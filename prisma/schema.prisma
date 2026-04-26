@@ -167,6 +167,7 @@ model StoryLog {
   status         TestStatus?
   commit_hash    String?
   commit_message String?
+  metadata       Json?
   created_at     DateTime    @default(now())
 
   @@index([story_id, created_at])

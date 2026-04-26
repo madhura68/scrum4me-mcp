@@ -1,12 +1,11 @@
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import type { Prisma } from '@prisma/client'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { userCanAccessStory } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 
-// metadata is accepted on input but not yet written — schema sync after
-// Scrum4Me PR #2 lands adds the StoryLog.metadata JSONB column.
 const inputSchema = z.object({
   story_id: z.string().min(1),
   content: z.string().min(1),
@@ -23,7 +22,7 @@ export function registerLogImplementationTool(server: McpServer) {
         'Forbidden for demo accounts.',
       inputSchema,
     },
-    async ({ story_id, content }) =>
+    async ({ story_id, content, metadata }) =>
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
         if (!(await userCanAccessStory(story_id, auth.userId))) {
@@ -34,6 +33,7 @@ export function registerLogImplementationTool(server: McpServer) {
             story_id,
             type: 'IMPLEMENTATION_PLAN',
             content,
+            metadata: (metadata ?? undefined) as Prisma.InputJsonValue | undefined,
           },
           select: { id: true, created_at: true },
         })

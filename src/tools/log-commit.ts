@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import type { Prisma } from '@prisma/client'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { userCanAccessStory } from '../access.js'
@@ -23,7 +24,7 @@ export function registerLogCommitTool(server: McpServer) {
         'Forbidden for demo accounts.',
       inputSchema,
     },
-    async ({ story_id, content, commit_hash, commit_message }) =>
+    async ({ story_id, content, commit_hash, commit_message, metadata }) =>
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
         if (!(await userCanAccessStory(story_id, auth.userId))) {
@@ -36,6 +37,7 @@ export function registerLogCommitTool(server: McpServer) {
             content,
             commit_hash,
             commit_message,
+            metadata: (metadata ?? undefined) as Prisma.InputJsonValue | undefined,
           },
           select: { id: true, created_at: true },
         })
