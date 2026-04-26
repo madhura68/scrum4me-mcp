@@ -6,6 +6,9 @@ import { registerListProductsTool } from './tools/list-products.js'
 import { registerGetClaudeContextTool } from './tools/get-claude-context.js'
 import { registerUpdateTaskStatusTool } from './tools/update-task-status.js'
 import { registerUpdateTaskPlanTool } from './tools/update-task-plan.js'
+import { registerLogImplementationTool } from './tools/log-implementation.js'
+import { registerLogTestResultTool } from './tools/log-test-result.js'
+import { registerLogCommitTool } from './tools/log-commit.js'
 
 const VERSION = '0.1.0'
 
@@ -24,7 +27,10 @@ async function main() {
   registerGetClaudeContextTool(server)
   registerUpdateTaskStatusTool(server)
   registerUpdateTaskPlanTool(server)
-  // Log tools, create_todo and prompts in ST-707..ST-709.
+  registerLogImplementationTool(server)
+  registerLogTestResultTool(server)
+  registerLogCommitTool(server)
+  // create_todo and prompts in ST-708..ST-709.
 
   const transport = new StdioServerTransport()
   await server.connect(transport)
