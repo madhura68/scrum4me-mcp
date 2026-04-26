@@ -4,6 +4,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { registerHealthTool } from './tools/health.js'
 import { registerListProductsTool } from './tools/list-products.js'
 import { registerGetClaudeContextTool } from './tools/get-claude-context.js'
+import { registerUpdateTaskStatusTool } from './tools/update-task-status.js'
+import { registerUpdateTaskPlanTool } from './tools/update-task-plan.js'
 
 const VERSION = '0.1.0'
 
@@ -20,7 +22,9 @@ async function main() {
   registerHealthTool(server)
   registerListProductsTool(server)
   registerGetClaudeContextTool(server)
-  // Write tools and prompts in ST-706..ST-709.
+  registerUpdateTaskStatusTool(server)
+  registerUpdateTaskPlanTool(server)
+  // Log tools, create_todo and prompts in ST-707..ST-709.
 
   const transport = new StdioServerTransport()
   await server.connect(transport)
