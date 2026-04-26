@@ -1,0 +1,240 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  PRODUCT_OWNER
+  SCRUM_MASTER
+  DEVELOPER
+}
+
+enum StoryStatus {
+  OPEN
+  IN_SPRINT
+  DONE
+}
+
+enum TaskStatus {
+  TO_DO
+  IN_PROGRESS
+  REVIEW
+  DONE
+}
+
+enum LogType {
+  IMPLEMENTATION_PLAN
+  TEST_RESULT
+  COMMIT
+}
+
+enum TestStatus {
+  PASSED
+  FAILED
+}
+
+enum SprintStatus {
+  ACTIVE
+  COMPLETED
+}
+
+model User {
+  id               String          @id @default(cuid())
+  username         String          @unique
+  email            String?         @unique
+  password_hash    String
+  is_demo          Boolean         @default(false)
+  bio              String?         @db.VarChar(160)
+  bio_detail       String?         @db.VarChar(2000)
+  avatar_data      Bytes?
+  created_at       DateTime        @default(now())
+  updated_at       DateTime        @updatedAt
+  roles            UserRole[]
+  api_tokens       ApiToken[]
+  products         Product[]
+  todos            Todo[]
+  product_members  ProductMember[]
+  assigned_stories Story[]         @relation("StoryAssignee")
+
+  @@map("users")
+}
+
+model UserRole {
+  id      String @id @default(cuid())
+  user    User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id String
+  role    Role
+
+  @@unique([user_id, role])
+  @@map("user_roles")
+}
+
+model ApiToken {
+  id         String    @id @default(cuid())
+  user       User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id    String
+  token_hash String    @unique
+  label      String?
+  created_at DateTime  @default(now())
+  revoked_at DateTime?
+
+  @@index([token_hash])
+  @@map("api_tokens")
+}
+
+model Product {
+  id                 String          @id @default(cuid())
+  user               User            @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id            String
+  name               String
+  code               String?         @db.VarChar(30)
+  description        String?
+  repo_url           String?
+  definition_of_done String
+  archived           Boolean         @default(false)
+  created_at         DateTime        @default(now())
+  updated_at         DateTime        @updatedAt
+  pbis               Pbi[]
+  sprints            Sprint[]
+  stories            Story[]
+  todos              Todo[]
+  members            ProductMember[]
+
+  @@unique([user_id, name])
+  @@unique([user_id, code])
+  @@index([user_id, archived])
+  @@map("products")
+}
+
+model Pbi {
+  id          String   @id @default(cuid())
+  product     Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id  String
+  code        String?  @db.VarChar(30)
+  title       String
+  description String?
+  priority    Int
+  sort_order  Float
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+  stories     Story[]
+
+  @@unique([product_id, code])
+  @@index([product_id, priority, sort_order])
+  @@map("pbis")
+}
+
+model Story {
+  id                  String      @id @default(cuid())
+  pbi                 Pbi         @relation(fields: [pbi_id], references: [id], onDelete: Cascade)
+  pbi_id              String
+  product             Product     @relation(fields: [product_id], references: [id])
+  product_id          String
+  sprint              Sprint?     @relation(fields: [sprint_id], references: [id])
+  sprint_id           String?
+  assignee            User?       @relation("StoryAssignee", fields: [assignee_id], references: [id], onDelete: SetNull)
+  assignee_id         String?
+  code                String?     @db.VarChar(30)
+  title               String
+  description         String?
+  acceptance_criteria String?
+  priority            Int
+  sort_order          Float
+  status              StoryStatus @default(OPEN)
+  created_at          DateTime    @default(now())
+  updated_at          DateTime    @updatedAt
+  logs                StoryLog[]
+  tasks               Task[]
+
+  @@unique([product_id, code])
+  @@index([pbi_id, priority, sort_order])
+  @@index([sprint_id, sort_order])
+  @@index([product_id, status])
+  @@index([sprint_id, assignee_id])
+  @@map("stories")
+}
+
+model StoryLog {
+  id             String      @id @default(cuid())
+  story          Story       @relation(fields: [story_id], references: [id], onDelete: Cascade)
+  story_id       String
+  type           LogType
+  content        String
+  status         TestStatus?
+  commit_hash    String?
+  commit_message String?
+  created_at     DateTime    @default(now())
+
+  @@index([story_id, created_at])
+  @@map("story_logs")
+}
+
+model Sprint {
+  id           String       @id @default(cuid())
+  product      Product      @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id   String
+  sprint_goal  String
+  status       SprintStatus @default(ACTIVE)
+  created_at   DateTime     @default(now())
+  completed_at DateTime?
+  stories      Story[]
+  tasks        Task[]
+
+  @@index([product_id, status])
+  @@map("sprints")
+}
+
+model Task {
+  id                  String     @id @default(cuid())
+  story               Story      @relation(fields: [story_id], references: [id], onDelete: Cascade)
+  story_id            String
+  sprint              Sprint?    @relation(fields: [sprint_id], references: [id])
+  sprint_id           String?
+  title               String
+  description         String?
+  implementation_plan String?
+  priority            Int
+  sort_order          Float
+  status              TaskStatus @default(TO_DO)
+  created_at          DateTime   @default(now())
+  updated_at          DateTime   @updatedAt
+
+  @@index([story_id, priority, sort_order])
+  @@index([sprint_id, status])
+  @@map("tasks")
+}
+
+model ProductMember {
+  id         String   @id @default(cuid())
+  product    Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id String
+  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id    String
+  created_at DateTime @default(now())
+
+  @@unique([product_id, user_id])
+  @@index([user_id])
+  @@map("product_members")
+}
+
+model Todo {
+  id         String   @id @default(cuid())
+  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id    String
+  product    Product? @relation(fields: [product_id], references: [id], onDelete: SetNull)
+  product_id String?
+  title      String
+  description String? @db.VarChar(2000)
+  done       Boolean  @default(false)
+  archived   Boolean  @default(false)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([user_id, done, archived])
+  @@index([user_id, product_id])
+  @@map("todos")
+}

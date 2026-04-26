@@ -16,6 +16,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "prisma:generate": "prisma generate",
+    "postinstall": "prisma generate || true",
     "typecheck": "tsc --noEmit",
     "sync-schema": "bash scripts/sync-schema.sh"
   },

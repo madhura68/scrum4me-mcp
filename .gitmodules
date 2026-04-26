@@ -1,0 +1,3 @@
+[submodule "vendor/scrum4me"]
+	path = vendor/scrum4me
+	url = https://github.com/madhura68/Scrum4Me.git
