@@ -1,0 +1,14 @@
+node_modules
+dist
+.env
+.env.local
+*.log
+.DS_Store
+
+# Generated Prisma Client
+src/generated
+prisma/generated
+
+# Editor
+.vscode
+.idea
