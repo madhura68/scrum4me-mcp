@@ -10,6 +10,7 @@ import { registerLogImplementationTool } from './tools/log-implementation.js'
 import { registerLogTestResultTool } from './tools/log-test-result.js'
 import { registerLogCommitTool } from './tools/log-commit.js'
 import { registerCreateTodoTool } from './tools/create-todo.js'
+import { registerImplementNextStoryPrompt } from './prompts/implement-next-story.js'
 
 const VERSION = '0.1.0'
 
@@ -32,7 +33,7 @@ async function main() {
   registerLogTestResultTool(server)
   registerLogCommitTool(server)
   registerCreateTodoTool(server)
-  // prompts in ST-709.
+  registerImplementNextStoryPrompt(server)
 
   const transport = new StdioServerTransport()
   await server.connect(transport)
