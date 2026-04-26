@@ -9,6 +9,7 @@ import { registerUpdateTaskPlanTool } from './tools/update-task-plan.js'
 import { registerLogImplementationTool } from './tools/log-implementation.js'
 import { registerLogTestResultTool } from './tools/log-test-result.js'
 import { registerLogCommitTool } from './tools/log-commit.js'
+import { registerCreateTodoTool } from './tools/create-todo.js'
 
 const VERSION = '0.1.0'
 
@@ -30,7 +31,8 @@ async function main() {
   registerLogImplementationTool(server)
   registerLogTestResultTool(server)
   registerLogCommitTool(server)
-  // create_todo and prompts in ST-708..ST-709.
+  registerCreateTodoTool(server)
+  // prompts in ST-709.
 
   const transport = new StdioServerTransport()
   await server.connect(transport)
