@@ -19,9 +19,16 @@ export function toolError(message: string): CallToolResult {
 }
 
 export function toolJson(value: unknown): CallToolResult {
+  const text = JSON.stringify(value, null, 2)
+  // structuredContent must be a JSON object per the MCP spec — wrap arrays
+  // and primitives so the SDK's response validator accepts them.
+  const structured: Record<string, unknown> =
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : { result: value }
   return {
-    content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
-    structuredContent: value as Record<string, unknown>,
+    content: [{ type: 'text', text }],
+    structuredContent: structured,
   }
 }
 
