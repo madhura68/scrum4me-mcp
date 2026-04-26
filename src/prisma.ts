@@ -2,6 +2,8 @@ import { PrismaClient } from '@prisma/client'
 import { Pool } from 'pg'
 import { PrismaPg } from '@prisma/adapter-pg'
 
+let client: PrismaClient | null = null
+
 function createClient(): PrismaClient {
   const url = process.env.DATABASE_URL
   if (!url) {
@@ -12,4 +14,9 @@ function createClient(): PrismaClient {
   return new PrismaClient({ adapter, log: ['error'] })
 }
 
-export const prisma = createClient()
+export const prisma = new Proxy({} as PrismaClient, {
+  get(_target, prop) {
+    if (!client) client = createClient()
+    return Reflect.get(client, prop, client)
+  },
+})

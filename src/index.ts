@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { registerHealthTool } from './tools/health.js'
+import { registerListProductsTool } from './tools/list-products.js'
+import { registerGetClaudeContextTool } from './tools/get-claude-context.js'
 
 const VERSION = '0.1.0'
 
@@ -14,7 +17,10 @@ async function main() {
     },
   )
 
-  // Tools and prompts will be registered here in ST-705..ST-709.
+  registerHealthTool(server)
+  registerListProductsTool(server)
+  registerGetClaudeContextTool(server)
+  // Write tools and prompts in ST-706..ST-709.
 
   const transport = new StdioServerTransport()
   await server.connect(transport)
