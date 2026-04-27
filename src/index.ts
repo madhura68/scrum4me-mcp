@@ -10,6 +10,10 @@ import { registerLogImplementationTool } from './tools/log-implementation.js'
 import { registerLogTestResultTool } from './tools/log-test-result.js'
 import { registerLogCommitTool } from './tools/log-commit.js'
 import { registerCreateTodoTool } from './tools/create-todo.js'
+import { registerAskUserQuestionTool } from './tools/ask-user-question.js'
+import { registerGetQuestionAnswerTool } from './tools/get-question-answer.js'
+import { registerListOpenQuestionsTool } from './tools/list-open-questions.js'
+import { registerCancelQuestionTool } from './tools/cancel-question.js'
 import { registerImplementNextStoryPrompt } from './prompts/implement-next-story.js'
 
 const VERSION = '0.1.0'
@@ -33,6 +37,10 @@ async function main() {
   registerLogTestResultTool(server)
   registerLogCommitTool(server)
   registerCreateTodoTool(server)
+  registerAskUserQuestionTool(server)
+  registerGetQuestionAnswerTool(server)
+  registerListOpenQuestionsTool(server)
+  registerCancelQuestionTool(server)
   registerImplementNextStoryPrompt(server)
 
   const transport = new StdioServerTransport()

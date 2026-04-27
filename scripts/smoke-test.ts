@@ -53,7 +53,7 @@ async function main() {
   const tools = await client.listTools()
   log(
     'tools/list',
-    tools.tools.length === 9,
+    tools.tools.length === 13,
     `${tools.tools.length} tools: ${tools.tools.map((t) => t.name).join(', ')}`,
   )
 
@@ -73,6 +73,14 @@ async function main() {
     const productId = productList[0].id
     const ctx = await callTool(client, 'get_claude_context', { product_id: productId })
     log('get_claude_context', !ctx.isError, ctx.text)
+  }
+
+  // list_open_questions (M11 — read-only, geen write nodig voor smoke-test)
+  const openQs = await callTool(client, 'list_open_questions')
+  log('list_open_questions', !openQs.isError, openQs.text)
+  if (!openQs.isError) {
+    const parsed = JSON.parse(openQs.text) as { count: number }
+    log('list_open_questions.shape', typeof parsed.count === 'number', `count=${parsed.count}`)
   }
 
   // prompts/list
