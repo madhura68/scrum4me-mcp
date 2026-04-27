@@ -43,23 +43,27 @@ enum SprintStatus {
 }
 
 model User {
-  id               String          @id @default(cuid())
-  username         String          @unique
-  email            String?         @unique
-  password_hash    String
-  is_demo          Boolean         @default(false)
-  bio              String?         @db.VarChar(160)
-  bio_detail       String?         @db.VarChar(2000)
-  avatar_data      Bytes?
-  created_at       DateTime        @default(now())
-  updated_at       DateTime        @updatedAt
-  roles            UserRole[]
-  api_tokens       ApiToken[]
-  products         Product[]
-  todos            Todo[]
-  product_members  ProductMember[]
-  assigned_stories Story[]         @relation("StoryAssignee")
+  id                String          @id @default(cuid())
+  username          String          @unique
+  email             String?         @unique
+  password_hash     String
+  is_demo           Boolean         @default(false)
+  bio               String?         @db.VarChar(160)
+  bio_detail        String?         @db.VarChar(2000)
+  avatar_data       Bytes?
+  active_product_id String?
+  active_product    Product?        @relation("UserActiveProduct", fields: [active_product_id], references: [id], onDelete: SetNull)
+  created_at        DateTime        @default(now())
+  updated_at        DateTime        @updatedAt
+  roles             UserRole[]
+  api_tokens        ApiToken[]
+  products          Product[]
+  todos             Todo[]
+  product_members   ProductMember[]
+  assigned_stories  Story[]         @relation("StoryAssignee")
+  login_pairings    LoginPairing[]
 
+  @@index([active_product_id])
   @@map("users")
 }
 
@@ -103,6 +107,7 @@ model Product {
   stories            Story[]
   todos              Todo[]
   members            ProductMember[]
+  active_for_users   User[]          @relation("UserActiveProduct")
 
   @@unique([user_id, name])
   @@unique([user_id, code])
@@ -238,4 +243,23 @@ model Todo {
   @@index([user_id, done, archived])
   @@index([user_id, product_id])
   @@map("todos")
+}
+
+model LoginPairing {
+  id                 String    @id @default(cuid())
+  secret_hash        String
+  desktop_token_hash String
+  status             String
+  user_id            String?
+  user               User?     @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  desktop_ua         String?   @db.VarChar(255)
+  desktop_ip         String?   @db.VarChar(45)
+  created_at         DateTime  @default(now())
+  expires_at         DateTime
+  approved_at        DateTime?
+  consumed_at        DateTime?
+
+  @@index([expires_at])
+  @@index([status, expires_at])
+  @@map("login_pairings")
 }
