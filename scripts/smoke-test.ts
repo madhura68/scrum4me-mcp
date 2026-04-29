@@ -53,7 +53,7 @@ async function main() {
   const tools = await client.listTools()
   log(
     'tools/list',
-    tools.tools.length === 13,
+    tools.tools.length === 16,
     `${tools.tools.length} tools: ${tools.tools.map((t) => t.name).join(', ')}`,
   )
 

@@ -10,6 +10,9 @@ import { registerLogImplementationTool } from './tools/log-implementation.js'
 import { registerLogTestResultTool } from './tools/log-test-result.js'
 import { registerLogCommitTool } from './tools/log-commit.js'
 import { registerCreateTodoTool } from './tools/create-todo.js'
+import { registerCreatePbiTool } from './tools/create-pbi.js'
+import { registerCreateStoryTool } from './tools/create-story.js'
+import { registerCreateTaskTool } from './tools/create-task.js'
 import { registerAskUserQuestionTool } from './tools/ask-user-question.js'
 import { registerGetQuestionAnswerTool } from './tools/get-question-answer.js'
 import { registerListOpenQuestionsTool } from './tools/list-open-questions.js'
@@ -37,6 +40,9 @@ async function main() {
   registerLogTestResultTool(server)
   registerLogCommitTool(server)
   registerCreateTodoTool(server)
+  registerCreatePbiTool(server)
+  registerCreateStoryTool(server)
+  registerCreateTaskTool(server)
   registerAskUserQuestionTool(server)
   registerGetQuestionAnswerTool(server)
   registerListOpenQuestionsTool(server)
