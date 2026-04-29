@@ -3,6 +3,7 @@ import { prisma } from './prisma.js'
 
 export type AuthContext = {
   userId: string
+  tokenId: string
   username: string
   isDemo: boolean
 }
@@ -29,6 +30,7 @@ export async function getAuth(): Promise<AuthContext> {
 
   cached = {
     userId: apiToken.user_id,
+    tokenId: apiToken.id,
     username: apiToken.user.username,
     isDemo: apiToken.user.is_demo,
   }
