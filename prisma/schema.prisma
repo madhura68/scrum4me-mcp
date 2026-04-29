@@ -62,6 +62,8 @@ model User {
   product_members   ProductMember[]
   assigned_stories  Story[]         @relation("StoryAssignee")
   login_pairings    LoginPairing[]
+  asked_questions     ClaudeQuestion[] @relation("ClaudeQuestionAsker")
+  answered_questions  ClaudeQuestion[] @relation("ClaudeQuestionAnswerer")
 
   @@index([active_product_id])
   @@map("users")
@@ -108,6 +110,7 @@ model Product {
   todos              Todo[]
   members            ProductMember[]
   active_for_users   User[]          @relation("UserActiveProduct")
+  claude_questions   ClaudeQuestion[]
 
   @@unique([user_id, name])
   @@unique([user_id, code])
@@ -154,6 +157,7 @@ model Story {
   updated_at          DateTime    @updatedAt
   logs                StoryLog[]
   tasks               Task[]
+  claude_questions    ClaudeQuestion[]
 
   @@unique([product_id, code])
   @@index([pbi_id, priority, sort_order])
@@ -208,6 +212,7 @@ model Task {
   status              TaskStatus @default(TO_DO)
   created_at          DateTime   @default(now())
   updated_at          DateTime   @updatedAt
+  claude_questions    ClaudeQuestion[]
 
   @@index([story_id, priority, sort_order])
   @@index([sprint_id, status])
@@ -262,4 +267,30 @@ model LoginPairing {
   @@index([expires_at])
   @@index([status, expires_at])
   @@map("login_pairings")
+}
+
+model ClaudeQuestion {
+  id           String    @id @default(cuid())
+  story        Story     @relation(fields: [story_id], references: [id], onDelete: Cascade)
+  story_id     String
+  task         Task?     @relation(fields: [task_id], references: [id], onDelete: SetNull)
+  task_id      String?
+  product      Product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id   String    // gedenormaliseerd uit story.product_id voor SSE-filter
+  asker        User      @relation("ClaudeQuestionAsker", fields: [asked_by], references: [id])
+  asked_by     String    // user_id van token-houder (= Claude-token)
+  question     String    @db.Text
+  options      Json?     // string[] voor multi-choice; null voor free-text
+  status       String    // 'open' | 'answered' | 'cancelled' | 'expired'
+  answer       String?   @db.Text
+  answerer     User?     @relation("ClaudeQuestionAnswerer", fields: [answered_by], references: [id])
+  answered_by  String?
+  answered_at  DateTime?
+  created_at   DateTime  @default(now())
+  expires_at   DateTime  // ingesteld door MCP-tool, default now() + 24h
+
+  @@index([story_id, status])
+  @@index([product_id, status])
+  @@index([status, expires_at])
+  @@map("claude_questions")
 }
