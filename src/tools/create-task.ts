@@ -1,0 +1,79 @@
+// MCP authoring tool: create een Task onder een bestaande Story.
+//
+// sprint_id wordt afgeleid uit de Story (denormalized FK). Als de story in
+// een sprint zit, erft de task die sprint_id; anders null. Status='TO_DO'.
+
+import { z } from 'zod'
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { prisma } from '../prisma.js'
+import { requireWriteAccess } from '../auth.js'
+import { userCanAccessProduct } from '../access.js'
+import { toolError, toolJson, withToolErrors } from '../errors.js'
+
+const inputSchema = z.object({
+  story_id: z.string().min(1),
+  title: z.string().min(1).max(200),
+  description: z.string().max(4000).optional(),
+  implementation_plan: z.string().max(8000).optional(),
+  priority: z.number().int().min(1).max(4),
+  sort_order: z.number().optional(),
+})
+
+export function registerCreateTaskTool(server: McpServer) {
+  server.registerTool(
+    'create_task',
+    {
+      title: 'Create task',
+      description:
+        'Add a task under an existing story. Inherits sprint_id from the story (denormalized). Status defaults to TO_DO. Sort_order auto-set to last+1 within the story/priority group if not provided. Forbidden for demo accounts.',
+      inputSchema,
+    },
+    async ({ story_id, title, description, implementation_plan, priority, sort_order }) =>
+      withToolErrors(async () => {
+        const auth = await requireWriteAccess()
+
+        const story = await prisma.story.findUnique({
+          where: { id: story_id },
+          select: { product_id: true, sprint_id: true },
+        })
+        if (!story) return toolError(`Story ${story_id} not found`)
+        if (!(await userCanAccessProduct(story.product_id, auth.userId))) {
+          return toolError(`Story ${story_id} not accessible`)
+        }
+
+        let resolvedSortOrder = sort_order
+        if (resolvedSortOrder === undefined) {
+          const last = await prisma.task.findFirst({
+            where: { story_id, priority },
+            orderBy: { sort_order: 'desc' },
+            select: { sort_order: true },
+          })
+          resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
+        }
+
+        const task = await prisma.task.create({
+          data: {
+            story_id,
+            sprint_id: story.sprint_id, // denormalized — erf van story
+            title,
+            description: description ?? null,
+            implementation_plan: implementation_plan ?? null,
+            priority,
+            sort_order: resolvedSortOrder,
+            status: 'TO_DO',
+          },
+          select: {
+            id: true,
+            title: true,
+            description: true,
+            implementation_plan: true,
+            priority: true,
+            sort_order: true,
+            status: true,
+            created_at: true,
+          },
+        })
+        return toolJson(task)
+      }),
+  )
+}

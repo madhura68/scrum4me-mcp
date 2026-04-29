@@ -18,6 +18,9 @@ activity and create todos via native tool calls instead of curl.
 | `log_test_result` | Append TEST_RESULT (PASSED/FAILED) | no |
 | `log_commit` | Append COMMIT with hash and message | no |
 | `create_todo` | Add a todo, optionally scoped to a product | no |
+| `create_pbi` | Add a Product Backlog Item to a product (auto sort_order) | no |
+| `create_story` | Add a story under a PBI (status=OPEN, lands in product backlog) | no |
+| `create_task` | Add a task under a story (status=TO_DO, inherits sprint_id) | no |
 | `ask_user_question` | Post a question to the active user about a story; optional `wait_seconds` (max 600) polls for the answer | no |
 | `get_question_answer` | Fetch the current status + answer of a previously-asked question | n/a |
 | `list_open_questions` | List own open/answered questions, most recent first (max 50) | n/a |
