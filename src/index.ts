@@ -19,6 +19,7 @@ import { registerListOpenQuestionsTool } from './tools/list-open-questions.js'
 import { registerCancelQuestionTool } from './tools/cancel-question.js'
 import { registerWaitForJobTool } from './tools/wait-for-job.js'
 import { registerUpdateJobStatusTool } from './tools/update-job-status.js'
+import { registerVerifyTaskAgainstPlanTool } from './tools/verify-task-against-plan.js'
 import { registerImplementNextStoryPrompt } from './prompts/implement-next-story.js'
 
 const VERSION = '0.1.0'
@@ -51,6 +52,7 @@ async function main() {
   registerCancelQuestionTool(server)
   registerWaitForJobTool(server)
   registerUpdateJobStatusTool(server)
+  registerVerifyTaskAgainstPlanTool(server)
   registerImplementNextStoryPrompt(server)
 
   const transport = new StdioServerTransport()
