@@ -25,8 +25,51 @@ activity and create todos via native tool calls instead of curl.
 | `get_question_answer` | Fetch the current status + answer of a previously-asked question | n/a |
 | `list_open_questions` | List own open/answered questions, most recent first (max 50) | n/a |
 | `cancel_question` | Cancel an own open question (asker-only) | no |
+| `wait_for_job` | Block until a QUEUED ClaudeJob is available, claim it atomically, return full task context with frozen `plan_snapshot` | no |
+| `update_job_status` | Report job transition to `running`, `done`, or `failed`; triggers SSE event to UI | no |
+| `verify_task_against_plan` | Compare frozen `plan_snapshot` against current plan + story logs + commits; returns per-AC ✓/✗/? heuristic and drift-score | yes (read-only) |
 
 Demo accounts may read but writes return `PERMISSION_DENIED`.
+
+### verify_task_against_plan
+
+Compares the immutable snapshot captured at claim time against the current state of the work. Useful at the end of a job to self-assess completeness.
+
+**Input**
+
+```json
+{ "task_id": "cmolqlqvh0023q..." }
+```
+
+**Output**
+
+```
+# Verify task: Prisma-schema + migratie in Scrum4Me (cmolqlqvh...)
+
+## Plan
+- Snapshot: - Bewerk prisma/schema.prisma:...
+- Current: - Bewerk prisma/schema.prisma:...
+- Edited onderweg: **no**
+
+## AC-checks (5/6 ✓ — drift-score 83%)
+- ✓ Scrum4Me prisma/schema.prisma: nieuw veld plan_snapshot...
+- ✓ Migratie aangemaakt en getest
+- ✗ vendor/scrum4me submodule in scrum4me-mcp gebumpt
+
+## Realisatie
+- 1 log_implementation-entry
+- commit `a3af2dd` — feat: add plan_snapshot field to ClaudeJob schema
+
+---
+⚠️ Heuristiek-rapport — handmatige PR-review blijft nodig
+```
+
+**Beperkingen heuristiek**
+
+- Zoekt op sleutelwoorden (filenames, camelCase-identifiers, lange woorden) — geen semantisch begrip
+- AC's die alleen over externe verificatie gaan (deployment, user-test) scoren altijd ✗ zonder extra log-entries
+- Plan_snapshot is NULL voor jobs die zijn geclaimed vóór versie met snapshot-feature — rapport meldt "no baseline"
+- Gebruik het rapport als startpunt, niet als definitief oordeel; PR-review blijft leidend
 
 ## Prompts
 

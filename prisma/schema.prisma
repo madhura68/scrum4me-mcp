@@ -256,6 +256,7 @@ model ClaudeJob {
   claimed_at          DateTime?
   started_at          DateTime?
   finished_at         DateTime?
+  plan_snapshot       String?
   branch              String?
   summary             String?
   error               String?
