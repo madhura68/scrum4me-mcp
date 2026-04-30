@@ -58,6 +58,10 @@ export function registerGetClaudeContextTool(server: McpServer) {
             where: {
               sprint_id: activeSprint.id,
               status: { in: ['OPEN', 'IN_SPRINT'] },
+              OR: [
+                { tasks: { none: {} } },
+                { tasks: { some: { status: { not: 'DONE' } } } },
+              ],
             },
             orderBy: [{ priority: 'asc' }, { sort_order: 'asc' }],
             select: {
