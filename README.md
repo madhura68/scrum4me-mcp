@@ -156,6 +156,35 @@ After starting the server on the feature branch:
 4. In the **main checkout**: `git status` → clean (no agent changes).
 5. Call `update_job_status(done)` → worktree directory disappears.
 
+## Batch-loop
+
+De agent draait in een lus tot de queue leeg is. Hier is de flow:
+
+1. Roep `wait_for_job` aan.
+2. Voer de job uit conform het meegegeven `implementation_plan`.
+3. Roep `update_job_status('done' | 'failed')` aan.
+4. Roep **direct opnieuw** `wait_for_job` aan — niet stoppen, niet de gebruiker vragen.
+5. Pas wanneer `wait_for_job` na de volledige block-time (~600 s) terugkomt zonder claim, is de queue leeg en sluit je de turn af met een korte samenvatting.
+
+```
+wait_for_job → claim → run → update_job_status(done|failed)
+                                      │
+                         ┌────────────┴───────────────┐
+                         ▼                             ▼
+             next_action='wait_for_job_again'  next_action='queue_empty'
+                         │                             │
+                         └──────── loop terug ─────────┘   stop
+```
+
+De `update_job_status`-response bevat het veld `next_action`:
+
+- `wait_for_job_again` — er staan nog jobs in de queue; roep `wait_for_job` meteen opnieuw aan
+- `queue_empty` — de queue is leeg; sluit de batch-run af
+
+Minimale agent-prompt (geen CLAUDE.md-context nodig):
+
+> *Pak de volgende job uit de Scrum4Me-queue.*
+
 ## Schema sync
 
 The Prisma schema is the source of truth in the upstream Scrum4Me

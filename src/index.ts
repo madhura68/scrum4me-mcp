@@ -22,6 +22,10 @@ import { registerUpdateJobStatusTool } from './tools/update-job-status.js'
 import { registerVerifyTaskAgainstPlanTool } from './tools/verify-task-against-plan.js'
 import { registerCleanupMyWorktreesTool } from './tools/cleanup-my-worktrees.js'
 import { registerImplementNextStoryPrompt } from './prompts/implement-next-story.js'
+import { getAuth } from './auth.js'
+import { registerWorker } from './presence/worker.js'
+import { startHeartbeat } from './presence/heartbeat.js'
+import { registerShutdownHandlers } from './presence/shutdown.js'
 
 const VERSION = '0.1.0'
 
@@ -59,6 +63,12 @@ async function main() {
 
   const transport = new StdioServerTransport()
   await server.connect(transport)
+
+  const auth = await getAuth()
+  await registerWorker({ userId: auth.userId, tokenId: auth.tokenId })
+  const { stop: stopHeartbeat } = startHeartbeat({ tokenId: auth.tokenId })
+  registerShutdownHandlers({ userId: auth.userId, tokenId: auth.tokenId, stopHeartbeat })
+
   console.error(`scrum4me-mcp ${VERSION} running on stdio`)
 }
 
