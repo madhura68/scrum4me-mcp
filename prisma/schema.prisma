@@ -57,6 +57,13 @@ enum SprintStatus {
   COMPLETED
 }
 
+enum VerifyResult {
+  ALIGNED
+  PARTIAL
+  EMPTY
+  DIVERGENT
+}
+
 model User {
   id                String          @id @default(cuid())
   username          String          @unique
@@ -232,6 +239,7 @@ model Task {
   priority            Int
   sort_order          Float
   status              TaskStatus @default(TO_DO)
+  verify_only         Boolean    @default(false)
   created_at          DateTime   @default(now())
   updated_at          DateTime   @updatedAt
   claude_questions    ClaudeQuestion[]
@@ -261,6 +269,7 @@ model ClaudeJob {
   branch              String?
   summary             String?
   error               String?
+  verify_result       VerifyResult?
   created_at          DateTime        @default(now())
   updated_at          DateTime        @updatedAt
 
