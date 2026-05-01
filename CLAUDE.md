@@ -8,15 +8,23 @@ MCP server that exposes the Scrum4Me dev-flow as native tools for Claude Code.
 
 ### How it works
 
-1. On successful claim, `wait_for_job` calls `createWorktreeForJob`:
+1. On successful claim, `wait_for_job` calls `resolveBranchForJob` first:
+   - Looks for a sibling job in the same story that already has a branch
+   - If found → reuse that branch (`reused_branch: true` in the response)
+   - Otherwise → fresh branch `feat/story-<last-8-chars-of-story-id>`
+2. Then `createWorktreeForJob`:
    - Worktree directory: `SCRUM4ME_AGENT_WORKTREE_DIR/<job-id>` (default: `~/.scrum4me-agent-worktrees/<job-id>`)
-   - Branch: `feat/job-<last-8-chars-of-job-id>` (timestamp-suffixed if branch already exists)
-   - Base: `origin/main`
-2. Tool response includes `worktree_path` and `branch_name`.
-3. **Work exclusively in `worktree_path`** — all file edits and commits go there.
-4. On `update_job_status(done|failed)`, `removeWorktreeForJob` runs automatically:
+   - Base: `origin/main` for fresh branches; existing remote tip for reused branches
+   - When reusing: any stale sibling worktree still holding the branch is removed first (siblings are sequential)
+3. Tool response includes `worktree_path`, `branch_name`, `reused_branch`.
+4. **Work exclusively in `worktree_path`** — all file edits and commits go there.
+5. On `update_job_status(done|failed)`, `removeWorktreeForJob` runs automatically — but is **deferred** while siblings in the same story are still QUEUED/CLAIMED/RUNNING (next sub-task will reuse the branch). Only the last terminal transition triggers actual cleanup:
    - `keepBranch=true` if `done` and a `branch` was reported (agent pushed)
    - `keepBranch=false` otherwise (branch deleted with worktree)
+
+### Branch-per-story result
+
+A story with 3 sub-tasks lands as **1 branch** with 3 commits and **1 PR** (assuming `auto_pr=true`). Sibling sub-tasks share the same `pr_url` — `maybeCreateAutoPr` reuses an existing PR from a sibling job instead of opening duplicates. Story-level PR title (`<story-code>: <story-title>`) so the GitHub view reads as one logical change rather than per-task fragments.
 
 ### Required configuration
 
@@ -49,7 +57,7 @@ Server-startup registers a `ClaudeWorker` record + starts a 5 s heartbeat; SIGTE
 | File | Purpose |
 |---|---|
 | `src/presence/worker.ts` | `registerWorker` (upsert + pg_notify worker_connected) + `unregisterWorker` |
-| `src/presence/heartbeat.ts` | `startHeartbeat` — 5 s interval, stops on record-not-found |
+| `src/presence/heartbeat.ts` | `startHeartbeat` — 5 s interval, self-heals by re-registering when record disappears |
 | `src/presence/shutdown.ts` | `registerShutdownHandlers` — SIGTERM/SIGINT → stop heartbeat + unregister |
 | `src/index.ts` | Bootstrap: calls `getAuth` → `registerWorker` → `startHeartbeat` → `registerShutdownHandlers` |
 
