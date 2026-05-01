@@ -38,6 +38,10 @@ Or add to `~/.scrum4me-agent-config.json`:
 
 If no repo root is found, `wait_for_job` rolls the claim back to QUEUED and returns an error.
 
+## Manual worktree cleanup
+
+Run `cleanup_my_worktrees` (no arguments) to scan `~/.scrum4me-agent-worktrees/` and remove worktrees for jobs that are in a terminal state (DONE, FAILED, CANCELLED). Worktrees for active jobs (QUEUED, CLAIMED, RUNNING) are left untouched. Returns `{ removed, kept, skipped }`.
+
 ## Key source files
 
 | File | Purpose |
@@ -45,6 +49,7 @@ If no repo root is found, `wait_for_job` rolls the claim back to QUEUED and retu
 | `src/git/worktree.ts` | `createWorktreeForJob` + `removeWorktreeForJob` |
 | `src/tools/wait-for-job.ts` | `resolveRepoRoot`, `rollbackClaim`, `attachWorktreeToJob` |
 | `src/tools/update-job-status.ts` | `cleanupWorktreeForTerminalStatus` |
+| `src/tools/cleanup-my-worktrees.ts` | `cleanup_my_worktrees` tool — scans + removes stale worktrees |
 
 ## Testing
 
