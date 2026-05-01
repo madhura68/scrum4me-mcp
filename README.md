@@ -158,7 +158,7 @@ After starting the server on the feature branch:
 
 ## Batch-loop
 
-De agent draait in een lus tot de queue leeg is:
+De agent draait in een lus tot de queue leeg is. Hier is de flow:
 
 1. Roep `wait_for_job` aan.
 2. Voer de job uit conform het meegegeven `implementation_plan`.
