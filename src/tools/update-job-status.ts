@@ -5,11 +5,14 @@
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { Client } from 'pg'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { toolJson, toolError, withToolErrors } from '../errors.js'
 import { removeWorktreeForJob } from '../git/worktree.js'
 import { resolveRepoRoot } from './wait-for-job.js'
+import { pushBranchForJob } from '../git/push.js'
 
 const inputSchema = z.object({
   job_id: z.string().min(1),
@@ -34,6 +37,56 @@ export async function cleanupWorktreeForTerminalStatus(
     await removeWorktreeForJob({ repoRoot, jobId, keepBranch })
   } catch (err) {
     console.warn(`[update_job_status] Worktree cleanup failed for job ${jobId}:`, err)
+  }
+}
+
+export type DoneUpdatePlan = {
+  dbStatus: 'DONE' | 'FAILED'
+  pushedAt: Date | undefined
+  branchOverride: string | undefined
+  errorOverride: string | undefined
+  skipWorktreeCleanup: boolean
+}
+
+export async function prepareDoneUpdate(
+  jobId: string,
+  branch: string | undefined,
+): Promise<DoneUpdatePlan> {
+  const worktreeDir =
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR ?? path.join(os.homedir(), '.scrum4me-agent-worktrees')
+  const worktreePath = path.join(worktreeDir, jobId)
+  const branchName = branch ?? `feat/job-${jobId.slice(-8)}`
+
+  const pushResult = await pushBranchForJob({ worktreePath, branchName })
+
+  if (pushResult.pushed) {
+    return {
+      dbStatus: 'DONE',
+      pushedAt: new Date(),
+      branchOverride: branchName,
+      errorOverride: undefined,
+      skipWorktreeCleanup: false,
+    }
+  }
+
+  if (pushResult.reason === 'no-changes') {
+    return {
+      dbStatus: 'DONE',
+      pushedAt: undefined,
+      branchOverride: undefined,
+      errorOverride: undefined,
+      skipWorktreeCleanup: false,
+    }
+  }
+
+  // Push failed — job becomes FAILED, worktree stays for manual inspection
+  const snippet = pushResult.stderr.slice(0, 200)
+  return {
+    dbStatus: 'FAILED',
+    pushedAt: undefined,
+    branchOverride: undefined,
+    errorOverride: `push failed (${pushResult.reason}): ${snippet}`,
+    skipWorktreeCleanup: true,
   }
 }
 
@@ -80,22 +133,40 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           return toolError(`Job is already in terminal state: ${job.status.toLowerCase()}`)
         }
 
-        const dbStatus = DB_STATUS_MAP[status]
+        // For DONE: push first, adjust DB status based on result
+        let actualStatus = status
+        let pushedAt: Date | undefined
+        let branchToWrite = branch
+        let errorToWrite = error
+        let skipWorktreeCleanup = false
+
+        if (status === 'done') {
+          const plan = await prepareDoneUpdate(job_id, branch)
+          actualStatus = plan.dbStatus === 'DONE' ? 'done' : 'failed'
+          pushedAt = plan.pushedAt
+          if (plan.branchOverride !== undefined) branchToWrite = plan.branchOverride
+          if (plan.errorOverride !== undefined) errorToWrite = plan.errorOverride
+          skipWorktreeCleanup = plan.skipWorktreeCleanup
+        }
+
+        const dbStatus = DB_STATUS_MAP[actualStatus as keyof typeof DB_STATUS_MAP]
         const now = new Date()
         const updated = await prisma.claudeJob.update({
           where: { id: job_id },
           data: {
             status: dbStatus,
-            ...(status === 'running' ? { started_at: now } : {}),
-            ...(status === 'done' || status === 'failed' ? { finished_at: now } : {}),
-            ...(branch !== undefined ? { branch } : {}),
+            ...(actualStatus === 'running' ? { started_at: now } : {}),
+            ...(actualStatus === 'done' || actualStatus === 'failed' ? { finished_at: now } : {}),
+            ...(branchToWrite !== undefined ? { branch: branchToWrite } : {}),
+            ...(pushedAt !== undefined ? { pushed_at: pushedAt } : {}),
             ...(summary !== undefined ? { summary } : {}),
-            ...(error !== undefined ? { error } : {}),
+            ...(errorToWrite !== undefined ? { error: errorToWrite } : {}),
           },
           select: {
             id: true,
             status: true,
             branch: true,
+            pushed_at: true,
             summary: true,
             error: true,
             started_at: true,
@@ -116,8 +187,9 @@ export function registerUpdateJobStatusTool(server: McpServer) {
                 task_id: job.task_id,
                 user_id: job.user_id,
                 product_id: job.product_id,
-                status,
+                status: actualStatus,
                 branch: updated.branch ?? undefined,
+                pushed_at: updated.pushed_at?.toISOString() ?? undefined,
                 summary: updated.summary ?? undefined,
                 error: updated.error ?? undefined,
               }),
@@ -128,15 +200,16 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           // non-fatal — status is already persisted
         }
 
-        // Best-effort worktree cleanup on terminal transitions
-        if (status === 'done' || status === 'failed') {
-          await cleanupWorktreeForTerminalStatus(job.product_id, job_id, status, branch)
+        // Best-effort worktree cleanup on terminal transitions (skip if push failed — worktree preserved)
+        if ((actualStatus === 'done' || actualStatus === 'failed') && !skipWorktreeCleanup) {
+          await cleanupWorktreeForTerminalStatus(job.product_id, job_id, actualStatus, branchToWrite)
         }
 
         return toolJson({
           job_id: updated.id,
-          status,
+          status: actualStatus,
           branch: updated.branch,
+          pushed_at: updated.pushed_at?.toISOString() ?? null,
           summary: updated.summary,
           error: updated.error,
           started_at: updated.started_at?.toISOString() ?? null,
