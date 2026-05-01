@@ -1,6 +1,8 @@
 import { prisma } from '../prisma.js'
+import { registerWorker } from './worker.js'
 
 export function startHeartbeat(opts: {
+  userId: string
   tokenId: string
   intervalMs?: number
 }): { stop: () => void } {
@@ -11,11 +13,18 @@ export function startHeartbeat(opts: {
         data: { last_seen_at: new Date() },
       })
       if (result.count === 0) {
-        console.error('[scrum4me-mcp] Heartbeat: worker record not found — token may be revoked. Stopping.')
-        clearInterval(timer)
+        // Record disappeared — likely deleted by prisma_workers_cleanup,
+        // a manual cleanup, or a race during shutdown of a parallel worker.
+        // Re-register so the UI's 'Agent verbonden'-indicator self-heals
+        // instead of going dark for the rest of the process lifetime.
+        try {
+          await registerWorker({ userId: opts.userId, tokenId: opts.tokenId })
+        } catch (err) {
+          console.error('[scrum4me-mcp] Heartbeat: re-register failed', err)
+        }
       }
     } catch {
-      // non-fatal
+      // non-fatal — next tick retries
     }
   }, opts.intervalMs ?? 5_000)
 
