@@ -8,6 +8,8 @@ import { Client } from 'pg'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { toolJson, toolError, withToolErrors } from '../errors.js'
+import { removeWorktreeForJob } from '../git/worktree.js'
+import { resolveRepoRoot } from './wait-for-job.js'
 
 const inputSchema = z.object({
   job_id: z.string().min(1),
@@ -16,6 +18,24 @@ const inputSchema = z.object({
   summary: z.string().max(1_000).optional(),
   error: z.string().max(2_000).optional(),
 })
+
+export async function cleanupWorktreeForTerminalStatus(
+  productId: string,
+  jobId: string,
+  status: 'done' | 'failed',
+  branch: string | undefined,
+): Promise<void> {
+  const repoRoot = await resolveRepoRoot(productId)
+  if (!repoRoot) return
+
+  // Keep branch when job is done and a branch was reported (agent pushed)
+  const keepBranch = status === 'done' && branch !== undefined
+  try {
+    await removeWorktreeForJob({ repoRoot, jobId, keepBranch })
+  } catch (err) {
+    console.warn(`[update_job_status] Worktree cleanup failed for job ${jobId}:`, err)
+  }
+}
 
 const DB_STATUS_MAP = {
   running: 'RUNNING',
@@ -106,6 +126,11 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           await pg.end()
         } catch {
           // non-fatal — status is already persisted
+        }
+
+        // Best-effort worktree cleanup on terminal transitions
+        if (status === 'done' || status === 'failed') {
+          await cleanupWorktreeForTerminalStatus(job.product_id, job_id, status, branch)
         }
 
         return toolJson({
