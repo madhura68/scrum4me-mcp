@@ -97,6 +97,14 @@ const DB_STATUS_MAP = {
   failed: 'FAILED',
 } as const
 
+export function resolveNextAction(
+  queueCount: number,
+  status: 'running' | 'done' | 'failed',
+): 'wait_for_job_again' | 'queue_empty' | 'idle' {
+  if (status === 'running') return 'idle'
+  return queueCount > 0 ? 'wait_for_job_again' : 'queue_empty'
+}
+
 export async function maybeCreateAutoPr(opts: {
   jobId: string
   productId: string
@@ -140,7 +148,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         'Report progress on a claimed ClaudeJob. Allowed transitions from CLAIMED/RUNNING: ' +
         'running (start), done (finished), failed (error). ' +
         'The Bearer token must match the token that claimed the job. ' +
-        'Automatically emits an SSE event so the Scrum4Me UI updates in real time.',
+        'Automatically emits an SSE event so the Scrum4Me UI updates in real time. ' +
+        'Response includes next_action: when wait_for_job_again, immediately call wait_for_job again. When queue_empty, the agent batch is done.',
       inputSchema,
     },
     async ({ job_id, status, branch, summary, error }) =>
@@ -262,6 +271,11 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           await cleanupWorktreeForTerminalStatus(job.product_id, job_id, actualStatus, branchToWrite)
         }
 
+        const queueCount = await prisma.claudeJob.count({
+          where: { user_id: userId, status: 'QUEUED' },
+        })
+        const nextAction = resolveNextAction(queueCount, actualStatus)
+
         return toolJson({
           job_id: updated.id,
           status: actualStatus,
@@ -272,6 +286,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           error: updated.error,
           started_at: updated.started_at?.toISOString() ?? null,
           finished_at: updated.finished_at?.toISOString() ?? null,
+          next_action: nextAction,
         })
       }),
   )
