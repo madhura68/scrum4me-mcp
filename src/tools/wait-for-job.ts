@@ -12,6 +12,13 @@ import { requireWriteAccess } from '../auth.js'
 import { toolJson, toolError, withToolErrors } from '../errors.js'
 import { createWorktreeForJob } from '../git/worktree.js'
 
+/** Parse `https://github.com/<owner>/<name>(.git)?` → `<name>`. */
+export function repoNameFromUrl(repoUrl: string | null | undefined): string | null {
+  if (!repoUrl) return null
+  const m = repoUrl.match(/[/:]([^/]+?)(?:\.git)?\/?$/)
+  return m ? m[1] : null
+}
+
 export async function resolveRepoRoot(productId: string): Promise<string | null> {
   const envKey = `SCRUM4ME_REPO_ROOT_${productId}`
   if (process.env[envKey]) return process.env[envKey]!
@@ -20,7 +27,24 @@ export async function resolveRepoRoot(productId: string): Promise<string | null>
   try {
     const raw = await fs.readFile(configPath, 'utf-8')
     const config = JSON.parse(raw) as { repoRoots?: Record<string, string> }
-    return config.repoRoots?.[productId] ?? null
+    if (config.repoRoots?.[productId]) return config.repoRoots[productId]
+  } catch {
+    // ignore — fall through to convention-based fallback
+  }
+
+  // Convention-based fallback: ~/Projects/<repo-name> with .git/ inside.
+  // Lets the agent work without explicit env-config when checkouts follow
+  // the standard ~/Projects/<name> layout.
+  try {
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+      select: { repo_url: true },
+    })
+    const name = repoNameFromUrl(product?.repo_url)
+    if (!name) return null
+    const candidate = path.join(os.homedir(), 'Projects', name)
+    await fs.access(path.join(candidate, '.git'))
+    return candidate
   } catch {
     return null
   }
@@ -34,10 +58,39 @@ export async function rollbackClaim(jobId: string): Promise<void> {
   `
 }
 
+/**
+ * Resolve the branch name for a newly-claimed job.
+ *
+ * Branch-per-story: if a sibling job in the same story already has a branch
+ * (assigned during its own claim), reuse it so all sub-tasks in the story
+ * land in one PR. Otherwise generate a fresh `feat/story-<8-char>` name.
+ *
+ * Returns also `siblingHasActiveWorktree` so the caller can decide to remove
+ * a stale sibling worktree before creating a new one (git refuses to check
+ * out the same branch in two worktrees).
+ */
+export async function resolveBranchForJob(
+  jobId: string,
+  storyId: string,
+): Promise<{ branchName: string; reused: boolean }> {
+  const sibling = await prisma.claudeJob.findFirst({
+    where: {
+      task: { story_id: storyId },
+      branch: { not: null },
+      id: { not: jobId },
+    },
+    orderBy: { created_at: 'asc' },
+    select: { branch: true },
+  })
+  if (sibling?.branch) return { branchName: sibling.branch, reused: true }
+  return { branchName: `feat/story-${storyId.slice(-8)}`, reused: false }
+}
+
 export async function attachWorktreeToJob(
   productId: string,
   jobId: string,
-): Promise<{ worktree_path: string; branch_name: string } | { error: string }> {
+  storyId: string,
+): Promise<{ worktree_path: string; branch_name: string; reused_branch: boolean } | { error: string }> {
   const repoRoot = await resolveRepoRoot(productId)
   if (!repoRoot) {
     await rollbackClaim(jobId)
@@ -48,14 +101,15 @@ export async function attachWorktreeToJob(
     }
   }
 
-  const branchName = `feat/job-${jobId.slice(-8)}`
+  const { branchName, reused } = await resolveBranchForJob(jobId, storyId)
   try {
     const { worktreePath, branchName: actualBranch } = await createWorktreeForJob({
       repoRoot,
       jobId,
       branchName,
+      reuseBranch: reused,
     })
-    return { worktree_path: worktreePath, branch_name: actualBranch }
+    return { worktree_path: worktreePath, branch_name: actualBranch, reused_branch: reused }
   } catch (err) {
     await rollbackClaim(jobId)
     return { error: `Worktree creation failed: ${(err as Error).message}` }
@@ -280,7 +334,7 @@ export function registerWaitForJobTool(server: McpServer) {
         if (jobId) {
           const ctx = await getFullJobContext(jobId)
           if (!ctx) return toolError('Job claimed but context fetch failed')
-          const wt = await attachWorktreeToJob(ctx.product.id, jobId)
+          const wt = await attachWorktreeToJob(ctx.product.id, jobId, ctx.story.id)
           if ('error' in wt) return toolError(wt.error)
           return toolJson({ ...ctx, worktree_path: wt.worktree_path, branch_name: wt.branch_name })
         }
@@ -318,7 +372,7 @@ export function registerWaitForJobTool(server: McpServer) {
             if (jobId) {
               const ctx = await getFullJobContext(jobId)
               if (!ctx) return toolError('Job claimed but context fetch failed')
-              const wt = await attachWorktreeToJob(ctx.product.id, jobId)
+              const wt = await attachWorktreeToJob(ctx.product.id, jobId, ctx.story.id)
               if ('error' in wt) return toolError(wt.error)
               return toolJson({ ...ctx, worktree_path: wt.worktree_path, branch_name: wt.branch_name })
             }

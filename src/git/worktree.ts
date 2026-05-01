@@ -15,13 +15,39 @@ async function branchExists(repoRoot: string, name: string): Promise<boolean> {
   }
 }
 
+async function findWorktreeForBranch(
+  repoRoot: string,
+  branchName: string,
+): Promise<string | null> {
+  try {
+    const { stdout } = await exec('git', ['worktree', 'list', '--porcelain'], { cwd: repoRoot })
+    // Porcelain blocks: worktree <path>\nHEAD <sha>\nbranch refs/heads/<name>\n\n
+    const blocks = stdout.split('\n\n').filter(Boolean)
+    for (const block of blocks) {
+      const lines = block.split('\n')
+      const wt = lines.find((l) => l.startsWith('worktree '))?.slice(9)
+      const br = lines.find((l) => l.startsWith('branch '))?.slice(7) // refs/heads/<name>
+      if (wt && br && br === `refs/heads/${branchName}`) return wt
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
 export async function createWorktreeForJob(opts: {
   repoRoot: string
   jobId: string
   branchName: string
   baseRef?: string
+  /**
+   * When true the branch is expected to exist already (sibling job created it).
+   * If a stale sibling worktree still occupies the branch, it is removed first
+   * — siblings are sequential, so this is safe.
+   */
+  reuseBranch?: boolean
 }): Promise<{ worktreePath: string; branchName: string }> {
-  const { repoRoot, jobId, baseRef = 'origin/main' } = opts
+  const { repoRoot, jobId, baseRef = 'origin/main', reuseBranch = false } = opts
   let { branchName } = opts
 
   const parent =
@@ -44,7 +70,18 @@ export async function createWorktreeForJob(opts: {
 
   await exec('git', ['fetch', 'origin', '--prune'], { cwd: repoRoot })
 
-  // Suffix with timestamp when branch already exists
+  if (reuseBranch) {
+    // Sibling task already created the branch; check it out into a fresh worktree.
+    // If the branch is still attached to a stale sibling worktree, drop that first.
+    const occupant = await findWorktreeForBranch(repoRoot, branchName)
+    if (occupant) {
+      await exec('git', ['worktree', 'remove', '--force', occupant], { cwd: repoRoot })
+    }
+    await exec('git', ['worktree', 'add', worktreePath, branchName], { cwd: repoRoot })
+    return { worktreePath, branchName }
+  }
+
+  // Fresh branch: suffix with timestamp when name collision occurs
   if (await branchExists(repoRoot, branchName)) {
     branchName = `${branchName}-${Date.now()}`
   }
