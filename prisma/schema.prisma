@@ -127,6 +127,7 @@ model Product {
   description        String?
   repo_url           String?
   definition_of_done String
+  auto_pr            Boolean         @default(false)
   archived           Boolean         @default(false)
   created_at         DateTime        @default(now())
   updated_at         DateTime        @updatedAt
@@ -267,6 +268,7 @@ model ClaudeJob {
   pushed_at           DateTime?
   plan_snapshot       String?
   branch              String?
+  pr_url              String?
   summary             String?
   error               String?
   verify_result       VerifyResult?
