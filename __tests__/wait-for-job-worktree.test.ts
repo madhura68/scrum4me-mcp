@@ -1,0 +1,138 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import * as fs from 'node:fs/promises'
+
+vi.mock('../src/prisma.js', () => ({
+  prisma: {
+    $executeRaw: vi.fn(),
+  },
+}))
+
+vi.mock('../src/git/worktree.js', () => ({
+  createWorktreeForJob: vi.fn(),
+}))
+
+import { prisma } from '../src/prisma.js'
+import { createWorktreeForJob } from '../src/git/worktree.js'
+import { resolveRepoRoot, rollbackClaim, attachWorktreeToJob } from '../src/tools/wait-for-job.js'
+
+const mockPrisma = prisma as unknown as { $executeRaw: ReturnType<typeof vi.fn> }
+const mockCreateWorktree = createWorktreeForJob as ReturnType<typeof vi.fn>
+
+beforeEach(() => {
+  vi.clearAllMocks()
+})
+
+describe('resolveRepoRoot', () => {
+  const originalEnv = { ...process.env }
+
+  afterEach(() => {
+    // Restore env
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('SCRUM4ME_REPO_ROOT_')) delete process.env[key]
+    }
+    Object.assign(process.env, originalEnv)
+  })
+
+  it('returns value from env var when set', async () => {
+    process.env['SCRUM4ME_REPO_ROOT_prod-001'] = '/repos/my-project'
+    const result = await resolveRepoRoot('prod-001')
+    expect(result).toBe('/repos/my-project')
+  })
+
+  it('returns null when no env var and no config file', async () => {
+    delete process.env['SCRUM4ME_REPO_ROOT_prod-999']
+    // Config file at home won't have this productId in CI
+    const result = await resolveRepoRoot('prod-999-nonexistent')
+    expect(result).toBeNull()
+  })
+
+  it('reads from config file when env var is absent', async () => {
+    const configPath = path.join(os.homedir(), '.scrum4me-agent-config.json')
+    const config = { repoRoots: { 'prod-config': '/repos/from-config' } }
+    let wroteConfig = false
+    try {
+      await fs.writeFile(configPath, JSON.stringify(config), 'utf-8')
+      wroteConfig = true
+      delete process.env['SCRUM4ME_REPO_ROOT_prod-config']
+
+      const result = await resolveRepoRoot('prod-config')
+      expect(result).toBe('/repos/from-config')
+    } finally {
+      // Clean up only what we wrote — don't delete if it pre-existed
+      if (wroteConfig) {
+        try {
+          const existing = JSON.parse(await fs.readFile(configPath, 'utf-8'))
+          delete existing.repoRoots?.['prod-config']
+          if (Object.keys(existing.repoRoots ?? {}).length === 0 && Object.keys(existing).length === 1) {
+            await fs.rm(configPath)
+          } else {
+            await fs.writeFile(configPath, JSON.stringify(existing), 'utf-8')
+          }
+        } catch {
+          await fs.rm(configPath).catch(() => {})
+        }
+      }
+    }
+  })
+})
+
+describe('attachWorktreeToJob', () => {
+  const originalEnv = { ...process.env }
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('SCRUM4ME_REPO_ROOT_')) delete process.env[key]
+    }
+    Object.assign(process.env, originalEnv)
+  })
+
+  it('returns worktree_path and branch_name on success', async () => {
+    process.env['SCRUM4ME_REPO_ROOT_prod-001'] = '/repos/my-project'
+    mockCreateWorktree.mockResolvedValue({
+      worktreePath: '/home/user/.scrum4me-agent-worktrees/job-abc12345',
+      branchName: 'feat/job-abc12345',
+    })
+    mockPrisma.$executeRaw.mockResolvedValue(0)
+
+    const result = await attachWorktreeToJob('prod-001', 'job-abc12345')
+
+    expect(result).toEqual({
+      worktree_path: '/home/user/.scrum4me-agent-worktrees/job-abc12345',
+      branch_name: 'feat/job-abc12345',
+    })
+    expect(mockCreateWorktree).toHaveBeenCalledWith({
+      repoRoot: '/repos/my-project',
+      jobId: 'job-abc12345',
+      branchName: 'feat/job-abc12345',
+    })
+  })
+
+  it('rolls back claim and returns error when no repoRoot configured', async () => {
+    delete process.env['SCRUM4ME_REPO_ROOT_prod-no-root']
+    mockPrisma.$executeRaw.mockResolvedValue(0)
+
+    const result = await attachWorktreeToJob('prod-no-root', 'job-xyz')
+
+    expect('error' in result).toBe(true)
+    expect((result as { error: string }).error).toContain('No repo root configured')
+    expect(mockPrisma.$executeRaw).toHaveBeenCalledOnce()
+    const sqlParts: string[] = mockPrisma.$executeRaw.mock.calls[0][0]
+    expect(sqlParts.join('')).toContain("status = 'QUEUED'")
+  })
+
+  it('rolls back claim and returns error when createWorktreeForJob throws', async () => {
+    process.env['SCRUM4ME_REPO_ROOT_prod-001'] = '/repos/my-project'
+    mockCreateWorktree.mockRejectedValue(new Error('git fetch failed'))
+    mockPrisma.$executeRaw.mockResolvedValue(0)
+
+    const result = await attachWorktreeToJob('prod-001', 'job-fail')
+
+    expect('error' in result).toBe(true)
+    expect((result as { error: string }).error).toContain('git fetch failed')
+    expect(mockPrisma.$executeRaw).toHaveBeenCalledOnce()
+    const sqlParts: string[] = mockPrisma.$executeRaw.mock.calls[0][0]
+    expect(sqlParts.join('')).toContain("status = 'QUEUED'")
+  })
+})

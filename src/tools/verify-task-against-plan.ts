@@ -1,14 +1,31 @@
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
 import { getAuth } from '../auth.js'
 import { userCanAccessTask } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
-import { buildVerifyResult, renderMarkdownReport } from '../lib/verify-plan.js'
+import { classifyDiffAgainstPlan, type VerifyResultValue } from '../verify/classify.js'
+
+const exec = promisify(execFile)
 
 const inputSchema = z.object({
   task_id: z.string().min(1),
+  worktree_path: z.string().min(1),
 })
+
+export async function getDiffInWorktree(worktreePath: string): Promise<string> {
+  const { stdout } = await exec('git', ['diff', 'origin/main...HEAD'], { cwd: worktreePath })
+  return stdout
+}
+
+export async function saveVerifyResult(jobId: string, result: VerifyResultValue): Promise<void> {
+  await prisma.claudeJob.update({
+    where: { id: jobId },
+    data: { verify_result: result },
+  })
+}
 
 export function registerVerifyTaskAgainstPlanTool(server: McpServer) {
   server.registerTool(
@@ -16,13 +33,15 @@ export function registerVerifyTaskAgainstPlanTool(server: McpServer) {
     {
       title: 'Verify task against plan',
       description:
-        'Compare the frozen plan_snapshot (captured at claim time) against current ' +
-        'task.implementation_plan, story logs, and commits. Returns a markdown report ' +
-        'with per-AC ✓/✗/? heuristic checks and a drift-score. Read-only — demo users allowed.',
+        'Run `git diff origin/main...HEAD` in the worktree and compare it against the ' +
+        'frozen plan_snapshot captured at claim time. Returns ALIGNED|PARTIAL|EMPTY|DIVERGENT ' +
+        'and saves verify_result on the active job. ' +
+        'Call this BEFORE update_job_status("done"). ' +
+        'If the result is EMPTY and task.verify_only is false, update_job_status("done") will be rejected.',
       inputSchema,
-      annotations: { readOnlyHint: true },
+      annotations: { readOnlyHint: false },
     },
-    async ({ task_id }) =>
+    async ({ task_id, worktree_path }) =>
       withToolErrors(async () => {
         const auth = await getAuth()
         if (!auth) return toolError('Unauthorized')
@@ -34,62 +53,44 @@ export function registerVerifyTaskAgainstPlanTool(server: McpServer) {
           where: { id: task_id },
           select: {
             id: true,
-            title: true,
-            implementation_plan: true,
-            story: {
-              select: {
-                id: true,
-                acceptance_criteria: true,
-                logs: {
-                  orderBy: { created_at: 'asc' },
-                  select: {
-                    type: true,
-                    content: true,
-                    commit_hash: true,
-                    commit_message: true,
-                  },
-                },
-              },
-            },
+            verify_only: true,
             claude_jobs: {
-              where: { status: { in: ['CLAIMED', 'RUNNING', 'DONE', 'FAILED'] } },
+              where: { status: { in: ['CLAIMED', 'RUNNING'] } },
               orderBy: { created_at: 'desc' },
               take: 1,
-              select: { plan_snapshot: true },
+              select: { id: true, plan_snapshot: true },
             },
           },
         })
 
         if (!task) return toolError(`Task ${task_id} not found`)
 
-        const latestJob = task.claude_jobs[0] ?? null
-        const planSnapshot = latestJob ? latestJob.plan_snapshot : null
+        const activeJob = task.claude_jobs[0] ?? null
 
-        const implementationLogs = task.story.logs
-          .filter((l) => l.type === 'IMPLEMENTATION_PLAN')
-          .map((l) => l.content)
+        let diff: string
+        try {
+          diff = await getDiffInWorktree(worktree_path)
+        } catch (err) {
+          return toolError(
+            `git diff failed in worktree (${worktree_path}): ${(err as Error).message ?? 'unknown error'}`,
+          )
+        }
 
-        const commits = task.story.logs
-          .filter((l) => l.type === 'COMMIT')
-          .map((l) => ({ hash: l.commit_hash, message: l.commit_message }))
-
-        const result = buildVerifyResult({
-          taskId: task.id,
-          taskTitle: task.title,
-          planSnapshot,
-          currentPlan: task.implementation_plan,
-          acceptanceCriteriaText: task.story.acceptance_criteria,
-          implementationLogs,
-          commits,
+        const { result, reasoning } = classifyDiffAgainstPlan({
+          diff,
+          plan: activeJob?.plan_snapshot ?? null,
         })
 
+        if (activeJob) {
+          await saveVerifyResult(activeJob.id, result)
+        }
+
         return toolJson({
-          report: renderMarkdownReport(result),
-          task_id: result.taskId,
-          drift_score: result.driftScore,
-          ac_results: result.acceptanceCriteria,
-          plan_edited: result.planEdited,
-          has_baseline: result.hasBaseline,
+          result: result.toLowerCase() as 'aligned' | 'partial' | 'empty' | 'divergent',
+          reasoning,
+          verify_only: task.verify_only,
+          task_id,
+          job_id: activeJob?.id ?? null,
         })
       }),
   )

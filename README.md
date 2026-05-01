@@ -25,8 +25,8 @@ activity and create todos via native tool calls instead of curl.
 | `get_question_answer` | Fetch the current status + answer of a previously-asked question | n/a |
 | `list_open_questions` | List own open/answered questions, most recent first (max 50) | n/a |
 | `cancel_question` | Cancel an own open question (asker-only) | no |
-| `wait_for_job` | Block until a QUEUED ClaudeJob is available, claim it atomically, return full task context with frozen `plan_snapshot` | no |
-| `update_job_status` | Report job transition to `running`, `done`, or `failed`; triggers SSE event to UI | no |
+| `wait_for_job` | Block until a QUEUED ClaudeJob is available, claim it atomically, return full task context with frozen `plan_snapshot`, `worktree_path`, and `branch_name` | no |
+| `update_job_status` | Report job transition to `running`, `done`, or `failed`; triggers SSE event to UI; cleans up worktree on terminal transitions | no |
 | `verify_task_against_plan` | Compare frozen `plan_snapshot` against current plan + story logs + commits; returns per-AC ✓/✗/? heuristic and drift-score | yes (read-only) |
 
 Demo accounts may read but writes return `PERMISSION_DENIED`.
@@ -115,6 +115,46 @@ Add to `~/.claude/mcp_servers.json`:
 
 Restart Claude Code. The 9 tools and 1 prompt show up under the
 `scrum4me` namespace.
+
+## Agent worktree-flow
+
+When a job is claimed via `wait_for_job`, the MCP server automatically creates an isolated git worktree for the job under `~/.scrum4me-agent-worktrees/<job-id>/` with a dedicated branch `feat/job-<suffix>`. The tool response includes:
+
+- `worktree_path` — absolute path to the worktree directory
+- `branch_name` — the branch checked out in that worktree
+
+**The agent must work exclusively inside `worktree_path`**. All file edits and commits belong there; the user's main checkout stays clean.
+
+When `update_job_status` is called with `done` or `failed`, the worktree is automatically removed. If the agent reported a `branch` (indicating a push), the local branch is preserved on `done`; otherwise it is deleted together with the worktree directory.
+
+### Required env vars
+
+| Variable | Purpose |
+|---|---|
+| `SCRUM4ME_AGENT_WORKTREE_DIR` | Override the default worktree parent directory (default: `~/.scrum4me-agent-worktrees`) |
+| `SCRUM4ME_REPO_ROOT_<productId>` | Absolute path to the local git clone for that product, e.g. `SCRUM4ME_REPO_ROOT_cmohrysyj0000rd17clnjy4tc=/home/user/projects/scrum4me` |
+
+Alternatively, configure repo roots in `~/.scrum4me-agent-config.json`:
+
+```json
+{
+  "repoRoots": {
+    "<productId>": "/home/user/projects/scrum4me"
+  }
+}
+```
+
+If no repo root is configured for the product, `wait_for_job` rolls back the claim to `QUEUED` and returns an error.
+
+### Smoke-test checklist
+
+After starting the server on the feature branch:
+
+1. Enqueue a job in Scrum4Me (Solo Paneel → Start agent).
+2. Call `wait_for_job` — response must contain `worktree_path` and `branch_name`.
+3. In the **main checkout**: `git worktree list` → the agent worktree appears.
+4. In the **main checkout**: `git status` → clean (no agent changes).
+5. Call `update_job_status(done)` → worktree directory disappears.
 
 ## Schema sync
 

@@ -20,6 +20,7 @@ import { registerCancelQuestionTool } from './tools/cancel-question.js'
 import { registerWaitForJobTool } from './tools/wait-for-job.js'
 import { registerUpdateJobStatusTool } from './tools/update-job-status.js'
 import { registerVerifyTaskAgainstPlanTool } from './tools/verify-task-against-plan.js'
+import { registerCleanupMyWorktreesTool } from './tools/cleanup-my-worktrees.js'
 import { registerImplementNextStoryPrompt } from './prompts/implement-next-story.js'
 
 const VERSION = '0.1.0'
@@ -53,6 +54,7 @@ async function main() {
   registerWaitForJobTool(server)
   registerUpdateJobStatusTool(server)
   registerVerifyTaskAgainstPlanTool(server)
+  registerCleanupMyWorktreesTool(server)
   registerImplementNextStoryPrompt(server)
 
   const transport = new StdioServerTransport()
