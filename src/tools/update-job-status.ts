@@ -91,6 +91,27 @@ export async function prepareDoneUpdate(
   }
 }
 
+export function checkVerifyGate(
+  verifyResult: string | null,
+  verifyOnly: boolean,
+): { allowed: true } | { allowed: false; error: string } {
+  if (verifyResult === null) {
+    return {
+      allowed: false,
+      error: 'Roep eerst verify_task_against_plan aan voordat je DONE markeert.',
+    }
+  }
+  if (verifyResult === 'EMPTY' && !verifyOnly) {
+    return {
+      allowed: false,
+      error:
+        'Plan-vs-implementatie verify gaf EMPTY. Geen wijzigingen gedetecteerd. ' +
+        'Markeer de task als verify_only of pas de implementatie aan.',
+    }
+  }
+  return { allowed: true }
+}
+
 const DB_STATUS_MAP = {
   running: 'RUNNING',
   done: 'DONE',
@@ -148,8 +169,14 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         'Report progress on a claimed ClaudeJob. Allowed transitions from CLAIMED/RUNNING: ' +
         'running (start), done (finished), failed (error). ' +
         'The Bearer token must match the token that claimed the job. ' +
+<<<<<<< feat/job-mgskzyvx
         'Automatically emits an SSE event so the Scrum4Me UI updates in real time. ' +
         'Response includes next_action: when wait_for_job_again, immediately call wait_for_job again. When queue_empty, the agent batch is done.',
+=======
+        'Before marking done: call verify_task_against_plan first — done is rejected when ' +
+        'verify_result is null or EMPTY (unless task.verify_only is true). ' +
+        'Automatically emits an SSE event so the Scrum4Me UI updates in real time.',
+>>>>>>> main
       inputSchema,
     },
     async ({ job_id, status, branch, summary, error }) =>
@@ -166,6 +193,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             user_id: true,
             product_id: true,
             task_id: true,
+            verify_result: true,
+            task: { select: { verify_only: true } },
           },
         })
 
@@ -185,6 +214,12 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         let skipWorktreeCleanup = false
 
         if (status === 'done') {
+          const gate = checkVerifyGate(
+            job.verify_result ?? null,
+            job.task?.verify_only ?? false,
+          )
+          if (!gate.allowed) return toolError(gate.error)
+
           const plan = await prepareDoneUpdate(job_id, branch)
           actualStatus = plan.dbStatus === 'DONE' ? 'done' : 'failed'
           pushedAt = plan.pushedAt
@@ -232,6 +267,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             branch: true,
             pushed_at: true,
             pr_url: true,
+            verify_result: true,
             summary: true,
             error: true,
             started_at: true,
@@ -256,6 +292,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
                 branch: updated.branch ?? undefined,
                 pushed_at: updated.pushed_at?.toISOString() ?? undefined,
                 pr_url: updated.pr_url ?? undefined,
+                verify_result: updated.verify_result?.toLowerCase() ?? undefined,
                 summary: updated.summary ?? undefined,
                 error: updated.error ?? undefined,
               }),
@@ -282,6 +319,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           branch: updated.branch,
           pushed_at: updated.pushed_at?.toISOString() ?? null,
           pr_url: updated.pr_url ?? null,
+          verify_result: updated.verify_result?.toLowerCase() ?? null,
           summary: updated.summary,
           error: updated.error,
           started_at: updated.started_at?.toISOString() ?? null,
