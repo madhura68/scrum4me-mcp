@@ -55,3 +55,43 @@ export async function createWorktreeForJob(opts: {
 
   return { worktreePath, branchName }
 }
+
+export async function removeWorktreeForJob(opts: {
+  repoRoot: string
+  jobId: string
+  keepBranch?: boolean
+}): Promise<{ removed: boolean }> {
+  const { repoRoot, jobId, keepBranch = false } = opts
+
+  const parent =
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR ??
+    path.join(os.homedir(), '.scrum4me-agent-worktrees')
+
+  const worktreePath = path.join(parent, jobId)
+
+  try {
+    await fs.access(worktreePath)
+  } catch {
+    return { removed: false }
+  }
+
+  let branchName: string | undefined
+  if (!keepBranch) {
+    try {
+      const { stdout } = await exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+        cwd: worktreePath,
+      })
+      branchName = stdout.trim()
+    } catch {
+      // worktree HEAD unreadable — skip branch deletion
+    }
+  }
+
+  await exec('git', ['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot })
+
+  if (!keepBranch && branchName && (await branchExists(repoRoot, branchName))) {
+    await exec('git', ['branch', '-D', branchName], { cwd: repoRoot })
+  }
+
+  return { removed: true }
+}

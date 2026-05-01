@@ -4,7 +4,7 @@ import { promisify } from 'node:util'
 import * as os from 'node:os'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
-import { createWorktreeForJob } from '../../src/git/worktree.js'
+import { createWorktreeForJob, removeWorktreeForJob } from '../../src/git/worktree.js'
 
 const exec = promisify(execFile)
 
@@ -110,5 +110,95 @@ describe('createWorktreeForJob', () => {
         baseRef: 'origin/main',
       }),
     ).rejects.toThrow('Worktree path already exists')
+  })
+})
+
+describe('removeWorktreeForJob', () => {
+  const tmpDirs: string[] = []
+  const originalWorktreeDir = process.env.SCRUM4ME_AGENT_WORKTREE_DIR
+
+  afterEach(async () => {
+    if (originalWorktreeDir === undefined) {
+      delete process.env.SCRUM4ME_AGENT_WORKTREE_DIR
+    } else {
+      process.env.SCRUM4ME_AGENT_WORKTREE_DIR = originalWorktreeDir
+    }
+    for (const dir of tmpDirs.splice(0)) {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  async function makeWorktreeParent(): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'scrum4me-worktrees-'))
+    tmpDirs.push(dir)
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = dir
+    return dir
+  }
+
+  it('removes worktree directory and deletes branch by default', async () => {
+    const { repoDir, originDir } = await setupRepo()
+    tmpDirs.push(repoDir, originDir)
+    const wtParent = await makeWorktreeParent()
+
+    const { worktreePath, branchName } = await createWorktreeForJob({
+      repoRoot: repoDir,
+      jobId: 'job-rm-01',
+      branchName: 'feat/job-rm-01',
+      baseRef: 'origin/main',
+    })
+
+    const result = await removeWorktreeForJob({ repoRoot: repoDir, jobId: 'job-rm-01' })
+
+    expect(result.removed).toBe(true)
+    await expect(fs.access(worktreePath)).rejects.toThrow()
+    await expect(fs.access(path.join(wtParent, 'job-rm-01'))).rejects.toThrow()
+
+    // Branch should be deleted
+    await expect(
+      exec('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branchName}`], {
+        cwd: repoDir,
+      }),
+    ).rejects.toThrow()
+  })
+
+  it('removes worktree directory but keeps branch when keepBranch=true', async () => {
+    const { repoDir, originDir } = await setupRepo()
+    tmpDirs.push(repoDir, originDir)
+    const wtParent = await makeWorktreeParent()
+
+    const { worktreePath, branchName } = await createWorktreeForJob({
+      repoRoot: repoDir,
+      jobId: 'job-rm-02',
+      branchName: 'feat/job-rm-02',
+      baseRef: 'origin/main',
+    })
+
+    const result = await removeWorktreeForJob({
+      repoRoot: repoDir,
+      jobId: 'job-rm-02',
+      keepBranch: true,
+    })
+
+    expect(result.removed).toBe(true)
+    await expect(fs.access(worktreePath)).rejects.toThrow()
+    await expect(fs.access(path.join(wtParent, 'job-rm-02'))).rejects.toThrow()
+
+    // Branch should still exist
+    const { stdout } = await exec(
+      'git',
+      ['show-ref', '--verify', `refs/heads/${branchName}`],
+      { cwd: repoDir },
+    )
+    expect(stdout).toContain(branchName)
+  })
+
+  it('returns { removed: false } when worktree does not exist', async () => {
+    const { repoDir, originDir } = await setupRepo()
+    tmpDirs.push(repoDir, originDir)
+    await makeWorktreeParent()
+
+    const result = await removeWorktreeForJob({ repoRoot: repoDir, jobId: 'job-rm-nonexistent' })
+
+    expect(result.removed).toBe(false)
   })
 })
