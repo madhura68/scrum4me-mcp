@@ -73,14 +73,78 @@ const inputSchema = z.object({
   wait_seconds: z.number().int().min(1).max(MAX_WAIT_SECONDS).default(300),
 })
 
-export async function resetStaleClaimedJobs(userId: string) {
-  await prisma.$executeRaw`
+const STALE_ERROR_MSG = 'agent did not complete job within 2 attempts'
+
+export async function resetStaleClaimedJobs(userId: string): Promise<void> {
+  // Jobs that exceeded the retry limit → FAILED
+  const failedRows = await prisma.$queryRaw<
+    Array<{ id: string; task_id: string; product_id: string }>
+  >`
     UPDATE claude_jobs
-    SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL, plan_snapshot = NULL
+    SET status = 'FAILED',
+        finished_at = NOW(),
+        error = ${STALE_ERROR_MSG}
     WHERE user_id = ${userId}
       AND status = 'CLAIMED'
       AND claimed_at < NOW() - INTERVAL '30 minutes'
+      AND retry_count >= 2
+    RETURNING id, task_id, product_id
   `
+
+  // Jobs under the retry limit → back to QUEUED, increment retry_count
+  const requeuedRows = await prisma.$queryRaw<
+    Array<{ id: string; task_id: string; product_id: string; retry_count: number }>
+  >`
+    UPDATE claude_jobs
+    SET status = 'QUEUED',
+        claimed_by_token_id = NULL,
+        claimed_at = NULL,
+        plan_snapshot = NULL,
+        retry_count = retry_count + 1
+    WHERE user_id = ${userId}
+      AND status = 'CLAIMED'
+      AND claimed_at < NOW() - INTERVAL '30 minutes'
+      AND retry_count < 2
+    RETURNING id, task_id, product_id, retry_count
+  `
+
+  if (failedRows.length === 0 && requeuedRows.length === 0) return
+
+  // Notify UI via SSE for each transition (best-effort)
+  try {
+    const pg = new Client({ connectionString: process.env.DATABASE_URL })
+    await pg.connect()
+    for (const j of failedRows) {
+      await pg.query('SELECT pg_notify($1, $2)', [
+        'scrum4me_changes',
+        JSON.stringify({
+          type: 'claude_job_status',
+          job_id: j.id,
+          task_id: j.task_id,
+          user_id: userId,
+          product_id: j.product_id,
+          status: 'failed',
+          error: STALE_ERROR_MSG,
+        }),
+      ])
+    }
+    for (const j of requeuedRows) {
+      await pg.query('SELECT pg_notify($1, $2)', [
+        'scrum4me_changes',
+        JSON.stringify({
+          type: 'claude_job_status',
+          job_id: j.id,
+          task_id: j.task_id,
+          user_id: userId,
+          product_id: j.product_id,
+          status: 'queued',
+        }),
+      ])
+    }
+    await pg.end()
+  } catch {
+    // non-fatal — status transitions are already persisted
+  }
 }
 
 export async function tryClaimJob(
