@@ -6,6 +6,8 @@ import * as fs from 'node:fs/promises'
 vi.mock('../src/prisma.js', () => ({
   prisma: {
     $executeRaw: vi.fn(),
+    claudeJob: { findFirst: vi.fn() },
+    product: { findUnique: vi.fn() },
   },
 }))
 
@@ -17,7 +19,11 @@ import { prisma } from '../src/prisma.js'
 import { createWorktreeForJob } from '../src/git/worktree.js'
 import { resolveRepoRoot, rollbackClaim, attachWorktreeToJob } from '../src/tools/wait-for-job.js'
 
-const mockPrisma = prisma as unknown as { $executeRaw: ReturnType<typeof vi.fn> }
+const mockPrisma = prisma as unknown as {
+  $executeRaw: ReturnType<typeof vi.fn>
+  claudeJob: { findFirst: ReturnType<typeof vi.fn> }
+  product: { findUnique: ReturnType<typeof vi.fn> }
+}
 const mockCreateWorktree = createWorktreeForJob as ReturnType<typeof vi.fn>
 
 beforeEach(() => {
@@ -88,32 +94,51 @@ describe('attachWorktreeToJob', () => {
     Object.assign(process.env, originalEnv)
   })
 
-  it('returns worktree_path and branch_name on success', async () => {
+  it('returns worktree_path and branch_name on success (no sibling → fresh story branch)', async () => {
     process.env['SCRUM4ME_REPO_ROOT_prod-001'] = '/repos/my-project'
+    mockPrisma.claudeJob.findFirst.mockResolvedValue(null)
     mockCreateWorktree.mockResolvedValue({
       worktreePath: '/home/user/.scrum4me-agent-worktrees/job-abc12345',
-      branchName: 'feat/job-abc12345',
+      branchName: 'feat/story-XXXstory',
     })
     mockPrisma.$executeRaw.mockResolvedValue(0)
 
-    const result = await attachWorktreeToJob('prod-001', 'job-abc12345')
+    const result = await attachWorktreeToJob('prod-001', 'job-abc12345', 'story-XXXstory')
 
     expect(result).toEqual({
       worktree_path: '/home/user/.scrum4me-agent-worktrees/job-abc12345',
-      branch_name: 'feat/job-abc12345',
+      branch_name: 'feat/story-XXXstory',
+      reused_branch: false,
     })
     expect(mockCreateWorktree).toHaveBeenCalledWith({
       repoRoot: '/repos/my-project',
       jobId: 'job-abc12345',
-      branchName: 'feat/job-abc12345',
+      branchName: 'feat/story-XXXstory',
+      reuseBranch: false,
     })
+  })
+
+  it('reuses sibling branch when sibling job already has a branch in same story', async () => {
+    process.env['SCRUM4ME_REPO_ROOT_prod-001'] = '/repos/my-project'
+    mockPrisma.claudeJob.findFirst.mockResolvedValue({ branch: 'feat/story-existing' })
+    mockCreateWorktree.mockResolvedValue({
+      worktreePath: '/home/user/.scrum4me-agent-worktrees/job-zzz',
+      branchName: 'feat/story-existing',
+    })
+    mockPrisma.$executeRaw.mockResolvedValue(0)
+
+    const result = await attachWorktreeToJob('prod-001', 'job-zzz', 'story-shared')
+
+    expect(result).toMatchObject({ branch_name: 'feat/story-existing', reused_branch: true })
+    expect(mockCreateWorktree).toHaveBeenCalledWith(expect.objectContaining({ reuseBranch: true }))
   })
 
   it('rolls back claim and returns error when no repoRoot configured', async () => {
     delete process.env['SCRUM4ME_REPO_ROOT_prod-no-root']
+    mockPrisma.product.findUnique.mockResolvedValue({ repo_url: null })
     mockPrisma.$executeRaw.mockResolvedValue(0)
 
-    const result = await attachWorktreeToJob('prod-no-root', 'job-xyz')
+    const result = await attachWorktreeToJob('prod-no-root', 'job-xyz', 'story-y')
 
     expect('error' in result).toBe(true)
     expect((result as { error: string }).error).toContain('No repo root configured')
@@ -124,10 +149,11 @@ describe('attachWorktreeToJob', () => {
 
   it('rolls back claim and returns error when createWorktreeForJob throws', async () => {
     process.env['SCRUM4ME_REPO_ROOT_prod-001'] = '/repos/my-project'
+    mockPrisma.claudeJob.findFirst.mockResolvedValue(null)
     mockCreateWorktree.mockRejectedValue(new Error('git fetch failed'))
     mockPrisma.$executeRaw.mockResolvedValue(0)
 
-    const result = await attachWorktreeToJob('prod-001', 'job-fail')
+    const result = await attachWorktreeToJob('prod-001', 'job-fail', 'story-z')
 
     expect('error' in result).toBe(true)
     expect((result as { error: string }).error).toContain('git fetch failed')

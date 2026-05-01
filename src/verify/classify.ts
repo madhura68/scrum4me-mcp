@@ -66,6 +66,21 @@ export function classifyDiffAgainstPlan(opts: {
     return { result: 'EMPTY', reasoning: 'Geen bestandswijzigingen in de diff.' }
   }
 
+  // Whitespace-only / no-content edge case: paths are present but every +/-
+  // line is a diff header (---/+++) or whitespace-only. Treat as EMPTY so the
+  // gate rejects DONE for tasks that didn't really change anything.
+  const meaningfulChange = diff.split('\n').some((l) => {
+    if (!/^[+-]/.test(l)) return false
+    if (/^[+-]{3}\s/.test(l)) return false // diff header line (--- / +++)
+    return l.slice(1).trim().length > 0
+  })
+  if (!meaningfulChange) {
+    return {
+      result: 'EMPTY',
+      reasoning: 'Diff bevat alleen headers of whitespace — geen daadwerkelijke content-wijzigingen.',
+    }
+  }
+
   const changedLines = diff.split('\n').filter((l) => l.startsWith('+') || l.startsWith('-')).length
 
   if (!plan || plan.trim().length === 0) {
