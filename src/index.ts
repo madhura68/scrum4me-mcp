@@ -61,13 +61,18 @@ async function main() {
   registerCleanupMyWorktreesTool(server)
   registerImplementNextStoryPrompt(server)
 
-  const transport = new StdioServerTransport()
-  await server.connect(transport)
-
+  // Presence bootstrap MUST run before server.connect — the stdio transport
+  // can stall the await on incoming messages, so anything after server.connect
+  // may never execute reliably. Registering the worker + starting the
+  // heartbeat first guarantees the UI sees the agent as soon as the process
+  // is up, regardless of when the MCP client sends its first request.
   const auth = await getAuth()
   await registerWorker({ userId: auth.userId, tokenId: auth.tokenId })
   const { stop: stopHeartbeat } = startHeartbeat({ tokenId: auth.tokenId })
   registerShutdownHandlers({ userId: auth.userId, tokenId: auth.tokenId, stopHeartbeat })
+
+  const transport = new StdioServerTransport()
+  await server.connect(transport)
 
   console.error(`scrum4me-mcp ${VERSION} running on stdio`)
 }
