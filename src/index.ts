@@ -22,10 +22,14 @@ import { registerUpdateJobStatusTool } from './tools/update-job-status.js'
 import { registerVerifyTaskAgainstPlanTool } from './tools/verify-task-against-plan.js'
 import { registerCleanupMyWorktreesTool } from './tools/cleanup-my-worktrees.js'
 import { registerImplementNextStoryPrompt } from './prompts/implement-next-story.js'
+import { getAuth } from './auth.js'
 
 const VERSION = '0.1.0'
 
 async function main() {
+  const auth = await getAuth()
+  console.error(`scrum4me-mcp: authenticated as ${auth.username} (token ${auth.tokenId})`)
+
   const server = new McpServer(
     { name: 'scrum4me-mcp', version: VERSION },
     {

@@ -10,6 +10,10 @@ export type AuthContext = {
 
 let cached: AuthContext | null = null
 
+export function resetAuthCache(): void {
+  cached = null
+}
+
 export async function getAuth(): Promise<AuthContext> {
   if (cached) return cached
 
