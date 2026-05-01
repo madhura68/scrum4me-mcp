@@ -5,9 +5,63 @@
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { Client } from 'pg'
+import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { toolJson, toolError, withToolErrors } from '../errors.js'
+import { createWorktreeForJob } from '../git/worktree.js'
+
+export async function resolveRepoRoot(productId: string): Promise<string | null> {
+  const envKey = `SCRUM4ME_REPO_ROOT_${productId}`
+  if (process.env[envKey]) return process.env[envKey]!
+
+  const configPath = path.join(os.homedir(), '.scrum4me-agent-config.json')
+  try {
+    const raw = await fs.readFile(configPath, 'utf-8')
+    const config = JSON.parse(raw) as { repoRoots?: Record<string, string> }
+    return config.repoRoots?.[productId] ?? null
+  } catch {
+    return null
+  }
+}
+
+export async function rollbackClaim(jobId: string): Promise<void> {
+  await prisma.$executeRaw`
+    UPDATE claude_jobs
+    SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL, plan_snapshot = NULL
+    WHERE id = ${jobId}
+  `
+}
+
+export async function attachWorktreeToJob(
+  productId: string,
+  jobId: string,
+): Promise<{ worktree_path: string; branch_name: string } | { error: string }> {
+  const repoRoot = await resolveRepoRoot(productId)
+  if (!repoRoot) {
+    await rollbackClaim(jobId)
+    return {
+      error:
+        `No repo root configured for product ${productId}. ` +
+        `Set env var SCRUM4ME_REPO_ROOT_${productId} or add to ~/.scrum4me-agent-config.json.`,
+    }
+  }
+
+  const branchName = `feat/job-${jobId.slice(-8)}`
+  try {
+    const { worktreePath, branchName: actualBranch } = await createWorktreeForJob({
+      repoRoot,
+      jobId,
+      branchName,
+    })
+    return { worktree_path: worktreePath, branch_name: actualBranch }
+  } catch (err) {
+    await rollbackClaim(jobId)
+    return { error: `Worktree creation failed: ${(err as Error).message}` }
+  }
+}
 
 const MAX_WAIT_SECONDS = 600
 const POLL_INTERVAL_MS = 5_000
@@ -162,6 +216,8 @@ export function registerWaitForJobTool(server: McpServer) {
       description:
         'Block until a QUEUED ClaudeJob is available for this user, then claim it atomically ' +
         'and return full task context (implementation_plan, story, pbi, sprint, repo_url). ' +
+        'Also creates a git worktree for the job and returns worktree_path and branch_name. ' +
+        'Work exclusively in worktree_path — do all file edits and commits there. ' +
         'Registers worker presence so the Scrum4Me UI can show "Agent verbonden". ' +
         'Resets stale CLAIMED jobs (>30min) back to QUEUED before scanning. ' +
         'Pass optional product_id to scope to a specific product. ' +
@@ -199,7 +255,9 @@ export function registerWaitForJobTool(server: McpServer) {
           if (jobId) {
             const ctx = await getFullJobContext(jobId)
             if (!ctx) return toolError('Job claimed but context fetch failed')
-            return toolJson(ctx)
+            const wt = await attachWorktreeToJob(ctx.product.id, jobId)
+            if ('error' in wt) return toolError(wt.error)
+            return toolJson({ ...ctx, worktree_path: wt.worktree_path, branch_name: wt.branch_name })
           }
 
           // 3. No job available — LISTEN and poll until timeout
@@ -243,7 +301,9 @@ export function registerWaitForJobTool(server: McpServer) {
               if (jobId) {
                 const ctx = await getFullJobContext(jobId)
                 if (!ctx) return toolError('Job claimed but context fetch failed')
-                return toolJson(ctx)
+                const wt = await attachWorktreeToJob(ctx.product.id, jobId)
+                if ('error' in wt) return toolError(wt.error)
+                return toolJson({ ...ctx, worktree_path: wt.worktree_path, branch_name: wt.branch_name })
               }
             }
           } finally {
