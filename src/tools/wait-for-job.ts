@@ -19,22 +19,60 @@ export function repoNameFromUrl(repoUrl: string | null | undefined): string | nu
   return m ? m[1] : null
 }
 
-export async function resolveRepoRoot(productId: string): Promise<string | null> {
+/**
+ * Resolve the repo-root path on disk for a job's worktree.
+ *
+ * Lookup order (first hit wins):
+ *  1. `task.repo_url`-override → match against config / convention via repo-name
+ *  2. env var `SCRUM4ME_REPO_ROOT_<productId>`
+ *  3. `~/.scrum4me-agent-config.json` `repoRoots[productId]`
+ *  4. Convention `~/Projects/<repo-name-from-product.repo_url>/.git`
+ *
+ * The task-level override exists for cross-repo tasks (e.g. an MCP-server
+ * task tracked under the main product's PBI). Falls back to product-level
+ * resolution when null. Documented in CLAUDE.md.
+ */
+export async function resolveRepoRoot(
+  productId: string,
+  taskRepoUrl?: string | null,
+): Promise<string | null> {
+  // 1. Task-level override: match by repo-name through config/convention
+  if (taskRepoUrl) {
+    const taskRepoName = repoNameFromUrl(taskRepoUrl)
+    if (taskRepoName) {
+      const overrideEnv = `SCRUM4ME_REPO_ROOT_REPO_${taskRepoName}`
+      if (process.env[overrideEnv]) return process.env[overrideEnv]!
+
+      const configPath = path.join(os.homedir(), '.scrum4me-agent-config.json')
+      try {
+        const raw = await fs.readFile(configPath, 'utf-8')
+        const config = JSON.parse(raw) as { repoRoots?: Record<string, string> }
+        if (config.repoRoots?.[taskRepoName]) return config.repoRoots[taskRepoName]
+      } catch { /* fall through */ }
+
+      const candidate = path.join(os.homedir(), 'Projects', taskRepoName)
+      try {
+        await fs.access(path.join(candidate, '.git'))
+        return candidate
+      } catch { /* fall through to product-level */ }
+    }
+  }
+
+  // 2. Env var per-product
   const envKey = `SCRUM4ME_REPO_ROOT_${productId}`
   if (process.env[envKey]) return process.env[envKey]!
 
+  // 3. Config file per-product
   const configPath = path.join(os.homedir(), '.scrum4me-agent-config.json')
   try {
     const raw = await fs.readFile(configPath, 'utf-8')
     const config = JSON.parse(raw) as { repoRoots?: Record<string, string> }
     if (config.repoRoots?.[productId]) return config.repoRoots[productId]
   } catch {
-    // ignore — fall through to convention-based fallback
+    // ignore — fall through
   }
 
-  // Convention-based fallback: ~/Projects/<repo-name> with .git/ inside.
-  // Lets the agent work without explicit env-config when checkouts follow
-  // the standard ~/Projects/<name> layout.
+  // 4. Convention via product.repo_url
   try {
     const product = await prisma.product.findUnique({
       where: { id: productId },
@@ -90,14 +128,19 @@ export async function attachWorktreeToJob(
   productId: string,
   jobId: string,
   storyId: string,
+  taskRepoUrl?: string | null,
 ): Promise<{ worktree_path: string; branch_name: string; reused_branch: boolean } | { error: string }> {
-  const repoRoot = await resolveRepoRoot(productId)
+  const repoRoot = await resolveRepoRoot(productId, taskRepoUrl)
   if (!repoRoot) {
     await rollbackClaim(jobId)
+    const repoHint = taskRepoUrl
+      ? `task.repo_url=${taskRepoUrl}`
+      : `product ${productId}`
     return {
       error:
-        `No repo root configured for product ${productId}. ` +
-        `Set env var SCRUM4ME_REPO_ROOT_${productId} or add to ~/.scrum4me-agent-config.json.`,
+        `No repo root configured for ${repoHint}. ` +
+        `Set env var SCRUM4ME_REPO_ROOT_${productId}, add a repoRoots entry to ~/.scrum4me-agent-config.json, ` +
+        `or place a clone at ~/Projects/<repo-name>.`,
     }
   }
 
@@ -280,6 +323,7 @@ async function getFullJobContext(jobId: string) {
       description: task.description,
       implementation_plan: task.implementation_plan,
       priority: task.priority,
+      repo_url: task.repo_url,
     },
     story: {
       id: story.id,
@@ -334,7 +378,7 @@ export function registerWaitForJobTool(server: McpServer) {
         if (jobId) {
           const ctx = await getFullJobContext(jobId)
           if (!ctx) return toolError('Job claimed but context fetch failed')
-          const wt = await attachWorktreeToJob(ctx.product.id, jobId, ctx.story.id)
+          const wt = await attachWorktreeToJob(ctx.product.id, jobId, ctx.story.id, ctx.task.repo_url)
           if ('error' in wt) return toolError(wt.error)
           return toolJson({ ...ctx, worktree_path: wt.worktree_path, branch_name: wt.branch_name })
         }
@@ -372,7 +416,7 @@ export function registerWaitForJobTool(server: McpServer) {
             if (jobId) {
               const ctx = await getFullJobContext(jobId)
               if (!ctx) return toolError('Job claimed but context fetch failed')
-              const wt = await attachWorktreeToJob(ctx.product.id, jobId, ctx.story.id)
+              const wt = await attachWorktreeToJob(ctx.product.id, jobId, ctx.story.id, ctx.task.repo_url)
               if ('error' in wt) return toolError(wt.error)
               return toolJson({ ...ctx, worktree_path: wt.worktree_path, branch_name: wt.branch_name })
             }

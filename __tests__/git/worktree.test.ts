@@ -74,11 +74,12 @@ describe('createWorktreeForJob', () => {
     expect(result.worktreePath).toBe(path.join(wtParent, 'job-001'))
   })
 
-  it('suffixes branch name with timestamp when branch already exists', async () => {
+  it('removes orphan branch and reuses the predictable name when no worktree owns it', async () => {
     const { repoDir, originDir } = await setupRepo()
     tmpDirs.push(repoDir, originDir)
     await makeWorktreeParent()
 
+    // Pre-create an orphan branch (no worktree attached)
     await git(['branch', 'feat/job-002'], repoDir)
 
     const result = await createWorktreeForJob({
@@ -88,10 +89,11 @@ describe('createWorktreeForJob', () => {
       baseRef: 'origin/main',
     })
 
-    expect(result.branchName).toMatch(/^feat\/job-002-\d+$/)
+    // Orphan was deleted → predictable name reused, no timestamp suffix
+    expect(result.branchName).toBe('feat/job-002')
 
     const { stdout } = await git(['rev-parse', '--abbrev-ref', 'HEAD'], result.worktreePath)
-    expect(stdout.trim()).toBe(result.branchName)
+    expect(stdout.trim()).toBe('feat/job-002')
   })
 
   it('rejects when worktree path already exists', async () => {

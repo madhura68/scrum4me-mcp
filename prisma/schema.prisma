@@ -250,6 +250,11 @@ model Task {
   status              TaskStatus @default(TO_DO)
   verify_only         Boolean        @default(false)
   verify_required     VerifyRequired @default(ALIGNED_OR_PARTIAL)
+  // Override product.repo_url for branch/worktree/push purposes. Set when
+  // a task targets a different repo than its parent product (e.g. an
+  // MCP-server task tracked under the main product's PBI). Falls back to
+  // product.repo_url when null.
+  repo_url            String?
   created_at          DateTime       @default(now())
   updated_at          DateTime   @updatedAt
   claude_questions    ClaudeQuestion[]

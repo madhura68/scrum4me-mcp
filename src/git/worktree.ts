@@ -81,9 +81,30 @@ export async function createWorktreeForJob(opts: {
     return { worktreePath, branchName }
   }
 
-  // Fresh branch: suffix with timestamp when name collision occurs
+  // Fresh branch: if a local branch with this name already exists, it is an
+  // orphan from a prior failed run (the agent didn't push or branch was
+  // never tied to a worktree). Remove the orphan so the new worktree gets
+  // the predictable `feat/story-<id>`-name; this prevents the kind of
+  // 2-May-2026 failure where the agent inherited an unrelated suffix and
+  // pushed to a non-existent remote ref.
   if (await branchExists(repoRoot, branchName)) {
-    branchName = `${branchName}-${Date.now()}`
+    const occupant = await findWorktreeForBranch(repoRoot, branchName)
+    if (occupant) {
+      // Branch is currently checked out elsewhere — likely a sibling worktree
+      // that should have been cleaned up. Remove it before reusing the name.
+      try {
+        await exec('git', ['worktree', 'remove', '--force', occupant], { cwd: repoRoot })
+      } catch {
+        // ignore — fall through to deletion below
+      }
+    }
+    try {
+      await exec('git', ['branch', '-D', branchName], { cwd: repoRoot })
+      console.warn(`[createWorktreeForJob] removed orphan branch ${branchName} before recreate`)
+    } catch {
+      // last resort: timestamp-suffix to avoid collision rather than fail
+      branchName = `${branchName}-${Date.now()}`
+    }
   }
 
   await exec('git', ['worktree', 'add', '-b', branchName, worktreePath, baseRef], {
