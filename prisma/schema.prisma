@@ -34,6 +34,19 @@ enum ClaudeJobStatus {
   CANCELLED
 }
 
+enum VerifyResult {
+  ALIGNED
+  PARTIAL
+  EMPTY
+  DIVERGENT
+}
+
+enum VerifyRequired {
+  ALIGNED
+  ALIGNED_OR_PARTIAL
+  ANY
+}
+
 enum TaskStatus {
   TO_DO
   IN_PROGRESS
@@ -55,13 +68,6 @@ enum TestStatus {
 enum SprintStatus {
   ACTIVE
   COMPLETED
-}
-
-enum VerifyResult {
-  ALIGNED
-  PARTIAL
-  EMPTY
-  DIVERGENT
 }
 
 model User {
@@ -219,6 +225,8 @@ model Sprint {
   product_id   String
   sprint_goal  String
   status       SprintStatus @default(ACTIVE)
+  start_date   DateTime?    @db.Date
+  end_date     DateTime?    @db.Date
   created_at   DateTime     @default(now())
   completed_at DateTime?
   stories      Story[]
@@ -240,8 +248,9 @@ model Task {
   priority            Int
   sort_order          Float
   status              TaskStatus @default(TO_DO)
-  verify_only         Boolean    @default(false)
-  created_at          DateTime   @default(now())
+  verify_only         Boolean        @default(false)
+  verify_required     VerifyRequired @default(ALIGNED_OR_PARTIAL)
+  created_at          DateTime       @default(now())
   updated_at          DateTime   @updatedAt
   claude_questions    ClaudeQuestion[]
   claude_jobs         ClaudeJob[]
@@ -266,12 +275,12 @@ model ClaudeJob {
   started_at          DateTime?
   finished_at         DateTime?
   pushed_at           DateTime?
+  verify_result       VerifyResult?
   plan_snapshot       String?
   branch              String?
   pr_url              String?
   summary             String?
   error               String?
-  verify_result       VerifyResult?
   retry_count         Int             @default(0)
   created_at          DateTime        @default(now())
   updated_at          DateTime        @updatedAt
@@ -279,6 +288,7 @@ model ClaudeJob {
   @@index([user_id, status])
   @@index([task_id, status])
   @@index([status, claimed_at])
+  @@index([status, finished_at])
   @@map("claude_jobs")
 }
 

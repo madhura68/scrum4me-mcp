@@ -122,9 +122,29 @@ export async function prepareDoneUpdate(
   }
 }
 
+export type VerifyRequired = 'ALIGNED' | 'ALIGNED_OR_PARTIAL' | 'ANY'
+
+const SUMMARY_MIN_LENGTH = 20
+
+/**
+ * Validate whether a CLAIMED/RUNNING job can transition to DONE based on its
+ * verify_result + the task's verify_required level.
+ *
+ * Decision matrix:
+ *   verifyResult=null        → reject (run verify_task_against_plan first)
+ *   EMPTY  + !verify_only    → reject
+ *   EMPTY  + verify_only     → allowed
+ *   ALIGNED                  → always allowed
+ *   PARTIAL/DIVERGENT
+ *     required=ALIGNED       → reject (strict task)
+ *     required=ALIGNED_OR_PARTIAL → require non-empty summary explaining drift
+ *     required=ANY           → allowed (refactor/multi-file edit)
+ */
 export function checkVerifyGate(
   verifyResult: string | null,
   verifyOnly: boolean,
+  verifyRequired: VerifyRequired = 'ALIGNED_OR_PARTIAL',
+  summary: string | undefined = undefined,
 ): { allowed: true } | { allowed: false; error: string } {
   if (verifyResult === null) {
     return {
@@ -132,12 +152,35 @@ export function checkVerifyGate(
       error: 'Roep eerst verify_task_against_plan aan voordat je DONE markeert.',
     }
   }
-  if (verifyResult === 'EMPTY' && !verifyOnly) {
+  if (verifyResult === 'EMPTY') {
+    if (verifyOnly) return { allowed: true }
     return {
       allowed: false,
       error:
         'Plan-vs-implementatie verify gaf EMPTY. Geen wijzigingen gedetecteerd. ' +
         'Markeer de task als verify_only of pas de implementatie aan.',
+    }
+  }
+  if (verifyResult === 'ALIGNED') return { allowed: true }
+
+  // PARTIAL or DIVERGENT
+  if (verifyRequired === 'ANY') return { allowed: true }
+  if (verifyRequired === 'ALIGNED') {
+    return {
+      allowed: false,
+      error:
+        `Plan vereist ALIGNED maar verify gaf ${verifyResult}. ` +
+        `Pas de implementatie aan zodat alle plan-paden zijn afgedekt, ` +
+        `of stel verify_required in op ALIGNED_OR_PARTIAL/ANY.`,
+    }
+  }
+  // verifyRequired === 'ALIGNED_OR_PARTIAL': vereist summary
+  if (!summary || summary.trim().length < SUMMARY_MIN_LENGTH) {
+    return {
+      allowed: false,
+      error:
+        `Verify gaf ${verifyResult}. Geef een summary (≥${SUMMARY_MIN_LENGTH} chars) die uitlegt ` +
+        `waarom de implementatie afwijkt van het plan, of stel verify_required in op ANY.`,
     }
   }
   return { allowed: true }
@@ -218,7 +261,10 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         'running (start), done (finished), failed (error). ' +
         'The Bearer token must match the token that claimed the job. ' +
         'Before marking done: call verify_task_against_plan first — done is rejected when ' +
-        'verify_result is null or EMPTY (unless task.verify_only is true). ' +
+        'verify_result is null, EMPTY (unless task.verify_only is true), or when the verify level ' +
+        'doesn’t meet task.verify_required: ALIGNED-only is strict; ALIGNED_OR_PARTIAL accepts ' +
+        'PARTIAL/DIVERGENT but requires a non-empty summary (≥20 chars) explaining the drift; ANY ' +
+        'accepts everything. ' +
         'Automatically emits an SSE event so the Scrum4Me UI updates in real time. ' +
         'Response includes next_action: when wait_for_job_again, immediately call wait_for_job again. When queue_empty, the agent batch is done.',
       inputSchema,
@@ -238,7 +284,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             product_id: true,
             task_id: true,
             verify_result: true,
-            task: { select: { verify_only: true } },
+            task: { select: { verify_only: true, verify_required: true } },
           },
         })
 
@@ -261,6 +307,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           const gate = checkVerifyGate(
             job.verify_result ?? null,
             job.task?.verify_only ?? false,
+            (job.task?.verify_required ?? 'ALIGNED_OR_PARTIAL') as VerifyRequired,
+            summary,
           )
           if (!gate.allowed) return toolError(gate.error)
 
