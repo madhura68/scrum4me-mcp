@@ -140,13 +140,19 @@ Synchronous, non-blocking poll that returns how many ClaudeJobs are still active
 { "product_id": "cmoprewcf000q..." }   // optional — omit to aggregate all products
 ```
 
-**Output — with product_id**
+**Output — empty queue**
+
+```json
+{ "empty": true, "remaining": 0, "by_product": {} }
+```
+
+**Output — with product_id (non-empty)**
 
 ```json
 { "empty": false, "remaining": 2 }
 ```
 
-**Output — without product_id**
+**Output — without product_id (per-product split)**
 
 ```json
 {
