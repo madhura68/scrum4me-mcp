@@ -1,0 +1,45 @@
+import { z } from 'zod'
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { prisma } from '../prisma.js'
+import { requireWriteAccess } from '../auth.js'
+import { userCanAccessProduct } from '../access.js'
+import { toolError, toolJson, withToolErrors } from '../errors.js'
+
+export const inputSchema = z.object({
+  pbi_id: z.string().min(1),
+  pr_url: z.string().regex(/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/),
+})
+
+export async function handleSetPbiPr({ pbi_id, pr_url }: z.infer<typeof inputSchema>) {
+  return withToolErrors(async () => {
+    const auth = await requireWriteAccess()
+
+    const pbi = await prisma.pbi.findUnique({
+      where: { id: pbi_id },
+      select: { product_id: true },
+    })
+    if (!pbi || !(await userCanAccessProduct(pbi.product_id, auth.userId))) {
+      return toolError(`PBI ${pbi_id} not found or not accessible`)
+    }
+
+    await prisma.pbi.update({
+      where: { id: pbi_id },
+      data: { pr_url, pr_merged_at: null },
+    })
+
+    return toolJson({ ok: true, pbi_id, pr_url })
+  })
+}
+
+export function registerSetPbiPrTool(server: McpServer) {
+  server.registerTool(
+    'set_pbi_pr',
+    {
+      title: 'Set PBI PR URL',
+      description:
+        'Write pr_url on a PBI and clear pr_merged_at. Idempotent: re-calling overwrites pr_url and resets pr_merged_at to null. Forbidden for demo accounts.',
+      inputSchema,
+    },
+    handleSetPbiPr,
+  )
+}

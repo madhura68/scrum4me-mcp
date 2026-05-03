@@ -161,8 +161,10 @@ model Pbi {
   description String?
   priority    Int
   sort_order  Float
-  status      PbiStatus @default(READY)
-  created_at  DateTime  @default(now())
+  status       PbiStatus @default(READY)
+  pr_url       String?
+  pr_merged_at DateTime?
+  created_at   DateTime  @default(now())
   updated_at  DateTime  @updatedAt
   stories     Story[]
 
