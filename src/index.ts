@@ -21,6 +21,7 @@ import { registerWaitForJobTool } from './tools/wait-for-job.js'
 import { registerUpdateJobStatusTool } from './tools/update-job-status.js'
 import { registerVerifyTaskAgainstPlanTool } from './tools/verify-task-against-plan.js'
 import { registerCleanupMyWorktreesTool } from './tools/cleanup-my-worktrees.js'
+import { registerCheckQueueEmptyTool } from './tools/check-queue-empty.js'
 import { registerSetPbiPrTool } from './tools/set-pbi-pr.js'
 import { registerMarkPbiPrMergedTool } from './tools/mark-pbi-pr-merged.js'
 import { registerImplementNextStoryPrompt } from './prompts/implement-next-story.js'
@@ -29,7 +30,7 @@ import { registerWorker } from './presence/worker.js'
 import { startHeartbeat } from './presence/heartbeat.js'
 import { registerShutdownHandlers } from './presence/shutdown.js'
 
-const VERSION = '0.2.0'
+const VERSION = '0.3.0'
 
 async function main() {
   const server = new McpServer(
@@ -61,6 +62,7 @@ async function main() {
   registerUpdateJobStatusTool(server)
   registerVerifyTaskAgainstPlanTool(server)
   registerCleanupMyWorktreesTool(server)
+  registerCheckQueueEmptyTool(server)
   registerSetPbiPrTool(server)
   registerMarkPbiPrMergedTool(server)
   registerImplementNextStoryPrompt(server)
