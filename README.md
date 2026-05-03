@@ -29,6 +29,7 @@ activity and create todos via native tool calls instead of curl.
 | `update_job_status` | Report job transition to `running`, `done`, or `failed`; triggers SSE event to UI; cleans up worktree on terminal transitions | no |
 | `verify_task_against_plan` | Compare frozen `plan_snapshot` against current plan + story logs + commits; returns per-AC ✓/✗/? heuristic and drift-score | yes (read-only) |
 | `set_pbi_pr` | Write `pr_url` on a PBI and clear `pr_merged_at`. Idempotent: re-calling overwrites `pr_url` and resets `pr_merged_at` to null | no |
+| `mark_pbi_pr_merged` | Set `pr_merged_at = now()` on a PBI. Requires `pr_url` to already be set. Idempotent: re-calling overwrites the timestamp | no |
 
 Demo accounts may read but writes return `PERMISSION_DENIED`.
 
