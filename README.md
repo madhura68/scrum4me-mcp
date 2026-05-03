@@ -28,6 +28,7 @@ activity and create todos via native tool calls instead of curl.
 | `wait_for_job` | Block until a QUEUED ClaudeJob is available, claim it atomically, return full task context with frozen `plan_snapshot`, `worktree_path`, and `branch_name` | no |
 | `update_job_status` | Report job transition to `running`, `done`, or `failed`; triggers SSE event to UI; cleans up worktree on terminal transitions | no |
 | `verify_task_against_plan` | Compare frozen `plan_snapshot` against current plan + story logs + commits; returns per-AC ✓/✗/? heuristic and drift-score | yes (read-only) |
+| `set_pbi_pr` | Write `pr_url` on a PBI and clear `pr_merged_at`. Idempotent: re-calling overwrites `pr_url` and resets `pr_merged_at` to null | no |
 
 Demo accounts may read but writes return `PERMISSION_DENIED`.
 
