@@ -28,6 +28,8 @@ activity and create todos via native tool calls instead of curl.
 | `wait_for_job` | Block until a QUEUED ClaudeJob is available, claim it atomically, return full task context with frozen `plan_snapshot`, `worktree_path`, and `branch_name` | no |
 | `update_job_status` | Report job transition to `running`, `done`, or `failed`; triggers SSE event to UI; cleans up worktree on terminal transitions | no |
 | `verify_task_against_plan` | Compare frozen `plan_snapshot` against current plan + story logs + commits; returns per-AC ✓/✗/? heuristic and drift-score | yes (read-only) |
+| `cleanup_my_worktrees` | Remove stale git worktrees left by crashed or cancelled agent runs | no |
+| `check_queue_empty` | Synchronous, non-blocking count of active jobs (QUEUED/CLAIMED/RUNNING); optional `product_id` scope | no |
 | `set_pbi_pr` | Write `pr_url` on a PBI and clear `pr_merged_at`. Idempotent: re-calling overwrites `pr_url` and resets `pr_merged_at` to null | no |
 | `mark_pbi_pr_merged` | Set `pr_merged_at = now()` on a PBI. Requires `pr_url` to already be set. Idempotent: re-calling overwrites the timestamp | no |
 
@@ -126,6 +128,49 @@ Records that the linked PR has been merged by setting `pr_merged_at = now()`. Re
 |---|---|
 | PBI not found or inaccessible | `PBI <id> not found or not accessible` |
 | `pr_url` not set | `PBI <id> heeft geen gekoppelde PR` |
+| Demo account | `PERMISSION_DENIED: Demo accounts cannot perform write operations` |
+
+### check_queue_empty
+
+Synchronous, non-blocking poll that returns how many ClaudeJobs are still active (`QUEUED`, `CLAIMED`, `RUNNING`). No blocking — returns immediately. Use it after the last `update_job_status('done')` in a batch to decide whether to stay in the loop or finalise.
+
+**Input**
+
+```json
+{ "product_id": "cmoprewcf000q..." }   // optional — omit to aggregate all products
+```
+
+**Output — with product_id**
+
+```json
+{ "empty": false, "remaining": 2 }
+```
+
+**Output — without product_id**
+
+```json
+{
+  "empty": false,
+  "remaining": 3,
+  "by_product": {
+    "cmoprewcf000q...": 2,
+    "cmohry5yj0001...": 1
+  }
+}
+```
+
+**Agent decision rule**
+
+| `empty` | Action |
+|---|---|
+| `false` | Stay in loop — call `wait_for_job` again immediately |
+| `true` | Finalise — push branch, open PR (if `auto_pr`), recap, exit |
+
+**Errors**
+
+| Condition | Message |
+|---|---|
+| `product_id` provided but not accessible | `Product <id> not found or not accessible` |
 | Demo account | `PERMISSION_DENIED: Demo accounts cannot perform write operations` |
 
 ## Prompts
