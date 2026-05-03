@@ -73,6 +73,61 @@ Compares the immutable snapshot captured at claim time against the current state
 - Plan_snapshot is NULL voor jobs die zijn geclaimed vóór versie met snapshot-feature — rapport meldt "no baseline"
 - Gebruik het rapport als startpunt, niet als definitief oordeel; PR-review blijft leidend
 
+### set_pbi_pr
+
+Links a GitHub Pull Request to a PBI and clears any previous merge timestamp. Safe to call multiple times — idempotent.
+
+**Input**
+
+```json
+{ "pbi_id": "cmoprewcf000q...", "pr_url": "https://github.com/owner/repo/pull/42" }
+```
+
+`pr_url` must match `^https://github\.com/[^/]+/[^/]+/pull/\d+$`. Any other format is rejected with a schema error.
+
+**Output**
+
+```json
+{ "ok": true, "pbi_id": "cmoprewcf000q...", "pr_url": "https://github.com/owner/repo/pull/42" }
+```
+
+**Errors**
+
+| Condition | Message |
+|---|---|
+| PBI not found or inaccessible | `PBI <id> not found or not accessible` |
+| Demo account | `PERMISSION_DENIED: Demo accounts cannot perform write operations` |
+| Invalid URL format | `VALIDATION_ERROR: pr_url: Invalid` |
+
+### mark_pbi_pr_merged
+
+Records that the linked PR has been merged by setting `pr_merged_at = now()`. Requires `set_pbi_pr` to have been called first. Idempotent: re-calling overwrites the timestamp.
+
+**Input**
+
+```json
+{ "pbi_id": "cmoprewcf000q..." }
+```
+
+**Output**
+
+```json
+{
+  "ok": true,
+  "pbi_id": "cmoprewcf000q...",
+  "pr_url": "https://github.com/owner/repo/pull/42",
+  "pr_merged_at": "2026-05-03T12:00:00.000Z"
+}
+```
+
+**Errors**
+
+| Condition | Message |
+|---|---|
+| PBI not found or inaccessible | `PBI <id> not found or not accessible` |
+| `pr_url` not set | `PBI <id> heeft geen gekoppelde PR` |
+| Demo account | `PERMISSION_DENIED: Demo accounts cannot perform write operations` |
+
 ## Prompts
 
 - `implement_next_story` — full workflow: fetch context, log plan, walk
