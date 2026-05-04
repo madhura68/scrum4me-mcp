@@ -28,3 +28,13 @@ export async function userCanAccessStory(storyId: string, userId: string): Promi
   if (!story) return false
   return userCanAccessProduct(story.product_id, userId)
 }
+
+// M12: idee is strikt user_id-only (geen productAccessFilter — Q8).
+// Idea-questions, idea-jobs, en idea-md-mutaties scopen op de eigenaar.
+export async function userOwnsIdea(ideaId: string, userId: string): Promise<boolean> {
+  const idea = await prisma.idea.findUnique({
+    where: { id: ideaId },
+    select: { user_id: true },
+  })
+  return idea !== null && idea.user_id === userId
+}

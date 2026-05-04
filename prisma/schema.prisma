@@ -70,30 +70,58 @@ enum SprintStatus {
   COMPLETED
 }
 
+enum IdeaStatus {
+  DRAFT
+  GRILLING
+  GRILL_FAILED
+  GRILLED
+  PLANNING
+  PLAN_FAILED
+  PLAN_READY
+  PLANNED
+}
+
+enum ClaudeJobKind {
+  TASK_IMPLEMENTATION
+  IDEA_GRILL
+  IDEA_MAKE_PLAN
+}
+
+enum IdeaLogType {
+  DECISION
+  NOTE
+  GRILL_RESULT
+  PLAN_RESULT
+  STATUS_CHANGE
+  JOB_EVENT
+}
+
 model User {
-  id                String          @id @default(cuid())
-  username          String          @unique
-  email             String?         @unique
-  password_hash     String
-  is_demo           Boolean         @default(false)
-  bio               String?         @db.VarChar(160)
-  bio_detail        String?         @db.VarChar(2000)
-  avatar_data       Bytes?
-  active_product_id String?
-  active_product    Product?        @relation("UserActiveProduct", fields: [active_product_id], references: [id], onDelete: SetNull)
-  created_at        DateTime        @default(now())
-  updated_at        DateTime        @updatedAt
-  roles             UserRole[]
-  api_tokens          ApiToken[]
-  products            Product[]
-  todos               Todo[]
-  product_members     ProductMember[]
-  assigned_stories    Story[]          @relation("StoryAssignee")
-  login_pairings      LoginPairing[]
-  asked_questions     ClaudeQuestion[] @relation("ClaudeQuestionAsker")
-  answered_questions  ClaudeQuestion[] @relation("ClaudeQuestionAnswerer")
-  claude_jobs         ClaudeJob[]
-  claude_workers      ClaudeWorker[]
+  id                 String           @id @default(cuid())
+  username           String           @unique
+  email              String?          @unique
+  password_hash      String
+  is_demo            Boolean          @default(false)
+  bio                String?          @db.VarChar(160)
+  bio_detail         String?          @db.VarChar(2000)
+  avatar_data        Bytes?
+  active_product_id  String?
+  active_product     Product?         @relation("UserActiveProduct", fields: [active_product_id], references: [id], onDelete: SetNull)
+  idea_code_counter  Int              @default(0)
+  created_at         DateTime         @default(now())
+  updated_at         DateTime         @updatedAt
+  roles              UserRole[]
+  api_tokens         ApiToken[]
+  products           Product[]
+  todos              Todo[]
+  ideas              Idea[]
+  product_members    ProductMember[]
+  assigned_stories   Story[]          @relation("StoryAssignee")
+  login_pairings     LoginPairing[]
+  asked_questions    ClaudeQuestion[] @relation("ClaudeQuestionAsker")
+  answered_questions ClaudeQuestion[] @relation("ClaudeQuestionAnswerer")
+  claude_jobs        ClaudeJob[]
+  claude_workers     ClaudeWorker[]
 
   @@index([active_product_id])
   @@map("users")
@@ -110,33 +138,33 @@ model UserRole {
 }
 
 model ApiToken {
-  id             String        @id @default(cuid())
-  user           User          @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  user_id        String
-  token_hash     String        @unique
-  label          String?
-  created_at     DateTime      @default(now())
-  revoked_at     DateTime?
-  claimed_jobs   ClaudeJob[]
-  claude_worker  ClaudeWorker?
+  id            String        @id @default(cuid())
+  user          User          @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id       String
+  token_hash    String        @unique
+  label         String?
+  created_at    DateTime      @default(now())
+  revoked_at    DateTime?
+  claimed_jobs  ClaudeJob[]
+  claude_worker ClaudeWorker?
 
   @@index([token_hash])
   @@map("api_tokens")
 }
 
 model Product {
-  id                 String          @id @default(cuid())
-  user               User            @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  id                 String           @id @default(cuid())
+  user               User             @relation(fields: [user_id], references: [id], onDelete: Cascade)
   user_id            String
   name               String
-  code               String?         @db.VarChar(30)
+  code               String?          @db.VarChar(30)
   description        String?
   repo_url           String?
   definition_of_done String
-  auto_pr            Boolean         @default(false)
-  archived           Boolean         @default(false)
-  created_at         DateTime        @default(now())
-  updated_at         DateTime        @updatedAt
+  auto_pr            Boolean          @default(false)
+  archived           Boolean          @default(false)
+  created_at         DateTime         @default(now())
+  updated_at         DateTime         @updatedAt
   pbis               Pbi[]
   sprints            Sprint[]
   stories            Story[]
@@ -146,6 +174,7 @@ model Product {
   active_for_users   User[]           @relation("UserActiveProduct")
   claude_questions   ClaudeQuestion[]
   claude_jobs        ClaudeJob[]
+  ideas              Idea[]
 
   @@unique([user_id, name])
   @@unique([user_id, code])
@@ -154,20 +183,21 @@ model Product {
 }
 
 model Pbi {
-  id          String   @id @default(cuid())
-  product     Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
-  product_id  String
-  code        String   @db.VarChar(30)
-  title       String
-  description String?
-  priority    Int
-  sort_order  Float
+  id           String    @id @default(cuid())
+  product      Product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id   String
+  code         String    @db.VarChar(30)
+  title        String
+  description  String?
+  priority     Int
+  sort_order   Float
   status       PbiStatus @default(READY)
   pr_url       String?
   pr_merged_at DateTime?
   created_at   DateTime  @default(now())
   updated_at   DateTime  @updatedAt
   stories      Story[]
+  idea         Idea?
 
   @@unique([product_id, code])
   @@index([product_id, priority, sort_order])
@@ -176,24 +206,24 @@ model Pbi {
 }
 
 model Story {
-  id                  String      @id @default(cuid())
-  pbi                 Pbi         @relation(fields: [pbi_id], references: [id], onDelete: Cascade)
+  id                  String           @id @default(cuid())
+  pbi                 Pbi              @relation(fields: [pbi_id], references: [id], onDelete: Cascade)
   pbi_id              String
-  product             Product     @relation(fields: [product_id], references: [id])
+  product             Product          @relation(fields: [product_id], references: [id])
   product_id          String
-  sprint              Sprint?     @relation(fields: [sprint_id], references: [id])
+  sprint              Sprint?          @relation(fields: [sprint_id], references: [id])
   sprint_id           String?
-  assignee            User?       @relation("StoryAssignee", fields: [assignee_id], references: [id], onDelete: SetNull)
+  assignee            User?            @relation("StoryAssignee", fields: [assignee_id], references: [id], onDelete: SetNull)
   assignee_id         String?
-  code                String      @db.VarChar(30)
+  code                String           @db.VarChar(30)
   title               String
   description         String?
   acceptance_criteria String?
   priority            Int
   sort_order          Float
-  status              StoryStatus @default(OPEN)
-  created_at          DateTime    @default(now())
-  updated_at          DateTime    @updatedAt
+  status              StoryStatus      @default(OPEN)
+  created_at          DateTime         @default(now())
+  updated_at          DateTime         @updatedAt
   logs                StoryLog[]
   tasks               Task[]
   claude_questions    ClaudeQuestion[]
@@ -240,29 +270,29 @@ model Sprint {
 }
 
 model Task {
-  id                  String     @id @default(cuid())
-  story               Story      @relation(fields: [story_id], references: [id], onDelete: Cascade)
+  id                  String           @id @default(cuid())
+  story               Story            @relation(fields: [story_id], references: [id], onDelete: Cascade)
   story_id            String
-  product             Product    @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product             Product          @relation(fields: [product_id], references: [id], onDelete: Cascade)
   product_id          String
-  sprint              Sprint?    @relation(fields: [sprint_id], references: [id])
+  sprint              Sprint?          @relation(fields: [sprint_id], references: [id])
   sprint_id           String?
-  code                String     @db.VarChar(30)
+  code                String           @db.VarChar(30)
   title               String
   description         String?
   implementation_plan String?
   priority            Int
   sort_order          Float
-  status              TaskStatus @default(TO_DO)
-  verify_only         Boolean        @default(false)
-  verify_required     VerifyRequired @default(ALIGNED_OR_PARTIAL)
+  status              TaskStatus       @default(TO_DO)
+  verify_only         Boolean          @default(false)
+  verify_required     VerifyRequired   @default(ALIGNED_OR_PARTIAL)
   // Override product.repo_url for branch/worktree/push purposes. Set when
   // a task targets a different repo than its parent product (e.g. an
   // MCP-server task tracked under the main product's PBI). Falls back to
   // product.repo_url when null.
   repo_url            String?
-  created_at          DateTime       @default(now())
-  updated_at          DateTime   @updatedAt
+  created_at          DateTime         @default(now())
+  updated_at          DateTime         @updatedAt
   claude_questions    ClaudeQuestion[]
   claude_jobs         ClaudeJob[]
 
@@ -279,8 +309,11 @@ model ClaudeJob {
   user_id             String
   product             Product         @relation(fields: [product_id], references: [id], onDelete: Cascade)
   product_id          String
-  task                Task            @relation(fields: [task_id], references: [id], onDelete: Cascade)
-  task_id             String
+  task                Task?           @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  task_id             String?
+  idea                Idea?           @relation(fields: [idea_id], references: [id], onDelete: Cascade)
+  idea_id             String?
+  kind                ClaudeJobKind   @default(TASK_IMPLEMENTATION)
   status              ClaudeJobStatus @default(QUEUED)
   claimed_by_token    ApiToken?       @relation(fields: [claimed_by_token_id], references: [id], onDelete: SetNull)
   claimed_by_token_id String?
@@ -300,20 +333,21 @@ model ClaudeJob {
 
   @@index([user_id, status])
   @@index([task_id, status])
+  @@index([idea_id, status])
   @@index([status, claimed_at])
   @@index([status, finished_at])
   @@map("claude_jobs")
 }
 
 model ClaudeWorker {
-  id           String    @id @default(cuid())
-  user         User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  id           String   @id @default(cuid())
+  user         User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
   user_id      String
-  token        ApiToken  @relation(fields: [token_id], references: [id], onDelete: Cascade)
+  token        ApiToken @relation(fields: [token_id], references: [id], onDelete: Cascade)
   token_id     String
   product_id   String?
-  started_at   DateTime  @default(now())
-  last_seen_at DateTime  @default(now())
+  started_at   DateTime @default(now())
+  last_seen_at DateTime @default(now())
 
   @@unique([token_id])
   @@index([user_id, last_seen_at])
@@ -334,21 +368,62 @@ model ProductMember {
 }
 
 model Todo {
-  id         String   @id @default(cuid())
-  user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  user_id    String
-  product    Product? @relation(fields: [product_id], references: [id], onDelete: SetNull)
-  product_id String?
-  title      String
-  description String? @db.VarChar(2000)
-  done       Boolean  @default(false)
-  archived   Boolean  @default(false)
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
+  id          String   @id @default(cuid())
+  user        User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id     String
+  product     Product? @relation(fields: [product_id], references: [id], onDelete: SetNull)
+  product_id  String?
+  title       String
+  description String?  @db.VarChar(2000)
+  done        Boolean  @default(false)
+  archived    Boolean  @default(false)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
 
   @@index([user_id, done, archived])
   @@index([user_id, product_id])
   @@map("todos")
+}
+
+model Idea {
+  id          String     @id @default(cuid())
+  user        User       @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id     String
+  product     Product?   @relation(fields: [product_id], references: [id], onDelete: SetNull)
+  product_id  String?
+  code        String     @db.VarChar(30)
+  title       String
+  description String?    @db.VarChar(4000)
+  grill_md    String?    @db.Text
+  plan_md     String?    @db.Text
+  pbi         Pbi?       @relation(fields: [pbi_id], references: [id], onDelete: SetNull)
+  pbi_id      String?    @unique
+  status      IdeaStatus @default(DRAFT)
+  archived    Boolean    @default(false)
+  created_at  DateTime   @default(now())
+  updated_at  DateTime   @updatedAt
+
+  questions ClaudeQuestion[]
+  jobs      ClaudeJob[]
+  logs      IdeaLog[]
+
+  @@unique([user_id, code])
+  @@index([user_id, archived, status])
+  @@index([user_id, product_id])
+  @@map("ideas")
+}
+
+model IdeaLog {
+  id         String      @id @default(cuid())
+  idea       Idea        @relation(fields: [idea_id], references: [id], onDelete: Cascade)
+  idea_id    String
+  type       IdeaLogType
+  content    String      @db.Text
+  metadata   Json?
+  created_at DateTime    @default(now())
+
+  @@index([idea_id, created_at])
+  @@map("idea_logs")
 }
 
 model LoginPairing {
@@ -371,26 +446,29 @@ model LoginPairing {
 }
 
 model ClaudeQuestion {
-  id           String    @id @default(cuid())
-  story        Story     @relation(fields: [story_id], references: [id], onDelete: Cascade)
-  story_id     String
-  task         Task?     @relation(fields: [task_id], references: [id], onDelete: SetNull)
-  task_id      String?
-  product      Product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
-  product_id   String    // gedenormaliseerd uit story.product_id voor SSE-filter
-  asker        User      @relation("ClaudeQuestionAsker", fields: [asked_by], references: [id])
-  asked_by     String    // user_id van token-houder (= Claude-token)
-  question     String    @db.Text
-  options      Json?     // string[] voor multi-choice; null voor free-text
-  status       String    // 'open' | 'answered' | 'cancelled' | 'expired'
-  answer       String?   @db.Text
-  answerer     User?     @relation("ClaudeQuestionAnswerer", fields: [answered_by], references: [id])
-  answered_by  String?
-  answered_at  DateTime?
-  created_at   DateTime  @default(now())
-  expires_at   DateTime  // ingesteld door MCP-tool, default now() + 24h
+  id          String    @id @default(cuid())
+  story       Story?    @relation(fields: [story_id], references: [id], onDelete: Cascade)
+  story_id    String?
+  task        Task?     @relation(fields: [task_id], references: [id], onDelete: SetNull)
+  task_id     String?
+  idea        Idea?     @relation(fields: [idea_id], references: [id], onDelete: Cascade)
+  idea_id     String?
+  product     Product   @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id  String // gedenormaliseerd uit story.product_id voor SSE-filter
+  asker       User      @relation("ClaudeQuestionAsker", fields: [asked_by], references: [id])
+  asked_by    String // user_id van token-houder (= Claude-token)
+  question    String    @db.Text
+  options     Json? // string[] voor multi-choice; null voor free-text
+  status      String // 'open' | 'answered' | 'cancelled' | 'expired'
+  answer      String?   @db.Text
+  answerer    User?     @relation("ClaudeQuestionAnswerer", fields: [answered_by], references: [id])
+  answered_by String?
+  answered_at DateTime?
+  created_at  DateTime  @default(now())
+  expires_at  DateTime // ingesteld door MCP-tool, default now() + 24h
 
   @@index([story_id, status])
+  @@index([idea_id, status])
   @@index([product_id, status])
   @@index([status, expires_at])
   @@map("claude_questions")

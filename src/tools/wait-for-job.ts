@@ -305,17 +305,58 @@ async function getFullJobContext(jobId: string) {
           },
         },
       },
-      product: { select: { id: true, name: true, repo_url: true } },
+      idea: {
+        include: {
+          pbi: { select: { id: true, code: true, title: true } },
+        },
+      },
+      product: { select: { id: true, name: true, repo_url: true, definition_of_done: true } },
     },
   })
   if (!job) return null
 
+  // M12: branch on kind. Idea-jobs hebben geen task/story/pbi/sprint; ze
+  // hebben in plaats daarvan idea + embedded prompt_text.
+  if (job.kind === 'IDEA_GRILL' || job.kind === 'IDEA_MAKE_PLAN') {
+    if (!job.idea) return null
+    const { idea } = job
+    const { getIdeaPromptText } = await import('../lib/idea-prompts.js')
+    return {
+      job_id: job.id,
+      kind: job.kind,
+      status: 'claimed',
+      idea: {
+        id: idea.id,
+        code: idea.code,
+        title: idea.title,
+        description: idea.description,
+        grill_md: idea.grill_md,
+        plan_md: idea.plan_md,
+        status: idea.status,
+        product_id: idea.product_id,
+      },
+      product: {
+        id: job.product.id,
+        name: job.product.name,
+        repo_url: job.product.repo_url,
+        definition_of_done: job.product.definition_of_done,
+      },
+      pbi: idea.pbi,
+      repo_url: job.product.repo_url,
+      prompt_text: getIdeaPromptText(job.kind),
+      branch_suggestion: `feat/idea-${idea.code.toLowerCase()}-${job.kind === 'IDEA_GRILL' ? 'grill' : 'plan'}`,
+    }
+  }
+
+  // TASK_IMPLEMENTATION (default) — bestaande gedrag onaangetast.
   const { task } = job
+  if (!task) return null
   const { story } = task
   const { pbi, sprint } = story
 
   return {
     job_id: job.id,
+    kind: job.kind,
     status: 'claimed',
     task: {
       id: task.id,
@@ -378,9 +419,23 @@ export function registerWaitForJobTool(server: McpServer) {
         if (jobId) {
           const ctx = await getFullJobContext(jobId)
           if (!ctx) return toolError('Job claimed but context fetch failed')
-          const wt = await attachWorktreeToJob(ctx.product.id, jobId, ctx.story.id, ctx.task.repo_url)
-          if ('error' in wt) return toolError(wt.error)
-          return toolJson({ ...ctx, worktree_path: wt.worktree_path, branch_name: wt.branch_name })
+          // M12: idee-jobs hebben geen worktree nodig — de agent werkt in de
+          // bestaande user-repo (geen branch/commit-flow). Alleen task-jobs
+          // krijgen een worktree.
+          if (ctx.kind === 'TASK_IMPLEMENTATION') {
+            if (!ctx.story || !ctx.task) {
+              return toolError('Task-job claimed but story/task context is incomplete')
+            }
+            const wt = await attachWorktreeToJob(
+              ctx.product.id,
+              jobId,
+              ctx.story.id,
+              ctx.task.repo_url,
+            )
+            if ('error' in wt) return toolError(wt.error)
+            return toolJson({ ...ctx, worktree_path: wt.worktree_path, branch_name: wt.branch_name })
+          }
+          return toolJson(ctx)
         }
 
         // 3. No job available — LISTEN and poll until timeout
@@ -416,9 +471,20 @@ export function registerWaitForJobTool(server: McpServer) {
             if (jobId) {
               const ctx = await getFullJobContext(jobId)
               if (!ctx) return toolError('Job claimed but context fetch failed')
-              const wt = await attachWorktreeToJob(ctx.product.id, jobId, ctx.story.id, ctx.task.repo_url)
-              if ('error' in wt) return toolError(wt.error)
-              return toolJson({ ...ctx, worktree_path: wt.worktree_path, branch_name: wt.branch_name })
+              if (ctx.kind === 'TASK_IMPLEMENTATION') {
+                if (!ctx.story || !ctx.task) {
+                  return toolError('Task-job claimed but story/task context is incomplete')
+                }
+                const wt = await attachWorktreeToJob(
+                  ctx.product.id,
+                  jobId,
+                  ctx.story.id,
+                  ctx.task.repo_url,
+                )
+                if ('error' in wt) return toolError(wt.error)
+                return toolJson({ ...ctx, worktree_path: wt.worktree_path, branch_name: wt.branch_name })
+              }
+              return toolJson(ctx)
             }
           }
         } finally {
