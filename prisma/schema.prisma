@@ -140,6 +140,7 @@ model Product {
   pbis               Pbi[]
   sprints            Sprint[]
   stories            Story[]
+  tasks              Task[]
   todos              Todo[]
   members            ProductMember[]
   active_for_users   User[]           @relation("UserActiveProduct")
@@ -156,7 +157,7 @@ model Pbi {
   id          String   @id @default(cuid())
   product     Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
   product_id  String
-  code        String?  @db.VarChar(30)
+  code        String   @db.VarChar(30)
   title       String
   description String?
   priority    Int
@@ -165,8 +166,8 @@ model Pbi {
   pr_url       String?
   pr_merged_at DateTime?
   created_at   DateTime  @default(now())
-  updated_at  DateTime  @updatedAt
-  stories     Story[]
+  updated_at   DateTime  @updatedAt
+  stories      Story[]
 
   @@unique([product_id, code])
   @@index([product_id, priority, sort_order])
@@ -184,7 +185,7 @@ model Story {
   sprint_id           String?
   assignee            User?       @relation("StoryAssignee", fields: [assignee_id], references: [id], onDelete: SetNull)
   assignee_id         String?
-  code                String?     @db.VarChar(30)
+  code                String      @db.VarChar(30)
   title               String
   description         String?
   acceptance_criteria String?
@@ -242,8 +243,11 @@ model Task {
   id                  String     @id @default(cuid())
   story               Story      @relation(fields: [story_id], references: [id], onDelete: Cascade)
   story_id            String
+  product             Product    @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id          String
   sprint              Sprint?    @relation(fields: [sprint_id], references: [id])
   sprint_id           String?
+  code                String     @db.VarChar(30)
   title               String
   description         String?
   implementation_plan String?
@@ -262,8 +266,10 @@ model Task {
   claude_questions    ClaudeQuestion[]
   claude_jobs         ClaudeJob[]
 
+  @@unique([product_id, code])
   @@index([story_id, priority, sort_order])
   @@index([sprint_id, status])
+  @@index([product_id])
   @@map("tasks")
 }
 
