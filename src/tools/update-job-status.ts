@@ -306,20 +306,30 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         let skipWorktreeCleanup = false
 
         if (status === 'done') {
-          const gate = checkVerifyGate(
-            job.verify_result ?? null,
-            job.task?.verify_only ?? false,
-            (job.task?.verify_required ?? 'ALIGNED_OR_PARTIAL') as VerifyRequired,
-            summary,
-          )
-          if (!gate.allowed) return toolError(gate.error)
+          // M12: idea-jobs hebben geen task/plan_snapshot/branch — skip de
+          // verify-gate én de prepareDoneUpdate (die doet git push). Voor
+          // idea-jobs is `done` direct geldig: de bijhorende update_idea_*_md
+          // heeft de idea-status al naar GRILLED/PLAN_READY gezet.
+          if (job.kind === 'IDEA_GRILL' || job.kind === 'IDEA_MAKE_PLAN') {
+            actualStatus = 'done'
+            // pushedAt blijft undefined, branch/error overrides ook
+            skipWorktreeCleanup = true
+          } else {
+            const gate = checkVerifyGate(
+              job.verify_result ?? null,
+              job.task?.verify_only ?? false,
+              (job.task?.verify_required ?? 'ALIGNED_OR_PARTIAL') as VerifyRequired,
+              summary,
+            )
+            if (!gate.allowed) return toolError(gate.error)
 
-          const plan = await prepareDoneUpdate(job_id, branch)
-          actualStatus = plan.dbStatus === 'DONE' ? 'done' : 'failed'
-          pushedAt = plan.pushedAt
-          if (plan.branchOverride !== undefined) branchToWrite = plan.branchOverride
-          if (plan.errorOverride !== undefined) errorToWrite = plan.errorOverride
-          skipWorktreeCleanup = plan.skipWorktreeCleanup
+            const plan = await prepareDoneUpdate(job_id, branch)
+            actualStatus = plan.dbStatus === 'DONE' ? 'done' : 'failed'
+            pushedAt = plan.pushedAt
+            if (plan.branchOverride !== undefined) branchToWrite = plan.branchOverride
+            if (plan.errorOverride !== undefined) errorToWrite = plan.errorOverride
+            skipWorktreeCleanup = plan.skipWorktreeCleanup
+          }
         }
 
         // Auto-PR: best-effort, only when push actually happened.
