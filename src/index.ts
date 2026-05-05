@@ -24,13 +24,32 @@ import { registerCleanupMyWorktreesTool } from './tools/cleanup-my-worktrees.js'
 import { registerCheckQueueEmptyTool } from './tools/check-queue-empty.js'
 import { registerSetPbiPrTool } from './tools/set-pbi-pr.js'
 import { registerMarkPbiPrMergedTool } from './tools/mark-pbi-pr-merged.js'
+import { registerGetIdeaContextTool } from './tools/get-idea-context.js'
+import { registerUpdateIdeaGrillMdTool } from './tools/update-idea-grill-md.js'
+import { registerUpdateIdeaPlanMdTool } from './tools/update-idea-plan-md.js'
+import { registerLogIdeaDecisionTool } from './tools/log-idea-decision.js'
 import { registerImplementNextStoryPrompt } from './prompts/implement-next-story.js'
 import { getAuth } from './auth.js'
 import { registerWorker } from './presence/worker.js'
 import { startHeartbeat } from './presence/heartbeat.js'
 import { registerShutdownHandlers } from './presence/shutdown.js'
 
-const VERSION = '0.3.0'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+// Read version dynamically from package.json — voorheen hardcoded en
+// veroorzaakte sync-issues bij deployment. Lees op module-load.
+function readPkgVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url))
+    const pkgPath = join(here, '..', 'package.json')
+    return (JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string }).version ?? '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+}
+const VERSION = readPkgVersion()
 
 async function main() {
   const server = new McpServer(
@@ -65,6 +84,11 @@ async function main() {
   registerCheckQueueEmptyTool(server)
   registerSetPbiPrTool(server)
   registerMarkPbiPrMergedTool(server)
+  // M12: idee-job tools
+  registerGetIdeaContextTool(server)
+  registerUpdateIdeaGrillMdTool(server)
+  registerUpdateIdeaPlanMdTool(server)
+  registerLogIdeaDecisionTool(server)
   registerImplementNextStoryPrompt(server)
 
   // Presence bootstrap MUST run before server.connect — the stdio transport

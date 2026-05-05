@@ -8,20 +8,26 @@ import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
-import { userCanAccessStory } from '../access.js'
+import { userCanAccessStory, userOwnsIdea } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 
 const PENDING_TTL_HOURS = 24
 const POLL_INTERVAL_MS = 2_000
 const MAX_WAIT_SECONDS = 600
 
-const inputSchema = z.object({
-  story_id: z.string().min(1),
-  question: z.string().min(1).max(4_000),
-  options: z.array(z.string().min(1)).max(8).optional(),
-  task_id: z.string().min(1).optional(),
-  wait_seconds: z.number().int().min(0).max(MAX_WAIT_SECONDS).optional(),
-})
+// M12: schema accepteert exact één van story_id of idea_id (xor refine).
+const inputSchema = z
+  .object({
+    story_id: z.string().min(1).optional(),
+    idea_id: z.string().min(1).optional(),
+    question: z.string().min(1).max(4_000),
+    options: z.array(z.string().min(1)).max(8).optional(),
+    task_id: z.string().min(1).optional(),
+    wait_seconds: z.number().int().min(0).max(MAX_WAIT_SECONDS).optional(),
+  })
+  .refine((d) => Boolean(d.story_id) !== Boolean(d.idea_id), {
+    message: 'Provide exactly one of story_id or idea_id',
+  })
 
 function summarize(q: {
   id: string
@@ -57,36 +63,60 @@ export function registerAskUserQuestionTool(server: McpServer) {
         'demo accounts.',
       inputSchema,
     },
-    async ({ story_id, question, options, task_id, wait_seconds }) =>
+    async ({ story_id, idea_id, question, options, task_id, wait_seconds }) =>
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
-        if (!(await userCanAccessStory(story_id, auth.userId))) {
-          return toolError(`Story ${story_id} not found or not accessible`)
-        }
 
-        const story = await prisma.story.findUnique({
-          where: { id: story_id },
-          select: { product_id: true },
-        })
-        if (!story) {
-          return toolError(`Story ${story_id} not found`)
-        }
-
-        if (task_id) {
-          const task = await prisma.task.findFirst({
-            where: { id: task_id, story_id },
-            select: { id: true },
-          })
-          if (!task) {
-            return toolError(`Task ${task_id} does not belong to story ${story_id}`)
+        // M12: branch on which scope was provided. story_id en idea_id sluiten
+        // elkaar uit (zod-refine in inputSchema).
+        let productId: string
+        if (idea_id) {
+          if (!(await userOwnsIdea(idea_id, auth.userId))) {
+            return toolError(`Idea ${idea_id} not found`)
           }
+          const idea = await prisma.idea.findUnique({
+            where: { id: idea_id },
+            select: { product_id: true },
+          })
+          if (!idea?.product_id) {
+            // Idee zonder product mag pas Q&A starten als product gekoppeld is
+            // (M12 grill-keuze 3: product met repo verplicht voor grill).
+            return toolError(`Idea ${idea_id} has no linked product`)
+          }
+          productId = idea.product_id
+        } else if (story_id) {
+          if (!(await userCanAccessStory(story_id, auth.userId))) {
+            return toolError(`Story ${story_id} not found or not accessible`)
+          }
+          const story = await prisma.story.findUnique({
+            where: { id: story_id },
+            select: { product_id: true },
+          })
+          if (!story) {
+            return toolError(`Story ${story_id} not found`)
+          }
+          productId = story.product_id
+
+          if (task_id) {
+            const task = await prisma.task.findFirst({
+              where: { id: task_id, story_id },
+              select: { id: true },
+            })
+            if (!task) {
+              return toolError(`Task ${task_id} does not belong to story ${story_id}`)
+            }
+          }
+        } else {
+          // Mag niet voorkomen door de zod-refine, maar TS-narrow.
+          return toolError('Provide exactly one of story_id or idea_id')
         }
 
         const created = await prisma.claudeQuestion.create({
           data: {
-            story_id,
+            story_id: story_id ?? null,
+            idea_id: idea_id ?? null,
             task_id: task_id ?? null,
-            product_id: story.product_id,
+            product_id: productId,
             asked_by: auth.userId,
             question,
             // Prisma's `Json?`-veld accepteert geen `null`-literal in `data`;

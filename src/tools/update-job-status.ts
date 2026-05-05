@@ -44,7 +44,7 @@ export async function cleanupWorktreeForTerminalStatus(
     where: { id: jobId },
     select: { task: { select: { story_id: true } } },
   })
-  if (job) {
+  if (job?.task) {
     const activeSiblings = await prisma.claudeJob.count({
       where: {
         task: { story_id: job.task.story_id },
@@ -283,6 +283,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             user_id: true,
             product_id: true,
             task_id: true,
+            idea_id: true,
+            kind: true,
             verify_result: true,
             task: { select: { verify_only: true, verify_required: true } },
           },
@@ -320,9 +322,16 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           skipWorktreeCleanup = plan.skipWorktreeCleanup
         }
 
-        // Auto-PR: best-effort, only when push actually happened
+        // Auto-PR: best-effort, only when push actually happened.
+        // M12: idee-jobs hebben geen task_id en geen branch — skip auto-PR.
         let prUrl: string | null = null
-        if (actualStatus === 'done' && pushedAt && branchToWrite) {
+        if (
+          actualStatus === 'done' &&
+          pushedAt &&
+          branchToWrite &&
+          job.kind === 'TASK_IMPLEMENTATION' &&
+          job.task_id
+        ) {
           const worktreeDir =
             process.env.SCRUM4ME_AGENT_WORKTREE_DIR ??
             path.join(os.homedir(), '.scrum4me-agent-worktrees')
@@ -366,6 +375,34 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             finished_at: true,
           },
         })
+
+        // M12: bij failed voor IDEA_*-jobs: zet idea.status op
+        // GRILL_FAILED / PLAN_FAILED + log JOB_EVENT. Bij done laten we de
+        // idea-status met rust — die wordt door update_idea_*_md gezet.
+        if (actualStatus === 'failed' && job.idea_id) {
+          const newIdeaStatus =
+            job.kind === 'IDEA_GRILL'
+              ? 'GRILL_FAILED'
+              : job.kind === 'IDEA_MAKE_PLAN'
+                ? 'PLAN_FAILED'
+                : null
+          if (newIdeaStatus) {
+            await prisma.$transaction([
+              prisma.idea.update({
+                where: { id: job.idea_id },
+                data: { status: newIdeaStatus },
+              }),
+              prisma.ideaLog.create({
+                data: {
+                  idea_id: job.idea_id,
+                  type: 'JOB_EVENT',
+                  content: `${job.kind} failed`,
+                  metadata: { job_id, error: errorToWrite ?? null },
+                },
+              }),
+            ])
+          }
+        }
 
         // Notify UI via SSE
         try {

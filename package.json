@@ -1,6 +1,6 @@
 {
   "name": "scrum4me-mcp",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "description": "MCP server for Scrum4Me — exposes dev-flow tools and prompts via the Model Context Protocol",
   "type": "module",
   "bin": {
@@ -33,6 +33,7 @@
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "pg": "^8.13.1",
+    "yaml": "^2.8.4",
     "zod": "^4.0.0"
   },
   "devDependencies": {
