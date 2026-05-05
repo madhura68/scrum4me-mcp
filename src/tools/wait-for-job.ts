@@ -249,12 +249,14 @@ export async function tryClaimJob(
 ): Promise<string | null> {
   // Atomic claim in a single transaction — also captures plan_snapshot from task
   const rows = await prisma.$transaction(async (tx) => {
-    // SELECT FOR UPDATE OF claude_jobs SKIP LOCKED — join tasks to read implementation_plan
+    // SELECT FOR UPDATE OF claude_jobs SKIP LOCKED — LEFT JOIN tasks zodat
+    // idea-jobs (task_id IS NULL, M12) ook gevonden worden. plan_snapshot
+    // blijft dan NULL/'' voor idea-jobs — niet nodig (geen verify-flow).
     const found = productId
       ? await tx.$queryRaw<Array<{ id: string; implementation_plan: string | null }>>`
           SELECT cj.id, t.implementation_plan
           FROM claude_jobs cj
-          JOIN tasks t ON t.id = cj.task_id
+          LEFT JOIN tasks t ON t.id = cj.task_id
           WHERE cj.user_id = ${userId}
             AND cj.product_id = ${productId}
             AND cj.status = 'QUEUED'
@@ -265,7 +267,7 @@ export async function tryClaimJob(
       : await tx.$queryRaw<Array<{ id: string; implementation_plan: string | null }>>`
           SELECT cj.id, t.implementation_plan
           FROM claude_jobs cj
-          JOIN tasks t ON t.id = cj.task_id
+          LEFT JOIN tasks t ON t.id = cj.task_id
           WHERE cj.user_id = ${userId}
             AND cj.status = 'QUEUED'
           ORDER BY cj.created_at ASC
