@@ -73,6 +73,17 @@ describe('listWorktreeJobIds', () => {
     mockReaddir.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))
     expect(await listWorktreeJobIds(WORKTREE_PARENT)).toEqual([])
   })
+
+  it('skips _products/ system dir and *.lock files (PBI-9)', async () => {
+    mockReaddir.mockResolvedValue([
+      makeDirent('job-aaa'),
+      makeDirent('_products'),
+      makeDirent('product-abc.lock'),
+      makeDirent('job-bbb'),
+    ])
+    const ids = await listWorktreeJobIds(WORKTREE_PARENT)
+    expect(ids).toEqual(['job-aaa', 'job-bbb'])
+  })
 })
 
 describe('cleanupWorktrees', () => {

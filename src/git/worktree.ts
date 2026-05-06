@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import * as path from 'node:path'
-import * as os from 'node:os'
 import * as fs from 'node:fs/promises'
+import { getWorktreeRoot } from './worktree-paths.js'
 
 const exec = promisify(execFile)
 
@@ -50,9 +50,7 @@ export async function createWorktreeForJob(opts: {
   const { repoRoot, jobId, baseRef = 'origin/main', reuseBranch = false } = opts
   let { branchName } = opts
 
-  const parent =
-    process.env.SCRUM4ME_AGENT_WORKTREE_DIR ??
-    path.join(os.homedir(), '.scrum4me-agent-worktrees')
+  const parent = getWorktreeRoot()
 
   await fs.mkdir(parent, { recursive: true })
 
@@ -121,9 +119,7 @@ export async function removeWorktreeForJob(opts: {
 }): Promise<{ removed: boolean }> {
   const { repoRoot, jobId, keepBranch = false } = opts
 
-  const parent =
-    process.env.SCRUM4ME_AGENT_WORKTREE_DIR ??
-    path.join(os.homedir(), '.scrum4me-agent-worktrees')
+  const parent = getWorktreeRoot()
 
   const worktreePath = path.join(parent, jobId)
 

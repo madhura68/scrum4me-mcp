@@ -335,3 +335,33 @@ npx @modelcontextprotocol/inspector node dist/index.js
 - **Production database** — verify against a preview database before
   running against prod. The token check enforces user scope but does
   not gate reads of unrelated products you happen to be a member of.
+
+## Worktrees
+
+Scrum4Me-mcp uses git worktrees rooted at `~/.scrum4me-agent-worktrees/` (override via `SCRUM4ME_AGENT_WORKTREE_DIR`).
+
+### Two kinds of worktrees
+
+- **Per-job task-worktrees** (`<jobId>/`) — one per `TASK_IMPLEMENTATION` job. Created at claim, cleaned up on `DONE`/`FAILED`/`CANCELLED` via `cleanup_my_worktrees`.
+- **Persistent product-worktrees** (`_products/<productId>/`) — one per product with `repo_url`, used by `IDEA_GRILL` and `IDEA_MAKE_PLAN`. **Detached HEAD on `origin/main`**, hard-reset at every job start. `.scratch/` holds throw-away work and is wiped on each claim.
+
+### Concurrency: file-locks
+
+Product-worktrees are serialised via `proper-lockfile` on `_products/<productId>.lock`. Two parallel idea-jobs on the same product wait for each other. For multi-product idea-jobs, locks are acquired in alphabetical order to prevent deadlocks.
+
+### Single-host invariant
+
+`proper-lockfile` only works when all MCP-server processes run on the same host. Migrate to Postgres `pg_advisory_lock` when:
+- multiple MCP instances on different machines serve workers, or
+- the worktree directory is shared over NFS/CIFS.
+
+Migration path: replace `acquireFileLock` in `src/git/file-lock.ts` with a `pg_try_advisory_lock(hashtext(path)::bigint)` wrapper via the existing Prisma connection. The API stays identical.
+
+### Manual cleanup
+
+`cleanup_my_worktrees` skips `_products/` and `*.lock` automatically. To clean up a product-worktree manually (after archive or repo-rename):
+
+```bash
+git worktree remove --force ~/.scrum4me-agent-worktrees/_products/<productId>
+rm ~/.scrum4me-agent-worktrees/_products/<productId>.lock  # if still present
+```

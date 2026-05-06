@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import * as path from 'node:path'
-import * as os from 'node:os'
+import { getWorktreeRoot } from './worktree-paths.js'
 
 const exec = promisify(execFile)
 
@@ -12,10 +12,17 @@ export async function createPullRequest(opts: {
   body: string
   /** Open as draft PR (mens moet 'm later ready-for-review zetten). Default false. */
   draft?: boolean
-  /** Schakel auto-merge (squash) in. Default true. Voor sprint-mode: false. */
+  /**
+   * PBI-47 (P0): default changed to false. Auto-merge is now enabled
+   * separately via `enableAutoMergeOnPr` only on the **last task** of a
+   * STORY-mode story, with a head-SHA guard to prevent racing earlier
+   * task merges. Callers may still pass `true` for one-off PRs that
+   * are immediately ready to merge; in that case we use the new typed
+   * helper rather than the previous fire-and-forget gh call.
+   */
   enableAutoMerge?: boolean
 }): Promise<{ url: string } | { error: string }> {
-  const { worktreePath, branchName, title, body, draft = false, enableAutoMerge = true } = opts
+  const { worktreePath, branchName, title, body, draft = false, enableAutoMerge = false } = opts
 
   let url: string
   try {
@@ -40,26 +47,64 @@ export async function createPullRequest(opts: {
     return { error: `gh pr create failed: ${msg.slice(0, 300)}` }
   }
 
-  // Best-effort: enable auto-merge (squash) on the freshly created PR. If the
-  // repo doesn't have "Allow auto-merge" turned on, or the token lacks scope,
-  // gh exits non-zero and we just log. The PR is still valid; auto-merge can
-  // be turned on manually. We do NOT fail the whole createPullRequest call —
-  // the URL was successfully obtained which is the contract this returns.
-  // Bij draft + sprint-flow slaan we dit over: de PR moet eerst handmatig of
-  // via markPullRequestReady ready-for-review worden gezet.
+  // Legacy opt-in: enableAutoMerge=true and not draft → fire the new typed
+  // helper without head-SHA guard (caller didn't supply one). Result is
+  // logged but not propagated — same shape as before.
   if (enableAutoMerge && !draft) {
-    try {
-      await exec('gh', ['pr', 'merge', '--auto', '--squash', url], { cwd: worktreePath })
-    } catch (err) {
-      const stderr =
-        (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''
+    const result = await enableAutoMergeOnPr({ prUrl: url, cwd: worktreePath })
+    if (!result.ok) {
       console.warn(
-        `[createPullRequest] auto-merge enable failed for ${url}: ${stderr.slice(0, 200)}`,
+        `[createPullRequest] auto-merge enable failed for ${url}: ${result.reason} ${result.stderr.slice(0, 200)}`,
       )
     }
   }
 
   return { url }
+}
+
+export type AutoMergeFailReason =
+  | 'CHECKS_FAILED'
+  | 'MERGE_CONFLICT'
+  | 'GH_AUTH_ERROR'
+  | 'AUTO_MERGE_NOT_ALLOWED'
+  | 'UNKNOWN'
+
+export type EnableAutoMergeResult =
+  | { ok: true }
+  | { ok: false; reason: AutoMergeFailReason; stderr: string }
+
+function classifyAutoMergeError(stderr: string): AutoMergeFailReason {
+  if (/conflict|not in mergeable state|dirty/i.test(stderr)) return 'MERGE_CONFLICT'
+  if (/checks? failed|status check|required check/i.test(stderr)) return 'CHECKS_FAILED'
+  if (/authentication|HTTP 401|HTTP 403|permission|gh auth/i.test(stderr)) return 'GH_AUTH_ERROR'
+  if (/auto-?merge.*not.*allowed|auto-?merge.*disabled/i.test(stderr)) return 'AUTO_MERGE_NOT_ALLOWED'
+  return 'UNKNOWN'
+}
+
+/**
+ * Enable auto-merge (squash) on a PR with an optional head-SHA guard.
+ *
+ * PBI-47 (P0): when `expectedHeadSha` is provided we pass `--match-head-commit`
+ * so GitHub only activates auto-merge if the remote head still matches the
+ * SHA the caller observed. This prevents racing late pushes from another
+ * worker triggering a merge of a different commit set.
+ */
+export async function enableAutoMergeOnPr(opts: {
+  prUrl: string
+  expectedHeadSha?: string
+  cwd?: string
+}): Promise<EnableAutoMergeResult> {
+  try {
+    const args = ['pr', 'merge', '--auto', '--squash']
+    if (opts.expectedHeadSha) args.push('--match-head-commit', opts.expectedHeadSha)
+    args.push(opts.prUrl)
+    await exec('gh', args, opts.cwd ? { cwd: opts.cwd } : {})
+    return { ok: true }
+  } catch (err) {
+    const stderr =
+      (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''
+    return { ok: false, reason: classifyAutoMergeError(stderr), stderr: stderr.slice(0, 500) }
+  }
 }
 
 // Zet een draft-PR over naar "ready for review". Gebruikt bij sprint-mode
@@ -163,8 +208,7 @@ export async function createRevertPullRequest(opts: {
     pbiCode,
   } = opts
 
-  const worktreeDir =
-    process.env.SCRUM4ME_AGENT_WORKTREE_DIR ?? path.join(os.homedir(), '.scrum4me-agent-worktrees')
+  const worktreeDir = getWorktreeRoot()
   const wtPath = path.join(worktreeDir, `revert-${jobId}`)
   const revertBranch = `revert/${originalBranch}-${jobId.slice(-8)}`
 

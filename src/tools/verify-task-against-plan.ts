@@ -15,8 +15,15 @@ const inputSchema = z.object({
   worktree_path: z.string().min(1),
 })
 
-export async function getDiffInWorktree(worktreePath: string): Promise<string> {
-  const { stdout } = await exec('git', ['diff', 'origin/main...HEAD'], { cwd: worktreePath })
+export async function getDiffInWorktree(
+  worktreePath: string,
+  baseSha?: string,
+): Promise<string> {
+  // PBI-47 (P0): when base_sha is provided, diff against the per-job base
+  // captured at claim-time so verify only sees the current task's changes.
+  // Falls back to origin/main only for legacy callers without base_sha.
+  const range = baseSha ? `${baseSha}...HEAD` : 'origin/main...HEAD'
+  const { stdout } = await exec('git', ['diff', range], { cwd: worktreePath })
   return stdout
 }
 
@@ -58,7 +65,7 @@ export function registerVerifyTaskAgainstPlanTool(server: McpServer) {
               where: { status: { in: ['CLAIMED', 'RUNNING'] } },
               orderBy: { created_at: 'desc' },
               take: 1,
-              select: { id: true, plan_snapshot: true },
+              select: { id: true, plan_snapshot: true, base_sha: true },
             },
           },
         })
@@ -67,9 +74,19 @@ export function registerVerifyTaskAgainstPlanTool(server: McpServer) {
 
         const activeJob = task.claude_jobs[0] ?? null
 
+        // PBI-47 (P0): require base_sha so diff is scoped to this job's work,
+        // not the full origin/main...HEAD which would include sibling commits
+        // on a reused story/sprint branch.
+        if (activeJob && !activeJob.base_sha) {
+          return toolError(
+            'MISSING_BASE_SHA: This claim has no base_sha. '
+              + 'Re-claim the task (cancel + wait_for_job) so a fresh base_sha is captured.',
+          )
+        }
+
         let diff: string
         try {
-          diff = await getDiffInWorktree(worktree_path)
+          diff = await getDiffInWorktree(worktree_path, activeJob?.base_sha ?? undefined)
         } catch (err) {
           return toolError(
             `git diff failed in worktree (${worktree_path}): ${(err as Error).message ?? 'unknown error'}`,
