@@ -247,29 +247,47 @@ export async function tryClaimJob(
   tokenId: string,
   productId?: string,
 ): Promise<string | null> {
-  // Atomic claim in a single transaction — also captures plan_snapshot from task
+  // Atomic claim in a single transaction — also captures plan_snapshot from task.
+  //
+  // Sprint-flow filter (PBI-46):
+  //   Idea-jobs (task_id IS NULL) blijven onafhankelijk claimable.
+  //   Task-jobs zijn alleen claimable wanneer ze aan een actieve SprintRun
+  //   hangen (status QUEUED of RUNNING). Legacy task-jobs zonder sprint_run_id
+  //   en jobs in PAUSED/FAILED/CANCELLED/DONE SprintRuns worden overgeslagen.
+  //   Bij eerste claim van een nog QUEUED SprintRun → status RUNNING.
   const rows = await prisma.$transaction(async (tx) => {
-    // SELECT FOR UPDATE OF claude_jobs SKIP LOCKED — LEFT JOIN tasks zodat
-    // idea-jobs (task_id IS NULL, M12) ook gevonden worden. plan_snapshot
-    // blijft dan NULL/'' voor idea-jobs — niet nodig (geen verify-flow).
     const found = productId
-      ? await tx.$queryRaw<Array<{ id: string; implementation_plan: string | null }>>`
-          SELECT cj.id, t.implementation_plan
+      ? await tx.$queryRaw<
+          Array<{ id: string; implementation_plan: string | null; sprint_run_id: string | null }>
+        >`
+          SELECT cj.id, t.implementation_plan, cj.sprint_run_id
           FROM claude_jobs cj
           LEFT JOIN tasks t ON t.id = cj.task_id
+          LEFT JOIN sprint_runs sr ON sr.id = cj.sprint_run_id
           WHERE cj.user_id = ${userId}
             AND cj.product_id = ${productId}
             AND cj.status = 'QUEUED'
+            AND (
+              cj.task_id IS NULL
+              OR (cj.sprint_run_id IS NOT NULL AND sr.status IN ('QUEUED', 'RUNNING'))
+            )
           ORDER BY cj.created_at ASC
           LIMIT 1
           FOR UPDATE OF cj SKIP LOCKED
         `
-      : await tx.$queryRaw<Array<{ id: string; implementation_plan: string | null }>>`
-          SELECT cj.id, t.implementation_plan
+      : await tx.$queryRaw<
+          Array<{ id: string; implementation_plan: string | null; sprint_run_id: string | null }>
+        >`
+          SELECT cj.id, t.implementation_plan, cj.sprint_run_id
           FROM claude_jobs cj
           LEFT JOIN tasks t ON t.id = cj.task_id
+          LEFT JOIN sprint_runs sr ON sr.id = cj.sprint_run_id
           WHERE cj.user_id = ${userId}
             AND cj.status = 'QUEUED'
+            AND (
+              cj.task_id IS NULL
+              OR (cj.sprint_run_id IS NOT NULL AND sr.status IN ('QUEUED', 'RUNNING'))
+            )
           ORDER BY cj.created_at ASC
           LIMIT 1
           FOR UPDATE OF cj SKIP LOCKED
@@ -279,6 +297,7 @@ export async function tryClaimJob(
 
     const jobId = found[0].id
     const snapshot = found[0].implementation_plan ?? ''
+    const sprintRunId = found[0].sprint_run_id
     await tx.$executeRaw`
       UPDATE claude_jobs
       SET status = 'CLAIMED',
@@ -287,6 +306,19 @@ export async function tryClaimJob(
           plan_snapshot = ${snapshot}
       WHERE id = ${jobId}
     `
+
+    // SprintRun QUEUED → RUNNING bij eerste claim, in dezelfde tx zodat
+    // concurrent claims dezelfde overgang niet dubbel doen (UPDATE skipt
+    // rows die al RUNNING zijn).
+    if (sprintRunId) {
+      await tx.$executeRaw`
+        UPDATE sprint_runs
+        SET status = 'RUNNING',
+            started_at = COALESCE(started_at, NOW()),
+            updated_at = NOW()
+        WHERE id = ${sprintRunId} AND status = 'QUEUED'
+      `
+    }
     return [{ id: jobId }]
   })
 

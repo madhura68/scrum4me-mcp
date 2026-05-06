@@ -99,19 +99,21 @@ export function registerGetClaudeContextTool(server: McpServer) {
           }
         }
 
-        const openTodos = await prisma.todo.findMany({
+        const openIdeas = await prisma.idea.findMany({
           where: {
             user_id: auth.userId,
-            done: false,
             archived: false,
+            status: { not: 'PLANNED' },
             OR: [{ product_id: product_id }, { product_id: null }],
           },
           orderBy: { created_at: 'asc' },
           take: 50,
           select: {
             id: true,
+            code: true,
             title: true,
             description: true,
+            status: true,
             created_at: true,
           },
         })
@@ -120,7 +122,7 @@ export function registerGetClaudeContextTool(server: McpServer) {
           product,
           active_sprint: activeSprint,
           next_story: nextStory,
-          open_todos: openTodos,
+          open_ideas: openIdeas,
         })
       }),
   )

@@ -18,11 +18,13 @@ enum StoryStatus {
   OPEN
   IN_SPRINT
   DONE
+  FAILED
 }
 
 enum PbiStatus {
   READY
   BLOCKED
+  FAILED
   DONE
 }
 
@@ -54,6 +56,7 @@ enum TaskStatus {
   IN_PROGRESS
   REVIEW
   DONE
+  FAILED
 }
 
 enum LogType {
@@ -70,6 +73,21 @@ enum TestStatus {
 enum SprintStatus {
   ACTIVE
   COMPLETED
+  FAILED
+}
+
+enum SprintRunStatus {
+  QUEUED
+  RUNNING
+  PAUSED
+  DONE
+  FAILED
+  CANCELLED
+}
+
+enum PrStrategy {
+  SPRINT
+  STORY
 }
 
 enum IdeaStatus {
@@ -105,33 +123,33 @@ enum UserQuestionStatus {
 }
 
 model User {
-  id                 String           @id @default(cuid())
-  username           String           @unique
-  email              String?          @unique
-  password_hash      String
-  is_demo            Boolean          @default(false)
-  bio                String?          @db.VarChar(160)
-  bio_detail         String?          @db.VarChar(2000)
-  must_reset_password Boolean         @default(false)
-  avatar_data        Bytes?
-  active_product_id  String?
-  active_product     Product?         @relation("UserActiveProduct", fields: [active_product_id], references: [id], onDelete: SetNull)
-  idea_code_counter  Int              @default(0)
-  min_quota_pct      Int              @default(20)
-  created_at         DateTime         @default(now())
-  updated_at         DateTime         @updatedAt
-  roles              UserRole[]
-  api_tokens         ApiToken[]
-  products           Product[]
-  todos              Todo[]
-  ideas              Idea[]
-  product_members    ProductMember[]
-  assigned_stories   Story[]          @relation("StoryAssignee")
-  login_pairings     LoginPairing[]
-  asked_questions    ClaudeQuestion[] @relation("ClaudeQuestionAsker")
-  answered_questions ClaudeQuestion[] @relation("ClaudeQuestionAnswerer")
-  claude_jobs        ClaudeJob[]
-  claude_workers     ClaudeWorker[]
+  id                  String           @id @default(cuid())
+  username            String           @unique
+  email               String?          @unique
+  password_hash       String
+  is_demo             Boolean          @default(false)
+  bio                 String?          @db.VarChar(160)
+  bio_detail          String?          @db.VarChar(2000)
+  must_reset_password Boolean          @default(false)
+  avatar_data         Bytes?
+  active_product_id   String?
+  active_product      Product?         @relation("UserActiveProduct", fields: [active_product_id], references: [id], onDelete: SetNull)
+  idea_code_counter   Int              @default(0)
+  min_quota_pct       Int              @default(20)
+  created_at          DateTime         @default(now())
+  updated_at          DateTime         @updatedAt
+  roles               UserRole[]
+  api_tokens          ApiToken[]
+  products            Product[]
+  ideas               Idea[]
+  product_members     ProductMember[]
+  assigned_stories    Story[]          @relation("StoryAssignee")
+  login_pairings      LoginPairing[]
+  asked_questions     ClaudeQuestion[] @relation("ClaudeQuestionAsker")
+  answered_questions  ClaudeQuestion[] @relation("ClaudeQuestionAnswerer")
+  claude_jobs         ClaudeJob[]
+  claude_workers      ClaudeWorker[]
+  started_sprint_runs SprintRun[]      @relation("SprintRunStartedBy")
 
   @@index([active_product_id])
   @@map("users")
@@ -172,6 +190,7 @@ model Product {
   repo_url           String?
   definition_of_done String
   auto_pr            Boolean          @default(false)
+  pr_strategy        PrStrategy       @default(SPRINT)
   archived           Boolean          @default(false)
   created_at         DateTime         @default(now())
   updated_at         DateTime         @updatedAt
@@ -179,7 +198,6 @@ model Product {
   sprints            Sprint[]
   stories            Story[]
   tasks              Task[]
-  todos              Todo[]
   members            ProductMember[]
   active_for_users   User[]           @relation("UserActiveProduct")
   claude_questions   ClaudeQuestion[]
@@ -275,9 +293,34 @@ model Sprint {
   completed_at DateTime?
   stories      Story[]
   tasks        Task[]
+  sprint_runs  SprintRun[]
 
   @@index([product_id, status])
   @@map("sprints")
+}
+
+model SprintRun {
+  id             String          @id @default(cuid())
+  sprint         Sprint          @relation(fields: [sprint_id], references: [id], onDelete: Cascade)
+  sprint_id      String
+  started_by     User            @relation("SprintRunStartedBy", fields: [started_by_id], references: [id])
+  started_by_id  String
+  status         SprintRunStatus @default(QUEUED)
+  pr_strategy    PrStrategy
+  branch         String?
+  pr_url         String?
+  started_at     DateTime?
+  finished_at    DateTime?
+  failure_reason String?
+  failed_task    Task?           @relation("SprintRunFailedTask", fields: [failed_task_id], references: [id], onDelete: SetNull)
+  failed_task_id String?
+  created_at     DateTime        @default(now())
+  updated_at     DateTime        @updatedAt
+  jobs           ClaudeJob[]
+
+  @@index([sprint_id, status])
+  @@index([started_by_id, status])
+  @@map("sprint_runs")
 }
 
 model Task {
@@ -306,6 +349,7 @@ model Task {
   updated_at          DateTime         @updatedAt
   claude_questions    ClaudeQuestion[]
   claude_jobs         ClaudeJob[]
+  sprint_run_failures SprintRun[]      @relation("SprintRunFailedTask")
 
   @@unique([product_id, code])
   @@index([story_id, priority, sort_order])
@@ -324,6 +368,8 @@ model ClaudeJob {
   task_id             String?
   idea                Idea?           @relation(fields: [idea_id], references: [id], onDelete: Cascade)
   idea_id             String?
+  sprint_run          SprintRun?      @relation(fields: [sprint_run_id], references: [id], onDelete: SetNull)
+  sprint_run_id       String?
   kind                ClaudeJobKind   @default(TASK_IMPLEMENTATION)
   status              ClaudeJobStatus @default(QUEUED)
   claimed_by_token    ApiToken?       @relation(fields: [claimed_by_token_id], references: [id], onDelete: SetNull)
@@ -350,31 +396,32 @@ model ClaudeJob {
   @@index([user_id, status])
   @@index([task_id, status])
   @@index([idea_id, status])
+  @@index([sprint_run_id, status])
   @@index([status, claimed_at])
   @@index([status, finished_at])
   @@map("claude_jobs")
 }
 
 model ModelPrice {
-  id                        String   @id @default(cuid())
-  model_id                  String   @unique
-  input_price_per_1m        Decimal  @db.Decimal(12, 6)
-  output_price_per_1m       Decimal  @db.Decimal(12, 6)
-  cache_read_price_per_1m   Decimal  @db.Decimal(12, 6)
-  cache_write_price_per_1m  Decimal  @db.Decimal(12, 6)
-  currency                  String   @default("USD")
-  created_at                DateTime @default(now())
-  updated_at                DateTime @updatedAt
+  id                       String   @id @default(cuid())
+  model_id                 String   @unique
+  input_price_per_1m       Decimal  @db.Decimal(12, 6)
+  output_price_per_1m      Decimal  @db.Decimal(12, 6)
+  cache_read_price_per_1m  Decimal  @db.Decimal(12, 6)
+  cache_write_price_per_1m Decimal  @db.Decimal(12, 6)
+  currency                 String   @default("USD")
+  created_at               DateTime @default(now())
+  updated_at               DateTime @updatedAt
 
   @@map("model_prices")
 }
 
 model ClaudeWorker {
-  id           String   @id @default(cuid())
-  user         User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  user_id      String
-  token        ApiToken @relation(fields: [token_id], references: [id], onDelete: Cascade)
-  token_id     String
+  id                  String    @id @default(cuid())
+  user                User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id             String
+  token               ApiToken  @relation(fields: [token_id], references: [id], onDelete: Cascade)
+  token_id            String
   product_id          String?
   started_at          DateTime  @default(now())
   last_seen_at        DateTime  @default(now())
@@ -397,24 +444,6 @@ model ProductMember {
   @@unique([product_id, user_id])
   @@index([user_id])
   @@map("product_members")
-}
-
-model Todo {
-  id          String   @id @default(cuid())
-  user        User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  user_id     String
-  product     Product? @relation(fields: [product_id], references: [id], onDelete: SetNull)
-  product_id  String?
-  title       String
-  description String?  @db.VarChar(2000)
-  done        Boolean  @default(false)
-  archived    Boolean  @default(false)
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
-
-  @@index([user_id, done, archived])
-  @@index([user_id, product_id])
-  @@map("todos")
 }
 
 model Idea {
@@ -453,8 +482,8 @@ model IdeaProduct {
   product_id String
   created_at DateTime @default(now())
 
-  idea       Idea     @relation(fields: [idea_id], references: [id], onDelete: Cascade)
-  product    Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  idea    Idea    @relation(fields: [idea_id], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [product_id], references: [id], onDelete: Cascade)
 
   @@unique([idea_id, product_id])
   @@index([product_id])
@@ -484,7 +513,7 @@ model UserQuestion {
   created_at DateTime           @default(now())
   updated_at DateTime           @updatedAt
 
-  idea       Idea               @relation(fields: [idea_id], references: [id], onDelete: Cascade)
+  idea Idea @relation(fields: [idea_id], references: [id], onDelete: Cascade)
 
   @@index([idea_id, status])
   @@index([user_id])

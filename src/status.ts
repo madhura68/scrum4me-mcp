@@ -5,6 +5,7 @@ const TASK_DB_TO_API = {
   IN_PROGRESS: 'in_progress',
   REVIEW: 'review',
   DONE: 'done',
+  FAILED: 'failed',
 } as const satisfies Record<TaskStatus, string>
 
 const TASK_API_TO_DB: Record<string, TaskStatus> = {
@@ -12,18 +13,21 @@ const TASK_API_TO_DB: Record<string, TaskStatus> = {
   in_progress: 'IN_PROGRESS',
   review: 'REVIEW',
   done: 'DONE',
+  failed: 'FAILED',
 }
 
 const STORY_DB_TO_API = {
   OPEN: 'open',
   IN_SPRINT: 'in_sprint',
   DONE: 'done',
+  FAILED: 'failed',
 } as const satisfies Record<StoryStatus, string>
 
 const STORY_API_TO_DB: Record<string, StoryStatus> = {
   open: 'OPEN',
   in_sprint: 'IN_SPRINT',
   done: 'DONE',
+  failed: 'FAILED',
 }
 
 export type TaskStatusApi = (typeof TASK_DB_TO_API)[TaskStatus]

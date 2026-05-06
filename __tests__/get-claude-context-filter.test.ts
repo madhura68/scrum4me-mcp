@@ -4,12 +4,12 @@ const {
   mockProductFindFirst,
   mockSprintFindFirst,
   mockStoryFindFirst,
-  mockTodoFindMany,
+  mockIdeaFindMany,
 } = vi.hoisted(() => ({
   mockProductFindFirst: vi.fn(),
   mockSprintFindFirst: vi.fn(),
   mockStoryFindFirst: vi.fn(),
-  mockTodoFindMany: vi.fn(),
+  mockIdeaFindMany: vi.fn(),
 }))
 
 vi.mock('../src/auth.js', () => ({
@@ -21,7 +21,7 @@ vi.mock('../src/prisma.js', () => ({
     product: { findFirst: mockProductFindFirst },
     sprint: { findFirst: mockSprintFindFirst },
     story: { findFirst: mockStoryFindFirst },
-    todo: { findMany: mockTodoFindMany },
+    idea: { findMany: mockIdeaFindMany },
   },
 }))
 
@@ -55,7 +55,7 @@ beforeEach(() => {
   })
   mockSprintFindFirst.mockResolvedValue({ id: 'sprint-1', sprint_goal: 'Goal', status: 'ACTIVE' })
   mockStoryFindFirst.mockResolvedValue(null)
-  mockTodoFindMany.mockResolvedValue([])
+  mockIdeaFindMany.mockResolvedValue([])
 })
 
 describe('get_claude_context safety-net filter', () => {

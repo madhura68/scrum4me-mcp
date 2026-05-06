@@ -124,3 +124,42 @@ describe('classifyDiffAgainstPlan — DIVERGENT (scope creep)', () => {
     expect(r.reasoning).toMatch(/extra/i)
   })
 })
+
+// Helper voor pure-delete diffs: +++ /dev/null betekent dat het bestand
+// volledig verwijderd is. Pad zit alleen nog in de "--- a/<path>" regel.
+function makeDeleteDiff(files: string[], linesPerFile = 5): string {
+  return files
+    .map(
+      (f) =>
+        `diff --git a/${f} b/${f}\ndeleted file mode 100644\n--- a/${f}\n+++ /dev/null\n` +
+        Array.from({ length: linesPerFile }, (_, i) => `-removed line ${i}`).join('\n'),
+    )
+    .join('\n')
+}
+
+describe('classifyDiffAgainstPlan — delete-only commits', () => {
+  it('herkent delete-only diff (geen +++ b/, wel --- a/) als ALIGNED bij matchend plan', () => {
+    const plan = 'Verwijder `src/old-helper.ts` — niet meer gebruikt.'
+    const diff = makeDeleteDiff(['src/old-helper.ts'])
+    const r = classifyDiffAgainstPlan({ diff, plan })
+    expect(r.result).toBe('ALIGNED')
+  })
+
+  it('retourneert PARTIAL wanneer plan meer paden noemt dan zijn verwijderd', () => {
+    const plan = 'Verwijder `src/a.ts` en `src/b.ts`.'
+    const diff = makeDeleteDiff(['src/a.ts'])
+    const r = classifyDiffAgainstPlan({ diff, plan })
+    expect(r.result).toBe('PARTIAL')
+  })
+
+  it('retourneert ALIGNED voor delete-only diff zonder plan-baseline', () => {
+    const diff = makeDeleteDiff(['src/old.ts'])
+    const r = classifyDiffAgainstPlan({ diff, plan: null })
+    expect(r.result).toBe('ALIGNED')
+  })
+
+  it('retourneert nog steeds EMPTY voor echt lege diff', () => {
+    const r = classifyDiffAgainstPlan({ diff: '', plan: 'Verwijder `src/x.ts`.' })
+    expect(r.result).toBe('EMPTY')
+  })
+})
