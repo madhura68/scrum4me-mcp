@@ -4,12 +4,13 @@ vi.mock('../src/prisma.js', () => ({
   prisma: {
     product: { findUnique: vi.fn() },
     task: { findUnique: vi.fn() },
-    claudeJob: { findFirst: vi.fn() },
+    claudeJob: { findFirst: vi.fn(), findUnique: vi.fn() },
   },
 }))
 
 vi.mock('../src/git/pr.js', () => ({
   createPullRequest: vi.fn(),
+  markPullRequestReady: vi.fn(),
 }))
 
 import { prisma } from '../src/prisma.js'
@@ -19,7 +20,10 @@ import { maybeCreateAutoPr } from '../src/tools/update-job-status.js'
 const mockPrisma = prisma as unknown as {
   product: { findUnique: ReturnType<typeof vi.fn> }
   task: { findUnique: ReturnType<typeof vi.fn> }
-  claudeJob: { findFirst: ReturnType<typeof vi.fn> }
+  claudeJob: {
+    findFirst: ReturnType<typeof vi.fn>
+    findUnique: ReturnType<typeof vi.fn>
+  }
 }
 const mockCreatePr = createPullRequest as ReturnType<typeof vi.fn>
 
@@ -40,6 +44,8 @@ beforeEach(() => {
     story: { id: 'story-1', code: 'SCRUM-42', title: 'Story title' },
   })
   mockPrisma.claudeJob.findFirst.mockResolvedValue(null) // no sibling PR by default
+  // Default: legacy job zonder sprint_run (STORY-mode pad).
+  mockPrisma.claudeJob.findUnique.mockResolvedValue({ sprint_run_id: null, sprint_run: null })
   mockCreatePr.mockResolvedValue({ url: 'https://github.com/org/repo/pull/99' })
 })
 
@@ -78,6 +84,41 @@ describe('maybeCreateAutoPr', () => {
     expect(mockCreatePr).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'Story title' }),
     )
+  })
+
+  it('SPRINT-mode: maakt een draft-PR aan met sprint-titel, geen auto-merge', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      sprint_run_id: 'run-1',
+      sprint_run: {
+        id: 'run-1',
+        pr_strategy: 'SPRINT',
+        sprint: { sprint_goal: 'Cascade-flow live' },
+      },
+    })
+
+    const url = await maybeCreateAutoPr(BASE_OPTS)
+
+    expect(url).toBe('https://github.com/org/repo/pull/99')
+    expect(mockCreatePr).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Sprint: Cascade-flow live',
+        draft: true,
+        enableAutoMerge: false,
+      }),
+    )
+  })
+
+  it('SPRINT-mode: hergebruikt sibling-PR binnen dezelfde SprintRun', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      sprint_run_id: 'run-1',
+      sprint_run: { id: 'run-1', pr_strategy: 'SPRINT', sprint: { sprint_goal: 'Goal' } },
+    })
+    mockPrisma.claudeJob.findFirst.mockResolvedValue({ pr_url: 'https://github.com/org/repo/pull/55' })
+
+    const url = await maybeCreateAutoPr(BASE_OPTS)
+
+    expect(url).toBe('https://github.com/org/repo/pull/55')
+    expect(mockCreatePr).not.toHaveBeenCalled()
   })
 
   it('returns null and does not throw when gh fails', async () => {

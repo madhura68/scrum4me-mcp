@@ -111,6 +111,35 @@ export async function resolveBranchForJob(
   jobId: string,
   storyId: string,
 ): Promise<{ branchName: string; reused: boolean }> {
+  // Sprint-flow (PBI-46): als deze job aan een SprintRun hangt, kies de branch
+  // op basis van Product.pr_strategy:
+  //   SPRINT → feat/sprint-<sprint_run_id-suffix> (één branch voor hele run)
+  //   STORY  → feat/story-<story_id-suffix>      (één branch per story; sibling-tasks delen 'm)
+  // Voor legacy task-jobs zonder sprint_run_id valt de logica terug op het
+  // bestaande feat/story-<storyId>-pad.
+  const job = await prisma.claudeJob.findUnique({
+    where: { id: jobId },
+    select: {
+      sprint_run_id: true,
+      sprint_run: { select: { id: true, pr_strategy: true } },
+    },
+  })
+
+  if (job?.sprint_run && job.sprint_run.pr_strategy === 'SPRINT') {
+    const branchName = `feat/sprint-${job.sprint_run.id.slice(-8)}`
+    const sibling = await prisma.claudeJob.findFirst({
+      where: {
+        sprint_run_id: job.sprint_run_id,
+        branch: branchName,
+        id: { not: jobId },
+      },
+      orderBy: { created_at: 'asc' },
+      select: { branch: true },
+    })
+    return { branchName, reused: sibling !== null }
+  }
+
+  // STORY-mode (default) of legacy: branch per story
   const sibling = await prisma.claudeJob.findFirst({
     where: {
       task: { story_id: storyId },

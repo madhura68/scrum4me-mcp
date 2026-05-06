@@ -10,16 +10,18 @@ export async function createPullRequest(opts: {
   branchName: string
   title: string
   body: string
+  /** Open as draft PR (mens moet 'm later ready-for-review zetten). Default false. */
+  draft?: boolean
+  /** Schakel auto-merge (squash) in. Default true. Voor sprint-mode: false. */
+  enableAutoMerge?: boolean
 }): Promise<{ url: string } | { error: string }> {
-  const { worktreePath, branchName, title, body } = opts
+  const { worktreePath, branchName, title, body, draft = false, enableAutoMerge = true } = opts
 
   let url: string
   try {
-    const { stdout } = await exec(
-      'gh',
-      ['pr', 'create', '--title', title, '--body', body, '--head', branchName],
-      { cwd: worktreePath },
-    )
+    const args = ['pr', 'create', '--title', title, '--body', body, '--head', branchName]
+    if (draft) args.push('--draft')
+    const { stdout } = await exec('gh', args, { cwd: worktreePath })
     // gh prints the PR URL as the last non-empty line
     const lines = stdout.trim().split('\n').filter(Boolean)
     url = lines[lines.length - 1]?.trim() ?? ''
@@ -43,17 +45,39 @@ export async function createPullRequest(opts: {
   // gh exits non-zero and we just log. The PR is still valid; auto-merge can
   // be turned on manually. We do NOT fail the whole createPullRequest call —
   // the URL was successfully obtained which is the contract this returns.
-  try {
-    await exec('gh', ['pr', 'merge', '--auto', '--squash', url], { cwd: worktreePath })
-  } catch (err) {
-    const stderr =
-      (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''
-    console.warn(
-      `[createPullRequest] auto-merge enable failed for ${url}: ${stderr.slice(0, 200)}`,
-    )
+  // Bij draft + sprint-flow slaan we dit over: de PR moet eerst handmatig of
+  // via markPullRequestReady ready-for-review worden gezet.
+  if (enableAutoMerge && !draft) {
+    try {
+      await exec('gh', ['pr', 'merge', '--auto', '--squash', url], { cwd: worktreePath })
+    } catch (err) {
+      const stderr =
+        (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''
+      console.warn(
+        `[createPullRequest] auto-merge enable failed for ${url}: ${stderr.slice(0, 200)}`,
+      )
+    }
   }
 
   return { url }
+}
+
+// Zet een draft-PR over naar "ready for review". Gebruikt bij sprint-mode
+// wanneer alle stories in de SprintRun DONE zijn — mens reviewt en mergt zelf.
+export async function markPullRequestReady(opts: {
+  prUrl: string
+  cwd?: string
+}): Promise<{ ok: true } | { error: string }> {
+  try {
+    await exec('gh', ['pr', 'ready', opts.prUrl], opts.cwd ? { cwd: opts.cwd } : {})
+    return { ok: true }
+  } catch (err) {
+    const msg = (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''
+    // gh-CLI fout "Pull request is not in draft state" is benign wanneer de
+    // PR al ready was (bv. handmatig ready gezet of een tweede call).
+    if (/not in draft state|already in ready/i.test(msg)) return { ok: true }
+    return { error: `gh pr ready failed: ${msg.slice(0, 300)}` }
+  }
 }
 
 export type PrState = 'OPEN' | 'MERGED' | 'CLOSED'

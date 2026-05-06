@@ -6,7 +6,7 @@ import * as fs from 'node:fs/promises'
 vi.mock('../src/prisma.js', () => ({
   prisma: {
     $executeRaw: vi.fn(),
-    claudeJob: { findFirst: vi.fn() },
+    claudeJob: { findFirst: vi.fn(), findUnique: vi.fn() },
     product: { findUnique: vi.fn() },
   },
 }))
@@ -21,13 +21,15 @@ import { resolveRepoRoot, rollbackClaim, attachWorktreeToJob } from '../src/tool
 
 const mockPrisma = prisma as unknown as {
   $executeRaw: ReturnType<typeof vi.fn>
-  claudeJob: { findFirst: ReturnType<typeof vi.fn> }
+  claudeJob: { findFirst: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn> }
   product: { findUnique: ReturnType<typeof vi.fn> }
 }
 const mockCreateWorktree = createWorktreeForJob as ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Default: legacy job zonder sprint_run (oude flow).
+  mockPrisma.claudeJob.findUnique.mockResolvedValue({ sprint_run_id: null, sprint_run: null })
 })
 
 describe('resolveRepoRoot', () => {
