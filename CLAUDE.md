@@ -69,12 +69,12 @@ Run `cleanup_my_worktrees` (no arguments) to scan `~/.scrum4me-agent-worktrees/`
 
 ## Worker presence
 
-Server-startup registers a `ClaudeWorker` record + starts a 5 s heartbeat; SIGTERM/SIGINT cleans it up. The Scrum4Me NavBar counts active workers via `last_seen_at < now() - 15s`.
+Server-startup registers a `ClaudeWorker` record + starts a 10 s heartbeat; SIGTERM/SIGINT cleans it up. The Scrum4Me NavBar counts active workers via `last_seen_at < now() - 15s` — at 10 s interval one missed tick + jitter can flicker the indicator; bump that threshold in Scrum4Me to ≥ 25 s if needed.
 
 | File | Purpose |
 |---|---|
 | `src/presence/worker.ts` | `registerWorker` (upsert + pg_notify worker_connected) + `unregisterWorker` |
-| `src/presence/heartbeat.ts` | `startHeartbeat` — 5 s interval, self-heals by re-registering when record disappears |
+| `src/presence/heartbeat.ts` | `startHeartbeat` — 10 s interval, self-heals by re-registering when record disappears |
 | `src/presence/shutdown.ts` | `registerShutdownHandlers` — SIGTERM/SIGINT → stop heartbeat + unregister |
 | `src/index.ts` | Bootstrap: calls `getAuth` → `registerWorker` → `startHeartbeat` → `registerShutdownHandlers` |
 

@@ -26,7 +26,7 @@ export function startHeartbeat(opts: {
     } catch {
       // non-fatal — next tick retries
     }
-  }, opts.intervalMs ?? 5_000)
+  }, opts.intervalMs ?? 10_000)
 
   return { stop: () => clearInterval(timer) }
 }
