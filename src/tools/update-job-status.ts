@@ -11,11 +11,30 @@ import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { toolJson, toolError, withToolErrors } from '../errors.js'
 import { removeWorktreeForJob } from '../git/worktree.js'
+import { getWorktreeRoot } from '../git/worktree-paths.js'
+import { releaseLocksOnTerminal } from '../git/job-locks.js'
 import { resolveRepoRoot } from './wait-for-job.js'
 import { pushBranchForJob } from '../git/push.js'
 import { createPullRequest, markPullRequestReady } from '../git/pr.js'
 import { cancelPbiOnFailure } from '../cancel/pbi-cascade.js'
 import { propagateStatusUpwards } from '../lib/tasks-status-update.js'
+import { transition as prFlowTransition } from '../flow/pr-flow.js'
+import { transition as sprintRunTransition } from '../flow/sprint-run.js'
+import { executeEffects } from '../flow/effects.js'
+import { execFile as execFileCb } from 'node:child_process'
+import { promisify } from 'node:util'
+
+const execGh = promisify(execFileCb)
+
+async function fetchConflictFiles(prUrl: string): Promise<string[]> {
+  try {
+    const { stdout } = await execGh('gh', ['pr', 'view', prUrl, '--json', 'files'])
+    const parsed = JSON.parse(stdout) as { files?: Array<{ path: string }> }
+    return parsed.files?.map((f) => f.path) ?? []
+  } catch {
+    return []
+  }
+}
 
 const inputSchema = z.object({
   job_id: z.string().min(1),
@@ -85,26 +104,37 @@ export type DoneUpdatePlan = {
   branchOverride: string | undefined
   errorOverride: string | undefined
   skipWorktreeCleanup: boolean
+  headSha: string | undefined
 }
 
 export async function prepareDoneUpdate(
   jobId: string,
   branch: string | undefined,
 ): Promise<DoneUpdatePlan> {
-  const worktreeDir =
-    process.env.SCRUM4ME_AGENT_WORKTREE_DIR ?? path.join(os.homedir(), '.scrum4me-agent-worktrees')
+  const worktreeDir = getWorktreeRoot()
   const worktreePath = path.join(worktreeDir, jobId)
   const branchName = branch ?? `feat/job-${jobId.slice(-8)}`
 
   const pushResult = await pushBranchForJob({ worktreePath, branchName })
 
   if (pushResult.pushed) {
+    let headSha: string | undefined
+    try {
+      const { execFile } = await import('node:child_process')
+      const { promisify } = await import('node:util')
+      const exec = promisify(execFile)
+      const { stdout } = await exec('git', ['rev-parse', 'HEAD'], { cwd: worktreePath })
+      headSha = stdout.trim()
+    } catch (err) {
+      console.warn(`[prepareDoneUpdate] failed to resolve HEAD sha for job ${jobId}:`, err)
+    }
     return {
       dbStatus: 'DONE',
       pushedAt: new Date(),
       branchOverride: branchName,
       errorOverride: undefined,
       skipWorktreeCleanup: false,
+      headSha,
     }
   }
 
@@ -115,6 +145,7 @@ export async function prepareDoneUpdate(
       branchOverride: undefined,
       errorOverride: undefined,
       skipWorktreeCleanup: false,
+      headSha: undefined,
     }
   }
 
@@ -126,6 +157,7 @@ export async function prepareDoneUpdate(
     branchOverride: undefined,
     errorOverride: `push failed (${pushResult.reason}): ${snippet}`,
     skipWorktreeCleanup: true,
+    headSha: undefined,
   }
 }
 
@@ -376,6 +408,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         let branchToWrite = branch
         let errorToWrite = error
         let skipWorktreeCleanup = false
+        let headShaToWrite: string | undefined
 
         if (status === 'done') {
           // M12: idea-jobs hebben geen task/plan_snapshot/branch — skip de
@@ -401,6 +434,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             if (plan.branchOverride !== undefined) branchToWrite = plan.branchOverride
             if (plan.errorOverride !== undefined) errorToWrite = plan.errorOverride
             skipWorktreeCleanup = plan.skipWorktreeCleanup
+            headShaToWrite = plan.headSha
           }
         }
 
@@ -414,9 +448,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           job.kind === 'TASK_IMPLEMENTATION' &&
           job.task_id
         ) {
-          const worktreeDir =
-            process.env.SCRUM4ME_AGENT_WORKTREE_DIR ??
-            path.join(os.homedir(), '.scrum4me-agent-worktrees')
+          const worktreeDir = getWorktreeRoot()
           prUrl = await maybeCreateAutoPr({
             jobId: job_id,
             productId: job.product_id,
@@ -443,6 +475,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             ...(summary !== undefined ? { summary } : {}),
             ...(errorToWrite !== undefined ? { error: errorToWrite } : {}),
             ...(prUrl !== null ? { pr_url: prUrl } : {}),
+            ...(headShaToWrite !== undefined ? { head_sha: headShaToWrite } : {}),
             ...(model_id !== undefined ? { model_id } : {}),
             ...(input_tokens !== undefined ? { input_tokens } : {}),
             ...(output_tokens !== undefined ? { output_tokens } : {}),
@@ -468,6 +501,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         // sibling-cancel binnen dezelfde SprintRun af bij FAILED.
         // Idea-jobs hebben geen task_id en worden hier overgeslagen.
         let sprintRunBecameDone = false
+        let storyBecameDone = false
         if (
           (actualStatus === 'done' || actualStatus === 'failed') &&
           job.kind === 'TASK_IMPLEMENTATION' &&
@@ -479,11 +513,78 @@ export function registerUpdateJobStatusTool(server: McpServer) {
               actualStatus === 'done' ? 'DONE' : 'FAILED',
             )
             sprintRunBecameDone = actualStatus === 'done' && propagation.sprintRunChanged
+            storyBecameDone = actualStatus === 'done' && propagation.storyChanged
           } catch (err) {
             console.warn(
               `[update_job_status] propagateStatusUpwards error for task ${job.task_id}:`,
               err,
             )
+          }
+        }
+
+        // PBI-47 (P0): STORY-mode auto-merge timing fix.
+        // Only enable auto-merge when this DONE was the *last* task of a STORY
+        // (story.status flipped to DONE) and pr_strategy === STORY. The
+        // pr-flow transition emits ENABLE_AUTO_MERGE with the head_sha guard.
+        if (
+          storyBecameDone &&
+          updated.pr_url &&
+          headShaToWrite &&
+          job.kind === 'TASK_IMPLEMENTATION'
+        ) {
+          const storyCtx = await prisma.claudeJob.findUnique({
+            where: { id: job_id },
+            select: {
+              task: { select: { story: { select: { status: true } } } },
+              sprint_run: { select: { pr_strategy: true } },
+            },
+          })
+          if (
+            storyCtx?.sprint_run?.pr_strategy === 'STORY'
+            && storyCtx.task?.story.status === 'DONE'
+          ) {
+            const result = prFlowTransition(
+              { kind: 'pr_opened', strategy: 'STORY', prUrl: updated.pr_url },
+              {
+                type: 'STORY_COMPLETED',
+                storyId: '',
+                headSha: headShaToWrite,
+              },
+            )
+            const outcomes = await executeEffects(result.effects)
+            // PBI-47 (C2): route MERGE_CONFLICT to sprint-run flow → PAUSED.
+            // Other reasons (CHECKS_FAILED, GH_AUTH_ERROR, AUTO_MERGE_NOT_ALLOWED, UNKNOWN)
+            // remain warnings; CHECKS_FAILED is already covered by the task-FAIL cascade.
+            for (const o of outcomes) {
+              if (o.effect === 'ENABLE_AUTO_MERGE' && !o.ok) {
+                console.warn(
+                  `[update_job_status] auto-merge fail for ${updated.pr_url}: ${o.reason} ${o.stderr.slice(0, 200)}`,
+                )
+                if (o.reason === 'MERGE_CONFLICT') {
+                  const sprintRunId = await prisma.claudeJob
+                    .findUnique({
+                      where: { id: job_id },
+                      select: { sprint_run_id: true },
+                    })
+                    .then((j) => j?.sprint_run_id)
+                  if (sprintRunId) {
+                    const conflictFiles = await fetchConflictFiles(updated.pr_url)
+                    const conflictResult = sprintRunTransition(
+                      { kind: 'running', sprintRunId },
+                      {
+                        type: 'MERGE_CONFLICT',
+                        prUrl: updated.pr_url,
+                        prHeadSha: headShaToWrite ?? '',
+                        conflictFiles,
+                        resumeInstructions:
+                          'Resolve the conflict on this branch, push, then resume the sprint via the UI.',
+                      },
+                    )
+                    await executeEffects(conflictResult.effects)
+                  }
+                }
+              }
+            }
           }
         }
 
@@ -579,6 +680,12 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         // already-merged ones). Idempotent + non-blocking — never throws.
         if (actualStatus === 'failed' && job.kind === 'TASK_IMPLEMENTATION' && job.task_id) {
           await cancelPbiOnFailure(job_id)
+        }
+
+        // PBI-9: release product-worktree locks on terminal transitions.
+        // No-op for jobs without registered locks (i.e. TASK_IMPLEMENTATION).
+        if (actualStatus === 'done' || actualStatus === 'failed') {
+          await releaseLocksOnTerminal(job_id)
         }
 
         const queueCount = await prisma.claudeJob.count({

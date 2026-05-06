@@ -2,7 +2,6 @@ generator client {
   provider = "prisma-client-js"
 }
 
-
 datasource db {
   provider = "postgresql"
 }
@@ -314,6 +313,7 @@ model SprintRun {
   failure_reason String?
   failed_task    Task?           @relation("SprintRunFailedTask", fields: [failed_task_id], references: [id], onDelete: SetNull)
   failed_task_id String?
+  pause_context  Json?
   created_at     DateTime        @default(now())
   updated_at     DateTime        @updatedAt
   jobs           ClaudeJob[]
@@ -385,6 +385,8 @@ model ClaudeJob {
   cache_read_tokens   Int?
   cache_write_tokens  Int?
   plan_snapshot       String?
+  base_sha            String?
+  head_sha            String?
   branch              String?
   pr_url              String?
   summary             String?

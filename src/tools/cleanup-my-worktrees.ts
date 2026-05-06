@@ -1,12 +1,11 @@
 import { z } from 'zod'
 import * as fs from 'node:fs/promises'
-import * as path from 'node:path'
-import * as os from 'node:os'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { toolJson, withToolErrors } from '../errors.js'
 import { removeWorktreeForJob } from '../git/worktree.js'
+import { getWorktreeRoot, SYSTEM_WORKTREE_DIRS } from '../git/worktree-paths.js'
 import { resolveRepoRoot } from './wait-for-job.js'
 
 const TERMINAL_STATUSES = new Set(['DONE', 'FAILED', 'CANCELLED'])
@@ -15,16 +14,20 @@ const ACTIVE_STATUSES = new Set(['QUEUED', 'CLAIMED', 'RUNNING'])
 const inputSchema = z.object({})
 
 export async function getWorktreeParent(): Promise<string> {
-  return (
-    process.env.SCRUM4ME_AGENT_WORKTREE_DIR ??
-    path.join(os.homedir(), '.scrum4me-agent-worktrees')
-  )
+  return getWorktreeRoot()
 }
 
 export async function listWorktreeJobIds(worktreeParent: string): Promise<string[]> {
   try {
     const entries = await fs.readdir(worktreeParent, { withFileTypes: true })
-    return entries.filter((e) => e.isDirectory()).map((e) => e.name)
+    return entries
+      .filter(
+        (e) =>
+          e.isDirectory()
+          && !SYSTEM_WORKTREE_DIRS.has(e.name)
+          && !e.name.endsWith('.lock'),
+      )
+      .map((e) => e.name)
   } catch {
     return []
   }

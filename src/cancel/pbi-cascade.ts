@@ -13,6 +13,7 @@ import {
   getPullRequestState,
 } from '../git/pr.js'
 import { deleteRemoteBranch } from '../git/push.js'
+import { releaseLocksOnTerminal } from '../git/job-locks.js'
 
 export type CascadeOutcome = {
   cancelled_job_ids: string[]
@@ -88,6 +89,9 @@ async function runCascade(failedJobId: string): Promise<CascadeOutcome> {
         error: 'cancelled_by_pbi_failure',
       },
     })
+    // PBI-9: release product-worktree locks for cancelled jobs.
+    // No-op for jobs without registered locks (TASK_IMPLEMENTATION).
+    for (const j of eligible) await releaseLocksOnTerminal(j.id)
   }
 
   const outcome: CascadeOutcome = {

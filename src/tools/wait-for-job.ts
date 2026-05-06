@@ -7,10 +7,15 @@ import { Client } from 'pg'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { prisma } from '../prisma.js'
+
+const execFileP = promisify(execFile)
 import { requireWriteAccess } from '../auth.js'
 import { toolJson, toolError, withToolErrors } from '../errors.js'
 import { createWorktreeForJob } from '../git/worktree.js'
+import { setupProductWorktrees, releaseLocksOnTerminal } from '../git/job-locks.js'
 
 /** Parse `https://github.com/<owner>/<name>(.git)?` → `<name>`. */
 export function repoNameFromUrl(repoUrl: string | null | undefined): string | null {
@@ -181,6 +186,26 @@ export async function attachWorktreeToJob(
       branchName,
       reuseBranch: reused,
     })
+
+    // PBI-47 (P0): capture base_sha so verify_task_against_plan can diff
+    // against the claim-time HEAD instead of origin/main. For reused branches
+    // (siblings already pushed), base_sha = SHA of the worktree HEAD now.
+    // For fresh branches, base_sha = origin/main HEAD which createWorktreeForJob
+    // just checked out.
+    let baseSha: string | null = null
+    try {
+      const { stdout } = await execFileP('git', ['rev-parse', 'HEAD'], { cwd: worktreePath })
+      baseSha = stdout.trim()
+    } catch (err) {
+      console.warn(`[attachWorktreeToJob] failed to resolve base_sha for ${jobId}:`, err)
+    }
+    if (baseSha) {
+      await prisma.claudeJob.update({
+        where: { id: jobId },
+        data: { base_sha: baseSha },
+      })
+    }
+
     return { worktree_path: worktreePath, branch_name: actualBranch, reused_branch: reused }
   } catch (err) {
     await rollbackClaim(jobId)
@@ -233,6 +258,11 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
   `
 
   if (failedRows.length === 0 && requeuedRows.length === 0) return
+
+  // PBI-9: release any product-worktree locks held by these stale jobs.
+  // No-op for jobs without registered locks (TASK_IMPLEMENTATION).
+  for (const j of failedRows) await releaseLocksOnTerminal(j.id)
+  for (const j of requeuedRows) await releaseLocksOnTerminal(j.id)
 
   // Notify UI via SSE for each transition (best-effort)
   try {
@@ -371,6 +401,9 @@ async function getFullJobContext(jobId: string) {
       idea: {
         include: {
           pbi: { select: { id: true, code: true, title: true } },
+          secondary_products: {
+            include: { product: { select: { id: true, repo_url: true } } },
+          },
         },
       },
       product: { select: { id: true, name: true, repo_url: true, definition_of_done: true } },
@@ -384,6 +417,21 @@ async function getFullJobContext(jobId: string) {
     if (!job.idea) return null
     const { idea } = job
     const { getIdeaPromptText } = await import('../lib/idea-prompts.js')
+
+    // Setup persistent product-worktrees for this idea-job (PBI-9).
+    // Primary product is gated by repo_url via resolveRepoRoot returning null.
+    // Secondary products from IdeaProduct[] need explicit repo_url filter.
+    const involvedProductIds: string[] = []
+    if (idea.product_id) involvedProductIds.push(idea.product_id)
+    for (const ip of idea.secondary_products ?? []) {
+      if (ip.product?.repo_url && !involvedProductIds.includes(ip.product_id)) {
+        involvedProductIds.push(ip.product_id)
+      }
+    }
+    const worktrees = involvedProductIds.length > 0
+      ? await setupProductWorktrees(job.id, involvedProductIds, (pid) => resolveRepoRoot(pid))
+      : []
+
     return {
       job_id: job.id,
       kind: job.kind,
@@ -408,6 +456,11 @@ async function getFullJobContext(jobId: string) {
       repo_url: job.product.repo_url,
       prompt_text: getIdeaPromptText(job.kind),
       branch_suggestion: `feat/idea-${idea.code.toLowerCase()}-${job.kind === 'IDEA_GRILL' ? 'grill' : 'plan'}`,
+      product_worktrees: worktrees.map((w) => ({
+        product_id: w.productId,
+        worktree_path: w.worktreePath,
+      })),
+      primary_worktree_path: worktrees[0]?.worktreePath ?? null,
     }
   }
 
