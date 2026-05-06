@@ -26,6 +26,16 @@ MCP server that exposes the Scrum4Me dev-flow as native tools for Claude Code.
 
 A story with 3 sub-tasks lands as **1 branch** with 3 commits and **1 PR** (assuming `auto_pr=true`). Sibling sub-tasks share the same `pr_url` — `maybeCreateAutoPr` reuses an existing PR from a sibling job instead of opening duplicates. Story-level PR title (`<story-code>: <story-title>`) so the GitHub view reads as one logical change rather than per-task fragments.
 
+### PBI fail-cascade
+
+When a `TASK_IMPLEMENTATION` job ends in `FAILED`, `cancelPbiOnFailure` (`src/cancel/pbi-cascade.ts`) cancels every queued/claimed/running sibling under the **same PBI** (across all stories) and undoes already-pushed commits:
+
+- **Open PR** → `gh pr close --delete-branch` with a cascade-comment.
+- **Merged PR** → revert-PR opened against the base branch via `git revert -m 1 <mergeSha>`. **No** auto-merge on the revert PR — review by hand.
+- **Branch without PR** → best-effort `git push origin --delete <branch>`.
+
+A trace (cancelled job count, closed/reverted PRs, deleted branches) is written to the original failed job's `error` column. Race-protection: if a parallel worker tries to `update_job_status` on a job that the cascade already set to `CANCELLED`, the call is rejected with a `JOB_CANCELLED` error so the agent discards local work and calls `wait_for_job` again. The cascade is idempotent and never throws — failures become warnings on the failed-job's trace.
+
 ### Required configuration
 
 Set env var per product:
