@@ -11,6 +11,7 @@ enum Role {
   PRODUCT_OWNER
   SCRUM_MASTER
   DEVELOPER
+  ADMIN
 }
 
 enum StoryStatus {
@@ -32,6 +33,7 @@ enum ClaudeJobStatus {
   DONE
   FAILED
   CANCELLED
+  SKIPPED
 }
 
 enum VerifyResult {
@@ -85,6 +87,7 @@ enum ClaudeJobKind {
   TASK_IMPLEMENTATION
   IDEA_GRILL
   IDEA_MAKE_PLAN
+  PLAN_CHAT
 }
 
 enum IdeaLogType {
@@ -96,6 +99,11 @@ enum IdeaLogType {
   JOB_EVENT
 }
 
+enum UserQuestionStatus {
+  pending
+  answered
+}
+
 model User {
   id                 String           @id @default(cuid())
   username           String           @unique
@@ -104,10 +112,12 @@ model User {
   is_demo            Boolean          @default(false)
   bio                String?          @db.VarChar(160)
   bio_detail         String?          @db.VarChar(2000)
+  must_reset_password Boolean         @default(false)
   avatar_data        Bytes?
   active_product_id  String?
   active_product     Product?         @relation("UserActiveProduct", fields: [active_product_id], references: [id], onDelete: SetNull)
   idea_code_counter  Int              @default(0)
+  min_quota_pct      Int              @default(20)
   created_at         DateTime         @default(now())
   updated_at         DateTime         @updatedAt
   roles              UserRole[]
@@ -175,6 +185,7 @@ model Product {
   claude_questions   ClaudeQuestion[]
   claude_jobs        ClaudeJob[]
   ideas              Idea[]
+  idea_products      IdeaProduct[]
 
   @@unique([user_id, name])
   @@unique([user_id, code])
@@ -322,6 +333,11 @@ model ClaudeJob {
   finished_at         DateTime?
   pushed_at           DateTime?
   verify_result       VerifyResult?
+  model_id            String?
+  input_tokens        Int?
+  output_tokens       Int?
+  cache_read_tokens   Int?
+  cache_write_tokens  Int?
   plan_snapshot       String?
   branch              String?
   pr_url              String?
@@ -339,15 +355,31 @@ model ClaudeJob {
   @@map("claude_jobs")
 }
 
+model ModelPrice {
+  id                        String   @id @default(cuid())
+  model_id                  String   @unique
+  input_price_per_1m        Decimal  @db.Decimal(12, 6)
+  output_price_per_1m       Decimal  @db.Decimal(12, 6)
+  cache_read_price_per_1m   Decimal  @db.Decimal(12, 6)
+  cache_write_price_per_1m  Decimal  @db.Decimal(12, 6)
+  currency                  String   @default("USD")
+  created_at                DateTime @default(now())
+  updated_at                DateTime @updatedAt
+
+  @@map("model_prices")
+}
+
 model ClaudeWorker {
   id           String   @id @default(cuid())
   user         User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
   user_id      String
   token        ApiToken @relation(fields: [token_id], references: [id], onDelete: Cascade)
   token_id     String
-  product_id   String?
-  started_at   DateTime @default(now())
-  last_seen_at DateTime @default(now())
+  product_id          String?
+  started_at          DateTime  @default(now())
+  last_seen_at        DateTime  @default(now())
+  last_quota_pct      Int?
+  last_quota_check_at DateTime?
 
   @@unique([token_id])
   @@index([user_id, last_seen_at])
@@ -403,14 +435,30 @@ model Idea {
   created_at  DateTime   @default(now())
   updated_at  DateTime   @updatedAt
 
-  questions ClaudeQuestion[]
-  jobs      ClaudeJob[]
-  logs      IdeaLog[]
+  questions          ClaudeQuestion[]
+  jobs               ClaudeJob[]
+  logs               IdeaLog[]
+  user_questions     UserQuestion[]
+  secondary_products IdeaProduct[]
 
   @@unique([user_id, code])
   @@index([user_id, archived, status])
   @@index([user_id, product_id])
   @@map("ideas")
+}
+
+model IdeaProduct {
+  id         String   @id @default(cuid())
+  idea_id    String
+  product_id String
+  created_at DateTime @default(now())
+
+  idea       Idea     @relation(fields: [idea_id], references: [id], onDelete: Cascade)
+  product    Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+
+  @@unique([idea_id, product_id])
+  @@index([product_id])
+  @@map("idea_products")
 }
 
 model IdeaLog {
@@ -424,6 +472,23 @@ model IdeaLog {
 
   @@index([idea_id, created_at])
   @@map("idea_logs")
+}
+
+model UserQuestion {
+  id         String             @id @default(cuid())
+  idea_id    String
+  user_id    String
+  question   String             @db.Text
+  answer     String?            @db.Text
+  status     UserQuestionStatus @default(pending)
+  created_at DateTime           @default(now())
+  updated_at DateTime           @updatedAt
+
+  idea       Idea               @relation(fields: [idea_id], references: [id], onDelete: Cascade)
+
+  @@index([idea_id, status])
+  @@index([user_id])
+  @@map("user_questions")
 }
 
 model LoginPairing {
