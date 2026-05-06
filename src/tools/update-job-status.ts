@@ -21,6 +21,11 @@ const inputSchema = z.object({
   branch: z.string().min(1).optional(),
   summary: z.string().max(1_000).optional(),
   error: z.string().max(2_000).optional(),
+  model_id: z.string().min(1).max(200).optional(),
+  input_tokens: z.number().int().nonnegative().optional(),
+  output_tokens: z.number().int().nonnegative().optional(),
+  cache_read_tokens: z.number().int().nonnegative().optional(),
+  cache_write_tokens: z.number().int().nonnegative().optional(),
 })
 
 export async function cleanupWorktreeForTerminalStatus(
@@ -266,10 +271,24 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         'PARTIAL/DIVERGENT but requires a non-empty summary (≥20 chars) explaining the drift; ANY ' +
         'accepts everything. ' +
         'Automatically emits an SSE event so the Scrum4Me UI updates in real time. ' +
+        'Optionally accepts token-usage fields (model_id + input/output/cache_read/cache_write tokens) ' +
+        'for cost tracking — typically populated by a PostToolUse hook from the local Claude Code transcript, ' +
+        'not by the agent itself. ' +
         'Response includes next_action: when wait_for_job_again, immediately call wait_for_job again. When queue_empty, the agent batch is done.',
       inputSchema,
     },
-    async ({ job_id, status, branch, summary, error }) =>
+    async ({
+      job_id,
+      status,
+      branch,
+      summary,
+      error,
+      model_id,
+      input_tokens,
+      output_tokens,
+      cache_read_tokens,
+      cache_write_tokens,
+    }) =>
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
         const { tokenId, userId } = auth
@@ -371,6 +390,11 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             ...(summary !== undefined ? { summary } : {}),
             ...(errorToWrite !== undefined ? { error: errorToWrite } : {}),
             ...(prUrl !== null ? { pr_url: prUrl } : {}),
+            ...(model_id !== undefined ? { model_id } : {}),
+            ...(input_tokens !== undefined ? { input_tokens } : {}),
+            ...(output_tokens !== undefined ? { output_tokens } : {}),
+            ...(cache_read_tokens !== undefined ? { cache_read_tokens } : {}),
+            ...(cache_write_tokens !== undefined ? { cache_write_tokens } : {}),
           },
           select: {
             id: true,
