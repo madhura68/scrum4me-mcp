@@ -45,6 +45,13 @@ const inputSchema = z.object({
   implementation_plan: z.string().max(8000).optional(),
   priority: z.number().int().min(1).max(4),
   sort_order: z.number().optional(),
+  // Cross-repo override: zet expliciet de repo waarop de worker deze task
+  // moet uitvoeren (overrides product.repo_url). Gebruik dit voor PBI's die
+  // werk in meerdere repos coördineren — bv. PBI op Scrum4Me-product met
+  // tasks die in scrum4me-mcp of scrum4me-docker landen.
+  // Format: full git URL (https://github.com/owner/repo). Null/omit = erf
+  // van product.repo_url.
+  repo_url: z.string().url().optional(),
 })
 
 export function registerCreateTaskTool(server: McpServer) {
@@ -53,10 +60,10 @@ export function registerCreateTaskTool(server: McpServer) {
     {
       title: 'Create task',
       description:
-        'Add a task under an existing story. Inherits sprint_id from the story (denormalized). Status defaults to TO_DO. Sort_order auto-set to last+1 within the story/priority group if not provided. Forbidden for demo accounts.',
+        'Add a task under an existing story. Inherits sprint_id from the story (denormalized). Status defaults to TO_DO. Sort_order auto-set to last+1 within the story/priority group if not provided. Optional repo_url overrides the product.repo_url for cross-repo work (e.g. tasks targeting scrum4me-mcp under a Scrum4Me PBI). Forbidden for demo accounts.',
       inputSchema,
     },
-    async ({ story_id, title, description, implementation_plan, priority, sort_order }) =>
+    async ({ story_id, title, description, implementation_plan, priority, sort_order, repo_url }) =>
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
 
@@ -95,6 +102,7 @@ export function registerCreateTaskTool(server: McpServer) {
                 priority,
                 sort_order: resolvedSortOrder,
                 status: 'TO_DO',
+                repo_url: repo_url ?? null,
               },
               select: {
                 id: true,
@@ -105,6 +113,7 @@ export function registerCreateTaskTool(server: McpServer) {
                 priority: true,
                 sort_order: true,
                 status: true,
+                repo_url: true,
                 created_at: true,
               },
             })
