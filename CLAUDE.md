@@ -46,6 +46,23 @@ Or add to `~/.scrum4me-agent-config.json`:
 
 If no repo root is found, `wait_for_job` rolls the claim back to QUEUED and returns an error.
 
+## Token-usage capture (PostToolUse hook)
+
+`update_job_status` accepts optional fields `model_id`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`. The agent never has to pass them — `scripts/persist-job-usage.ts` runs as a PostToolUse hook, reads the local Claude Code transcript JSONL (no Anthropic API needed), sums per-job usage, and writes directly to `claude_jobs` via Prisma. Window detection: from the most-recent `wait_for_job` tool_use to EOF.
+
+The hook is registered in `.claude/settings.json` of this repo. **For agent-worker mode** (Claude Code running with cwd inside a product worktree, not scrum4me-mcp), copy the same hook block into your user settings (`~/.claude/settings.json`) and set `SCRUM4ME_MCP_DIR` so the script resolves regardless of cwd:
+
+```bash
+export SCRUM4ME_MCP_DIR=/absolute/path/to/scrum4me-mcp
+```
+
+Pricing rows (`model_prices`) are seeded by Scrum4Me's `prisma/seed.ts`. Unknown `model_id`s leave `cost_usd = NULL` in Insights queries — add a row and re-run `npm run seed` to fill them in.
+
+Robustness notes:
+- Subagent (`isSidechain: true`) lines in the main JSONL are skipped to avoid double-counting against `subagents/`-subdirectory transcripts.
+- Lines are deduplicated on `uuid` because branching/resumption can rewrite the same message into multiple JSONLs.
+- Known Claude Code bug: auto-updates can silently delete files under `~/.claude/projects/`. If you depend on these numbers for billing/reporting, persist `claude_jobs.input_tokens` etc. immediately on `update_job_status` (already what this hook does) and consider an external backup of `~/.claude/projects/` if you want to retain historical detail.
+
 ## Manual worktree cleanup
 
 Run `cleanup_my_worktrees` (no arguments) to scan `~/.scrum4me-agent-worktrees/` and remove worktrees for jobs that are in a terminal state (DONE, FAILED, CANCELLED). Worktrees for active jobs (QUEUED, CLAIMED, RUNNING) are left untouched. Returns `{ removed, kept, skipped }`.
