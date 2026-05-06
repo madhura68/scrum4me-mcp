@@ -28,9 +28,46 @@ PBI + stories + taken via `materializeIdeaPlanAction`.
 
 1. Lees `idea.grill_md` volledig.
 2. Verken de repo voor patronen, bestaande modules, en `docs/`-structuur.
-3. Bouw het plan op in de **strikte format** hieronder.
-4. Roep `mcp__scrum4me__update_idea_plan_md({ idea_id, markdown })`.
-5. Roep `mcp__scrum4me__update_job_status({ job_id, status: 'done', summary })`.
+3. **Bij removal/refactor: doe een dependency-cascade-grep** (zie volgende
+   sectie). Voeg per geraakte file een taak toe vóór de schema/code-edit zelf.
+4. Bouw het plan op in de **strikte format** hieronder.
+5. Roep `mcp__scrum4me__update_idea_plan_md({ idea_id, markdown })`.
+6. Roep `mcp__scrum4me__update_job_status({ job_id, status: 'done', summary })`.
+
+## Dependency-cascade-grep (verplicht bij removal/refactor)
+
+Wanneer het idee een **bestaand symbool, model, route of component
+verwijdert of hernoemt**, MOET je éérst de consumers in kaart brengen voordat
+je het plan vaststelt. Anders breekt `next build` op type-errors die `lint`
+en `vitest run` niet pakken (zie hieronder waarom).
+
+**Concreet:**
+
+- Verwijder je een Prisma-model `Foo`?
+  ```bash
+  grep -rn "prisma\.foo\b\|prisma\.foos\b" actions/ app/ components/ lib/ \
+    --include="*.ts" --include="*.tsx"
+  ```
+  Voeg per geraakt bestand één of meer taken toe ("schoon `actions/foos.ts`
+  op", "verwijder `app/(app)/foos/`-route", "haal Foo-tegel uit
+  `app/page.tsx`-feature-grid", etc.) **vóór** de schema-edit-taak.
+
+- Verwijder je een component / utility / type? Idem: grep op de
+  bestandspaden en exports en plan per consumer een taak.
+
+- Hernoem je een model/route/component? Plan per geraakt bestand een edit-taak.
+
+- Wijzig je een `prisma.x.create`-veld (verplicht ↔ optioneel)? Grep op
+  `prisma.x.create` en `prisma.x.update` voor type-mismatches.
+
+- Voeg óók een **eind-taak** toe: `npm run typecheck` (= `tsc --noEmit`)
+  als sanity-check, los van `lint && test && build`. Type-errors verschijnen
+  daar het eerst en zijn 10× sneller dan een full `next build`.
+
+**Waarom zo strikt?** `eslint` doet geen diepe type-check. `vitest` met
+esbuild-transpile slaat type-errors over. `next build` is de eerste step die
+álles type-checkt — en die zit aan het einde van de pijp. Een gemist
+consumer-bestand wordt pas zichtbaar bij verify, niet bij implementation.
 
 ## STEL GEEN VRAGEN
 
