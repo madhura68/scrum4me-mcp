@@ -51,3 +51,27 @@ export async function pushBranchForJob(opts: {
     return { pushed: false, reason: 'unknown', stderr }
   }
 }
+
+export type DeleteRemoteResult =
+  | { deleted: true }
+  | { deleted: false; reason: 'not-found' | 'no-credentials' | 'unknown'; stderr: string }
+
+export async function deleteRemoteBranch(opts: {
+  repoRoot: string
+  branch: string
+}): Promise<DeleteRemoteResult> {
+  const { repoRoot, branch } = opts
+  try {
+    await exec('git', ['push', 'origin', '--delete', branch], { cwd: repoRoot })
+    return { deleted: true }
+  } catch (err) {
+    const stderr = (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''
+    if (/remote ref does not exist|unable to delete .* remote ref does not exist/i.test(stderr)) {
+      return { deleted: false, reason: 'not-found', stderr }
+    }
+    if (/Authentication failed|could not read Username/i.test(stderr)) {
+      return { deleted: false, reason: 'no-credentials', stderr }
+    }
+    return { deleted: false, reason: 'unknown', stderr }
+  }
+}

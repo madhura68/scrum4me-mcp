@@ -14,6 +14,7 @@ import { removeWorktreeForJob } from '../git/worktree.js'
 import { resolveRepoRoot } from './wait-for-job.js'
 import { pushBranchForJob } from '../git/push.js'
 import { createPullRequest } from '../git/pr.js'
+import { cancelPbiOnFailure } from '../cancel/pbi-cascade.js'
 
 const inputSchema = z.object({
   job_id: z.string().min(1),
@@ -313,6 +314,15 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         if (job.claimed_by_token_id !== tokenId) {
           return toolError('PERMISSION_DENIED: This job was not claimed by your token')
         }
+        if (job.status === 'CANCELLED') {
+          // PBI fail-cascade got here first. The agent must abandon any
+          // local work and call wait_for_job again instead of forcing this
+          // job into DONE/FAILED.
+          return toolError(
+            'JOB_CANCELLED: This job was cancelled by the PBI fail-cascade. ' +
+              'Discard your local changes and call wait_for_job for the next item.',
+          )
+        }
         if (!['CLAIMED', 'RUNNING'].includes(job.status)) {
           return toolError(`Job is already in terminal state: ${job.status.toLowerCase()}`)
         }
@@ -469,6 +479,14 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         // Best-effort worktree cleanup on terminal transitions (skip if push failed — worktree preserved)
         if ((actualStatus === 'done' || actualStatus === 'failed') && !skipWorktreeCleanup) {
           await cleanupWorktreeForTerminalStatus(job.product_id, job_id, actualStatus, branchToWrite)
+        }
+
+        // PBI fail-cascade: when a TASK_IMPLEMENTATION job ends in FAILED,
+        // cancel all queued/claimed/running siblings under the same PBI and
+        // undo any pushed commits (close open PRs / open revert-PRs for
+        // already-merged ones). Idempotent + non-blocking — never throws.
+        if (actualStatus === 'failed' && job.kind === 'TASK_IMPLEMENTATION' && job.task_id) {
+          await cancelPbiOnFailure(job_id)
         }
 
         const queueCount = await prisma.claudeJob.count({
