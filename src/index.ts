@@ -28,6 +28,8 @@ import { registerGetIdeaContextTool } from './tools/get-idea-context.js'
 import { registerUpdateIdeaGrillMdTool } from './tools/update-idea-grill-md.js'
 import { registerUpdateIdeaPlanMdTool } from './tools/update-idea-plan-md.js'
 import { registerLogIdeaDecisionTool } from './tools/log-idea-decision.js'
+import { registerGetWorkerSettingsTool } from './tools/get-worker-settings.js'
+import { registerWorkerHeartbeatTool } from './tools/worker-heartbeat.js'
 import { registerImplementNextStoryPrompt } from './prompts/implement-next-story.js'
 import { getAuth } from './auth.js'
 import { registerWorker } from './presence/worker.js'
@@ -89,6 +91,9 @@ async function main() {
   registerUpdateIdeaGrillMdTool(server)
   registerUpdateIdeaPlanMdTool(server)
   registerLogIdeaDecisionTool(server)
+  // M13: worker quota-gate tools
+  registerGetWorkerSettingsTool(server)
+  registerWorkerHeartbeatTool(server)
   registerImplementNextStoryPrompt(server)
 
   // Presence bootstrap MUST run before server.connect — the stdio transport
