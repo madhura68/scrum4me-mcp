@@ -5,12 +5,16 @@ export interface ClassifyResult {
   reasoning: string
 }
 
-// Extract changed file paths from a unified diff ("+++ b/<path>" lines).
+// Extract changed file paths from a unified diff. Reads both "+++ b/<path>"
+// (created/modified files) and "--- a/<path>" (deleted/modified files), so
+// pure-delete commits (where +++ is /dev/null) are still recognised.
 function extractDiffPaths(diff: string): string[] {
   const paths = new Set<string>()
   for (const line of diff.split('\n')) {
-    const m = line.match(/^\+\+\+ b\/(.+)$/)
-    if (m && m[1].trim() !== '/dev/null') paths.add(m[1].trim())
+    const plus = line.match(/^\+\+\+ b\/(.+)$/)
+    if (plus && plus[1].trim() !== '/dev/null') paths.add(plus[1].trim())
+    const minus = line.match(/^--- a\/(.+)$/)
+    if (minus && minus[1].trim() !== '/dev/null') paths.add(minus[1].trim())
   }
   return [...paths]
 }

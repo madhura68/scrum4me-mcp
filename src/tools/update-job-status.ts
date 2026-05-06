@@ -15,6 +15,7 @@ import { resolveRepoRoot } from './wait-for-job.js'
 import { pushBranchForJob } from '../git/push.js'
 import { createPullRequest } from '../git/pr.js'
 import { cancelPbiOnFailure } from '../cancel/pbi-cascade.js'
+import { propagateStatusUpwards } from '../lib/tasks-status-update.js'
 
 const inputSchema = z.object({
   job_id: z.string().min(1),
@@ -419,6 +420,25 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             finished_at: true,
           },
         })
+
+        // PBI-46 sprint-flow: propageer Task → Story → PBI → Sprint → SprintRun
+        // bij elke task-statusovergang (DONE of FAILED). De helper handelt ook
+        // sibling-cancel binnen dezelfde SprintRun af bij FAILED.
+        // Idea-jobs hebben geen task_id en worden hier overgeslagen.
+        if (
+          (actualStatus === 'done' || actualStatus === 'failed') &&
+          job.kind === 'TASK_IMPLEMENTATION' &&
+          job.task_id
+        ) {
+          try {
+            await propagateStatusUpwards(job.task_id, actualStatus === 'done' ? 'DONE' : 'FAILED')
+          } catch (err) {
+            console.warn(
+              `[update_job_status] propagateStatusUpwards error for task ${job.task_id}:`,
+              err,
+            )
+          }
+        }
 
         // M12: bij failed voor IDEA_*-jobs: zet idea.status op
         // GRILL_FAILED / PLAN_FAILED + log JOB_EVENT. Bij done laten we de

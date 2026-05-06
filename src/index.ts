@@ -9,7 +9,6 @@ import { registerUpdateTaskPlanTool } from './tools/update-task-plan.js'
 import { registerLogImplementationTool } from './tools/log-implementation.js'
 import { registerLogTestResultTool } from './tools/log-test-result.js'
 import { registerLogCommitTool } from './tools/log-commit.js'
-import { registerCreateTodoTool } from './tools/create-todo.js'
 import { registerCreatePbiTool } from './tools/create-pbi.js'
 import { registerCreateStoryTool } from './tools/create-story.js'
 import { registerCreateTaskTool } from './tools/create-task.js'
@@ -71,7 +70,6 @@ async function main() {
   registerLogImplementationTool(server)
   registerLogTestResultTool(server)
   registerLogCommitTool(server)
-  registerCreateTodoTool(server)
   registerCreatePbiTool(server)
   registerCreateStoryTool(server)
   registerCreateTaskTool(server)
