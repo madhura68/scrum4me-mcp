@@ -296,6 +296,10 @@ Minimale agent-prompt (geen CLAUDE.md-context nodig):
 
 > *Pak de volgende job uit de Scrum4Me-queue.*
 
+## Web-push integration
+
+When `INTERNAL_PUSH_URL` and `INTERNAL_PUSH_SECRET` are set, the MCP server fires a fire-and-forget push notification to the main-app's internal endpoint (`/api/internal/push/send`) on two events: when `ask_user_question` creates a new question (tag `claude-q-<id>`), and when `update_job_status` transitions a job to `done` or `failed` (tag `job-<id>`). Both calls are wrapped in a 5 s `AbortController` timeout and a `try/catch` so a push failure never interrupts the tool response. Omitting the env vars disables the feature entirely. The `INTERNAL_PUSH_SECRET` value must match the one configured in the main-app; generate a fresh secret with `openssl rand -hex 32`.
+
 ## Schema sync
 
 The Prisma schema is the source of truth in the upstream Scrum4Me

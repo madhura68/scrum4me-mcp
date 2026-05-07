@@ -10,6 +10,7 @@ import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { userCanAccessStory, userOwnsIdea } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
+import { triggerPush } from '../lib/push-trigger.js'
 
 const PENDING_TTL_HOURS = 24
 const POLL_INTERVAL_MS = 2_000
@@ -125,6 +126,13 @@ export function registerAskUserQuestionTool(server: McpServer) {
             status: 'open',
             expires_at: new Date(Date.now() + PENDING_TTL_HOURS * 60 * 60 * 1000),
           },
+        })
+
+        void triggerPush(auth.userId, {
+          title: 'Claude heeft een vraag',
+          body: question.slice(0, 120),
+          url: '/notifications',
+          tag: `claude-q-${created.id}`,
         })
 
         // Async-mode (default): return direct.
