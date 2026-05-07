@@ -32,6 +32,9 @@ activity and create todos via native tool calls instead of curl.
 | `check_queue_empty` | Synchronous, non-blocking count of active jobs (QUEUED/CLAIMED/RUNNING); optional `product_id` scope | no |
 | `set_pbi_pr` | Write `pr_url` on a PBI and clear `pr_merged_at`. Idempotent: re-calling overwrites `pr_url` and resets `pr_merged_at` to null | no |
 | `mark_pbi_pr_merged` | Set `pr_merged_at = now()` on a PBI. Requires `pr_url` to already be set. Idempotent: re-calling overwrites the timestamp | no |
+| `verify_sprint_task` | SPRINT_IMPLEMENTATION-flow: compare a `SprintTaskExecution`'s frozen `plan_snapshot` against `git diff <base_sha>...HEAD`. Returns `verify_result` + `allowed_for_done`. For `task[1..N]` zonder base_sha vult de tool die in op basis van de head_sha van de vorige DONE-execution | yes (read-only) |
+| `update_task_execution` | SPRINT_IMPLEMENTATION-flow: mutate `SprintTaskExecution.status` (PENDING/RUNNING/DONE/FAILED/SKIPPED). Token must own the parent SPRINT-job. Idempotent | no |
+| `job_heartbeat` | Extend `claude_jobs.lease_until` by 5 min. For SPRINT-jobs: response includes `sprint_run_status` + `sprint_run_pause_reason` so the worker can break its task-loop on UI-side cancel/pause | no |
 
 Demo accounts may read but writes return `PERMISSION_DENIED`.
 

@@ -87,6 +87,7 @@ enum SprintRunStatus {
 enum PrStrategy {
   SPRINT
   STORY
+  SPRINT_BATCH
 }
 
 enum IdeaStatus {
@@ -105,6 +106,15 @@ enum ClaudeJobKind {
   IDEA_GRILL
   IDEA_MAKE_PLAN
   PLAN_CHAT
+  SPRINT_IMPLEMENTATION
+}
+
+enum SprintTaskExecutionStatus {
+  PENDING
+  RUNNING
+  DONE
+  FAILED
+  SKIPPED
 }
 
 enum IdeaLogType {
@@ -299,24 +309,27 @@ model Sprint {
 }
 
 model SprintRun {
-  id             String          @id @default(cuid())
-  sprint         Sprint          @relation(fields: [sprint_id], references: [id], onDelete: Cascade)
-  sprint_id      String
-  started_by     User            @relation("SprintRunStartedBy", fields: [started_by_id], references: [id])
-  started_by_id  String
-  status         SprintRunStatus @default(QUEUED)
-  pr_strategy    PrStrategy
-  branch         String?
-  pr_url         String?
-  started_at     DateTime?
-  finished_at    DateTime?
-  failure_reason String?
-  failed_task    Task?           @relation("SprintRunFailedTask", fields: [failed_task_id], references: [id], onDelete: SetNull)
-  failed_task_id String?
-  pause_context  Json?
-  created_at     DateTime        @default(now())
-  updated_at     DateTime        @updatedAt
-  jobs           ClaudeJob[]
+  id              String          @id @default(cuid())
+  sprint          Sprint          @relation(fields: [sprint_id], references: [id], onDelete: Cascade)
+  sprint_id       String
+  started_by      User            @relation("SprintRunStartedBy", fields: [started_by_id], references: [id])
+  started_by_id   String
+  status          SprintRunStatus @default(QUEUED)
+  pr_strategy     PrStrategy
+  branch          String?
+  pr_url          String?
+  started_at      DateTime?
+  finished_at     DateTime?
+  failure_reason  String?
+  failed_task     Task?           @relation("SprintRunFailedTask", fields: [failed_task_id], references: [id], onDelete: SetNull)
+  failed_task_id  String?
+  pause_context   Json?
+  previous_run_id String?         @unique
+  previous_run    SprintRun?      @relation("SprintRunChain", fields: [previous_run_id], references: [id], onDelete: SetNull)
+  next_run        SprintRun?      @relation("SprintRunChain")
+  created_at      DateTime        @default(now())
+  updated_at      DateTime        @updatedAt
+  jobs            ClaudeJob[]
 
   @@index([sprint_id, status])
   @@index([started_by_id, status])
@@ -324,32 +337,33 @@ model SprintRun {
 }
 
 model Task {
-  id                  String           @id @default(cuid())
-  story               Story            @relation(fields: [story_id], references: [id], onDelete: Cascade)
-  story_id            String
-  product             Product          @relation(fields: [product_id], references: [id], onDelete: Cascade)
-  product_id          String
-  sprint              Sprint?          @relation(fields: [sprint_id], references: [id])
-  sprint_id           String?
-  code                String           @db.VarChar(30)
-  title               String
-  description         String?
-  implementation_plan String?
-  priority            Int
-  sort_order          Float
-  status              TaskStatus       @default(TO_DO)
-  verify_only         Boolean          @default(false)
-  verify_required     VerifyRequired   @default(ALIGNED_OR_PARTIAL)
+  id                     String                @id @default(cuid())
+  story                  Story                 @relation(fields: [story_id], references: [id], onDelete: Cascade)
+  story_id               String
+  product                Product               @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id             String
+  sprint                 Sprint?               @relation(fields: [sprint_id], references: [id])
+  sprint_id              String?
+  code                   String                @db.VarChar(30)
+  title                  String
+  description            String?
+  implementation_plan    String?
+  priority               Int
+  sort_order             Float
+  status                 TaskStatus            @default(TO_DO)
+  verify_only            Boolean               @default(false)
+  verify_required        VerifyRequired        @default(ALIGNED_OR_PARTIAL)
   // Override product.repo_url for branch/worktree/push purposes. Set when
   // a task targets a different repo than its parent product (e.g. an
   // MCP-server task tracked under the main product's PBI). Falls back to
   // product.repo_url when null.
-  repo_url            String?
-  created_at          DateTime         @default(now())
-  updated_at          DateTime         @updatedAt
-  claude_questions    ClaudeQuestion[]
-  claude_jobs         ClaudeJob[]
-  sprint_run_failures SprintRun[]      @relation("SprintRunFailedTask")
+  repo_url               String?
+  created_at             DateTime              @default(now())
+  updated_at             DateTime              @updatedAt
+  claude_questions       ClaudeQuestion[]
+  claude_jobs            ClaudeJob[]
+  sprint_run_failures    SprintRun[]           @relation("SprintRunFailedTask")
+  sprint_task_executions SprintTaskExecution[]
 
   @@unique([product_id, code])
   @@index([story_id, priority, sort_order])
@@ -359,20 +373,20 @@ model Task {
 }
 
 model ClaudeJob {
-  id                  String          @id @default(cuid())
-  user                User            @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  id                  String                @id @default(cuid())
+  user                User                  @relation(fields: [user_id], references: [id], onDelete: Cascade)
   user_id             String
-  product             Product         @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product             Product               @relation(fields: [product_id], references: [id], onDelete: Cascade)
   product_id          String
-  task                Task?           @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  task                Task?                 @relation(fields: [task_id], references: [id], onDelete: Cascade)
   task_id             String?
-  idea                Idea?           @relation(fields: [idea_id], references: [id], onDelete: Cascade)
+  idea                Idea?                 @relation(fields: [idea_id], references: [id], onDelete: Cascade)
   idea_id             String?
-  sprint_run          SprintRun?      @relation(fields: [sprint_run_id], references: [id], onDelete: SetNull)
+  sprint_run          SprintRun?            @relation(fields: [sprint_run_id], references: [id], onDelete: SetNull)
   sprint_run_id       String?
-  kind                ClaudeJobKind   @default(TASK_IMPLEMENTATION)
-  status              ClaudeJobStatus @default(QUEUED)
-  claimed_by_token    ApiToken?       @relation(fields: [claimed_by_token_id], references: [id], onDelete: SetNull)
+  kind                ClaudeJobKind         @default(TASK_IMPLEMENTATION)
+  status              ClaudeJobStatus       @default(QUEUED)
+  claimed_by_token    ApiToken?             @relation(fields: [claimed_by_token_id], references: [id], onDelete: SetNull)
   claimed_by_token_id String?
   claimed_at          DateTime?
   started_at          DateTime?
@@ -391,9 +405,11 @@ model ClaudeJob {
   pr_url              String?
   summary             String?
   error               String?
-  retry_count         Int             @default(0)
-  created_at          DateTime        @default(now())
-  updated_at          DateTime        @updatedAt
+  retry_count         Int                   @default(0)
+  lease_until         DateTime?
+  task_executions     SprintTaskExecution[] @relation("SprintJobExecutions")
+  created_at          DateTime              @default(now())
+  updated_at          DateTime              @updatedAt
 
   @@index([user_id, status])
   @@index([task_id, status])
@@ -401,7 +417,39 @@ model ClaudeJob {
   @@index([sprint_run_id, status])
   @@index([status, claimed_at])
   @@index([status, finished_at])
+  @@index([status, lease_until])
   @@map("claude_jobs")
+}
+
+// PBI-50: frozen scope-snapshot per SPRINT_IMPLEMENTATION-claim. Bij claim
+// wordt voor elke TO_DO-task in scope één PENDING-record gemaakt met
+// implementation_plan + verify_required gesnapshot. Worker en gate werken
+// uitsluitend op deze rows; latere wijzigingen aan Task hebben geen
+// invloed op de lopende batch.
+model SprintTaskExecution {
+  id                       String                    @id @default(cuid())
+  sprint_job               ClaudeJob                 @relation("SprintJobExecutions", fields: [sprint_job_id], references: [id], onDelete: Cascade)
+  sprint_job_id            String
+  task                     Task                      @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  task_id                  String
+  order                    Int
+  plan_snapshot            String                    @db.Text
+  verify_required_snapshot VerifyRequired
+  verify_only_snapshot     Boolean                   @default(false)
+  base_sha                 String?
+  head_sha                 String?
+  status                   SprintTaskExecutionStatus @default(PENDING)
+  verify_result            VerifyResult?
+  verify_summary           String?                   @db.Text
+  skip_reason              String?                   @db.Text
+  started_at               DateTime?
+  finished_at              DateTime?
+  created_at               DateTime                  @default(now())
+  updated_at               DateTime                  @updatedAt
+
+  @@unique([sprint_job_id, task_id])
+  @@index([sprint_job_id, order])
+  @@map("sprint_task_executions")
 }
 
 model ModelPrice {

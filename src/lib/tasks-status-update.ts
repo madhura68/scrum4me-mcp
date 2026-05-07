@@ -38,6 +38,11 @@ export async function propagateStatusUpwards(
   taskId: string,
   newStatus: TaskStatus,
   client?: Prisma.TransactionClient,
+  // PBI-50: optionele expliciete sprint_run_id voor SPRINT_IMPLEMENTATION
+  // (waar geen ClaudeJob.task_id-koppeling bestaat). Wanneer afwezig valt
+  // de helper terug op de lookup via ClaudeJob.task_id, met als laatste
+  // fallback Story → Sprint → SprintRun.findFirst({ status: active }).
+  sprintRunId?: string,
 ): Promise<PropagationResult> {
   const run = async (tx: Prisma.TransactionClient): Promise<PropagationResult> => {
     const task = await tx.task.update({
@@ -151,18 +156,43 @@ export async function propagateStatusUpwards(
       }
     }
 
-    // SprintRun herevalueren — via ClaudeJob.sprint_run_id van deze task
+    // SprintRun herevalueren. Resolve sprint_run_id in volgorde:
+    //   1. Expliciete sprintRunId-arg (PBI-50: SPRINT_IMPLEMENTATION-pad).
+    //   2. ClaudeJob.task_id-lookup (PER_TASK-flow).
+    //   3. Story → Sprint → SprintRun.findFirst({ status: active }) (geen
+    //      task-job, bv. handmatige task-statuswijziging via UI).
     let sprintRunChanged = false
     if (nextSprintStatus === 'FAILED' || nextSprintStatus === 'COMPLETED') {
-      const job = await tx.claudeJob.findFirst({
-        where: { task_id: taskId, sprint_run_id: { not: null } },
-        orderBy: { created_at: 'desc' },
-        select: { id: true, sprint_run_id: true },
-      })
+      let resolvedRunId: string | null = sprintRunId ?? null
+      let cancelExceptJobId: string | null = null
 
-      if (job?.sprint_run_id) {
+      if (!resolvedRunId) {
+        const job = await tx.claudeJob.findFirst({
+          where: { task_id: taskId, sprint_run_id: { not: null } },
+          orderBy: { created_at: 'desc' },
+          select: { id: true, sprint_run_id: true },
+        })
+        if (job?.sprint_run_id) {
+          resolvedRunId = job.sprint_run_id
+          cancelExceptJobId = job.id
+        }
+      }
+
+      if (!resolvedRunId && story.sprint_id) {
+        const activeRun = await tx.sprintRun.findFirst({
+          where: {
+            sprint_id: story.sprint_id,
+            status: { in: ['QUEUED', 'RUNNING', 'PAUSED'] },
+          },
+          orderBy: { created_at: 'desc' },
+          select: { id: true },
+        })
+        if (activeRun) resolvedRunId = activeRun.id
+      }
+
+      if (resolvedRunId) {
         const sprintRun = await tx.sprintRun.findUnique({
-          where: { id: job.sprint_run_id },
+          where: { id: resolvedRunId },
           select: { id: true, status: true },
         })
         if (
@@ -180,11 +210,16 @@ export async function propagateStatusUpwards(
                 failed_task_id: taskId,
               },
             })
+            // Cancel sibling-jobs binnen dezelfde SprintRun behalve de
+            // huidige task-job (als die er is). Voor SPRINT_IMPLEMENTATION
+            // is cancelExceptJobId null en hebben we geen siblings om te
+            // cancellen — de SPRINT-job zelf blijft actief en de worker
+            // detecteert dit via job_heartbeat.
             await tx.claudeJob.updateMany({
               where: {
                 sprint_run_id: sprintRun.id,
                 status: { in: ['QUEUED', 'CLAIMED', 'RUNNING'] },
-                id: { not: job.id },
+                ...(cancelExceptJobId ? { id: { not: cancelExceptJobId } } : {}),
               },
               data: {
                 status: 'CANCELLED',
@@ -230,14 +265,16 @@ export interface UpdateTaskStatusResult {
   task: PropagationResult['task']
   storyStatusChange: StoryStatusChange
   storyId: string
+  sprintRunChanged: boolean
 }
 
 export async function updateTaskStatusWithStoryPromotion(
   taskId: string,
   newStatus: TaskStatus,
   client?: Prisma.TransactionClient,
+  sprintRunId?: string,
 ): Promise<UpdateTaskStatusResult> {
-  const result = await propagateStatusUpwards(taskId, newStatus, client)
+  const result = await propagateStatusUpwards(taskId, newStatus, client, sprintRunId)
   let storyStatusChange: StoryStatusChange = null
   if (result.storyChanged) {
     storyStatusChange = newStatus === 'DONE' ? 'promoted' : 'demoted'
@@ -246,5 +283,6 @@ export async function updateTaskStatusWithStoryPromotion(
     task: result.task,
     storyStatusChange,
     storyId: result.storyId,
+    sprintRunChanged: result.sprintRunChanged,
   }
 }

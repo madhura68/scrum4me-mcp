@@ -29,6 +29,10 @@ import { registerUpdateIdeaPlanMdTool } from './tools/update-idea-plan-md.js'
 import { registerLogIdeaDecisionTool } from './tools/log-idea-decision.js'
 import { registerGetWorkerSettingsTool } from './tools/get-worker-settings.js'
 import { registerWorkerHeartbeatTool } from './tools/worker-heartbeat.js'
+// PBI-50: SPRINT_IMPLEMENTATION-tools
+import { registerVerifySprintTaskTool } from './tools/verify-sprint-task.js'
+import { registerUpdateTaskExecutionTool } from './tools/update-task-execution.js'
+import { registerJobHeartbeatTool } from './tools/job-heartbeat.js'
 import { registerImplementNextStoryPrompt } from './prompts/implement-next-story.js'
 import { getAuth } from './auth.js'
 import { registerWorker } from './presence/worker.js'
@@ -92,6 +96,10 @@ async function main() {
   // M13: worker quota-gate tools
   registerGetWorkerSettingsTool(server)
   registerWorkerHeartbeatTool(server)
+  // PBI-50: SPRINT_IMPLEMENTATION-tools
+  registerVerifySprintTaskTool(server)
+  registerUpdateTaskExecutionTool(server)
+  registerJobHeartbeatTool(server)
   registerImplementNextStoryPrompt(server)
 
   // Presence bootstrap MUST run before server.connect — the stdio transport

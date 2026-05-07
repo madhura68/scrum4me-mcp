@@ -225,6 +225,106 @@ export function checkVerifyGate(
   return { allowed: true }
 }
 
+// PBI-50 F4-T1: aggregate verify-gate voor SPRINT_IMPLEMENTATION DONE.
+// Bron: alleen SprintTaskExecution-rows voor deze job. Per row:
+//   DONE     → checkVerifyGate met snapshot-velden (gate per row)
+//   SKIPPED  → alleen toegestaan als verify_required_snapshot === 'ANY'
+//   FAILED/PENDING/RUNNING → blocker (sprint mag niet DONE met openstaand werk)
+// Bij overall pass → { allowed: true }; anders error met opsomming.
+export async function checkSprintVerifyGate(
+  sprintJobId: string,
+): Promise<{ allowed: true } | { allowed: false; error: string }> {
+  const executions = await prisma.sprintTaskExecution.findMany({
+    where: { sprint_job_id: sprintJobId },
+    orderBy: { order: 'asc' },
+    select: {
+      id: true,
+      task_id: true,
+      order: true,
+      status: true,
+      verify_result: true,
+      verify_summary: true,
+      verify_required_snapshot: true,
+      verify_only_snapshot: true,
+      task: { select: { code: true, title: true } },
+    },
+  })
+  if (executions.length === 0) {
+    return {
+      allowed: false,
+      error:
+        'Sprint-job heeft geen SprintTaskExecution-rows. ' +
+        'Dit duidt op een claim-bug; reclaim de sprint.',
+    }
+  }
+
+  const blockers: string[] = []
+  for (const exec of executions) {
+    const taskLabel = `${exec.task.code}: ${exec.task.title}`
+    if (exec.status === 'PENDING' || exec.status === 'RUNNING') {
+      blockers.push(`[${exec.status}] ${taskLabel} — onafgemaakt werk`)
+      continue
+    }
+    if (exec.status === 'FAILED') {
+      blockers.push(`[FAILED] ${taskLabel}`)
+      continue
+    }
+    if (exec.status === 'SKIPPED') {
+      if (exec.verify_required_snapshot !== 'ANY') {
+        blockers.push(
+          `[SKIPPED] ${taskLabel} — alleen toegestaan bij verify_required=ANY`,
+        )
+      }
+      continue
+    }
+    // DONE: per-row gate
+    const gate = checkVerifyGate(
+      exec.verify_result,
+      exec.verify_only_snapshot,
+      exec.verify_required_snapshot,
+      exec.verify_summary ?? undefined,
+    )
+    if (!gate.allowed) {
+      blockers.push(`[DONE-gate] ${taskLabel}: ${gate.error}`)
+    }
+  }
+
+  if (blockers.length === 0) return { allowed: true }
+  return {
+    allowed: false,
+    error:
+      `Sprint kan niet DONE — ${blockers.length} task(s) blokkeren:\n` +
+      blockers.map((b) => `  - ${b}`).join('\n'),
+  }
+}
+
+// PBI-50 F4-T2: idempotent SprintRun-finalisering.
+// Invariant: alleen aanroepen wanneer alle stories in de sprint status
+// DONE/FAILED/CANCELLED hebben. Effect: SprintRun.status → DONE +
+// finished_at = NOW(). Idempotent — bij al-DONE: no-op.
+export async function finalizeSprintRunOnDone(sprintRunId: string): Promise<void> {
+  const sprintRun = await prisma.sprintRun.findUnique({
+    where: { id: sprintRunId },
+    select: { id: true, status: true, sprint_id: true },
+  })
+  if (!sprintRun) return
+  if (sprintRun.status === 'DONE') return // idempotent
+
+  // Check alle stories in deze sprint zijn klaar
+  const openStories = await prisma.story.count({
+    where: {
+      sprint_id: sprintRun.sprint_id,
+      status: { notIn: ['DONE', 'FAILED'] },
+    },
+  })
+  if (openStories > 0) return // nog werk over — niet finaliseren
+
+  await prisma.sprintRun.update({
+    where: { id: sprintRunId },
+    data: { status: 'DONE', finished_at: new Date() },
+  })
+}
+
 const DB_STATUS_MAP = {
   running: 'RUNNING',
   done: 'DONE',
@@ -332,6 +432,68 @@ export async function maybeCreateAutoPr(opts: {
   return null
 }
 
+// PBI-50 F4-T2: SPRINT_BATCH PR-flow. Eén draft-PR voor de hele sprint,
+// title = sprint.sprint_goal. Mens reviewt + mergt zelf — geen auto-merge.
+// Lijkt op de SPRINT-mode van maybeCreateAutoPr maar zonder task-context.
+export async function maybeCreateSprintBatchPr(opts: {
+  jobId: string
+  productId: string
+  worktreePath: string
+  branchName: string
+  summary: string | undefined
+}): Promise<string | null> {
+  const { jobId, productId, worktreePath, branchName, summary } = opts
+
+  const product = await prisma.product.findUnique({
+    where: { id: productId },
+    select: { auto_pr: true },
+  })
+  if (!product?.auto_pr) return null
+
+  const job = await prisma.claudeJob.findUnique({
+    where: { id: jobId },
+    select: {
+      sprint_run_id: true,
+      sprint_run: {
+        select: { id: true, sprint: { select: { sprint_goal: true } } },
+      },
+    },
+  })
+  if (!job?.sprint_run) return null
+
+  // Resume-pad: oude SprintRun heeft mogelijk al een PR via vorige run-job.
+  // Lookup via SprintRunChain (previous_run_id) of via sibling-SPRINT-job.
+  const previousRun = await prisma.sprintRun.findUnique({
+    where: { id: job.sprint_run.id },
+    select: { previous_run_id: true },
+  })
+  if (previousRun?.previous_run_id) {
+    const prevPr = await prisma.claudeJob.findFirst({
+      where: { sprint_run_id: previousRun.previous_run_id, pr_url: { not: null } },
+      select: { pr_url: true },
+    })
+    if (prevPr?.pr_url) return prevPr.pr_url
+  }
+
+  const goal = job.sprint_run.sprint.sprint_goal
+  const sprintTitle = `Sprint: ${goal}`.slice(0, 200)
+  const body = summary
+    ? `${summary}\n\n---\n\n*Draft PR voor sprint-batch \`${job.sprint_run.id}\` (single-session). Wordt ready-for-review zodra alle tasks DONE zijn.*`
+    : `*Draft PR voor sprint-batch \`${job.sprint_run.id}\` (single-session). Wordt ready-for-review zodra alle tasks DONE zijn.*`
+
+  const result = await createPullRequest({
+    worktreePath,
+    branchName,
+    title: sprintTitle,
+    body,
+    draft: true,
+    enableAutoMerge: false,
+  })
+  if ('url' in result) return result.url
+  console.warn(`[update_job_status] sprint-batch draft-PR skipped for job ${jobId}:`, result.error)
+  return null
+}
+
 export function registerUpdateJobStatusTool(server: McpServer) {
   server.registerTool(
     'update_job_status',
@@ -379,6 +541,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             product_id: true,
             task_id: true,
             idea_id: true,
+            sprint_run_id: true,
             kind: true,
             verify_result: true,
             task: { select: { verify_only: true, verify_required: true } },
@@ -419,6 +582,19 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             actualStatus = 'done'
             // pushedAt blijft undefined, branch/error overrides ook
             skipWorktreeCleanup = true
+          } else if (job.kind === 'SPRINT_IMPLEMENTATION') {
+            // PBI-50 F4-T2: aggregate verify-gate via SprintTaskExecution-rows.
+            // Geen single-task verify_result op de SPRINT-job zelf.
+            const gate = await checkSprintVerifyGate(job_id)
+            if (!gate.allowed) return toolError(gate.error)
+
+            const plan = await prepareDoneUpdate(job_id, branch)
+            actualStatus = plan.dbStatus === 'DONE' ? 'done' : 'failed'
+            pushedAt = plan.pushedAt
+            if (plan.branchOverride !== undefined) branchToWrite = plan.branchOverride
+            if (plan.errorOverride !== undefined) errorToWrite = plan.errorOverride
+            skipWorktreeCleanup = plan.skipWorktreeCleanup
+            headShaToWrite = plan.headSha
           } else {
             const gate = checkVerifyGate(
               job.verify_result ?? null,
@@ -440,6 +616,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
 
         // Auto-PR: best-effort, only when push actually happened.
         // M12: idee-jobs hebben geen task_id en geen branch — skip auto-PR.
+        // PBI-50: SPRINT_IMPLEMENTATION krijgt een eigen PR-flow (sprint-goal als title).
         let prUrl: string | null = null
         if (
           actualStatus === 'done' &&
@@ -458,6 +635,23 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             summary,
           }).catch((err) => {
             console.warn(`[update_job_status] auto-PR error for job ${job_id}:`, err)
+            return null
+          })
+        } else if (
+          actualStatus === 'done' &&
+          pushedAt &&
+          branchToWrite &&
+          job.kind === 'SPRINT_IMPLEMENTATION'
+        ) {
+          const worktreeDir = getWorktreeRoot()
+          prUrl = await maybeCreateSprintBatchPr({
+            jobId: job_id,
+            productId: job.product_id,
+            worktreePath: path.join(worktreeDir, job_id),
+            branchName: branchToWrite,
+            summary,
+          }).catch((err) => {
+            console.warn(`[update_job_status] sprint-batch PR error for job ${job_id}:`, err)
             return null
           })
         }
@@ -493,6 +687,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             error: true,
             started_at: true,
             finished_at: true,
+            head_sha: true,
           },
         })
 
@@ -694,8 +889,86 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         // cancel all queued/claimed/running siblings under the same PBI and
         // undo any pushed commits (close open PRs / open revert-PRs for
         // already-merged ones). Idempotent + non-blocking — never throws.
+        // PBI-50: SPRINT_IMPLEMENTATION SKIPS this — cascade naar tasks/stories/
+        // PBIs is al gebeurd via per-task update_task_status('failed')-calls
+        // van de worker. Sprint-job heeft geen task_id; cancelPbi-flow past niet.
         if (actualStatus === 'failed' && job.kind === 'TASK_IMPLEMENTATION' && job.task_id) {
           await cancelPbiOnFailure(job_id)
+        }
+
+        // PBI-50 F4-T2: SPRINT_IMPLEMENTATION DONE → finalize SprintRun.
+        if (
+          actualStatus === 'done' &&
+          job.kind === 'SPRINT_IMPLEMENTATION' &&
+          job.sprint_run_id
+        ) {
+          try {
+            await finalizeSprintRunOnDone(job.sprint_run_id)
+            // Mark draft-PR ready-for-review als de SprintRun nu DONE is
+            const finalRun = await prisma.sprintRun.findUnique({
+              where: { id: job.sprint_run_id },
+              select: { status: true },
+            })
+            if (finalRun?.status === 'DONE' && updated.pr_url) {
+              try {
+                const ready = await markPullRequestReady({ prUrl: updated.pr_url })
+                if ('error' in ready) {
+                  console.warn(
+                    `[update_job_status] sprint-batch markPullRequestReady failed for ${updated.pr_url}: ${ready.error}`,
+                  )
+                }
+              } catch (err) {
+                console.warn(`[update_job_status] sprint-batch markPullRequestReady error:`, err)
+              }
+            }
+          } catch (err) {
+            console.warn(`[update_job_status] finalizeSprintRunOnDone error:`, err)
+          }
+        }
+
+        // PBI-50 F4-T3: SPRINT_IMPLEMENTATION FAILED →
+        //  - Detect QUOTA_PAUSE: error-prefix → PAUSED met pause_context.
+        //  - Anders: vul SprintRun.failure_reason + failed_task_id (uit error).
+        if (actualStatus === 'failed' && job.kind === 'SPRINT_IMPLEMENTATION' && job.sprint_run_id) {
+          const isQuotaPause = (errorToWrite ?? '').startsWith('QUOTA_PAUSE:')
+          if (isQuotaPause) {
+            // Vind laatst-DONE execution voor pause-context
+            const lastDone = await prisma.sprintTaskExecution.findFirst({
+              where: { sprint_job_id: job_id, status: 'DONE' },
+              orderBy: { order: 'desc' },
+              select: { id: true, order: true, task_id: true },
+            })
+            await prisma.sprintRun.update({
+              where: { id: job.sprint_run_id },
+              data: {
+                status: 'PAUSED',
+                pause_context: {
+                  pause_reason: 'QUOTA_DEPLETED',
+                  paused_at: new Date().toISOString(),
+                  resume_instructions:
+                    'Wacht tot quota is gereset, dan resume de SprintRun via de UI. Een nieuwe SprintRun wordt gemaakt met previous_run_id en branch hergebruik.',
+                  last_completed_execution_id: lastDone?.id ?? null,
+                  last_completed_order: lastDone?.order ?? null,
+                  last_completed_task_id: lastDone?.task_id ?? null,
+                  pr_url: updated.pr_url ?? null,
+                  pr_head_sha: updated.head_sha ?? null,
+                  conflict_files: [],
+                  claude_question_id: '',
+                } as any,
+              },
+            })
+          } else {
+            const failedTaskId = (errorToWrite ?? '').match(/task[:\s]+([a-z0-9]+)/i)?.[1] ?? null
+            await prisma.sprintRun.update({
+              where: { id: job.sprint_run_id },
+              data: {
+                status: 'FAILED',
+                failure_reason: errorToWrite?.slice(0, 500) ?? null,
+                failed_task_id: failedTaskId,
+                finished_at: new Date(),
+              },
+            })
+          }
         }
 
         // PBI-9: release product-worktree locks on terminal transitions.
