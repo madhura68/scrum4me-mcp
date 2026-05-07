@@ -285,4 +285,66 @@ describe('cancelPbiOnFailure', () => {
 
     expect(out.warnings.some((w) => w.includes('boom'))).toBe(true)
   })
+
+  it('no-ops when failed job has status SKIPPED (no-op exit, niet een echte fail)', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({ ...FAILED_JOB, status: 'SKIPPED' })
+
+    const out = await cancelPbiOnFailure('job-failed')
+
+    expect(out.cancelled_job_ids).toEqual([])
+    expect(mockPrisma.claudeJob.findMany).not.toHaveBeenCalled()
+    expect(mockPrisma.claudeJob.updateMany).not.toHaveBeenCalled()
+    expect(mockPrisma.claudeJob.update).not.toHaveBeenCalled()
+  })
+
+  it('appends the cascade trace to an existing error (preserves original cause)', async () => {
+    // findUnique wordt twee keer aangeroepen: eerst voor failedJob (status FAILED + originele error),
+    // daarna door de append-trace om de huidige error te lezen vóór update.
+    mockPrisma.claudeJob.findUnique
+      .mockResolvedValueOnce({ ...FAILED_JOB, status: 'FAILED' })
+      .mockResolvedValueOnce({ error: 'timeout: agent died after 5min' })
+    mockPrisma.claudeJob.findMany.mockResolvedValue([])
+
+    await cancelPbiOnFailure('job-failed')
+
+    expect(mockPrisma.claudeJob.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'job-failed' },
+        data: expect.objectContaining({
+          error: expect.stringMatching(/timeout: agent died after 5min[\s\S]*---[\s\S]*cancelled_by_self/),
+        }),
+      }),
+    )
+  })
+
+  it('falls back to trace-only when there is no existing error', async () => {
+    mockPrisma.claudeJob.findUnique
+      .mockResolvedValueOnce({ ...FAILED_JOB, status: 'FAILED' })
+      .mockResolvedValueOnce({ error: null })
+    mockPrisma.claudeJob.findMany.mockResolvedValue([])
+
+    await cancelPbiOnFailure('job-failed')
+
+    const updateCall = mockPrisma.claudeJob.update.mock.calls[0]?.[0] as
+      | { data: { error: string } }
+      | undefined
+    expect(updateCall?.data.error).toMatch(/^cancelled_by_self/)
+    expect(updateCall?.data.error).not.toContain('---')
+  })
+
+  it('truncates the merged error at 1900 chars while preserving the head of the original', async () => {
+    const longOriginal = 'X'.repeat(1800)
+    mockPrisma.claudeJob.findUnique
+      .mockResolvedValueOnce({ ...FAILED_JOB, status: 'FAILED' })
+      .mockResolvedValueOnce({ error: longOriginal })
+    mockPrisma.claudeJob.findMany.mockResolvedValue([])
+
+    await cancelPbiOnFailure('job-failed')
+
+    const updateCall = mockPrisma.claudeJob.update.mock.calls[0]?.[0] as
+      | { data: { error: string } }
+      | undefined
+    expect(updateCall?.data.error.length).toBeLessThanOrEqual(1900)
+    expect(updateCall?.data.error.startsWith('X')).toBe(true)
+  })
 })

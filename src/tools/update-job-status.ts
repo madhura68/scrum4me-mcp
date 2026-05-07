@@ -1,6 +1,12 @@
-// update_job_status — agent rapporteert voortgang: running | done | failed.
+// update_job_status — agent rapporteert voortgang: running | done | failed | skipped.
 // Auth: Bearer-token moet matchen claimed_by_token_id van de job.
 // Triggert automatisch een SSE-event naar de UI via pg_notify.
+//
+// 'skipped' is de no-op exit voor TASK_IMPLEMENTATION jobs waar verify_task_against_plan
+// EMPTY oplevert omdat de wijzigingen al in origin/main staan (parallel werk, eerdere
+// PR, race tussen siblings). Geen verify-gate, geen PR, geen cascade. De worker moet
+// de bijbehorende task apart op DONE zetten via update_task_status als de inhoudelijke
+// vereisten al zijn voldaan.
 
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
@@ -38,7 +44,7 @@ async function fetchConflictFiles(prUrl: string): Promise<string[]> {
 
 const inputSchema = z.object({
   job_id: z.string().min(1),
-  status: z.enum(['running', 'done', 'failed']),
+  status: z.enum(['running', 'done', 'failed', 'skipped']),
   branch: z.string().min(1).optional(),
   summary: z.string().max(1_000).optional(),
   error: z.string().max(2_000).optional(),
@@ -52,7 +58,7 @@ const inputSchema = z.object({
 export async function cleanupWorktreeForTerminalStatus(
   productId: string,
   jobId: string,
-  status: 'done' | 'failed',
+  status: 'done' | 'failed' | 'skipped',
   branch: string | undefined,
 ): Promise<void> {
   const repoRoot = await resolveRepoRoot(productId)
@@ -329,11 +335,12 @@ const DB_STATUS_MAP = {
   running: 'RUNNING',
   done: 'DONE',
   failed: 'FAILED',
+  skipped: 'SKIPPED',
 } as const
 
 export function resolveNextAction(
   queueCount: number,
-  status: 'running' | 'done' | 'failed',
+  status: 'running' | 'done' | 'failed' | 'skipped',
 ): 'wait_for_job_again' | 'queue_empty' | 'idle' {
   if (status === 'running') return 'idle'
   return queueCount > 0 ? 'wait_for_job_again' : 'queue_empty'
@@ -501,13 +508,18 @@ export function registerUpdateJobStatusTool(server: McpServer) {
       title: 'Update job status',
       description:
         'Report progress on a claimed ClaudeJob. Allowed transitions from CLAIMED/RUNNING: ' +
-        'running (start), done (finished), failed (error). ' +
+        'running (start), done (finished), failed (error), skipped (no-op exit). ' +
         'The Bearer token must match the token that claimed the job. ' +
         'Before marking done: call verify_task_against_plan first — done is rejected when ' +
         'verify_result is null, EMPTY (unless task.verify_only is true), or when the verify level ' +
         'doesn’t meet task.verify_required: ALIGNED-only is strict; ALIGNED_OR_PARTIAL accepts ' +
         'PARTIAL/DIVERGENT but requires a non-empty summary (≥20 chars) explaining the drift; ANY ' +
         'accepts everything. ' +
+        "Use 'skipped' for TASK_IMPLEMENTATION when verify_task_against_plan returns EMPTY because " +
+        'the requested changes are already present in origin/main (parallel work, earlier PR, race ' +
+        "between siblings). 'skipped' requires a non-empty error (≥10 chars) describing the reason " +
+        "(e.g. 'no_op_changes_already_in_main') and skips the verify-gate, auto-PR and PBI fail-cascade. " +
+        'Mark the underlying task DONE separately via update_task_status if its requirements are met. ' +
         'Automatically emits an SSE event so the Scrum4Me UI updates in real time. ' +
         'Optionally accepts token-usage fields (model_id + input/output/cache_read/cache_write tokens) ' +
         'for cost tracking — typically populated by a PostToolUse hook from the local Claude Code transcript, ' +
@@ -563,6 +575,23 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         }
         if (!['CLAIMED', 'RUNNING'].includes(job.status)) {
           return toolError(`Job is already in terminal state: ${job.status.toLowerCase()}`)
+        }
+
+        // 'skipped' = no-op exit. Only valid for TASK_IMPLEMENTATION (verify=EMPTY
+        // patroon) en vereist een non-empty error met ≥10 chars uitleg, zoals
+        // 'no_op_changes_already_in_main'. Geen verify-gate, geen PR, geen
+        // PBI fail-cascade, geen propagation naar task/story/PBI.
+        if (status === 'skipped') {
+          if (job.kind !== 'TASK_IMPLEMENTATION') {
+            return toolError(
+              `'skipped' is alleen toegestaan voor TASK_IMPLEMENTATION (kind=${job.kind})`,
+            )
+          }
+          if (!error || error.trim().length < 10) {
+            return toolError(
+              "'skipped' vereist non-empty error met reden (≥10 chars), bv. 'no_op_changes_already_in_main'",
+            )
+          }
         }
 
         // For DONE: push first, adjust DB status based on result
@@ -663,7 +692,9 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           data: {
             status: dbStatus,
             ...(actualStatus === 'running' ? { started_at: now } : {}),
-            ...(actualStatus === 'done' || actualStatus === 'failed' ? { finished_at: now } : {}),
+            ...(actualStatus === 'done' || actualStatus === 'failed' || actualStatus === 'skipped'
+              ? { finished_at: now }
+              : {}),
             ...(branchToWrite !== undefined ? { branch: branchToWrite } : {}),
             ...(pushedAt !== undefined ? { pushed_at: pushedAt } : {}),
             ...(summary !== undefined ? { summary } : {}),
@@ -881,7 +912,10 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         }
 
         // Best-effort worktree cleanup on terminal transitions (skip if push failed — worktree preserved)
-        if ((actualStatus === 'done' || actualStatus === 'failed') && !skipWorktreeCleanup) {
+        if (
+          (actualStatus === 'done' || actualStatus === 'failed' || actualStatus === 'skipped') &&
+          !skipWorktreeCleanup
+        ) {
           await cleanupWorktreeForTerminalStatus(job.product_id, job_id, actualStatus, branchToWrite)
         }
 
@@ -973,7 +1007,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
 
         // PBI-9: release product-worktree locks on terminal transitions.
         // No-op for jobs without registered locks (i.e. TASK_IMPLEMENTATION).
-        if (actualStatus === 'done' || actualStatus === 'failed') {
+        if (actualStatus === 'done' || actualStatus === 'failed' || actualStatus === 'skipped') {
           await releaseLocksOnTerminal(job_id)
         }
 
