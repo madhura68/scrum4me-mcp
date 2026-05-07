@@ -308,12 +308,15 @@ export async function tryClaimJob(
 ): Promise<string | null> {
   // Atomic claim in a single transaction — also captures plan_snapshot from task.
   //
-  // Sprint-flow filter (PBI-46):
-  //   Idea-jobs (task_id IS NULL) blijven onafhankelijk claimable.
-  //   Task-jobs zijn alleen claimable wanneer ze aan een actieve SprintRun
-  //   hangen (status QUEUED of RUNNING). Legacy task-jobs zonder sprint_run_id
-  //   en jobs in PAUSED/FAILED/CANCELLED/DONE SprintRuns worden overgeslagen.
+  // PBI-50: claim-filter discrimineert via cj.kind:
+  //   - IDEA_GRILL/IDEA_MAKE_PLAN/PLAN_CHAT: standalone idea-jobs.
+  //   - TASK_IMPLEMENTATION/SPRINT_IMPLEMENTATION: alleen via actieve SprintRun
+  //     (status QUEUED of RUNNING). Legacy task-jobs zonder sprint_run_id en
+  //     jobs in PAUSED/FAILED/CANCELLED/DONE SprintRuns worden overgeslagen.
   //   Bij eerste claim van een nog QUEUED SprintRun → status RUNNING.
+  //
+  // PBI-50 lease: lease_until = NOW() + 5min op claim. resetStaleClaimedJobs
+  // reset bij verlopen lease.
   const rows = await prisma.$transaction(async (tx) => {
     const found = productId
       ? await tx.$queryRaw<
@@ -327,8 +330,10 @@ export async function tryClaimJob(
             AND cj.product_id = ${productId}
             AND cj.status = 'QUEUED'
             AND (
-              cj.task_id IS NULL
-              OR (cj.sprint_run_id IS NOT NULL AND sr.status IN ('QUEUED', 'RUNNING'))
+              cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'PLAN_CHAT')
+              OR (cj.kind IN ('TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION')
+                  AND cj.sprint_run_id IS NOT NULL
+                  AND sr.status IN ('QUEUED', 'RUNNING'))
             )
           ORDER BY cj.created_at ASC
           LIMIT 1
@@ -344,8 +349,10 @@ export async function tryClaimJob(
           WHERE cj.user_id = ${userId}
             AND cj.status = 'QUEUED'
             AND (
-              cj.task_id IS NULL
-              OR (cj.sprint_run_id IS NOT NULL AND sr.status IN ('QUEUED', 'RUNNING'))
+              cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'PLAN_CHAT')
+              OR (cj.kind IN ('TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION')
+                  AND cj.sprint_run_id IS NOT NULL
+                  AND sr.status IN ('QUEUED', 'RUNNING'))
             )
           ORDER BY cj.created_at ASC
           LIMIT 1
@@ -362,7 +369,8 @@ export async function tryClaimJob(
       SET status = 'CLAIMED',
           claimed_by_token_id = ${tokenId},
           claimed_at = NOW(),
-          plan_snapshot = ${snapshot}
+          plan_snapshot = ${snapshot},
+          lease_until = NOW() + INTERVAL '5 minutes'
       WHERE id = ${jobId}
     `
 
