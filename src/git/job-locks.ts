@@ -23,15 +23,19 @@ export async function setupProductWorktrees(
   // Ensure parent dir exists so lockfile creation succeeds
   await fs.mkdir(path.join(getWorktreeRoot(), '_products'), { recursive: true })
 
-  // Lock-first, alphabetically sorted (deadlock prevention for multi-product idea-jobs)
+  // Lock-first, alphabetically sorted (deadlock prevention for multi-product idea-jobs).
+  // Locks acquired in sorted order; output preserves caller's input order so that
+  // worktrees[0] is the primary product (Idea.product_id), regardless of how its
+  // id sorts alphabetically against secondary products.
   const sorted = [...productIds].sort()
   const lockPaths = sorted.map(getProductWorktreeLockPath)
   const releaseAll = await acquireFileLocksOrdered(lockPaths)
   registerJobLockReleases(jobId, [releaseAll])
 
-  // After lock-acquire, create/reuse worktrees and sync
+  // After lock-acquire, create/reuse worktrees and sync — iterate input order
+  // so callers get back [primary, ...secondaries] in their original sequence.
   const out: Array<{ productId: string; worktreePath: string }> = []
-  for (const productId of sorted) {
+  for (const productId of productIds) {
     const repoRoot = await resolveRepoRoot(productId)
     if (!repoRoot) continue
     const { worktreePath } = await getOrCreateProductWorktree({ repoRoot, productId })

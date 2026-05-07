@@ -590,25 +590,41 @@ export function registerUpdateJobStatusTool(server: McpServer) {
 
         // SPRINT-mode: bij sprint-DONE de draft-PR ready-for-review zetten.
         // Mens reviewt + mergt zelf — geen auto-merge in deze modus.
-        if (sprintRunBecameDone && updated.pr_url) {
-          const sprintRun = await prisma.claudeJob
+        // PBI-49 P2: gebruik niet alleen updated.pr_url — als de laatste task
+        // verify-only is of geen wijzigingen pusht, krijgt die geen pr_url.
+        // Zoek de eerst aangemaakte PR op binnen de SprintRun als fallback.
+        if (sprintRunBecameDone) {
+          const ctx = await prisma.claudeJob
             .findUnique({
               where: { id: job_id },
               select: {
+                sprint_run_id: true,
                 sprint_run: { select: { pr_strategy: true, status: true } },
               },
             })
-            .then((j) => j?.sprint_run)
-          if (sprintRun?.pr_strategy === 'SPRINT' && sprintRun.status === 'DONE') {
-            try {
-              const ready = await markPullRequestReady({ prUrl: updated.pr_url })
-              if ('error' in ready) {
-                console.warn(
-                  `[update_job_status] markPullRequestReady failed for ${updated.pr_url}: ${ready.error}`,
-                )
+          if (
+            ctx?.sprint_run?.pr_strategy === 'SPRINT'
+            && ctx.sprint_run.status === 'DONE'
+            && ctx.sprint_run_id
+          ) {
+            const sprintPrUrl = updated.pr_url
+              ?? (await prisma.claudeJob.findFirst({
+                where: { sprint_run_id: ctx.sprint_run_id, pr_url: { not: null } },
+                orderBy: { created_at: 'asc' },
+                select: { pr_url: true },
+              }))?.pr_url
+              ?? null
+            if (sprintPrUrl) {
+              try {
+                const ready = await markPullRequestReady({ prUrl: sprintPrUrl })
+                if ('error' in ready) {
+                  console.warn(
+                    `[update_job_status] markPullRequestReady failed for ${sprintPrUrl}: ${ready.error}`,
+                  )
+                }
+              } catch (err) {
+                console.warn(`[update_job_status] markPullRequestReady error:`, err)
               }
-            } catch (err) {
-              console.warn(`[update_job_status] markPullRequestReady error:`, err)
             }
           }
         }

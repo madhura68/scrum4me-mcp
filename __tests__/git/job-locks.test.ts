@@ -118,4 +118,19 @@ describe('job-locks: setupProductWorktrees', () => {
     // Lock was still acquired and registered — release cleans up
     await releaseLocksOnTerminal('j3')
   })
+
+  it('output preserves input order regardless of alphabetical lock-acquire order', async () => {
+    // 'z-primary' sorts AFTER 'a-secondary' alphabetically, but caller passes
+    // primary first → output[0] must be 'z-primary' so wait_for_job's
+    // primary_worktree_path = worktrees[0]?.worktreePath points at the right repo.
+    const result = await setupProductWorktrees(
+      'j4',
+      ['z-primary', 'a-secondary'],
+      async () => originRepo,
+    )
+    expect(result).toHaveLength(2)
+    expect(result[0].productId).toBe('z-primary')
+    expect(result[1].productId).toBe('a-secondary')
+    await releaseLocksOnTerminal('j4')
+  })
 })
