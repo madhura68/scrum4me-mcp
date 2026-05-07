@@ -428,9 +428,27 @@ async function getFullJobContext(jobId: string) {
         involvedProductIds.push(ip.product_id)
       }
     }
-    const worktrees = involvedProductIds.length > 0
-      ? await setupProductWorktrees(job.id, involvedProductIds, (pid) => resolveRepoRoot(pid))
-      : []
+    // PBI-49 P1: rollback the claim if worktree setup fails so the job
+    // doesn't hang in CLAIMED until the 30-min stale-reset, and any partial
+    // locks are released. Mirrors attachWorktreeToJob's task-pad behaviour.
+    let worktrees: Array<{ productId: string; worktreePath: string }> = []
+    if (involvedProductIds.length > 0) {
+      try {
+        worktrees = await setupProductWorktrees(
+          job.id,
+          involvedProductIds,
+          (pid) => resolveRepoRoot(pid),
+        )
+      } catch (err) {
+        console.warn(
+          `[wait-for-job] product-worktree setup failed for idea-job ${job.id}; rolling back claim:`,
+          err,
+        )
+        await releaseLocksOnTerminal(job.id)
+        await rollbackClaim(job.id)
+        return null
+      }
+    }
 
     return {
       job_id: job.id,
