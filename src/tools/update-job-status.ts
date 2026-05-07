@@ -24,6 +24,7 @@ import { pushBranchForJob } from '../git/push.js'
 import { createPullRequest, markPullRequestReady } from '../git/pr.js'
 import { cancelPbiOnFailure } from '../cancel/pbi-cascade.js'
 import { propagateStatusUpwards } from '../lib/tasks-status-update.js'
+import { triggerPush } from '../lib/push-trigger.js'
 import { transition as prFlowTransition } from '../flow/pr-flow.js'
 import { transition as sprintRunTransition } from '../flow/sprint-run.js'
 import { executeEffects } from '../flow/effects.js'
@@ -887,28 +888,38 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         try {
           const pg = new Client({ connectionString: process.env.DATABASE_URL })
           await pg.connect()
-          await pg.query(
-            `SELECT pg_notify('scrum4me_changes', $1)`,
-            [
-              JSON.stringify({
-                type: 'claude_job_status',
-                job_id: updated.id,
-                task_id: job.task_id,
-                user_id: job.user_id,
-                product_id: job.product_id,
-                status: actualStatus,
-                branch: updated.branch ?? undefined,
-                pushed_at: updated.pushed_at?.toISOString() ?? undefined,
-                pr_url: updated.pr_url ?? undefined,
-                verify_result: updated.verify_result?.toLowerCase() ?? undefined,
-                summary: updated.summary ?? undefined,
-                error: updated.error ?? undefined,
-              }),
-            ],
-          )
+          const notifyPayload: Record<string, unknown> = {
+            type: 'claude_job_status',
+            job_id: updated.id,
+            user_id: job.user_id,
+            product_id: job.product_id,
+            status: actualStatus,
+            branch: updated.branch ?? undefined,
+            pushed_at: updated.pushed_at?.toISOString() ?? undefined,
+            pr_url: updated.pr_url ?? undefined,
+            verify_result: updated.verify_result?.toLowerCase() ?? undefined,
+            summary: updated.summary ?? undefined,
+            error: updated.error ?? undefined,
+          }
+          if (job.task_id) notifyPayload.task_id = job.task_id
+          if (job.idea_id) {
+            notifyPayload.idea_id = job.idea_id
+            notifyPayload.kind = job.kind
+          }
+          await pg.query(`SELECT pg_notify('scrum4me_changes', $1)`, [JSON.stringify(notifyPayload)])
           await pg.end()
         } catch {
           // non-fatal — status is already persisted
+        }
+
+        if (actualStatus === 'failed' || actualStatus === 'done') {
+          const isFailed = actualStatus === 'failed'
+          void triggerPush(job.user_id, {
+            title: isFailed ? 'Job gefaald' : 'Job klaar',
+            body: (updated.summary ?? updated.error ?? `Job ${updated.id}`).slice(0, 120),
+            url: updated.pr_url ?? '/dashboard',
+            tag: `job-${updated.id}`,
+          })
         }
 
         // Best-effort worktree cleanup on terminal transitions (skip if push failed — worktree preserved)
