@@ -47,6 +47,7 @@ async function runCascade(failedJobId: string): Promise<CascadeOutcome> {
     select: {
       id: true,
       kind: true,
+      status: true,
       product_id: true,
       task_id: true,
       branch: true,
@@ -65,6 +66,8 @@ async function runCascade(failedJobId: string): Promise<CascadeOutcome> {
 
   if (!failedJob) return EMPTY
   if (failedJob.kind !== 'TASK_IMPLEMENTATION') return EMPTY
+  // SKIPPED is een no-op exit (zie update_job_status). Geen cascade naar siblings.
+  if (failedJob.status === 'SKIPPED') return EMPTY
   const pbi = failedJob.task?.story?.pbi
   if (!pbi) return EMPTY
 
@@ -194,12 +197,21 @@ async function runCascade(failedJobId: string): Promise<CascadeOutcome> {
 
   // 4. Persist a trace on the failed-job's error field so the operator can
   //    follow up. Use a structured one-liner to keep the column readable.
+  //    Append to the existing error (separated by '\n---\n') so the original
+  //    failure reason is preserved instead of being overwritten by the trace.
   const trace = formatTrace(outcome)
   if (trace) {
     try {
+      const fresh = await prisma.claudeJob.findUnique({
+        where: { id: failedJobId },
+        select: { error: true },
+      })
+      const merged = fresh?.error
+        ? `${fresh.error}\n---\n${trace}`.slice(0, 1900)
+        : trace.slice(0, 1900)
       await prisma.claudeJob.update({
         where: { id: failedJobId },
-        data: { error: trace.slice(0, 1900) },
+        data: { error: merged },
       })
     } catch (err) {
       console.warn(`[pbi-cascade] failed to persist trace for ${failedJobId}:`, err)
