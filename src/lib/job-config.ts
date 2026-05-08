@@ -1,10 +1,21 @@
 // PBI-67: model + mode-selectie per ClaudeJob-kind.
 //
+// Sync met Scrum4Me/lib/job-config.ts — als je hier een veld aanpast,
+// doe hetzelfde aan de webapp-kant. Bewust duplicate (geen gedeeld
+// package) om de MCP-server eigenstandig te houden.
+//
 // Override-cascade (eerste match wint):
 //   1. task.requires_opus === true       → forceer Opus
 //   2. job.requested_*  (snapshot bij enqueue)
 //   3. product.preferred_*
 //   4. KIND_DEFAULTS hieronder
+//
+// CLI-flag-mapping (Claude CLI 2.1.x):
+//   - thinking_budget (number) → mapBudgetToEffort() → --effort {low,medium,high,xhigh,max}
+//     (de CLI heeft geen --thinking-budget flag — alleen --effort)
+//   - max_turns blijft audit-only: de CLI heeft géén --max-turns flag.
+//     De waarde wordt gesnapshot voor cost-attribution maar niet doorgegeven.
+//   - allowed_tools → --allowedTools (komma-gescheiden lijst)
 
 export type ClaudeModel =
   | 'claude-opus-4-7'
@@ -38,20 +49,52 @@ export type TaskInput = {
   requires_opus?: boolean | null
 }
 
+// Tool-allowlists per kind. Bewust géén `wait_for_job`, `check_queue_empty`
+// of `get_idea_context` — de runner (scrum4me-docker/bin/run-one-job.ts)
+// claimt voor Claude. Vangrail tegen recursieve claims binnen één invocation.
+const TASK_TOOLS = [
+  'Read', 'Edit', 'Write', 'Bash', 'Grep', 'Glob',
+  'mcp__scrum4me__get_claude_context',
+  'mcp__scrum4me__update_task_status',
+  'mcp__scrum4me__update_task_plan',
+  'mcp__scrum4me__log_implementation',
+  'mcp__scrum4me__log_test_result',
+  'mcp__scrum4me__log_commit',
+  'mcp__scrum4me__verify_task_against_plan',
+  'mcp__scrum4me__update_job_status',
+  'mcp__scrum4me__ask_user_question',
+  'mcp__scrum4me__get_question_answer',
+  'mcp__scrum4me__list_open_questions',
+  'mcp__scrum4me__cancel_question',
+  'mcp__scrum4me__worker_heartbeat',
+]
+
 const KIND_DEFAULTS: Record<string, JobConfig> = {
   IDEA_GRILL: {
     model: 'claude-sonnet-4-6',
     thinking_budget: 12000,
     permission_mode: 'plan',
     max_turns: 15,
-    allowed_tools: ['Read', 'Grep', 'Glob', 'WebSearch', 'AskUserQuestion'],
+    allowed_tools: [
+      'Read', 'Grep', 'Glob', 'WebSearch', 'AskUserQuestion',
+      'mcp__scrum4me__update_idea_grill_md',
+      'mcp__scrum4me__log_idea_decision',
+      'mcp__scrum4me__update_job_status',
+      'mcp__scrum4me__ask_user_question',
+      'mcp__scrum4me__get_question_answer',
+    ],
   },
   IDEA_MAKE_PLAN: {
     model: 'claude-opus-4-7',
     thinking_budget: 24000,
     permission_mode: 'plan',
     max_turns: 20,
-    allowed_tools: ['Read', 'Grep', 'Glob', 'WebSearch', 'AskUserQuestion', 'Write'],
+    allowed_tools: [
+      'Read', 'Grep', 'Glob', 'WebSearch', 'AskUserQuestion', 'Write',
+      'mcp__scrum4me__update_idea_plan_md',
+      'mcp__scrum4me__log_idea_decision',
+      'mcp__scrum4me__update_job_status',
+    ],
   },
   PLAN_CHAT: {
     model: 'claude-sonnet-4-6',
@@ -65,14 +108,20 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
     thinking_budget: 6000,
     permission_mode: 'bypassPermissions',
     max_turns: 50,
-    allowed_tools: null,
+    allowed_tools: TASK_TOOLS,
   },
   SPRINT_IMPLEMENTATION: {
     model: 'claude-sonnet-4-6',
     thinking_budget: 6000,
     permission_mode: 'bypassPermissions',
     max_turns: null,
-    allowed_tools: null,
+    // Geen `mcp__scrum4me__job_heartbeat` — de runner verlengt de lease
+    // automatisch via setInterval (zie scrum4me-docker/bin/run-one-job.ts).
+    allowed_tools: [
+      ...TASK_TOOLS,
+      'mcp__scrum4me__update_task_execution',
+      'mcp__scrum4me__verify_sprint_task',
+    ],
   },
 }
 
@@ -117,4 +166,21 @@ export function resolveJobConfig(
     max_turns: base.max_turns,
     allowed_tools: base.allowed_tools,
   }
+}
+
+// Map numeriek thinking_budget naar de Claude CLI 2.1.x --effort flag.
+// Returns null als de flag niet meegegeven moet worden (budget = 0).
+//
+// Mapping (sync met Scrum4Me/lib/job-config.ts):
+//   0           → null         (geen --effort flag)
+//   1..6000     → "medium"
+//   6001..12000 → "high"
+//   12001..24000→ "xhigh"
+//   >24000      → "max"
+export function mapBudgetToEffort(budget: number): string | null {
+  if (budget <= 0) return null
+  if (budget <= 6000) return 'medium'
+  if (budget <= 12000) return 'high'
+  if (budget <= 24000) return 'xhigh'
+  return 'max'
 }

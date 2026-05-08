@@ -446,7 +446,7 @@ export async function tryClaimJob(
   return rows.length > 0 ? rows[0].id : null
 }
 
-async function getFullJobContext(jobId: string) {
+export async function getFullJobContext(jobId: string) {
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     include: {
@@ -505,7 +505,7 @@ async function getFullJobContext(jobId: string) {
   if (job.kind === 'IDEA_GRILL' || job.kind === 'IDEA_MAKE_PLAN') {
     if (!job.idea) return null
     const { idea } = job
-    const { getIdeaPromptText } = await import('../lib/idea-prompts.js')
+    const { getIdeaPromptText } = await import('../lib/kind-prompts.js')
 
     // Setup persistent product-worktrees for this idea-job (PBI-9).
     // Primary product is gated by repo_url via resolveRepoRoot returning null.

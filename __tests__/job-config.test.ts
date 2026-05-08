@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getKindDefault, resolveJobConfig } from '../src/lib/job-config.js'
+import { getKindDefault, resolveJobConfig, mapBudgetToEffort } from '../src/lib/job-config.js'
 
 const KIND_EXPECTED = {
   IDEA_GRILL: { model: 'claude-sonnet-4-6', thinking_budget: 12000, permission_mode: 'plan', max_turns: 15 },
@@ -86,12 +86,81 @@ describe('resolveJobConfig — cascade', () => {
     expect(cfg.permission_mode).toBe('acceptEdits')
   })
 
-  it('max_turns en allowed_tools blijven kind-default ook met product- en job-overrides (geen V1-cascade)', () => {
+  it('max_turns blijft kind-default ook met product- en job-overrides (geen V1-cascade)', () => {
     const cfg = resolveJobConfig(
       { kind: 'IDEA_GRILL', requested_model: 'claude-haiku-4-5-20251001' },
       { preferred_model: 'claude-sonnet-4-6' },
     )
     expect(cfg.max_turns).toBe(15)
-    expect(cfg.allowed_tools).toEqual(['Read', 'Grep', 'Glob', 'WebSearch', 'AskUserQuestion'])
+  })
+})
+
+describe('KIND_DEFAULTS.allowed_tools', () => {
+  it('TASK_IMPLEMENTATION bevat geen claim-tools', () => {
+    const cfg = getKindDefault('TASK_IMPLEMENTATION')
+    expect(cfg.allowed_tools).not.toContain('mcp__scrum4me__wait_for_job')
+    expect(cfg.allowed_tools).not.toContain('mcp__scrum4me__check_queue_empty')
+    expect(cfg.allowed_tools).not.toContain('mcp__scrum4me__get_idea_context')
+  })
+
+  it('TASK_IMPLEMENTATION bevat de essentiële task-tools', () => {
+    const cfg = getKindDefault('TASK_IMPLEMENTATION')
+    expect(cfg.allowed_tools).toContain('mcp__scrum4me__update_task_status')
+    expect(cfg.allowed_tools).toContain('mcp__scrum4me__update_job_status')
+    expect(cfg.allowed_tools).toContain('mcp__scrum4me__verify_task_against_plan')
+    expect(cfg.allowed_tools).toContain('Bash')
+    expect(cfg.allowed_tools).toContain('Edit')
+    expect(cfg.allowed_tools).toContain('Write')
+  })
+
+  it('SPRINT_IMPLEMENTATION bevat sprint-specifieke tools maar GEEN job_heartbeat (runner doet die)', () => {
+    const cfg = getKindDefault('SPRINT_IMPLEMENTATION')
+    expect(cfg.allowed_tools).toContain('mcp__scrum4me__update_task_execution')
+    expect(cfg.allowed_tools).toContain('mcp__scrum4me__verify_sprint_task')
+    expect(cfg.allowed_tools).not.toContain('mcp__scrum4me__job_heartbeat')
+  })
+
+  it('IDEA_GRILL bevat update_idea_grill_md en geen wait_for_job', () => {
+    const cfg = getKindDefault('IDEA_GRILL')
+    expect(cfg.allowed_tools).toContain('mcp__scrum4me__update_idea_grill_md')
+    expect(cfg.allowed_tools).toContain('mcp__scrum4me__log_idea_decision')
+    expect(cfg.allowed_tools).toContain('mcp__scrum4me__update_job_status')
+    expect(cfg.allowed_tools).not.toContain('mcp__scrum4me__wait_for_job')
+  })
+
+  it('IDEA_MAKE_PLAN bevat update_idea_plan_md en geen wait_for_job', () => {
+    const cfg = getKindDefault('IDEA_MAKE_PLAN')
+    expect(cfg.allowed_tools).toContain('mcp__scrum4me__update_idea_plan_md')
+    expect(cfg.allowed_tools).toContain('mcp__scrum4me__log_idea_decision')
+    expect(cfg.allowed_tools).not.toContain('mcp__scrum4me__wait_for_job')
+  })
+
+  it('alle kinds hebben non-null allowed_tools', () => {
+    for (const kind of ['IDEA_GRILL', 'IDEA_MAKE_PLAN', 'PLAN_CHAT', 'TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION']) {
+      const cfg = getKindDefault(kind)
+      expect(cfg.allowed_tools).not.toBeNull()
+      expect(Array.isArray(cfg.allowed_tools)).toBe(true)
+    }
+  })
+})
+
+describe('mapBudgetToEffort', () => {
+  it.each([
+    [0, null],
+    [-1, null],
+    [1, 'medium'],
+    [3000, 'medium'],
+    [6000, 'medium'],
+    [6001, 'high'],
+    [9000, 'high'],
+    [12000, 'high'],
+    [12001, 'xhigh'],
+    [18000, 'xhigh'],
+    [24000, 'xhigh'],
+    [24001, 'max'],
+    [50000, 'max'],
+    [100000, 'max'],
+  ])('budget %i → %s', (budget, expected) => {
+    expect(mapBudgetToEffort(budget)).toBe(expected)
   })
 })
