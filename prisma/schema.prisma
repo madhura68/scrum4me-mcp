@@ -200,6 +200,9 @@ model Product {
   definition_of_done String
   auto_pr            Boolean          @default(false)
   pr_strategy        PrStrategy       @default(SPRINT)
+  preferred_model            String?
+  thinking_budget_default    Int?
+  preferred_permission_mode  String?
   archived           Boolean          @default(false)
   created_at         DateTime         @default(now())
   updated_at         DateTime         @updatedAt
@@ -353,6 +356,7 @@ model Task {
   status                 TaskStatus            @default(TO_DO)
   verify_only            Boolean               @default(false)
   verify_required        VerifyRequired        @default(ALIGNED_OR_PARTIAL)
+  requires_opus          Boolean               @default(false)
   // Override product.repo_url for branch/worktree/push purposes. Set when
   // a task targets a different repo than its parent product (e.g. an
   // MCP-server task tracked under the main product's PBI). Falls back to
@@ -398,6 +402,10 @@ model ClaudeJob {
   output_tokens       Int?
   cache_read_tokens   Int?
   cache_write_tokens  Int?
+  requested_model            String?
+  requested_thinking_budget  Int?
+  requested_permission_mode  String?
+  actual_thinking_tokens     Int?
   plan_snapshot       String?
   base_sha            String?
   head_sha            String?

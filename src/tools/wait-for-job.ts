@@ -18,6 +18,7 @@ import { createWorktreeForJob } from '../git/worktree.js'
 import { getWorktreeRoot } from '../git/worktree-paths.js'
 import { setupProductWorktrees, releaseLocksOnTerminal } from '../git/job-locks.js'
 import { pushBranchForJob } from '../git/push.js'
+import { resolveJobConfig } from '../lib/job-config.js'
 
 /** Parse `https://github.com/<owner>/<name>(.git)?` → `<name>`. */
 export function repoNameFromUrl(repoUrl: string | null | undefined): string | null {
@@ -467,10 +468,37 @@ async function getFullJobContext(jobId: string) {
           },
         },
       },
-      product: { select: { id: true, name: true, repo_url: true, definition_of_done: true } },
+      product: {
+        select: {
+          id: true,
+          name: true,
+          repo_url: true,
+          definition_of_done: true,
+          preferred_model: true,
+          thinking_budget_default: true,
+          preferred_permission_mode: true,
+        },
+      },
     },
   })
   if (!job) return null
+
+  // PBI-67: model + mode-selectie. Resolved op claim-moment; override-cascade
+  // task.requires_opus → job.requested_* → product.preferred_* → kind-default.
+  const config = resolveJobConfig(
+    {
+      kind: job.kind,
+      requested_model: job.requested_model,
+      requested_thinking_budget: job.requested_thinking_budget,
+      requested_permission_mode: job.requested_permission_mode,
+    },
+    {
+      preferred_model: job.product.preferred_model,
+      thinking_budget_default: job.product.thinking_budget_default,
+      preferred_permission_mode: job.product.preferred_permission_mode,
+    },
+    job.task ? { requires_opus: job.task.requires_opus } : undefined,
+  )
 
   // M12: branch on kind. Idea-jobs hebben geen task/story/pbi/sprint; ze
   // hebben in plaats daarvan idea + embedded prompt_text.
@@ -515,6 +543,7 @@ async function getFullJobContext(jobId: string) {
       job_id: job.id,
       kind: job.kind,
       status: 'claimed',
+      config,
       idea: {
         id: idea.id,
         code: idea.code,
@@ -659,6 +688,7 @@ async function getFullJobContext(jobId: string) {
       job_id: job.id,
       kind: job.kind,
       status: 'claimed',
+      config,
       sprint: {
         id: sprintRun.sprint.id,
         sprint_goal: sprintRun.sprint.sprint_goal,
@@ -724,6 +754,7 @@ async function getFullJobContext(jobId: string) {
     job_id: job.id,
     kind: job.kind,
     status: 'claimed',
+    config,
     task: {
       id: task.id,
       title: task.title,

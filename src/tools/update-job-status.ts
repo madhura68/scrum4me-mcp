@@ -54,6 +54,7 @@ const inputSchema = z.object({
   output_tokens: z.number().int().nonnegative().optional(),
   cache_read_tokens: z.number().int().nonnegative().optional(),
   cache_write_tokens: z.number().int().nonnegative().optional(),
+  actual_thinking_tokens: z.number().int().nonnegative().optional(),
 })
 
 export async function cleanupWorktreeForTerminalStatus(
@@ -539,6 +540,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
       output_tokens,
       cache_read_tokens,
       cache_write_tokens,
+      actual_thinking_tokens,
     }) =>
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
@@ -707,6 +709,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             ...(output_tokens !== undefined ? { output_tokens } : {}),
             ...(cache_read_tokens !== undefined ? { cache_read_tokens } : {}),
             ...(cache_write_tokens !== undefined ? { cache_write_tokens } : {}),
+            ...(actual_thinking_tokens !== undefined ? { actual_thinking_tokens } : {}),
           },
           select: {
             id: true,
