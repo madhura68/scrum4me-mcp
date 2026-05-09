@@ -26,11 +26,27 @@ describe('getKindPromptText', () => {
     expect(text).toMatch(/GEEN.*job_heartbeat/)
   })
 
-  it.each(['TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION', 'PLAN_CHAT'] as const)(
-    '%s-prompt noemt $PAYLOAD_PATH als variabele',
+  it.each(KINDS)(
+    '%s-prompt noemt $PAYLOAD_PATH als variabele (alle kinds — runner doet substitution)',
     (kind) => {
       const text = getKindPromptText(kind)
       expect(text).toContain('$PAYLOAD_PATH')
+    },
+  )
+
+  it.each(['IDEA_GRILL', 'IDEA_MAKE_PLAN'] as const)(
+    '%s-prompt verwijst niet meer naar wait_for_job (refactor: runner claimt)',
+    (kind) => {
+      const text = getKindPromptText(kind)
+      expect(text).not.toContain('wait_for_job')
+    },
+  )
+
+  it.each(['IDEA_GRILL', 'IDEA_MAKE_PLAN'] as const)(
+    '%s-prompt bevat geen onvervangen {idea_*} placeholders',
+    (kind) => {
+      const text = getKindPromptText(kind)
+      expect(text).not.toMatch(/\{idea_code\}|\{idea_title\}/)
     },
   )
 })

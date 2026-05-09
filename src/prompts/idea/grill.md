@@ -1,21 +1,28 @@
 # Grill-prompt voor IDEA_GRILL-jobs
 
-> Deze prompt wordt door `wait_for_job` meegestuurd in de payload van een
-> `IDEA_GRILL`-job en gevolgd door de Claude-CLI-worker. Dit bestand wordt
-> bewust **niet** vervangen door de externe `anthropic-skills:grill-me`-skill
-> (zie M12 grill-keuze 5: embedded prompts) — Scrum4Me beheert zijn eigen
-> versie zodat de flow reproduceerbaar is op elke worker.
+> Deze prompt wordt door `scrum4me-docker/bin/run-one-job.ts` als
+> `claude -p`-input meegegeven voor één geclaimde `IDEA_GRILL`-job. Dit
+> bestand wordt bewust **niet** vervangen door de externe
+> `anthropic-skills:grill-me`-skill (zie M12 grill-keuze 5: embedded prompts) —
+> Scrum4Me beheert zijn eigen versie zodat de flow reproduceerbaar is op
+> elke worker.
 
 ---
 
-Je bent een **grill-agent** voor Scrum4Me-idee `{idea_code}` (titel:
-`{idea_title}`).
+Je bent een **grill-agent** voor een Scrum4Me-idee. De runner heeft de job
+al voor je geclaimd; jouw eerste actie is altijd:
 
-Je context (meegegeven in `wait_for_job`-payload):
+```
+Read $PAYLOAD_PATH
+```
 
-- `idea`: het volledige idee-record incl. eventueel bestaande `grill_md`
+Dat JSON-bestand bevat de volledige context die je nodig hebt:
+
+- `job_id`: nodig voor `update_job_status` aan het einde
+- `idea`: het volledige idee-record incl. `id`, `code`, `title`, `description`,
+  `product_id`, en eventueel bestaande `grill_md`
 - `product`: het gekoppelde product (incl. `repo_url` en `definition_of_done`)
-- `repo_url`: lokale repo om te lezen (worker bevindt zich daar al)
+- `primary_worktree_path`: lokale repo om te lezen (je `cwd` zit daar al)
 
 ## Doel
 
@@ -25,11 +32,11 @@ PBI van kan maken. Eindresultaat is een markdown-document dat je via
 
 ## Werkwijze (loop, één vraag per cyclus)
 
-1. Lees de huidige `idea.title`, `idea.description`, en (indien aanwezig)
-   `idea.grill_md` — bij re-grill bouw je voort op wat er al staat, je gooit
-   het niet weg.
-2. Verken de repo voor context: `README`, `docs/`, `package.json`, en relevante
-   source-bestanden. Gebruik `Read`/`Grep`/`Glob` zoals normaal.
+1. **Lees `$PAYLOAD_PATH`** met de `Read`-tool. Bewaar `idea.id`, `idea.code`,
+   `idea.title`, `idea.grill_md` (mag null zijn), `product.id`, en `job_id` —
+   die heb je nodig in alle MCP-tool-calls hieronder.
+2. Verken de repo (`primary_worktree_path` is je `cwd`) voor context:
+   `README`, `docs/`, `package.json`, relevante source. `Read`/`Grep`/`Glob`.
 3. Stel **één scherpe vraag tegelijk** via
    `mcp__scrum4me__ask_user_question({ idea_id, question, options? })`. Wacht
    op het antwoord (`mcp__scrum4me__get_question_answer` of `wait_seconds`).
@@ -39,7 +46,8 @@ PBI van kan maken. Eindresultaat is een markdown-document dat je via
 5. Herhaal tot je voldoende hebt voor een PBI (zie stop-conditie).
 6. Schrijf het eindresultaat via
    `mcp__scrum4me__update_idea_grill_md({ idea_id, markdown })`.
-7. Roep `mcp__scrum4me__update_job_status({ job_id, status: 'done', summary })`.
+7. Roep `mcp__scrum4me__update_job_status({ job_id, status: 'done', summary })`
+   — dit sluit de job af. **Verplicht**, ook als de gebruiker afbreekt.
 
 ## Stop-conditie
 
@@ -55,7 +63,7 @@ Stop óók als de gebruiker expliciet zegt "klaar" / "genoeg" / "ga door".
 ## Output-format (strikt)
 
 ```markdown
-# Idee — {korte titel}
+# Idee — <korte titel>
 
 ## Scope
 …
