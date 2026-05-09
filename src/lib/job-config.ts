@@ -70,10 +70,15 @@ const TASK_TOOLS = [
 ]
 
 const KIND_DEFAULTS: Record<string, JobConfig> = {
+  // Idea-kinds en PLAN_CHAT draaien in `acceptEdits` (niet `plan`):
+  // `plan`-mode wacht op human-approval na elke planning-fase, wat in een
+  // autonome runner-context betekent dat Claude geen `update_job_status`
+  // aanroept en de job na lease-expiry FAILED'd. De `allowed_tools`-lijst
+  // doet de echte sandboxing (geen Bash, geen Edit, alleen Read/Grep/etc).
   IDEA_GRILL: {
     model: 'claude-sonnet-4-6',
     thinking_budget: 12000,
-    permission_mode: 'plan',
+    permission_mode: 'acceptEdits',
     max_turns: 15,
     allowed_tools: [
       'Read', 'Grep', 'Glob', 'WebSearch', 'AskUserQuestion',
@@ -87,7 +92,7 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
   IDEA_MAKE_PLAN: {
     model: 'claude-opus-4-7',
     thinking_budget: 24000,
-    permission_mode: 'plan',
+    permission_mode: 'acceptEdits',
     max_turns: 20,
     allowed_tools: [
       'Read', 'Grep', 'Glob', 'WebSearch', 'AskUserQuestion', 'Write',
@@ -99,9 +104,12 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
   PLAN_CHAT: {
     model: 'claude-sonnet-4-6',
     thinking_budget: 6000,
-    permission_mode: 'plan',
+    permission_mode: 'acceptEdits',
     max_turns: 5,
-    allowed_tools: ['Read', 'Grep', 'AskUserQuestion'],
+    allowed_tools: [
+      'Read', 'Grep', 'AskUserQuestion',
+      'mcp__scrum4me__update_job_status',
+    ],
   },
   TASK_IMPLEMENTATION: {
     model: 'claude-sonnet-4-6',
