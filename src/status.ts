@@ -6,6 +6,7 @@ const TASK_DB_TO_API = {
   REVIEW: 'review',
   DONE: 'done',
   FAILED: 'failed',
+  EXCLUDED: 'excluded',
 } as const satisfies Record<TaskStatus, string>
 
 const TASK_API_TO_DB: Record<string, TaskStatus> = {
@@ -14,6 +15,7 @@ const TASK_API_TO_DB: Record<string, TaskStatus> = {
   review: 'REVIEW',
   done: 'DONE',
   failed: 'FAILED',
+  excluded: 'EXCLUDED',
 }
 
 const STORY_DB_TO_API = {
