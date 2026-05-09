@@ -56,6 +56,7 @@ enum TaskStatus {
   REVIEW
   DONE
   FAILED
+  EXCLUDED
 }
 
 enum LogType {
@@ -70,8 +71,9 @@ enum TestStatus {
 }
 
 enum SprintStatus {
-  ACTIVE
-  COMPLETED
+  OPEN
+  CLOSED
+  ARCHIVED
   FAILED
 }
 
@@ -159,6 +161,7 @@ model User {
   claude_jobs         ClaudeJob[]
   claude_workers      ClaudeWorker[]
   started_sprint_runs SprintRun[]      @relation("SprintRunStartedBy")
+  push_subscriptions  PushSubscription[]
 
   @@index([active_product_id])
   @@map("users")
@@ -297,8 +300,9 @@ model Sprint {
   id           String       @id @default(cuid())
   product      Product      @relation(fields: [product_id], references: [id], onDelete: Cascade)
   product_id   String
+  code         String       @db.VarChar(30)
   sprint_goal  String
-  status       SprintStatus @default(ACTIVE)
+  status       SprintStatus @default(OPEN)
   start_date   DateTime?    @db.Date
   end_date     DateTime?    @db.Date
   created_at   DateTime     @default(now())
@@ -307,6 +311,7 @@ model Sprint {
   tasks        Task[]
   sprint_runs  SprintRun[]
 
+  @@unique([product_id, code])
   @@index([product_id, status])
   @@map("sprints")
 }
@@ -624,4 +629,19 @@ model ClaudeQuestion {
   @@index([product_id, status])
   @@index([status, expires_at])
   @@map("claude_questions")
+}
+
+model PushSubscription {
+  id           String   @id @default(cuid())
+  user         User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id      String
+  endpoint     String   @unique
+  p256dh       String
+  auth         String
+  user_agent   String?
+  created_at   DateTime @default(now())
+  last_used_at DateTime @default(now())
+
+  @@index([user_id])
+  @@map("push_subscriptions")
 }

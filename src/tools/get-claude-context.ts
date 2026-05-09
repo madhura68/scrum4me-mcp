@@ -47,7 +47,7 @@ export function registerGetClaudeContextTool(server: McpServer) {
         }
 
         const activeSprint = await prisma.sprint.findFirst({
-          where: { product_id, status: 'ACTIVE' },
+          where: { product_id, status: 'OPEN' },
           orderBy: { created_at: 'desc' },
           select: { id: true, sprint_goal: true, status: true },
         })

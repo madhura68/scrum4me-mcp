@@ -140,15 +140,15 @@ export async function propagateStatusUpwards(
 
       let nextStatus: SprintStatus
       if (anyPbiFailed) nextStatus = 'FAILED'
-      else if (allPbisDone) nextStatus = 'COMPLETED'
-      else nextStatus = 'ACTIVE'
+      else if (allPbisDone) nextStatus = 'CLOSED'
+      else nextStatus = 'OPEN'
 
       if (nextStatus !== sprint.status) {
         await tx.sprint.update({
           where: { id: sprint.id },
           data: {
             status: nextStatus,
-            ...(nextStatus === 'COMPLETED' ? { completed_at: new Date() } : {}),
+            ...(nextStatus === 'CLOSED' ? { completed_at: new Date() } : {}),
           },
         })
         sprintChanged = true
@@ -162,7 +162,7 @@ export async function propagateStatusUpwards(
     //   3. Story → Sprint → SprintRun.findFirst({ status: active }) (geen
     //      task-job, bv. handmatige task-statuswijziging via UI).
     let sprintRunChanged = false
-    if (nextSprintStatus === 'FAILED' || nextSprintStatus === 'COMPLETED') {
+    if (nextSprintStatus === 'FAILED' || nextSprintStatus === 'CLOSED') {
       let resolvedRunId: string | null = sprintRunId ?? null
       let cancelExceptJobId: string | null = null
 
