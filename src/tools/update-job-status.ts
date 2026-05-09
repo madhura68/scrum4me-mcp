@@ -71,31 +71,57 @@ export async function cleanupWorktreeForTerminalStatus(
     return
   }
 
-  // Branch-per-story: only remove the worktree if no sibling job in the same
-  // story is still active. If siblings are queued/claimed/running they will
-  // re-use this branch — destroying the worktree now wastes the next claim.
+  // Branch-shared check: bepaal welke siblings dezelfde branch reuse'n.
+  //   - SPRINT pr_strategy → alle TASK_IMPLEMENTATION jobs in dezelfde
+  //     sprint_run delen feat/sprint-<id>.
+  //   - STORY pr_strategy / legacy → alle TASK_IMPLEMENTATION jobs in
+  //     dezelfde story delen feat/story-<id>.
+  // Bij active siblings: defer cleanup (en in elk geval keepBranch=true)
+  // zodat de volgende claim de branch kan reuse'n.
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
-    select: { task: { select: { story_id: true } } },
+    select: {
+      task: { select: { story_id: true } },
+      sprint_run_id: true,
+      sprint_run: { select: { pr_strategy: true } },
+    },
   })
-  if (job?.task) {
-    const activeSiblings = await prisma.claudeJob.count({
+
+  let activeSiblings = 0
+  let scope = ''
+  if (job?.sprint_run && job.sprint_run.pr_strategy === 'SPRINT') {
+    activeSiblings = await prisma.claudeJob.count({
+      where: {
+        sprint_run_id: job.sprint_run_id,
+        status: { in: ['QUEUED', 'CLAIMED', 'RUNNING'] },
+        id: { not: jobId },
+      },
+    })
+    scope = `sprint_run ${job.sprint_run_id}`
+  } else if (job?.task) {
+    activeSiblings = await prisma.claudeJob.count({
       where: {
         task: { story_id: job.task.story_id },
         status: { in: ['QUEUED', 'CLAIMED', 'RUNNING'] },
         id: { not: jobId },
       },
     })
-    if (activeSiblings > 0) {
-      console.log(
-        `[update_job_status] cleanup deferred for job=${jobId}: ${activeSiblings} sibling(s) still active in story ${job.task.story_id}`,
-      )
-      return
-    }
+    scope = `story ${job.task.story_id}`
   }
 
-  // Keep branch when job is done and a branch was reported (agent pushed)
-  const keepBranch = status === 'done' && branch !== undefined
+  if (activeSiblings > 0) {
+    console.log(
+      `[update_job_status] cleanup deferred for job=${jobId}: ${activeSiblings} sibling(s) still active in ${scope}`,
+    )
+    return
+  }
+
+  // Keep branch when:
+  //   - job is done en agent rapporteerde push (branch !== undefined), of
+  //   - SPRINT pr_strategy job is skipped — andere stories delen branch.
+  const keepBranch =
+    (status === 'done' && branch !== undefined) ||
+    (status === 'skipped' && job?.sprint_run?.pr_strategy === 'SPRINT')
   try {
     await removeWorktreeForJob({ repoRoot, jobId, keepBranch })
   } catch (err) {
