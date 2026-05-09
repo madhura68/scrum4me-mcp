@@ -5,13 +5,26 @@ vi.mock('../src/git/push.js', () => ({
   pushBranchForJob: vi.fn(),
 }))
 
+vi.mock('../src/prisma.js', () => ({
+  prisma: {
+    claudeJob: {
+      findUnique: vi.fn(),
+    },
+  },
+}))
+
 import { pushBranchForJob } from '../src/git/push.js'
+import { prisma } from '../src/prisma.js'
 import { prepareDoneUpdate } from '../src/tools/update-job-status.js'
 
 const mockPush = pushBranchForJob as ReturnType<typeof vi.fn>
+const mockFindUnique = (prisma as unknown as {
+  claudeJob: { findUnique: ReturnType<typeof vi.fn> }
+}).claudeJob.findUnique
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockFindUnique.mockResolvedValue(null)
 })
 
 describe('prepareDoneUpdate', () => {
@@ -39,8 +52,25 @@ describe('prepareDoneUpdate', () => {
     })
   })
 
-  it('derives branchName from jobId when branch is undefined', async () => {
+  it('reads branchName from DB (claudeJob.branch) when branch arg is undefined', async () => {
     process.env.SCRUM4ME_AGENT_WORKTREE_DIR = '/wt'
+    mockFindUnique.mockResolvedValue({ branch: 'feat/sprint-fvy30lvv' })
+    mockPush.mockResolvedValue({ pushed: true, remoteRef: 'refs/heads/feat/sprint-fvy30lvv' })
+
+    await prepareDoneUpdate('job-abc12345', undefined)
+
+    expect(mockFindUnique).toHaveBeenCalledWith({
+      where: { id: 'job-abc12345' },
+      select: { branch: true },
+    })
+    expect(mockPush).toHaveBeenCalledWith(
+      expect.objectContaining({ branchName: 'feat/sprint-fvy30lvv' }),
+    )
+  })
+
+  it('falls back to feat/job-<8> when neither branch arg nor DB.branch is set', async () => {
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = '/wt'
+    mockFindUnique.mockResolvedValue({ branch: null })
     mockPush.mockResolvedValue({ pushed: true, remoteRef: 'refs/heads/feat/job-abc12345' })
 
     await prepareDoneUpdate('job-abc12345', undefined)
