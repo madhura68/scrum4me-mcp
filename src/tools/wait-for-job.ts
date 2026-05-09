@@ -202,12 +202,18 @@ export async function attachWorktreeToJob(
     } catch (err) {
       console.warn(`[attachWorktreeToJob] failed to resolve base_sha for ${jobId}:`, err)
     }
-    if (baseSha) {
-      await prisma.claudeJob.update({
-        where: { id: jobId },
-        data: { base_sha: baseSha },
-      })
-    }
+    // Persist branch + base_sha. update_job_status (prepareDoneUpdate)
+    // leest claudeJob.branch om naar de juiste ref te pushen — zonder deze
+    // update valt 'ie terug op het legacy `feat/job-<8>` patroon en faalt
+    // de push met "src refspec ... does not match any" voor sprint/story
+    // strategy branches.
+    await prisma.claudeJob.update({
+      where: { id: jobId },
+      data: {
+        branch: actualBranch,
+        ...(baseSha ? { base_sha: baseSha } : {}),
+      },
+    })
 
     return { worktree_path: worktreePath, branch_name: actualBranch, reused_branch: reused }
   } catch (err) {
