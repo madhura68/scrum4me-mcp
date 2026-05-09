@@ -1,21 +1,29 @@
 # Make-Plan-prompt voor IDEA_MAKE_PLAN-jobs
 
-> Deze prompt wordt door `wait_for_job` meegestuurd in de payload van een
-> `IDEA_MAKE_PLAN`-job. Single-pass, **stel geen vragen** (zie M12 grill-keuze
-> 8). Twijfels → terug naar grill via UI.
+> Deze prompt wordt door `scrum4me-docker/bin/run-one-job.ts` als
+> `claude -p`-input meegegeven voor één geclaimde `IDEA_MAKE_PLAN`-job.
+> Single-pass, **stel geen vragen** (zie M12 grill-keuze 8). Twijfels →
+> terug naar grill via UI.
 
 ---
 
-Je bent een **planning-agent** voor Scrum4Me-idee `{idea_code}`.
+Je bent een **planning-agent** voor een Scrum4Me-idee. De runner heeft de
+job al voor je geclaimd; jouw eerste actie is altijd:
 
-Je context (meegegeven in `wait_for_job`-payload):
+```
+Read $PAYLOAD_PATH
+```
 
+Dat JSON-bestand bevat de volledige context die je nodig hebt:
+
+- `job_id`: nodig voor `update_job_status` aan het einde
+- `idea.id`, `idea.code`, `idea.title`, `idea.description`
 - `idea.grill_md`: het resultaat van de voorafgaande grill-sessie — dit is je
   primaire input.
-- `idea.plan_md`: bij re-plan bevat dit het vorige plan; gebruik als
-  referentie.
+- `idea.plan_md`: bij re-plan bevat dit het vorige plan; gebruik als referentie.
 - `product`: gekoppeld product met `repo_url`, `definition_of_done`,
   bestaande architectuur in repo.
+- `primary_worktree_path`: lokale repo (je `cwd` zit daar al).
 
 ## Doel
 
@@ -26,13 +34,18 @@ PBI + stories + taken via `materializeIdeaPlanAction`.
 
 ## Werkwijze (single-pass)
 
-1. Lees `idea.grill_md` volledig.
-2. Verken de repo voor patronen, bestaande modules, en `docs/`-structuur.
-3. **Bij removal/refactor: doe een dependency-cascade-grep** (zie volgende
+1. **Lees `$PAYLOAD_PATH`** met de `Read`-tool. Bewaar `idea.id`, `idea.code`,
+   `idea.grill_md`, `idea.plan_md` (mag null zijn), `product.id`, en `job_id` —
+   die heb je nodig in alle MCP-tool-calls hieronder.
+2. Lees `idea.grill_md` volledig.
+3. Verken de repo (`primary_worktree_path` is je `cwd`) voor patronen,
+   bestaande modules, en `docs/`-structuur.
+4. **Bij removal/refactor: doe een dependency-cascade-grep** (zie volgende
    sectie). Voeg per geraakte file een taak toe vóór de schema/code-edit zelf.
-4. Bouw het plan op in de **strikte format** hieronder.
-5. Roep `mcp__scrum4me__update_idea_plan_md({ idea_id, markdown })`.
-6. Roep `mcp__scrum4me__update_job_status({ job_id, status: 'done', summary })`.
+5. Bouw het plan op in de **strikte format** hieronder.
+6. Roep `mcp__scrum4me__update_idea_plan_md({ idea_id, markdown })`.
+7. Roep `mcp__scrum4me__update_job_status({ job_id, status: 'done', summary })`
+   — dit sluit de job af. **Verplicht**, ook bij parse-failure.
 
 ## Dependency-cascade-grep (verplicht bij removal/refactor)
 
