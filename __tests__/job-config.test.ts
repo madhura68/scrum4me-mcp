@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest'
 import { getKindDefault, resolveJobConfig, mapBudgetToEffort } from '../src/lib/job-config.js'
 
 const KIND_EXPECTED = {
-  IDEA_GRILL: { model: 'claude-sonnet-4-6', thinking_budget: 12000, permission_mode: 'plan', max_turns: 15 },
-  IDEA_MAKE_PLAN: { model: 'claude-opus-4-7', thinking_budget: 24000, permission_mode: 'plan', max_turns: 20 },
-  PLAN_CHAT: { model: 'claude-sonnet-4-6', thinking_budget: 6000, permission_mode: 'plan', max_turns: 5 },
+  IDEA_GRILL: { model: 'claude-sonnet-4-6', thinking_budget: 12000, permission_mode: 'acceptEdits', max_turns: 15 },
+  IDEA_MAKE_PLAN: { model: 'claude-opus-4-7', thinking_budget: 24000, permission_mode: 'acceptEdits', max_turns: 20 },
+  PLAN_CHAT: { model: 'claude-sonnet-4-6', thinking_budget: 6000, permission_mode: 'acceptEdits', max_turns: 5 },
   TASK_IMPLEMENTATION: { model: 'claude-sonnet-4-6', thinking_budget: 6000, permission_mode: 'bypassPermissions', max_turns: 50 },
   SPRINT_IMPLEMENTATION: { model: 'claude-sonnet-4-6', thinking_budget: 6000, permission_mode: 'bypassPermissions', max_turns: null },
 } as const
