@@ -163,3 +163,53 @@ describe('classifyDiffAgainstPlan — delete-only commits', () => {
     expect(r.result).toBe('EMPTY')
   })
 })
+
+// Pseudo-paths in plans (code-snippets, attribute-syntax, ellipses) moeten
+// niet als plan-paden meetellen — anders krijg je PARTIAL terwijl het werk
+// volledig gedaan is. Regression-guard voor T-815-incident (sprint
+// cmoyiu4yd000zf917acq9twtr, 2026-05-09).
+describe('classifyDiffAgainstPlan — plan met pseudo-paths', () => {
+  it('negeert `data-debug-label="..."` als pseudo-pad en classificeert ALIGNED', () => {
+    const plan = [
+      'Verwijder alle voorkomens van `data-debug-label="..."` uit:',
+      '',
+      '- `app/components/shared/status-bar.tsx`',
+      '- `app/components/shared/header.tsx`',
+    ].join('\n')
+    const diff = makeDiff([
+      'app/components/shared/status-bar.tsx',
+      'app/components/shared/header.tsx',
+    ])
+    const r = classifyDiffAgainstPlan({ diff, plan })
+    expect(r.result).toBe('ALIGNED')
+  })
+
+  it('negeert ellipsis-tokens (drie of meer dots) als pad', () => {
+    const plan = 'Refactor `foo(...)` naar `bar()`. Files: `src/a.ts`.'
+    const diff = makeDiff(['src/a.ts'])
+    const r = classifyDiffAgainstPlan({ diff, plan })
+    expect(r.result).toBe('ALIGNED')
+  })
+
+  it('negeert tokens met operators/quotes als pad', () => {
+    const plan = 'Wijzig `props={x: 1}` en `useState<string>()` in `src/c.tsx`.'
+    const diff = makeDiff(['src/c.tsx'])
+    const r = classifyDiffAgainstPlan({ diff, plan })
+    expect(r.result).toBe('ALIGNED')
+  })
+
+  it('accepteert package.json en andere extension-only paths', () => {
+    const plan = 'Update `package.json` en `tsconfig.json`.'
+    const diff = makeDiff(['package.json', 'tsconfig.json'])
+    const r = classifyDiffAgainstPlan({ diff, plan })
+    expect(r.result).toBe('ALIGNED')
+  })
+
+  it('blijft PARTIAL retourneren wanneer een echt plan-pad ontbreekt', () => {
+    const plan = 'Wijzig `src/foo.ts` en `src/bar.ts`. Verwijder `data-x="..."`.'
+    const diff = makeDiff(['src/foo.ts'])
+    const r = classifyDiffAgainstPlan({ diff, plan })
+    expect(r.result).toBe('PARTIAL')
+    expect(r.reasoning).toMatch(/bar\.ts/)
+  })
+})

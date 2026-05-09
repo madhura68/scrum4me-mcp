@@ -27,7 +27,7 @@ function extractPlanPaths(plan: string): string[] {
   let m: RegExpExecArray | null
   while ((m = backtickRe.exec(plan)) !== null) {
     const p = m[1].trim()
-    if ((p.includes('/') || p.includes('.')) && !p.includes(' ') && p.length > 3) paths.add(p)
+    if (looksLikePath(p)) paths.add(p)
   }
 
   const bulletRe = /^[-*]\s+\*{0,2}([^\s*][^\s]*)\.([a-zA-Z]{1,6})\*{0,2}\s*[:\n]/gm
@@ -36,6 +36,20 @@ function extractPlanPaths(plan: string): string[] {
   }
 
   return [...paths]
+}
+
+// Heuristic: does this backtick-quoted token look like a file path?
+// Excludes code-snippets like `data-debug-label="..."`, `foo()`, `<div>` —
+// anything containing operator/quote/bracket chars or an ellipsis is rejected.
+// Accepts paths with a slash (multi-segment) or a recognisable file-extension
+// suffix (1–6 alphanumeric chars after a final dot, e.g. `.tsx`, `.json`).
+function looksLikePath(p: string): boolean {
+  if (p.length <= 3) return false
+  if (p.includes(' ')) return false
+  if (/[="'<>()[\]{};,]/.test(p)) return false
+  if (/\.{2,}/.test(p)) return false
+  if (!p.includes('/') && !/\.[a-zA-Z][a-zA-Z0-9]{0,5}$/.test(p)) return false
+  return true
 }
 
 // Path match: exact or suffix match so "classify.ts" matches "src/verify/classify.ts".
