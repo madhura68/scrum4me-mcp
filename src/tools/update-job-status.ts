@@ -119,9 +119,25 @@ export async function prepareDoneUpdate(
   jobId: string,
   branch: string | undefined,
 ): Promise<DoneUpdatePlan> {
+  // Resolve branch in deze volgorde:
+  //   1. Expliciete `branch`-arg van Claude (meestal niet meegegeven).
+  //   2. ClaudeJob.branch uit de DB — gezet door attachWorktreeToJob met de
+  //      juiste pr_strategy: feat/sprint-<id> voor SPRINT, feat/story-<id>
+  //      voor STORY met sibling-reuse.
+  //   3. Legacy fallback feat/job-<8> — alleen voor jobs zonder DB-branch
+  //      (zou niet moeten voorkomen na PBI-50).
+  let resolvedBranch = branch
+  if (!resolvedBranch) {
+    const dbJob = await prisma.claudeJob.findUnique({
+      where: { id: jobId },
+      select: { branch: true },
+    })
+    resolvedBranch = dbJob?.branch ?? undefined
+  }
+  const branchName = resolvedBranch ?? `feat/job-${jobId.slice(-8)}`
+
   const worktreeDir = getWorktreeRoot()
   const worktreePath = path.join(worktreeDir, jobId)
-  const branchName = branch ?? `feat/job-${jobId.slice(-8)}`
 
   const pushResult = await pushBranchForJob({ worktreePath, branchName })
 
