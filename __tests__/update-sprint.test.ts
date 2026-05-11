@@ -53,6 +53,7 @@ beforeEach(() => {
     status: 'OPEN',
     start_date: new Date('2026-05-11'),
     end_date: null,
+    completed_at: null,
   })
 })
 
@@ -77,7 +78,7 @@ describe('handleUpdateSprint', () => {
     expect(args.data).toEqual({ status: 'OPEN' })
   })
 
-  it('auto-sets end_date when status → CLOSED without explicit end_date', async () => {
+  it('auto-sets end_date AND completed_at when status → CLOSED without explicit end_date', async () => {
     const before = Date.now()
     await handleUpdateSprint({ sprint_id: SPRINT_ID, status: 'CLOSED' })
     const after = Date.now()
@@ -87,27 +88,28 @@ describe('handleUpdateSprint', () => {
     expect(args.data.end_date).toBeInstanceOf(Date)
     expect(args.data.end_date.getTime()).toBeGreaterThanOrEqual(before)
     expect(args.data.end_date.getTime()).toBeLessThanOrEqual(after)
+    expect(args.data.completed_at).toBeInstanceOf(Date)
+    expect(args.data.completed_at.getTime()).toBeGreaterThanOrEqual(before)
+    expect(args.data.completed_at.getTime()).toBeLessThanOrEqual(after)
   })
 
-  it('auto-sets end_date when status → FAILED', async () => {
+  it('auto-sets end_date when status → FAILED, but does NOT set completed_at', async () => {
     await handleUpdateSprint({ sprint_id: SPRINT_ID, status: 'FAILED' })
 
-    expect(mockPrisma.sprint.update.mock.calls[0][0].data.end_date).toBeInstanceOf(Date)
+    const args = mockPrisma.sprint.update.mock.calls[0][0]
+    expect(args.data.end_date).toBeInstanceOf(Date)
+    expect(args.data.completed_at).toBeUndefined()
   })
 
-  it('auto-sets end_date when status → ARCHIVED', async () => {
+  it('auto-sets end_date when status → ARCHIVED, but does NOT set completed_at', async () => {
     await handleUpdateSprint({ sprint_id: SPRINT_ID, status: 'ARCHIVED' })
 
-    expect(mockPrisma.sprint.update.mock.calls[0][0].data.end_date).toBeInstanceOf(Date)
+    const args = mockPrisma.sprint.update.mock.calls[0][0]
+    expect(args.data.end_date).toBeInstanceOf(Date)
+    expect(args.data.completed_at).toBeUndefined()
   })
 
-  it('does NOT auto-set end_date when status → OPEN', async () => {
-    await handleUpdateSprint({ sprint_id: SPRINT_ID, status: 'OPEN' })
-
-    expect(mockPrisma.sprint.update.mock.calls[0][0].data.end_date).toBeUndefined()
-  })
-
-  it('respects explicit end_date when status is terminal', async () => {
+  it('still sets completed_at when status → CLOSED even with explicit end_date', async () => {
     await handleUpdateSprint({
       sprint_id: SPRINT_ID,
       status: 'CLOSED',
@@ -116,6 +118,15 @@ describe('handleUpdateSprint', () => {
 
     const args = mockPrisma.sprint.update.mock.calls[0][0]
     expect(args.data.end_date.toISOString().slice(0, 10)).toBe('2025-12-31')
+    expect(args.data.completed_at).toBeInstanceOf(Date)
+  })
+
+  it('does NOT auto-set end_date or completed_at when status → OPEN', async () => {
+    await handleUpdateSprint({ sprint_id: SPRINT_ID, status: 'OPEN' })
+
+    const args = mockPrisma.sprint.update.mock.calls[0][0]
+    expect(args.data.end_date).toBeUndefined()
+    expect(args.data.completed_at).toBeUndefined()
   })
 
   it('updates multiple fields at once', async () => {
