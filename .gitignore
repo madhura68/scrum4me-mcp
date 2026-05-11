@@ -12,3 +12,6 @@ prisma/generated
 # Editor
 .vscode
 .idea
+
+# Claude Code worktrees (per-session, never tracked)
+.claude/worktrees/
