@@ -12,6 +12,8 @@ import { registerLogCommitTool } from './tools/log-commit.js'
 import { registerCreatePbiTool } from './tools/create-pbi.js'
 import { registerCreateStoryTool } from './tools/create-story.js'
 import { registerCreateTaskTool } from './tools/create-task.js'
+import { registerCreateSprintTool } from './tools/create-sprint.js'
+import { registerUpdateSprintTool } from './tools/update-sprint.js'
 import { registerAskUserQuestionTool } from './tools/ask-user-question.js'
 import { registerGetQuestionAnswerTool } from './tools/get-question-answer.js'
 import { registerListOpenQuestionsTool } from './tools/list-open-questions.js'
@@ -77,6 +79,9 @@ async function main() {
   registerCreatePbiTool(server)
   registerCreateStoryTool(server)
   registerCreateTaskTool(server)
+  // PBI-12: sprint lifecycle tools
+  registerCreateSprintTool(server)
+  registerUpdateSprintTool(server)
   registerAskUserQuestionTool(server)
   registerGetQuestionAnswerTool(server)
   registerListOpenQuestionsTool(server)
