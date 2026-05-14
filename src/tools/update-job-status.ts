@@ -390,6 +390,32 @@ export function resolveNextAction(
   return queueCount > 0 ? 'wait_for_job_again' : 'queue_empty'
 }
 
+export type JobTimestampUpdate = {
+  claimed_at?: Date
+  started_at?: Date
+  finished_at?: Date
+}
+
+// Bepaalt welke lifecycle-timestamps update_job_status schrijft bij een
+// status-overgang. Set-once (backfill alleen als nu null) houdt de invariant
+// claimed_at ≤ started_at ≤ finished_at: een job die CLAIMED → done gaat
+// zonder `running`-rapport krijgt alsnog een started_at, en claimed_at
+// (normaal door wait_for_job bij claim gezet) wordt nooit overschreven.
+export function resolveJobTimestamps(
+  status: 'running' | 'done' | 'failed' | 'skipped',
+  current: { claimed_at: Date | null; started_at: Date | null },
+  now: Date = new Date(),
+): JobTimestampUpdate {
+  const isTerminal = status === 'done' || status === 'failed' || status === 'skipped'
+  const update: JobTimestampUpdate = {}
+  if (current.claimed_at == null) update.claimed_at = now
+  if (current.started_at == null && (status === 'running' || isTerminal)) {
+    update.started_at = now
+  }
+  if (isTerminal) update.finished_at = now
+  return update
+}
+
 export async function maybeCreateAutoPr(opts: {
   jobId: string
   productId: string
@@ -569,6 +595,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         'Report progress on a claimed ClaudeJob. Allowed transitions from CLAIMED/RUNNING: ' +
         'running (start), done (finished), failed (error), skipped (no-op exit). ' +
         'The Bearer token must match the token that claimed the job. ' +
+        'Stamps started_at on running and finished_at on done/failed/skipped, and backfills ' +
+        'claimed_at/started_at when missing so claimed_at ≤ started_at ≤ finished_at always holds. ' +
         'Before marking done: call verify_task_against_plan first — done is rejected when ' +
         'verify_result is null, EMPTY (unless task.verify_only is true), or when the verify level ' +
         'doesn’t meet task.verify_required: ALIGNED-only is strict; ALIGNED_OR_PARTIAL accepts ' +
@@ -608,6 +636,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           select: {
             id: true,
             status: true,
+            claimed_at: true,
+            started_at: true,
             claimed_by_token_id: true,
             user_id: true,
             product_id: true,
@@ -751,10 +781,11 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           where: { id: job_id },
           data: {
             status: dbStatus,
-            ...(actualStatus === 'running' ? { started_at: now } : {}),
-            ...(actualStatus === 'done' || actualStatus === 'failed' || actualStatus === 'skipped'
-              ? { finished_at: now }
-              : {}),
+            ...resolveJobTimestamps(
+              actualStatus,
+              { claimed_at: job.claimed_at, started_at: job.started_at },
+              now,
+            ),
             ...(branchToWrite !== undefined ? { branch: branchToWrite } : {}),
             ...(pushedAt !== undefined ? { pushed_at: pushedAt } : {}),
             ...(summary !== undefined ? { summary } : {}),
