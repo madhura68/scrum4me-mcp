@@ -4,7 +4,7 @@ vi.mock('../src/prisma.js', () => ({
   prisma: {
     product: { findUnique: vi.fn() },
     task: { findUnique: vi.fn() },
-    claudeJob: { findFirst: vi.fn(), findUnique: vi.fn() },
+    claudeJob: { findFirst: vi.fn(), findMany: vi.fn(), findUnique: vi.fn() },
   },
 }))
 
@@ -22,6 +22,7 @@ const mockPrisma = prisma as unknown as {
   task: { findUnique: ReturnType<typeof vi.fn> }
   claudeJob: {
     findFirst: ReturnType<typeof vi.fn>
+    findMany: ReturnType<typeof vi.fn>
     findUnique: ReturnType<typeof vi.fn>
   }
 }
@@ -41,9 +42,10 @@ beforeEach(() => {
   mockPrisma.product.findUnique.mockResolvedValue({ auto_pr: true })
   mockPrisma.task.findUnique.mockResolvedValue({
     title: 'Add feature',
+    repo_url: null,
     story: { id: 'story-1', code: 'SCRUM-42', title: 'Story title' },
   })
-  mockPrisma.claudeJob.findFirst.mockResolvedValue(null) // no sibling PR by default
+  mockPrisma.claudeJob.findMany.mockResolvedValue([]) // no sibling PRs by default
   // Default: legacy job zonder sprint_run (STORY-mode pad).
   mockPrisma.claudeJob.findUnique.mockResolvedValue({ sprint_run_id: null, sprint_run: null })
   mockCreatePr.mockResolvedValue({ url: 'https://github.com/org/repo/pull/99' })
@@ -62,10 +64,25 @@ describe('maybeCreateAutoPr', () => {
   })
 
   it('reuses sibling pr_url when another job in same story already opened a PR', async () => {
-    mockPrisma.claudeJob.findFirst.mockResolvedValue({ pr_url: 'https://github.com/org/repo/pull/77' })
+    mockPrisma.claudeJob.findMany.mockResolvedValue([
+      { pr_url: 'https://github.com/org/repo/pull/77', task: { repo_url: null } },
+    ])
     const url = await maybeCreateAutoPr(BASE_OPTS)
     expect(url).toBe('https://github.com/org/repo/pull/77')
     expect(mockCreatePr).not.toHaveBeenCalled()
+  })
+
+  it('does NOT reuse a sibling PR from a different repo (cross-repo story)', async () => {
+    // Sibling targeted another repo via task.repo_url — its PR must not leak in.
+    mockPrisma.claudeJob.findMany.mockResolvedValue([
+      {
+        pr_url: 'https://github.com/org/other-repo/pull/12',
+        task: { repo_url: 'https://github.com/org/other-repo' },
+      },
+    ])
+    const url = await maybeCreateAutoPr(BASE_OPTS)
+    expect(url).toBe('https://github.com/org/repo/pull/99') // fresh PR, not the sibling's
+    expect(mockCreatePr).toHaveBeenCalledOnce()
   })
 
   it('returns null when auto_pr=false', async () => {
@@ -78,6 +95,7 @@ describe('maybeCreateAutoPr', () => {
   it('uses story title without code prefix when story has no code', async () => {
     mockPrisma.task.findUnique.mockResolvedValue({
       title: 'Add feature',
+      repo_url: null,
       story: { id: 'story-1', code: null, title: 'Story title' },
     })
     await maybeCreateAutoPr(BASE_OPTS)
@@ -113,12 +131,37 @@ describe('maybeCreateAutoPr', () => {
       sprint_run_id: 'run-1',
       sprint_run: { id: 'run-1', pr_strategy: 'SPRINT', sprint: { sprint_goal: 'Goal' } },
     })
-    mockPrisma.claudeJob.findFirst.mockResolvedValue({ pr_url: 'https://github.com/org/repo/pull/55' })
+    mockPrisma.claudeJob.findMany.mockResolvedValue([
+      { pr_url: 'https://github.com/org/repo/pull/55', task: { repo_url: null } },
+    ])
 
     const url = await maybeCreateAutoPr(BASE_OPTS)
 
     expect(url).toBe('https://github.com/org/repo/pull/55')
     expect(mockCreatePr).not.toHaveBeenCalled()
+  })
+
+  it('SPRINT-mode: cross-repo — sibling-PR van ander repo wordt niet hergebruikt', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      sprint_run_id: 'run-1',
+      sprint_run: { id: 'run-1', pr_strategy: 'SPRINT', sprint: { sprint_goal: 'Goal' } },
+    })
+    // Deze job target een ander repo via task.repo_url.
+    mockPrisma.task.findUnique.mockResolvedValue({
+      title: 'MCP-taak',
+      repo_url: 'https://github.com/org/scrum4me-mcp',
+      story: { id: 'story-1', code: 'SCRUM-9', title: 'Story title' },
+    })
+    // Sibling met pr_url hoort bij het product-repo (repo_url null) → andere bucket.
+    mockPrisma.claudeJob.findMany.mockResolvedValue([
+      { pr_url: 'https://github.com/org/repo/pull/201', task: { repo_url: null } },
+    ])
+
+    const url = await maybeCreateAutoPr(BASE_OPTS)
+
+    // Geen hergebruik van de product-repo PR → eigen draft-PR voor het mcp-repo.
+    expect(url).toBe('https://github.com/org/repo/pull/99')
+    expect(mockCreatePr).toHaveBeenCalledOnce()
   })
 
   it('returns null and does not throw when gh fails', async () => {

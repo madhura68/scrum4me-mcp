@@ -15,6 +15,19 @@ async function branchExists(repoRoot: string, name: string): Promise<boolean> {
   }
 }
 
+async function remoteBranchExists(repoRoot: string, name: string): Promise<boolean> {
+  try {
+    await exec(
+      'git',
+      ['show-ref', '--verify', '--quiet', `refs/remotes/origin/${name}`],
+      { cwd: repoRoot },
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
 async function findWorktreeForBranch(
   repoRoot: string,
   branchName: string,
@@ -75,7 +88,27 @@ export async function createWorktreeForJob(opts: {
     if (occupant) {
       await exec('git', ['worktree', 'remove', '--force', occupant], { cwd: repoRoot })
     }
-    await exec('git', ['worktree', 'add', worktreePath, branchName], { cwd: repoRoot })
+    // reuseBranch is decided sprint-wide, but git branches are per-repo. For a
+    // cross-repo sprint the first job targeting THIS repo gets reuseBranch=true
+    // even though the branch was never created here; a container recreate also
+    // wipes the local clone. Fall back gracefully instead of failing with
+    // "invalid reference":
+    //   - local branch exists   → reuse it
+    //   - exists on origin only → recreate the local branch tracking origin
+    //   - nowhere               → create it fresh from baseRef
+    if (await branchExists(repoRoot, branchName)) {
+      await exec('git', ['worktree', 'add', worktreePath, branchName], { cwd: repoRoot })
+    } else if (await remoteBranchExists(repoRoot, branchName)) {
+      await exec(
+        'git',
+        ['worktree', 'add', '-b', branchName, worktreePath, `origin/${branchName}`],
+        { cwd: repoRoot },
+      )
+    } else {
+      await exec('git', ['worktree', 'add', '-b', branchName, worktreePath, baseRef], {
+        cwd: repoRoot,
+      })
+    }
     return { worktreePath, branchName }
   }
 

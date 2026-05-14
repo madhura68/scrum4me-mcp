@@ -113,6 +113,71 @@ describe('createWorktreeForJob', () => {
       }),
     ).rejects.toThrow('Worktree path already exists')
   })
+
+  it('reuseBranch: reuses an existing local branch', async () => {
+    const { repoDir, originDir } = await setupRepo()
+    tmpDirs.push(repoDir, originDir)
+    await makeWorktreeParent()
+
+    // Sibling already created the branch locally.
+    await git(['branch', 'feat/sprint-abc', 'origin/main'], repoDir)
+
+    const result = await createWorktreeForJob({
+      repoRoot: repoDir,
+      jobId: 'job-reuse-local',
+      branchName: 'feat/sprint-abc',
+      baseRef: 'origin/main',
+      reuseBranch: true,
+    })
+
+    const { stdout } = await git(['rev-parse', '--abbrev-ref', 'HEAD'], result.worktreePath)
+    expect(stdout.trim()).toBe('feat/sprint-abc')
+    expect(result.branchName).toBe('feat/sprint-abc')
+  })
+
+  it('reuseBranch: recreates a local branch from origin when only the remote has it', async () => {
+    const { repoDir, originDir } = await setupRepo()
+    tmpDirs.push(repoDir, originDir)
+    await makeWorktreeParent()
+
+    // Branch exists on origin (a sibling pushed it, or the container was
+    // recreated and the local clone is fresh) but not as a local branch.
+    await git(['branch', 'feat/sprint-xyz', 'origin/main'], repoDir)
+    await git(['push', 'origin', 'feat/sprint-xyz'], repoDir)
+    await git(['branch', '-D', 'feat/sprint-xyz'], repoDir)
+
+    const result = await createWorktreeForJob({
+      repoRoot: repoDir,
+      jobId: 'job-reuse-origin',
+      branchName: 'feat/sprint-xyz',
+      baseRef: 'origin/main',
+      reuseBranch: true,
+    })
+
+    const { stdout } = await git(['rev-parse', '--abbrev-ref', 'HEAD'], result.worktreePath)
+    expect(stdout.trim()).toBe('feat/sprint-xyz')
+  })
+
+  it('reuseBranch: falls back to a fresh branch when it exists nowhere (cross-repo sprint)', async () => {
+    const { repoDir, originDir } = await setupRepo()
+    tmpDirs.push(repoDir, originDir)
+    await makeWorktreeParent()
+
+    // reuseBranch is decided sprint-wide; for the first job targeting THIS
+    // repo the branch exists neither locally nor on origin. Must not throw
+    // "invalid reference" — should create it fresh from baseRef.
+    const result = await createWorktreeForJob({
+      repoRoot: repoDir,
+      jobId: 'job-reuse-fresh',
+      branchName: 'feat/sprint-newrepo',
+      baseRef: 'origin/main',
+      reuseBranch: true,
+    })
+
+    const { stdout } = await git(['rev-parse', '--abbrev-ref', 'HEAD'], result.worktreePath)
+    expect(stdout.trim()).toBe('feat/sprint-newrepo')
+    expect(result.branchName).toBe('feat/sprint-newrepo')
+  })
 })
 
 describe('removeWorktreeForJob', () => {
