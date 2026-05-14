@@ -420,24 +420,35 @@ export async function maybeCreateAutoPr(opts: {
     where: { id: taskId },
     select: {
       title: true,
+      repo_url: true,
       story: { select: { id: true, code: true, title: true } },
     },
   })
   if (!task) return null
 
-  // PBI-46 SPRINT-mode: hergebruik 1 draft-PR voor de hele SprintRun.
+  // Cross-repo sprints: een sprint kan taken hebben die via task.repo_url een
+  // ander repo targeten. PRs en branches zijn per-repo, dus een sibling-PR mag
+  // alleen hergebruikt worden als die sibling hetzelfde repo targette. null/leeg
+  // repo_url = het product-repo; twee taken zitten in dezelfde repo-bucket als
+  // hun (repo_url ?? null) gelijk is.
+  const thisRepoKey = task.repo_url ?? null
+
+  // PBI-46 SPRINT-mode: hergebruik 1 draft-PR voor de hele SprintRun (per repo).
   // Mens zet 'm ready-for-review zodra de SprintRun DONE is.
   if (job?.sprint_run && job.sprint_run.pr_strategy === 'SPRINT') {
-    const sprintSibling = await prisma.claudeJob.findFirst({
+    const sprintSiblings = await prisma.claudeJob.findMany({
       where: {
         sprint_run_id: job.sprint_run_id,
         pr_url: { not: null },
         id: { not: jobId },
       },
-      select: { pr_url: true },
+      select: { pr_url: true, task: { select: { repo_url: true } } },
       orderBy: { created_at: 'asc' },
     })
-    if (sprintSibling?.pr_url) return sprintSibling.pr_url
+    const sameRepoSibling = sprintSiblings.find(
+      (s) => (s.task?.repo_url ?? null) === thisRepoKey,
+    )
+    if (sameRepoSibling?.pr_url) return sameRepoSibling.pr_url
 
     // Eerste DONE in deze SprintRun → maak draft-PR aan, geen auto-merge.
     const goal = job.sprint_run.sprint.sprint_goal
@@ -459,17 +470,21 @@ export async function maybeCreateAutoPr(opts: {
     return null
   }
 
-  // STORY-mode (default of legacy): branch-per-story, sibling-tasks delen PR.
-  const sibling = await prisma.claudeJob.findFirst({
+  // STORY-mode (default of legacy): branch-per-story, sibling-tasks delen PR
+  // — maar alleen siblings die hetzelfde repo targeten (zie thisRepoKey).
+  const storySiblings = await prisma.claudeJob.findMany({
     where: {
       task: { story_id: task.story.id },
       pr_url: { not: null },
       id: { not: jobId },
     },
-    select: { pr_url: true },
+    select: { pr_url: true, task: { select: { repo_url: true } } },
     orderBy: { created_at: 'asc' },
   })
-  if (sibling?.pr_url) return sibling.pr_url
+  const sameRepoStorySibling = storySiblings.find(
+    (s) => (s.task?.repo_url ?? null) === thisRepoKey,
+  )
+  if (sameRepoStorySibling?.pr_url) return sameRepoStorySibling.pr_url
 
   const storyTitle = task.story.code ? `${task.story.code}: ${task.story.title}` : task.story.title
   const body = summary
