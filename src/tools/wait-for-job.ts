@@ -508,7 +508,7 @@ export async function getFullJobContext(jobId: string) {
 
   // M12: branch on kind. Idea-jobs hebben geen task/story/pbi/sprint; ze
   // hebben in plaats daarvan idea + embedded prompt_text.
-  if (job.kind === 'IDEA_GRILL' || job.kind === 'IDEA_MAKE_PLAN') {
+  if (job.kind === 'IDEA_GRILL' || job.kind === 'IDEA_MAKE_PLAN' || job.kind === 'IDEA_REVIEW_PLAN') {
     if (!job.idea) return null
     const { idea } = job
     const { getIdeaPromptText } = await import('../lib/kind-prompts.js')
@@ -569,7 +569,11 @@ export async function getFullJobContext(jobId: string) {
       pbi: idea.pbi,
       repo_url: job.product.repo_url,
       prompt_text: getIdeaPromptText(job.kind),
-      branch_suggestion: `feat/idea-${idea.code.toLowerCase()}-${job.kind === 'IDEA_GRILL' ? 'grill' : 'plan'}`,
+      branch_suggestion: `feat/idea-${idea.code.toLowerCase()}-${(() => {
+        if (job.kind === 'IDEA_GRILL') return 'grill'
+        if (job.kind === 'IDEA_REVIEW_PLAN') return 'review'
+        return 'plan'
+      })()}`,
       product_worktrees: worktrees.map((w) => ({
         product_id: w.productId,
         worktree_path: w.worktreePath,

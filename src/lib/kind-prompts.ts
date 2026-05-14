@@ -25,6 +25,7 @@ function loadPrompt(rel: string): string {
 const KIND_TO_PROMPT_PATH: Partial<Record<ClaudeJobKind, string>> = {
   IDEA_GRILL: 'idea/grill.md',
   IDEA_MAKE_PLAN: 'idea/make-plan.md',
+  IDEA_REVIEW_PLAN: 'idea/review-plan.md',
   TASK_IMPLEMENTATION: 'task/implementation.md',
   SPRINT_IMPLEMENTATION: 'sprint/implementation.md',
   PLAN_CHAT: 'plan-chat/chat.md',
@@ -40,9 +41,9 @@ export function getKindPromptText(kind: ClaudeJobKind): string {
 }
 
 // Back-compat re-export. wait-for-job.ts roept getIdeaPromptText aan voor
-// de twee idea-kinds; behouden zodat we de bestaande call-site niet hoeven
+// de drie idea-kinds; behouden zodat we de bestaande call-site niet hoeven
 // te wijzigen tot een aparte cleanup-pass.
 export function getIdeaPromptText(kind: ClaudeJobKind): string {
-  if (kind !== 'IDEA_GRILL' && kind !== 'IDEA_MAKE_PLAN') return ''
+  if (kind !== 'IDEA_GRILL' && kind !== 'IDEA_MAKE_PLAN' && kind !== 'IDEA_REVIEW_PLAN') return ''
   return getKindPromptText(kind)
 }
