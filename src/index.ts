@@ -28,6 +28,7 @@ import { registerMarkPbiPrMergedTool } from './tools/mark-pbi-pr-merged.js'
 import { registerGetIdeaContextTool } from './tools/get-idea-context.js'
 import { registerUpdateIdeaGrillMdTool } from './tools/update-idea-grill-md.js'
 import { registerUpdateIdeaPlanMdTool } from './tools/update-idea-plan-md.js'
+import { registerUpdateIdeaPlanReviewedTool } from './tools/update-idea-plan-reviewed.js'
 import { registerLogIdeaDecisionTool } from './tools/log-idea-decision.js'
 import { registerGetWorkerSettingsTool } from './tools/get-worker-settings.js'
 import { registerWorkerHeartbeatTool } from './tools/worker-heartbeat.js'
@@ -97,6 +98,7 @@ async function main() {
   registerGetIdeaContextTool(server)
   registerUpdateIdeaGrillMdTool(server)
   registerUpdateIdeaPlanMdTool(server)
+  registerUpdateIdeaPlanReviewedTool(server)
   registerLogIdeaDecisionTool(server)
   // M13: worker quota-gate tools
   registerGetWorkerSettingsTool(server)

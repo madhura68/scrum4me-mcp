@@ -101,6 +101,19 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
       'mcp__scrum4me__update_job_status',
     ],
   },
+  IDEA_REVIEW_PLAN: {
+    model: 'claude-opus-4-7',
+    thinking_budget: 6000,
+    permission_mode: 'acceptEdits',
+    max_turns: 1,
+    allowed_tools: [
+      'Read', 'Write', 'Grep', 'Glob',
+      'mcp__scrum4me__update_idea_plan_reviewed',
+      'mcp__scrum4me__log_idea_decision',
+      'mcp__scrum4me__update_job_status',
+      'mcp__scrum4me__ask_user_question',
+    ],
+  },
   PLAN_CHAT: {
     model: 'claude-sonnet-4-6',
     thinking_budget: 6000,

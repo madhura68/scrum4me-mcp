@@ -104,10 +104,13 @@ describe('handleCreateSprint', () => {
   })
 
   it('auto-code increments past existing same-day sprints', async () => {
+    // Codes moeten relatief aan "vandaag" zijn: generateNextSprintCode telt
+    // alleen same-day sprints. Hardcoded datums maakten deze test datum-flaky.
+    const today = new Date().toISOString().slice(0, 10)
     mockPrisma.sprint.findMany.mockResolvedValue([
-      { code: 'S-2026-05-11-1' },
-      { code: 'S-2026-05-11-3' },
-      { code: 'S-2026-05-10-7' },
+      { code: `S-${today}-1` },
+      { code: `S-${today}-3` },
+      { code: 'S-2020-01-01-7' },
     ])
     mockPrisma.sprint.create.mockResolvedValue({
       id: 'spr-3', code: 'X', sprint_goal: 'g', status: 'OPEN', start_date: new Date(), created_at: new Date(),
@@ -115,7 +118,6 @@ describe('handleCreateSprint', () => {
 
     await handleCreateSprint({ product_id: PRODUCT_ID, sprint_goal: 'g' })
 
-    const today = new Date().toISOString().slice(0, 10)
     expect(mockPrisma.sprint.create.mock.calls[0][0].data.code).toBe(`S-${today}-4`)
   })
 

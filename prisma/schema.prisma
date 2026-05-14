@@ -100,6 +100,9 @@ enum IdeaStatus {
   PLANNING
   PLAN_FAILED
   PLAN_READY
+  REVIEWING_PLAN
+  PLAN_REVIEW_FAILED
+  PLAN_REVIEWED
   PLANNED
 }
 
@@ -107,6 +110,7 @@ enum ClaudeJobKind {
   TASK_IMPLEMENTATION
   IDEA_GRILL
   IDEA_MAKE_PLAN
+  IDEA_REVIEW_PLAN
   PLAN_CHAT
   SPRINT_IMPLEMENTATION
 }
@@ -124,6 +128,7 @@ enum IdeaLogType {
   NOTE
   GRILL_RESULT
   PLAN_RESULT
+  PLAN_REVIEW_RESULT
   STATUS_CHANGE
   JOB_EVENT
 }
@@ -147,6 +152,7 @@ model User {
   active_product      Product?         @relation("UserActiveProduct", fields: [active_product_id], references: [id], onDelete: SetNull)
   idea_code_counter   Int              @default(0)
   min_quota_pct       Int              @default(20)
+  settings            Json             @default("{}")
   created_at          DateTime         @default(now())
   updated_at          DateTime         @updatedAt
   roles               UserRole[]
@@ -510,22 +516,24 @@ model ProductMember {
 }
 
 model Idea {
-  id          String     @id @default(cuid())
-  user        User       @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  user_id     String
-  product     Product?   @relation(fields: [product_id], references: [id], onDelete: SetNull)
-  product_id  String?
-  code        String     @db.VarChar(30)
-  title       String
-  description String?    @db.VarChar(4000)
-  grill_md    String?    @db.Text
-  plan_md     String?    @db.Text
-  pbi         Pbi?       @relation(fields: [pbi_id], references: [id], onDelete: SetNull)
-  pbi_id      String?    @unique
-  status      IdeaStatus @default(DRAFT)
-  archived    Boolean    @default(false)
-  created_at  DateTime   @default(now())
-  updated_at  DateTime   @updatedAt
+  id              String     @id @default(cuid())
+  user            User       @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id         String
+  product         Product?   @relation(fields: [product_id], references: [id], onDelete: SetNull)
+  product_id      String?
+  code            String     @db.VarChar(30)
+  title           String
+  description     String?    @db.VarChar(4000)
+  grill_md        String?    @db.Text
+  plan_md         String?    @db.Text
+  plan_review_log Json?      // ReviewLog from orchestrator (all rounds, convergence metrics, approval status)
+  reviewed_at     DateTime?  // When last reviewed
+  pbi             Pbi?       @relation(fields: [pbi_id], references: [id], onDelete: SetNull)
+  pbi_id          String?    @unique
+  status          IdeaStatus @default(DRAFT)
+  archived        Boolean    @default(false)
+  created_at      DateTime   @default(now())
+  updated_at      DateTime   @updatedAt
 
   questions          ClaudeQuestion[]
   jobs               ClaudeJob[]
