@@ -152,6 +152,7 @@ model User {
   active_product      Product?         @relation("UserActiveProduct", fields: [active_product_id], references: [id], onDelete: SetNull)
   idea_code_counter   Int              @default(0)
   min_quota_pct       Int              @default(20)
+  settings            Json             @default("{}")
   created_at          DateTime         @default(now())
   updated_at          DateTime         @updatedAt
   roles               UserRole[]
@@ -515,18 +516,18 @@ model ProductMember {
 }
 
 model Idea {
-  id          String     @id @default(cuid())
-  user        User       @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  user_id     String
-  product     Product?   @relation(fields: [product_id], references: [id], onDelete: SetNull)
-  product_id  String?
-  code        String     @db.VarChar(30)
-  title       String
-  description String?    @db.VarChar(4000)
+  id              String     @id @default(cuid())
+  user            User       @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id         String
+  product         Product?   @relation(fields: [product_id], references: [id], onDelete: SetNull)
+  product_id      String?
+  code            String     @db.VarChar(30)
+  title           String
+  description     String?    @db.VarChar(4000)
   grill_md        String?    @db.Text
   plan_md         String?    @db.Text
-  plan_review_log Json?      // ReviewLog from orchestrator
-  reviewed_at     DateTime?
+  plan_review_log Json?      // ReviewLog from orchestrator (all rounds, convergence metrics, approval status)
+  reviewed_at     DateTime?  // When last reviewed
   pbi             Pbi?       @relation(fields: [pbi_id], references: [id], onDelete: SetNull)
   pbi_id          String?    @unique
   status          IdeaStatus @default(DRAFT)
