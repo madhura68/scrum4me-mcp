@@ -8,11 +8,12 @@ export type AuthContext = {
   isDemo: boolean
 }
 
-let cached: AuthContext | null = null
-
 export async function getAuth(): Promise<AuthContext> {
-  if (cached) return cached
-
+  // No process-lifetime cache: `ApiToken.user_id` can be re-pointed by an
+  // admin user-migration (see `scripts/migrate-user.ts` in Scrum4Me). A long-
+  // lived cache would keep writing the old user_id into ClaudeWorker rows
+  // and into `claude_jobs.user_id` SQL filters until the worker is restarted.
+  // One findUnique on a unique-indexed hash per request is cheap.
   const token = process.env.SCRUM4ME_TOKEN
   if (!token) {
     throw new Error('SCRUM4ME_TOKEN is not set — see .env.example')
@@ -28,13 +29,12 @@ export async function getAuth(): Promise<AuthContext> {
     throw new Error('SCRUM4ME_TOKEN is invalid or revoked')
   }
 
-  cached = {
+  return {
     userId: apiToken.user_id,
     tokenId: apiToken.id,
     username: apiToken.user.username,
     isDemo: apiToken.user.is_demo,
   }
-  return cached
 }
 
 export class PermissionDeniedError extends Error {
