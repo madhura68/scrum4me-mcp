@@ -116,7 +116,7 @@ async function main() {
   // is up, regardless of when the MCP client sends its first request.
   const auth = await getAuth()
   await registerWorker({ userId: auth.userId, tokenId: auth.tokenId })
-  const { stop: stopHeartbeat } = startHeartbeat({ userId: auth.userId, tokenId: auth.tokenId })
+  const { stop: stopHeartbeat } = startHeartbeat({ tokenId: auth.tokenId })
   registerShutdownHandlers({ userId: auth.userId, tokenId: auth.tokenId, stopHeartbeat })
 
   const transport = new StdioServerTransport()

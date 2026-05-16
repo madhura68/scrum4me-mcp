@@ -14,6 +14,10 @@ export async function registerWorker(opts: {
       product_id: opts.productId ?? null,
     },
     update: {
+      // Heal stale rows after a token user-migration: if an admin re-points
+      // ApiToken.user_id, the next heartbeat/re-register writes the current
+      // user_id instead of leaving the row stuck on the old owner.
+      user_id: opts.userId,
       last_seen_at: new Date(),
       product_id: opts.productId ?? null,
     },
