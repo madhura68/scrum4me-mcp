@@ -126,4 +126,36 @@ describe('inputSchema validation', () => {
     const r = inputSchema.safeParse({ pbi_id: '', pr_url: VALID_PR_URL })
     expect(r.success).toBe(false)
   })
+
+  it('accepts a valid Forgejo (git.jp-visser.nl) PR URL', () => {
+    const r = inputSchema.safeParse({
+      pbi_id: PBI_ID,
+      pr_url: 'https://git.jp-visser.nl/janpeter/Scrum4Me/pulls/6',
+    })
+    expect(r.success).toBe(true)
+  })
+
+  it('rejects a Forgejo URL with /pull/ (singular, GitHub-style) instead of /pulls/', () => {
+    const r = inputSchema.safeParse({
+      pbi_id: PBI_ID,
+      pr_url: 'https://git.jp-visser.nl/janpeter/Scrum4Me/pull/6',
+    })
+    expect(r.success).toBe(false)
+  })
+
+  it('rejects a Forgejo compare URL', () => {
+    const r = inputSchema.safeParse({
+      pbi_id: PBI_ID,
+      pr_url: 'https://git.jp-visser.nl/janpeter/Scrum4Me/compare/main...feat/x',
+    })
+    expect(r.success).toBe(false)
+  })
+
+  it('rejects an unknown Forgejo-style host', () => {
+    const r = inputSchema.safeParse({
+      pbi_id: PBI_ID,
+      pr_url: 'https://forgejo.example.com/owner/repo/pulls/1',
+    })
+    expect(r.success).toBe(false)
+  })
 })
