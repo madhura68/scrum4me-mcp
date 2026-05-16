@@ -5,9 +5,17 @@ import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 
+const GITHUB_PR_RE = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/
+const FORGEJO_PR_RE = /^https:\/\/git\.jp-visser\.nl\/[^/]+\/[^/]+\/pulls\/\d+$/
+
 export const inputSchema = z.object({
   pbi_id: z.string().min(1),
-  pr_url: z.string().regex(/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/),
+  pr_url: z
+    .string()
+    .refine((v) => GITHUB_PR_RE.test(v) || FORGEJO_PR_RE.test(v), {
+      message:
+        'pr_url must be a GitHub /pull/N or Forgejo (git.jp-visser.nl) /pulls/N URL',
+    }),
 })
 
 export async function handleSetPbiPr({ pbi_id, pr_url }: z.infer<typeof inputSchema>) {
