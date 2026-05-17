@@ -1,0 +1,176 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "version": "15.0.2+gitea-1.22.0",
+    "title": "Forgejo API"
+  },
+  "definitions": {
+    "MergePullRequestOption": {
+      "description": "MergePullRequestForm form for merging Pull Request",
+      "type": "object",
+      "required": [
+        "Do"
+      ],
+      "properties": {
+        "Do": {
+          "type": "string",
+          "enum": [
+            "merge",
+            "rebase",
+            "rebase-merge",
+            "squash",
+            "fast-forward-only",
+            "manually-merged"
+          ]
+        },
+        "MergeCommitID": {
+          "type": "string"
+        },
+        "MergeMessageField": {
+          "type": "string"
+        },
+        "MergeTitleField": {
+          "type": "string"
+        },
+        "delete_branch_after_merge": {
+          "type": "boolean",
+          "x-go-name": "DeleteBranchAfterMerge"
+        },
+        "force_merge": {
+          "type": "boolean",
+          "x-go-name": "ForceMerge"
+        },
+        "head_commit_id": {
+          "type": "string",
+          "x-go-name": "HeadCommitID"
+        },
+        "merge_when_checks_succeed": {
+          "type": "boolean",
+          "x-go-name": "MergeWhenChecksSucceed"
+        }
+      },
+      "x-go-name": "MergePullRequestForm",
+      "x-go-package": "forgejo.org/services/forms"
+    },
+    "CreatePullRequestOption": {
+      "description": "CreatePullRequestOption options when creating a pull request",
+      "type": "object",
+      "properties": {
+        "assignee": {
+          "type": "string",
+          "x-go-name": "Assignee"
+        },
+        "assignees": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "x-go-name": "Assignees"
+        },
+        "base": {
+          "type": "string",
+          "x-go-name": "Base"
+        },
+        "body": {
+          "type": "string",
+          "x-go-name": "Body"
+        },
+        "due_date": {
+          "type": "string",
+          "format": "date-time",
+          "x-go-name": "Deadline"
+        },
+        "head": {
+          "type": "string",
+          "x-go-name": "Head"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "x-go-name": "Labels"
+        },
+        "milestone": {
+          "type": "integer",
+          "format": "int64",
+          "x-go-name": "Milestone"
+        },
+        "title": {
+          "type": "string",
+          "x-go-name": "Title"
+        }
+      },
+      "x-go-package": "forgejo.org/modules/structs"
+    },
+    "EditPullRequestOption": {
+      "description": "EditPullRequestOption options when modify pull request",
+      "type": "object",
+      "properties": {
+        "allow_maintainer_edit": {
+          "type": "boolean",
+          "x-go-name": "AllowMaintainerEdit"
+        },
+        "assignee": {
+          "type": "string",
+          "x-go-name": "Assignee"
+        },
+        "assignees": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "x-go-name": "Assignees"
+        },
+        "base": {
+          "type": "string",
+          "x-go-name": "Base"
+        },
+        "body": {
+          "type": "string",
+          "x-go-name": "Body"
+        },
+        "due_date": {
+          "type": "string",
+          "format": "date-time",
+          "x-go-name": "Deadline"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "x-go-name": "Labels"
+        },
+        "milestone": {
+          "type": "integer",
+          "format": "int64",
+          "x-go-name": "Milestone"
+        },
+        "state": {
+          "type": "string",
+          "x-go-name": "State"
+        },
+        "title": {
+          "type": "string",
+          "x-go-name": "Title"
+        },
+        "unset_due_date": {
+          "type": "boolean",
+          "x-go-name": "RemoveDeadline"
+        }
+      },
+      "x-go-package": "forgejo.org/modules/structs"
+    },
+    "PullRequest": {
+      "properties": {
+        "draft": {
+          "type": "boolean",
+          "x-go-name": "Draft"
+        }
+      }
+    }
+  }
+}

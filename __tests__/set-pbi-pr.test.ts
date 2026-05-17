@@ -34,7 +34,7 @@ const mockPrisma = prisma as unknown as {
 const mockRequireWriteAccess = requireWriteAccess as ReturnType<typeof vi.fn>
 const mockUserCanAccessProduct = userCanAccessProduct as ReturnType<typeof vi.fn>
 
-const VALID_PR_URL = 'https://github.com/owner/repo/pull/42'
+const VALID_PR_URL = 'https://git.jp-visser.nl/owner/repo/pulls/42'
 const PBI_ID = 'pbi-abc123'
 const USER_ID = 'user-1'
 
@@ -61,7 +61,7 @@ describe('handleSetPbiPr', () => {
   })
 
   it('idempotent: second call with different url overwrites', async () => {
-    const newUrl = 'https://github.com/owner/repo/pull/99'
+    const newUrl = 'https://git.jp-visser.nl/owner/repo/pulls/99'
     await handleSetPbiPr({ pbi_id: PBI_ID, pr_url: newUrl })
 
     expect(mockPrisma.pbi.update).toHaveBeenCalledWith({
@@ -102,37 +102,20 @@ describe('handleSetPbiPr', () => {
 })
 
 describe('inputSchema validation', () => {
-  it('accepts a valid GitHub PR URL', () => {
-    const r = inputSchema.safeParse({ pbi_id: PBI_ID, pr_url: VALID_PR_URL })
-    expect(r.success).toBe(true)
-  })
-
-  it('rejects a URL pointing to an issue instead of a pull', () => {
-    const r = inputSchema.safeParse({ pbi_id: PBI_ID, pr_url: 'https://github.com/owner/repo/issues/42' })
-    expect(r.success).toBe(false)
-  })
-
-  it('rejects a non-GitHub URL', () => {
-    const r = inputSchema.safeParse({ pbi_id: PBI_ID, pr_url: 'https://gitlab.com/owner/repo/pull/42' })
-    expect(r.success).toBe(false)
-  })
-
-  it('rejects a URL without a numeric PR number', () => {
-    const r = inputSchema.safeParse({ pbi_id: PBI_ID, pr_url: 'https://github.com/owner/repo/pull/abc' })
-    expect(r.success).toBe(false)
-  })
-
-  it('rejects an empty pbi_id', () => {
-    const r = inputSchema.safeParse({ pbi_id: '', pr_url: VALID_PR_URL })
-    expect(r.success).toBe(false)
-  })
-
   it('accepts a valid Forgejo (git.jp-visser.nl) PR URL', () => {
     const r = inputSchema.safeParse({
       pbi_id: PBI_ID,
       pr_url: 'https://git.jp-visser.nl/janpeter/Scrum4Me/pulls/6',
     })
     expect(r.success).toBe(true)
+  })
+
+  it('rejects a GitHub /pull/N URL (Forgejo is leidend)', () => {
+    const r = inputSchema.safeParse({
+      pbi_id: PBI_ID,
+      pr_url: 'https://github.com/owner/repo/pull/42',
+    })
+    expect(r.success).toBe(false)
   })
 
   it('rejects a Forgejo URL with /pull/ (singular, GitHub-style) instead of /pulls/', () => {
@@ -148,6 +131,35 @@ describe('inputSchema validation', () => {
       pbi_id: PBI_ID,
       pr_url: 'https://git.jp-visser.nl/janpeter/Scrum4Me/compare/main...feat/x',
     })
+    expect(r.success).toBe(false)
+  })
+
+  it('rejects a non-Forgejo, non-GitHub URL', () => {
+    const r = inputSchema.safeParse({
+      pbi_id: PBI_ID,
+      pr_url: 'https://gitlab.com/owner/repo/pull/42',
+    })
+    expect(r.success).toBe(false)
+  })
+
+  it('rejects a URL pointing to an issue instead of a pull', () => {
+    const r = inputSchema.safeParse({
+      pbi_id: PBI_ID,
+      pr_url: 'https://git.jp-visser.nl/owner/repo/issues/42',
+    })
+    expect(r.success).toBe(false)
+  })
+
+  it('rejects a URL without a numeric PR number', () => {
+    const r = inputSchema.safeParse({
+      pbi_id: PBI_ID,
+      pr_url: 'https://git.jp-visser.nl/owner/repo/pulls/abc',
+    })
+    expect(r.success).toBe(false)
+  })
+
+  it('rejects an empty pbi_id', () => {
+    const r = inputSchema.safeParse({ pbi_id: '', pr_url: VALID_PR_URL })
     expect(r.success).toBe(false)
   })
 

@@ -54,13 +54,49 @@ export async function pushBranchForJob(opts: {
 
 export type DeleteRemoteResult =
   | { deleted: true }
-  | { deleted: false; reason: 'not-found' | 'no-credentials' | 'unknown'; stderr: string }
+  | {
+      deleted: false
+      reason: 'not-found' | 'no-credentials' | 'head-mismatch' | 'unknown'
+      stderr: string
+    }
 
 export async function deleteRemoteBranch(opts: {
   repoRoot: string
   branch: string
+  /**
+   * Optional safety-guard: wanneer gezet vergelijken we eerst `git ls-remote
+   * origin refs/heads/<branch>` met `expectedHeadSha`. Bij mismatch wordt de
+   * delete geweigerd met reason='head-mismatch' zodat we niet per ongeluk
+   * een latere worker-push wegvegen. Wanneer de remote ref niet (meer)
+   * bestaat is dat geen mismatch — we vallen door naar de normale delete-
+   * pad die 'not-found' returnt.
+   */
+  expectedHeadSha?: string
 }): Promise<DeleteRemoteResult> {
-  const { repoRoot, branch } = opts
+  const { repoRoot, branch, expectedHeadSha } = opts
+
+  if (expectedHeadSha) {
+    try {
+      const { stdout } = await exec(
+        'git',
+        ['ls-remote', 'origin', `refs/heads/${branch}`],
+        { cwd: repoRoot },
+      )
+      const remoteSha = stdout.trim().split(/\s+/)[0]
+      if (remoteSha && remoteSha !== expectedHeadSha) {
+        return {
+          deleted: false,
+          reason: 'head-mismatch',
+          stderr: `expected ${expectedHeadSha}, remote at ${remoteSha}`,
+        }
+      }
+      // remoteSha leeg → branch al gone; laat de delete hieronder 'not-found' returnen.
+    } catch (err) {
+      const stderr = (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''
+      return { deleted: false, reason: 'unknown', stderr }
+    }
+  }
+
   try {
     await exec('git', ['push', 'origin', '--delete', branch], { cwd: repoRoot })
     return { deleted: true }

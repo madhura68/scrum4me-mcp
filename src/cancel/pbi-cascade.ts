@@ -127,12 +127,12 @@ async function runCascade(failedJobId: string): Promise<CascadeOutcome> {
     if (prUrl) {
       const info = await getPullRequestState({ prUrl, cwd: repoRoot ?? undefined })
       if ('error' in info) {
-        outcome.warnings.push(`gh pr view ${prUrl}: ${info.error}`)
+        outcome.warnings.push(`PR state fetch ${prUrl}: ${info.error}`)
         continue
       }
       if (info.state === 'CLOSED') {
         // Already closed; nothing to do for the PR. Branch may still exist.
-        if (repoRoot) await tryDeleteBranch(repoRoot, branch, outcome)
+        if (repoRoot) await tryDeleteBranch(repoRoot, branch, outcome, info.headSha)
         continue
       }
       if (info.state === 'OPEN') {
@@ -145,6 +145,10 @@ async function runCascade(failedJobId: string): Promise<CascadeOutcome> {
           outcome.warnings.push(`close ${prUrl}: ${closed.error}`)
         } else {
           outcome.closed_prs.push(prUrl)
+          // Forgejo REST-close (anders dan `gh pr close --delete-branch`) raakt
+          // de branch niet aan — caller doet de remote delete expliciet, met
+          // head-SHA guard zodat we geen latere worker-push wegvegen.
+          if (repoRoot) await tryDeleteBranch(repoRoot, branch, outcome, info.headSha)
         }
         continue
       }
@@ -225,8 +229,13 @@ async function tryDeleteBranch(
   repoRoot: string,
   branch: string,
   outcome: CascadeOutcome,
+  expectedHeadSha?: string | null,
 ): Promise<void> {
-  const result = await deleteRemoteBranch({ repoRoot, branch })
+  const result = await deleteRemoteBranch({
+    repoRoot,
+    branch,
+    expectedHeadSha: expectedHeadSha ?? undefined,
+  })
   if (result.deleted) {
     outcome.deleted_branches.push(branch)
     return
