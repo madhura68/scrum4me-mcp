@@ -138,35 +138,62 @@ enum UserQuestionStatus {
   answered
 }
 
+enum ProductDocFolder {
+  ADR
+  ARCHITECTURE
+  GRILLS
+  PATTERNS
+  PLANS
+  RUNBOOKS
+  SPECS
+  MANUAL
+  API
+}
+
+enum ProductDocLogType {
+  CREATED
+  UPDATED
+  DELETED
+  FOLDER_ENABLED
+  FOLDER_DISABLED
+}
+
+// PBI-102: rol van een ProductDoc-revisie als bron voor een PBI.
+// PLAN = goedgekeurd plan-document; GRILL = grill-resultaat (idee-validatie).
+enum PbiDocRole {
+  PLAN
+  GRILL
+}
+
 model User {
-  id                  String           @id @default(cuid())
-  username            String           @unique
-  email               String?          @unique
+  id                  String             @id @default(cuid())
+  username            String             @unique
+  email               String?            @unique
   password_hash       String
-  is_demo             Boolean          @default(false)
-  bio                 String?          @db.VarChar(160)
-  bio_detail          String?          @db.VarChar(2000)
-  must_reset_password Boolean          @default(false)
+  is_demo             Boolean            @default(false)
+  bio                 String?            @db.VarChar(160)
+  bio_detail          String?            @db.VarChar(2000)
+  must_reset_password Boolean            @default(false)
   avatar_data         Bytes?
   active_product_id   String?
-  active_product      Product?         @relation("UserActiveProduct", fields: [active_product_id], references: [id], onDelete: SetNull)
-  idea_code_counter   Int              @default(0)
-  min_quota_pct       Int              @default(20)
-  settings            Json             @default("{}")
-  created_at          DateTime         @default(now())
-  updated_at          DateTime         @updatedAt
+  active_product      Product?           @relation("UserActiveProduct", fields: [active_product_id], references: [id], onDelete: SetNull)
+  idea_code_counter   Int                @default(0)
+  min_quota_pct       Int                @default(20)
+  settings            Json               @default("{}")
+  created_at          DateTime           @default(now())
+  updated_at          DateTime           @updatedAt
   roles               UserRole[]
   api_tokens          ApiToken[]
   products            Product[]
   ideas               Idea[]
   product_members     ProductMember[]
-  assigned_stories    Story[]          @relation("StoryAssignee")
+  assigned_stories    Story[]            @relation("StoryAssignee")
   login_pairings      LoginPairing[]
-  asked_questions     ClaudeQuestion[] @relation("ClaudeQuestionAsker")
-  answered_questions  ClaudeQuestion[] @relation("ClaudeQuestionAnswerer")
+  asked_questions     ClaudeQuestion[]   @relation("ClaudeQuestionAsker")
+  answered_questions  ClaudeQuestion[]   @relation("ClaudeQuestionAnswerer")
   claude_jobs         ClaudeJob[]
   claude_workers      ClaudeWorker[]
-  started_sprint_runs SprintRun[]      @relation("SprintRunStartedBy")
+  started_sprint_runs SprintRun[]        @relation("SprintRunStartedBy")
   push_subscriptions  PushSubscription[]
 
   @@index([active_product_id])
@@ -199,32 +226,35 @@ model ApiToken {
 }
 
 model Product {
-  id                 String           @id @default(cuid())
-  user               User             @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  user_id            String
-  name               String
-  code               String?          @db.VarChar(30)
-  description        String?
-  repo_url           String?
-  definition_of_done String
-  auto_pr            Boolean          @default(false)
-  pr_strategy        PrStrategy       @default(SPRINT)
-  preferred_model            String?
-  thinking_budget_default    Int?
-  preferred_permission_mode  String?
-  archived           Boolean          @default(false)
-  created_at         DateTime         @default(now())
-  updated_at         DateTime         @updatedAt
-  pbis               Pbi[]
-  sprints            Sprint[]
-  stories            Story[]
-  tasks              Task[]
-  members            ProductMember[]
-  active_for_users   User[]           @relation("UserActiveProduct")
-  claude_questions   ClaudeQuestion[]
-  claude_jobs        ClaudeJob[]
-  ideas              Idea[]
-  idea_products      IdeaProduct[]
+  id                        String             @id @default(cuid())
+  user                      User               @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id                   String
+  name                      String
+  code                      String?            @db.VarChar(30)
+  description               String?
+  repo_url                  String?
+  definition_of_done        String
+  auto_pr                   Boolean            @default(false)
+  pr_strategy               PrStrategy         @default(SPRINT)
+  preferred_model           String?
+  thinking_budget_default   Int?
+  preferred_permission_mode String?
+  archived                  Boolean            @default(false)
+  enabled_doc_folders       ProductDocFolder[] @default([ADR, ARCHITECTURE, GRILLS, PATTERNS, PLANS, RUNBOOKS, SPECS, MANUAL, API])
+  created_at                DateTime           @default(now())
+  updated_at                DateTime           @updatedAt
+  pbis                      Pbi[]
+  sprints                   Sprint[]
+  stories                   Story[]
+  tasks                     Task[]
+  members                   ProductMember[]
+  active_for_users          User[]             @relation("UserActiveProduct")
+  claude_questions          ClaudeQuestion[]
+  claude_jobs               ClaudeJob[]
+  ideas                     Idea[]
+  idea_products             IdeaProduct[]
+  docs                      ProductDoc[]
+  doc_logs                  ProductDocLog[]
 
   @@unique([user_id, name])
   @@unique([user_id, code])
@@ -248,6 +278,7 @@ model Pbi {
   updated_at   DateTime  @updatedAt
   stories      Story[]
   idea         Idea?
+  docs         PbiDoc[]
 
   @@unique([product_id, code])
   @@index([product_id, priority, sort_order])
@@ -388,47 +419,47 @@ model Task {
 }
 
 model ClaudeJob {
-  id                  String                @id @default(cuid())
-  user                User                  @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  user_id             String
-  product             Product               @relation(fields: [product_id], references: [id], onDelete: Cascade)
-  product_id          String
-  task                Task?                 @relation(fields: [task_id], references: [id], onDelete: Cascade)
-  task_id             String?
-  idea                Idea?                 @relation(fields: [idea_id], references: [id], onDelete: Cascade)
-  idea_id             String?
-  sprint_run          SprintRun?            @relation(fields: [sprint_run_id], references: [id], onDelete: SetNull)
-  sprint_run_id       String?
-  kind                ClaudeJobKind         @default(TASK_IMPLEMENTATION)
-  status              ClaudeJobStatus       @default(QUEUED)
-  claimed_by_token    ApiToken?             @relation(fields: [claimed_by_token_id], references: [id], onDelete: SetNull)
-  claimed_by_token_id String?
-  claimed_at          DateTime?
-  started_at          DateTime?
-  finished_at         DateTime?
-  pushed_at           DateTime?
-  verify_result       VerifyResult?
-  model_id            String?
-  input_tokens        Int?
-  output_tokens       Int?
-  cache_read_tokens   Int?
-  cache_write_tokens  Int?
-  requested_model            String?
-  requested_thinking_budget  Int?
-  requested_permission_mode  String?
-  actual_thinking_tokens     Int?
-  plan_snapshot       String?
-  base_sha            String?
-  head_sha            String?
-  branch              String?
-  pr_url              String?
-  summary             String?
-  error               String?
-  retry_count         Int                   @default(0)
-  lease_until         DateTime?
-  task_executions     SprintTaskExecution[] @relation("SprintJobExecutions")
-  created_at          DateTime              @default(now())
-  updated_at          DateTime              @updatedAt
+  id                        String                @id @default(cuid())
+  user                      User                  @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id                   String
+  product                   Product               @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id                String
+  task                      Task?                 @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  task_id                   String?
+  idea                      Idea?                 @relation(fields: [idea_id], references: [id], onDelete: Cascade)
+  idea_id                   String?
+  sprint_run                SprintRun?            @relation(fields: [sprint_run_id], references: [id], onDelete: SetNull)
+  sprint_run_id             String?
+  kind                      ClaudeJobKind         @default(TASK_IMPLEMENTATION)
+  status                    ClaudeJobStatus       @default(QUEUED)
+  claimed_by_token          ApiToken?             @relation(fields: [claimed_by_token_id], references: [id], onDelete: SetNull)
+  claimed_by_token_id       String?
+  claimed_at                DateTime?
+  started_at                DateTime?
+  finished_at               DateTime?
+  pushed_at                 DateTime?
+  verify_result             VerifyResult?
+  model_id                  String?
+  input_tokens              Int?
+  output_tokens             Int?
+  cache_read_tokens         Int?
+  cache_write_tokens        Int?
+  requested_model           String?
+  requested_thinking_budget Int?
+  requested_permission_mode String?
+  actual_thinking_tokens    Int?
+  plan_snapshot             String?
+  base_sha                  String?
+  head_sha                  String?
+  branch                    String?
+  pr_url                    String?
+  summary                   String?
+  error                     String?
+  retry_count               Int                   @default(0)
+  lease_until               DateTime?
+  task_executions           SprintTaskExecution[] @relation("SprintJobExecutions")
+  created_at                DateTime              @default(now())
+  updated_at                DateTime              @updatedAt
 
   @@index([user_id, status])
   @@index([task_id, status])
@@ -515,25 +546,125 @@ model ProductMember {
   @@map("product_members")
 }
 
+model ProductDoc {
+  id                  String               @id @default(cuid())
+  product             Product              @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id          String
+  folder              ProductDocFolder
+  slug                String               @db.VarChar(80)
+  title               String               @db.VarChar(200)
+  content_md          String               @db.Text
+  status              String               @db.VarChar(20)
+  created_by          String
+  created_at          DateTime             @default(now())
+  updated_at          DateTime             @updatedAt
+  logs                ProductDocLog[]
+  // PBI-102: pointer naar de huidige (laatste) immutable revision; bij
+  // elke create/update via lib/product-doc-write.ts wordt deze geüpdatet.
+  // Nullable tijdens dual-write/migratie; wordt non-null na backfill.
+  current_revision_id String?              @unique
+  current_revision    ProductDocRevision?  @relation("CurrentRevision", fields: [current_revision_id], references: [id], onDelete: SetNull)
+  revisions           ProductDocRevision[] @relation("DocRevisions")
+  // PBI-102: één-op-één back-relations vanuit Idea (zelfde Idea kan
+  // alleen één PLAN- en één GRILL-doc hebben — zie Idea.plan_doc_id /
+  // grill_doc_id met @unique).
+  idea_plan           Idea?                @relation("IdeaPlanDoc")
+  idea_grill          Idea?                @relation("IdeaGrillDoc")
+
+  @@unique([product_id, folder, slug])
+  @@index([product_id, folder, updated_at])
+  @@index([product_id, status])
+  @@map("product_docs")
+}
+
+// PBI-102: immutable snapshot van ProductDoc-content per save. PbiDoc
+// wijst naar een specifieke revision (niet naar de mutable ProductDoc),
+// zodat de bron van een PBI nooit stilzwijgend mee-verschuift bij latere
+// doc-edits. Append-only; `revision` is monotoon stijgend per doc.
+model ProductDocRevision {
+  id           String      @id @default(cuid())
+  doc          ProductDoc  @relation("DocRevisions", fields: [doc_id], references: [id], onDelete: Cascade)
+  doc_id       String
+  revision     Int
+  title        String      @db.VarChar(200)
+  status       String      @db.VarChar(20)
+  content_md   String      @db.Text
+  content_hash String      @db.VarChar(64)
+  created_by   String
+  created_at   DateTime    @default(now())
+  pbi_links    PbiDoc[]
+  current_for  ProductDoc? @relation("CurrentRevision")
+
+  @@unique([doc_id, revision])
+  @@index([doc_id, created_at])
+  @@map("product_doc_revisions")
+}
+
+// PBI-102: junction tussen Pbi en ProductDocRevision met rol (PLAN/GRILL).
+// `onDelete: Restrict` op de revisie zodat een PBI-link niet stilzwijgend
+// kan verdwijnen — wel mag de hele doc (ProductDoc) gecascadet worden,
+// dat verwijdert de revisies en daarmee ook deze PbiDoc-rijen.
+model PbiDoc {
+  id              String             @id @default(cuid())
+  pbi             Pbi                @relation(fields: [pbi_id], references: [id], onDelete: Cascade)
+  pbi_id          String
+  doc_revision    ProductDocRevision @relation(fields: [doc_revision_id], references: [id], onDelete: Restrict)
+  doc_revision_id String
+  role            PbiDocRole
+  created_at      DateTime           @default(now())
+  created_by      String
+
+  @@unique([pbi_id, doc_revision_id, role])
+  @@index([pbi_id])
+  @@index([doc_revision_id])
+  @@map("pbi_docs")
+}
+
+model ProductDocLog {
+  id            String            @id @default(cuid())
+  product       Product           @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id    String
+  doc           ProductDoc?       @relation(fields: [doc_id], references: [id], onDelete: SetNull)
+  doc_id        String?
+  actor_user_id String
+  type          ProductDocLogType
+  metadata      Json?
+  created_at    DateTime          @default(now())
+
+  @@index([product_id, created_at])
+  @@index([doc_id, created_at])
+  @@index([actor_user_id, created_at])
+  @@map("product_doc_logs")
+}
+
 model Idea {
-  id              String     @id @default(cuid())
-  user            User       @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  id              String      @id @default(cuid())
+  user            User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
   user_id         String
-  product         Product?   @relation(fields: [product_id], references: [id], onDelete: SetNull)
+  product         Product?    @relation(fields: [product_id], references: [id], onDelete: SetNull)
   product_id      String?
-  code            String     @db.VarChar(30)
+  code            String      @db.VarChar(30)
   title           String
-  description     String?    @db.VarChar(4000)
-  grill_md        String?    @db.Text
-  plan_md         String?    @db.Text
-  plan_review_log Json?      // ReviewLog from orchestrator (all rounds, convergence metrics, approval status)
-  reviewed_at     DateTime?  // When last reviewed
-  pbi             Pbi?       @relation(fields: [pbi_id], references: [id], onDelete: SetNull)
-  pbi_id          String?    @unique
-  status          IdeaStatus @default(DRAFT)
-  archived        Boolean    @default(false)
-  created_at      DateTime   @default(now())
-  updated_at      DateTime   @updatedAt
+  description     String?     @db.VarChar(4000)
+  grill_md        String?     @db.Text
+  plan_md         String?     @db.Text
+  plan_review_log Json? // ReviewLog from orchestrator (all rounds, convergence metrics, approval status)
+  reviewed_at     DateTime? // When last reviewed
+  pbi             Pbi?        @relation(fields: [pbi_id], references: [id], onDelete: SetNull)
+  pbi_id          String?     @unique
+  // PBI-102: actuele PLAN/GRILL-ProductDoc (huidige versie). PbiDoc
+  // bevriest de specifieke revisie ten tijde van PBI-creatie; deze
+  // pointer kan daarna nog verschuiven als plan_md/grill_md opnieuw
+  // gesaved wordt. `grill_md` en `plan_md` blijven tijdens dual-write
+  // bestaan voor backward-compat (drop in vervolg-PBI).
+  plan_doc        ProductDoc? @relation("IdeaPlanDoc", fields: [plan_doc_id], references: [id], onDelete: SetNull)
+  plan_doc_id     String?     @unique
+  grill_doc       ProductDoc? @relation("IdeaGrillDoc", fields: [grill_doc_id], references: [id], onDelete: SetNull)
+  grill_doc_id    String?     @unique
+  status          IdeaStatus  @default(DRAFT)
+  archived        Boolean     @default(false)
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
 
   questions          ClaudeQuestion[]
   jobs               ClaudeJob[]
