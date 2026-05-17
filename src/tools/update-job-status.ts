@@ -21,26 +21,18 @@ import { getWorktreeRoot } from '../git/worktree-paths.js'
 import { releaseLocksOnTerminal } from '../git/job-locks.js'
 import { resolveRepoRoot } from './wait-for-job.js'
 import { pushBranchForJob } from '../git/push.js'
-import { createPullRequest, markPullRequestReady } from '../git/pr.js'
+import { createPullRequest, listPullRequestFiles, markPullRequestReady } from '../git/pr.js'
 import { cancelPbiOnFailure } from '../cancel/pbi-cascade.js'
 import { propagateStatusUpwards } from '../lib/tasks-status-update.js'
 import { triggerPush } from '../lib/push-trigger.js'
 import { transition as prFlowTransition } from '../flow/pr-flow.js'
 import { transition as sprintRunTransition } from '../flow/sprint-run.js'
 import { executeEffects } from '../flow/effects.js'
-import { execFile as execFileCb } from 'node:child_process'
-import { promisify } from 'node:util'
-
-const execGh = promisify(execFileCb)
 
 async function fetchConflictFiles(prUrl: string): Promise<string[]> {
-  try {
-    const { stdout } = await execGh('gh', ['pr', 'view', prUrl, '--json', 'files'])
-    const parsed = JSON.parse(stdout) as { files?: Array<{ path: string }> }
-    return parsed.files?.map((f) => f.path) ?? []
-  } catch {
-    return []
-  }
+  const result = await listPullRequestFiles({ prUrl })
+  if (Array.isArray(result)) return result
+  return []
 }
 
 const inputSchema = z.object({

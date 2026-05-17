@@ -30,11 +30,45 @@ A story with 3 sub-tasks lands as **1 branch** with 3 commits and **1 PR** (assu
 
 When a `TASK_IMPLEMENTATION` job ends in `FAILED`, `cancelPbiOnFailure` (`src/cancel/pbi-cascade.ts`) cancels every queued/claimed/running sibling under the **same PBI** (across all stories) and undoes already-pushed commits:
 
-- **Open PR** → `gh pr close --delete-branch` with a cascade-comment.
-- **Merged PR** → revert-PR opened against the base branch via `git revert -m 1 <mergeSha>`. **No** auto-merge on the revert PR — review by hand.
-- **Branch without PR** → best-effort `git push origin --delete <branch>`.
+- **Open PR** → Forgejo REST close (cascade-comment + state:closed) + best-effort `git push origin --delete <branch>` with `expectedHeadSha`-guard so a late worker-push isn't overwritten.
+- **Merged PR** → revert-PR opened against the base branch via `git revert` (parent-count-aware: `-m 1` for merge-commits, plain revert for squash-merges with 1 parent). **No** auto-merge on the revert PR — review by hand.
+- **Branch without PR** → best-effort `git push origin --delete <branch>` with `expectedHeadSha`-guard.
 
 A trace (cancelled job count, closed/reverted PRs, deleted branches) is written to the original failed job's `error` column. Race-protection: if a parallel worker tries to `update_job_status` on a job that the cascade already set to `CANCELLED`, the call is rejected with a `JOB_CANCELLED` error so the agent discards local work and calls `wait_for_job` again. The cascade is idempotent and never throws — failures become warnings on the failed-job's trace.
+
+## Forgejo PR-automatisering
+
+PR-automatisering (create / mark-ready / auto-merge / close / revert / files-list) gaat via Forgejo REST tegen `git.jp-visser.nl`. Geen GitHub CLI (`gh`) meer; GitHub is alleen mirror.
+
+### Env-vars
+
+| Var | Doel | Default |
+|---|---|---|
+| `FORGEJO_HOST` | Primary host voor REST base-URL | `git.jp-visser.nl` |
+| `FORGEJO_HOSTS` | Comma-sep whitelist voor URL-parsers (alleen URLs op deze hosts worden geaccepteerd) | `${FORGEJO_HOST}` |
+| `FORGEJO_TOKEN` | `Authorization: token <…>` voor write-operaties. Scopes: `repo` (volledige PR-flow) + `write:repository`. | — |
+
+`FORGEJO_TOKEN` wordt **lazy** opgevraagd per write-operatie. De server start zonder token; read-only tools (`getPullRequestState`, `listPullRequestFiles`) werken op publieke repos zonder token. Write-acties (`createPullRequest`, `enableAutoMergeOnPr`, `markPullRequestReady`, `closePullRequest`, `createRevertPullRequest`) geven een typed `FORGEJO_AUTH_REQUIRED` error wanneer de env-var ontbreekt. De tokenwaarde wordt nooit in logs of error-messages opgenomen (redactor in `src/git/forgejo-rest.ts`).
+
+### Sprint-mode draft = WIP-prefix
+
+Forgejo 15.0.2 heeft géén `draft`-veld in `POST /pulls` en géén ready-transition endpoint. Implementatie:
+- `createPullRequest({ draft: true })` → title krijgt prefix `WIP: `.
+- `markPullRequestReady({ prUrl })` → GET de PR, strip `WIP: ` / `[WIP] ` prefix, PATCH de title terug. Idempotent (geen-op bij ontbrekende prefix).
+
+### Auto-merge (PBI-47)
+
+`enableAutoMergeOnPr` doet eerst een discovery-call (`/version` + `/swagger.v1.json`, gecached per host) om te verifiëren dat `merge_when_checks_succeed` in `MergePullRequestOption` zit. Bij ontbreken: typed `AUTO_MERGE_NOT_ALLOWED` zonder een merge-call te doen — direct mergen is bewust géén fallback.
+
+Bij wél-support: `POST /pulls/{idx}/merge` met `{Do:'squash', merge_when_checks_succeed:true, head_commit_id:<expectedHeadSha>}`. Forgejo's `head_commit_id`-check is mogelijk losser dan GitHub's `--match-head-commit` — bij twijfel verifieer in de smoke-stap dat een mismatch echt 409 oplevert.
+
+### URL-validatie
+
+`set_pbi_pr` accepteert alleen Forgejo-URLs op hosts in `FORGEJO_HOSTS`. GitHub URLs worden geweigerd met typed `LEGACY_GITHUB_URL`. Bestaande DB-records met github.com URLs blijven onveranderd; alleen nieuwe writes worden tegengehouden.
+
+### Encoding-regel
+
+`src/git/forgejo-rest.ts` past `encodePathSegment` toe op URL-segmenten (owner, repo, branchnames in path). JSON-body refs (`head`, `base`) worden **raw** doorgegeven — Forgejo doet zelf ref-matching en encoding daar leidt tot mismatches voor branchnames met slashes (bv. `feat/foo/bar`).
 
 ### Required configuration
 

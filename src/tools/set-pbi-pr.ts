@@ -4,23 +4,41 @@ import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
-
-const GITHUB_PR_RE = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/
-const FORGEJO_PR_RE = /^https:\/\/git\.jp-visser\.nl\/[^/]+\/[^/]+\/pulls\/\d+$/
+import { ForgejoError, parseForgejoPrUrl } from '../git/forgejo-rest.js'
 
 export const inputSchema = z.object({
   pbi_id: z.string().min(1),
-  pr_url: z
-    .string()
-    .refine((v) => GITHUB_PR_RE.test(v) || FORGEJO_PR_RE.test(v), {
+  pr_url: z.string().refine(
+    (v) => {
+      try {
+        parseForgejoPrUrl(v)
+        return true
+      } catch {
+        return false
+      }
+    },
+    {
       message:
-        'pr_url must be a GitHub /pull/N or Forgejo (git.jp-visser.nl) /pulls/N URL',
-    }),
+        'pr_url must be a Forgejo /pulls/N URL (GitHub URLs not accepted — Forgejo is leidend)',
+    },
+  ),
 })
 
 export async function handleSetPbiPr({ pbi_id, pr_url }: z.infer<typeof inputSchema>) {
   return withToolErrors(async () => {
     const auth = await requireWriteAccess()
+
+    // Re-parse om typed LEGACY_GITHUB_URL te onderscheiden van algemene parse-errors.
+    // Schema-validatie hierboven heeft al gefilterd op valid Forgejo-URLs, dus
+    // dit pad raken we alleen wanneer iemand het schema omzeilt (intern gebruik).
+    try {
+      parseForgejoPrUrl(pr_url)
+    } catch (err) {
+      if (err instanceof ForgejoError && err.code === 'LEGACY_GITHUB_URL') {
+        return toolError(`LEGACY_GITHUB_URL: ${err.message}`)
+      }
+      return toolError(`Invalid Forgejo PR URL: ${(err as Error).message}`)
+    }
 
     const pbi = await prisma.pbi.findUnique({
       where: { id: pbi_id },
@@ -45,7 +63,7 @@ export function registerSetPbiPrTool(server: McpServer) {
     {
       title: 'Set PBI PR URL',
       description:
-        'Write pr_url on a PBI and clear pr_merged_at. Idempotent: re-calling overwrites pr_url and resets pr_merged_at to null. Forbidden for demo accounts.',
+        'Write pr_url on a PBI and clear pr_merged_at. Forgejo is leidend: alleen /pulls/N URLs op een geconfigureerde Forgejo-host worden geaccepteerd. github.com URLs worden geweigerd (gebruik de Forgejo-mirror). Idempotent: re-calling overwrites pr_url en reset pr_merged_at naar null. Forbidden voor demo accounts.',
       inputSchema,
     },
     handleSetPbiPr,

@@ -1,57 +1,138 @@
+// PR-automatisering tegen Forgejo (`git.jp-visser.nl`) via de REST-API in
+// `./forgejo-rest.ts`. Vervangt de eerdere GitHub-CLI (`gh`) subprocess
+// implementatie. De exports behouden hun signatures zodat callers in
+// `flow/effects.ts`, `update-job-status.ts` en `cancel/pbi-cascade.ts`
+// niets hoeven aan te passen.
+
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import * as path from 'node:path'
+
 import { getWorktreeRoot } from './worktree-paths.js'
+import {
+  ForgejoError,
+  callForgejo,
+  discoverForgejo,
+  encodePathSegment,
+  getRepoRefFromWorktree,
+  parseForgejoPrUrl,
+} from './forgejo-rest.js'
 
 const exec = promisify(execFile)
+
+// =========================================================================
+// Re-exports voor caller-compat
+// =========================================================================
+
+export type { AutoMergeFailReason } from './forgejo-rest.js'
+import type { AutoMergeFailReason } from './forgejo-rest.js'
+
+export type EnableAutoMergeResult =
+  | { ok: true }
+  | { ok: false; reason: AutoMergeFailReason; stderr: string }
+
+export type PrState = 'OPEN' | 'MERGED' | 'CLOSED'
+
+export type PrInfo = {
+  state: PrState
+  mergeCommit: string | null
+  baseRefName: string
+  title: string
+  /** Head SHA — bruikbaar voor `deleteRemoteBranch`-guard na een PR-close. */
+  headSha: string | null
+}
+
+// =========================================================================
+// Helpers
+// =========================================================================
+
+const WIP_PREFIX_RE = /^(?:WIP: |\[WIP\] )/
+
+function repoPath(owner: string, repo: string): string {
+  return `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}`
+}
+
+function forgejoErrorToAutoMergeResult(err: unknown): EnableAutoMergeResult {
+  if (err instanceof ForgejoError) {
+    return {
+      ok: false,
+      reason: err.autoMergeReason ?? 'UNKNOWN',
+      stderr: err.message.slice(0, 500),
+    }
+  }
+  const msg = (err as Error).message || String(err)
+  return { ok: false, reason: 'UNKNOWN', stderr: msg.slice(0, 500) }
+}
+
+type ForgejoPullResponse = {
+  number: number
+  html_url: string
+  state: 'open' | 'closed'
+  merged: boolean
+  merge_commit_sha: string | null
+  title: string
+  body: string
+  base: { ref: string }
+  head: { ref: string; sha: string }
+}
+
+// =========================================================================
+// createPullRequest
+// =========================================================================
 
 export async function createPullRequest(opts: {
   worktreePath: string
   branchName: string
   title: string
   body: string
-  /** Open as draft PR (mens moet 'm later ready-for-review zetten). Default false. */
+  /** Open als draft-PR. Forgejo 15.0.2 heeft geen draft-veld → title krijgt `WIP: ` prefix. */
   draft?: boolean
   /**
-   * PBI-47 (P0): default changed to false. Auto-merge is now enabled
-   * separately via `enableAutoMergeOnPr` only on the **last task** of a
-   * STORY-mode story, with a head-SHA guard to prevent racing earlier
-   * task merges. Callers may still pass `true` for one-off PRs that
-   * are immediately ready to merge; in that case we use the new typed
-   * helper rather than the previous fire-and-forget gh call.
+   * PBI-47 (P0): default false. Auto-merge wordt apart aangezet via
+   * `enableAutoMergeOnPr` met head-SHA-guard. Voor compatibility blijft de
+   * legacy `true`-pad bestaan: fire-and-forget zonder head-guard.
    */
   enableAutoMerge?: boolean
 }): Promise<{ url: string } | { error: string }> {
   const { worktreePath, branchName, title, body, draft = false, enableAutoMerge = false } = opts
 
-  let url: string
+  let repoRef
   try {
-    const args = ['pr', 'create', '--title', title, '--body', body, '--head', branchName]
-    if (draft) args.push('--draft')
-    const { stdout } = await exec('gh', args, { cwd: worktreePath })
-    // gh prints the PR URL as the last non-empty line
-    const lines = stdout.trim().split('\n').filter(Boolean)
-    url = lines[lines.length - 1]?.trim() ?? ''
-    if (!url.startsWith('http')) {
-      return { error: `gh pr create produced unexpected output: ${stdout.slice(0, 200)}` }
-    }
-  } catch (err: unknown) {
-    const msg = (err as { message?: string }).message ?? String(err)
-    const isNotFound =
-      msg.includes('command not found') ||
-      msg.includes('is not recognized') ||
-      msg.includes('ENOENT')
-    if (isNotFound) {
-      return { error: 'gh CLI not found — install GitHub CLI to enable auto-PR' }
-    }
-    return { error: `gh pr create failed: ${msg.slice(0, 300)}` }
+    repoRef = await getRepoRefFromWorktree(worktreePath)
+  } catch (err) {
+    return { error: `Forgejo repo-detectie faalde: ${(err as Error).message.slice(0, 300)}` }
   }
 
-  // Legacy opt-in: enableAutoMerge=true and not draft → fire the new typed
-  // helper without head-SHA guard (caller didn't supply one). Result is
-  // logged but not propagated — same shape as before.
+  const finalTitle = draft ? `WIP: ${title}` : title
+
+  let pr: ForgejoPullResponse
+  try {
+    pr = await callForgejo<ForgejoPullResponse>(
+      `${repoPath(repoRef.owner, repoRef.repo)}/pulls`,
+      {
+        method: 'POST',
+        write: true,
+        host: repoRef.host,
+        json: {
+          head: branchName,
+          base: 'main',
+          title: finalTitle,
+          body,
+        },
+      },
+    )
+  } catch (err) {
+    return { error: `Forgejo pr-create failed: ${(err as Error).message.slice(0, 300)}` }
+  }
+
+  const url = pr.html_url || ''
+  if (!url.startsWith('http')) {
+    return { error: `Forgejo pr-create produced unexpected html_url: ${String(url).slice(0, 200)}` }
+  }
+
+  // Legacy opt-in: enableAutoMerge=true en niet draft → fire-and-forget zonder head-guard.
   if (enableAutoMerge && !draft) {
-    const result = await enableAutoMergeOnPr({ prUrl: url, cwd: worktreePath })
+    const result = await enableAutoMergeOnPr({ prUrl: url })
     if (!result.ok) {
       console.warn(
         `[createPullRequest] auto-merge enable failed for ${url}: ${result.reason} ${result.stderr.slice(0, 200)}`,
@@ -62,133 +143,257 @@ export async function createPullRequest(opts: {
   return { url }
 }
 
-export type AutoMergeFailReason =
-  | 'CHECKS_FAILED'
-  | 'MERGE_CONFLICT'
-  | 'GH_AUTH_ERROR'
-  | 'AUTO_MERGE_NOT_ALLOWED'
-  | 'UNKNOWN'
-
-export type EnableAutoMergeResult =
-  | { ok: true }
-  | { ok: false; reason: AutoMergeFailReason; stderr: string }
-
-function classifyAutoMergeError(stderr: string): AutoMergeFailReason {
-  if (/conflict|not in mergeable state|dirty/i.test(stderr)) return 'MERGE_CONFLICT'
-  if (/checks? failed|status check|required check/i.test(stderr)) return 'CHECKS_FAILED'
-  if (/authentication|HTTP 401|HTTP 403|permission|gh auth/i.test(stderr)) return 'GH_AUTH_ERROR'
-  if (/auto-?merge.*not.*allowed|auto-?merge.*disabled/i.test(stderr)) return 'AUTO_MERGE_NOT_ALLOWED'
-  return 'UNKNOWN'
-}
+// =========================================================================
+// enableAutoMergeOnPr
+// =========================================================================
 
 /**
- * Enable auto-merge (squash) on a PR with an optional head-SHA guard.
+ * Zet auto-merge (squash) aan op een Forgejo PR met optionele head-SHA guard.
  *
- * PBI-47 (P0): when `expectedHeadSha` is provided we pass `--match-head-commit`
- * so GitHub only activates auto-merge if the remote head still matches the
- * SHA the caller observed. This prevents racing late pushes from another
- * worker triggering a merge of a different commit set.
+ * PBI-47 (P0): wanneer `expectedHeadSha` meegegeven wordt sturen we
+ * `head_commit_id` mee in de merge-body; Forgejo activeert dan alleen
+ * auto-merge wanneer de remote head nog matcht. Dit voorkomt dat een
+ * latere worker-push een ongewenste commit-set mergt.
+ *
+ * Wanneer de Forgejo-instance `merge_when_checks_succeed` niet ondersteunt
+ * (discovery faalt op dat veld) retourneren we `AUTO_MERGE_NOT_ALLOWED`
+ * zónder een merge-call te doen — direct mergen is bewust géén fallback.
  */
 export async function enableAutoMergeOnPr(opts: {
   prUrl: string
   expectedHeadSha?: string
   cwd?: string
 }): Promise<EnableAutoMergeResult> {
+  let prRef
   try {
-    const args = ['pr', 'merge', '--auto', '--squash']
-    if (opts.expectedHeadSha) args.push('--match-head-commit', opts.expectedHeadSha)
-    args.push(opts.prUrl)
-    await exec('gh', args, opts.cwd ? { cwd: opts.cwd } : {})
+    prRef = parseForgejoPrUrl(opts.prUrl)
+  } catch (err) {
+    return forgejoErrorToAutoMergeResult(err)
+  }
+
+  try {
+    const discovery = await discoverForgejo(prRef.host)
+    if (!discovery.supportsAutoMerge) {
+      return {
+        ok: false,
+        reason: 'AUTO_MERGE_NOT_ALLOWED',
+        stderr: `Forgejo ${discovery.version} mist merge_when_checks_succeed in OpenAPI`,
+      }
+    }
+  } catch (err) {
+    return forgejoErrorToAutoMergeResult(err)
+  }
+
+  const body: Record<string, unknown> = {
+    Do: 'squash',
+    merge_when_checks_succeed: true,
+  }
+  if (opts.expectedHeadSha) body.head_commit_id = opts.expectedHeadSha
+
+  try {
+    await callForgejo(
+      `${repoPath(prRef.owner, prRef.repo)}/pulls/${prRef.index}/merge`,
+      {
+        method: 'POST',
+        write: true,
+        host: prRef.host,
+        json: body,
+      },
+    )
     return { ok: true }
   } catch (err) {
-    const stderr =
-      (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''
-    return { ok: false, reason: classifyAutoMergeError(stderr), stderr: stderr.slice(0, 500) }
+    return forgejoErrorToAutoMergeResult(err)
   }
 }
 
-// Zet een draft-PR over naar "ready for review". Gebruikt bij sprint-mode
-// wanneer alle stories in de SprintRun DONE zijn — mens reviewt en mergt zelf.
+// =========================================================================
+// markPullRequestReady
+//
+// Forgejo 15.0.2 heeft geen ready-transition endpoint. Implementatie: lees
+// de PR, strip de `WIP: ` of `[WIP] ` prefix uit de title, schrijf terug
+// via PATCH. Idempotent: als er geen prefix is, no-op return ok.
+// =========================================================================
+
 export async function markPullRequestReady(opts: {
   prUrl: string
   cwd?: string
 }): Promise<{ ok: true } | { error: string }> {
+  let prRef
   try {
-    await exec('gh', ['pr', 'ready', opts.prUrl], opts.cwd ? { cwd: opts.cwd } : {})
+    prRef = parseForgejoPrUrl(opts.prUrl)
+  } catch (err) {
+    return { error: `markPullRequestReady: ${(err as Error).message.slice(0, 300)}` }
+  }
+
+  let current: ForgejoPullResponse
+  try {
+    current = await callForgejo<ForgejoPullResponse>(
+      `${repoPath(prRef.owner, prRef.repo)}/pulls/${prRef.index}`,
+      { host: prRef.host },
+    )
+  } catch (err) {
+    return { error: `Forgejo pr-get failed: ${(err as Error).message.slice(0, 300)}` }
+  }
+
+  if (!WIP_PREFIX_RE.test(current.title)) {
+    // Geen prefix → al ready (of nooit draft geweest). Idempotent ok.
+    return { ok: true }
+  }
+
+  const newTitle = current.title.replace(WIP_PREFIX_RE, '')
+  try {
+    await callForgejo(
+      `${repoPath(prRef.owner, prRef.repo)}/pulls/${prRef.index}`,
+      {
+        method: 'PATCH',
+        write: true,
+        host: prRef.host,
+        json: { title: newTitle },
+      },
+    )
     return { ok: true }
   } catch (err) {
-    const msg = (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''
-    // gh-CLI fout "Pull request is not in draft state" is benign wanneer de
-    // PR al ready was (bv. handmatig ready gezet of een tweede call).
-    if (/not in draft state|already in ready/i.test(msg)) return { ok: true }
-    return { error: `gh pr ready failed: ${msg.slice(0, 300)}` }
+    return { error: `Forgejo pr-patch failed: ${(err as Error).message.slice(0, 300)}` }
   }
 }
 
-export type PrState = 'OPEN' | 'MERGED' | 'CLOSED'
-
-export type PrInfo = {
-  state: PrState
-  mergeCommit: string | null
-  baseRefName: string
-  title: string
-}
+// =========================================================================
+// getPullRequestState
+// =========================================================================
 
 export async function getPullRequestState(opts: {
   prUrl: string
   cwd?: string
 }): Promise<PrInfo | { error: string }> {
-  const { prUrl } = opts
+  let prRef
   try {
-    const { stdout } = await exec(
-      'gh',
-      ['pr', 'view', prUrl, '--json', 'state,mergeCommit,baseRefName,title'],
-      opts.cwd ? { cwd: opts.cwd } : {},
-    )
-    const parsed = JSON.parse(stdout) as {
-      state: string
-      mergeCommit: { oid: string } | null
-      baseRefName: string
-      title: string
-    }
-    const state = parsed.state.toUpperCase() as PrState
-    if (state !== 'OPEN' && state !== 'MERGED' && state !== 'CLOSED') {
-      return { error: `unexpected PR state: ${parsed.state}` }
-    }
-    return {
-      state,
-      mergeCommit: parsed.mergeCommit?.oid ?? null,
-      baseRefName: parsed.baseRefName,
-      title: parsed.title,
-    }
+    prRef = parseForgejoPrUrl(opts.prUrl)
   } catch (err) {
-    const msg = (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''
-    return { error: `gh pr view failed: ${msg.slice(0, 300)}` }
+    return { error: `getPullRequestState: ${(err as Error).message.slice(0, 300)}` }
+  }
+
+  let pr: ForgejoPullResponse
+  try {
+    pr = await callForgejo<ForgejoPullResponse>(
+      `${repoPath(prRef.owner, prRef.repo)}/pulls/${prRef.index}`,
+      { host: prRef.host },
+    )
+  } catch (err) {
+    return { error: `Forgejo pr-get failed: ${(err as Error).message.slice(0, 300)}` }
+  }
+
+  let state: PrState
+  if (pr.state === 'open') {
+    state = 'OPEN'
+  } else if (pr.state === 'closed' && pr.merged) {
+    state = 'MERGED'
+  } else if (pr.state === 'closed') {
+    state = 'CLOSED'
+  } else {
+    return { error: `unexpected PR state: ${pr.state}` }
+  }
+
+  return {
+    state,
+    mergeCommit: state === 'MERGED' ? pr.merge_commit_sha : null,
+    baseRefName: pr.base?.ref ?? '',
+    title: pr.title,
+    headSha: pr.head?.sha ?? null,
   }
 }
+
+// =========================================================================
+// listPullRequestFiles
+// =========================================================================
+
+type ForgejoChangedFile = { filename: string }
+
+export async function listPullRequestFiles(opts: {
+  prUrl: string
+  cwd?: string
+}): Promise<string[] | { error: string }> {
+  let prRef
+  try {
+    prRef = parseForgejoPrUrl(opts.prUrl)
+  } catch (err) {
+    return { error: `listPullRequestFiles: ${(err as Error).message.slice(0, 300)}` }
+  }
+
+  try {
+    const files = await callForgejo<ForgejoChangedFile[]>(
+      `${repoPath(prRef.owner, prRef.repo)}/pulls/${prRef.index}/files`,
+      { host: prRef.host },
+    )
+    return Array.isArray(files)
+      ? files.map((f) => f.filename).filter((s): s is string => typeof s === 'string')
+      : []
+  } catch (err) {
+    return { error: `Forgejo pr-files failed: ${(err as Error).message.slice(0, 300)}` }
+  }
+}
+
+// =========================================================================
+// closePullRequest
+//
+// Plaatst eerst een cascade-comment en zet daarna state:closed. De caller
+// (pbi-cascade.ts) is verantwoordelijk voor de branch-delete daarna.
+// =========================================================================
 
 export async function closePullRequest(opts: {
   prUrl: string
   comment: string
   cwd?: string
 }): Promise<{ ok: true } | { error: string }> {
+  let prRef
   try {
-    await exec(
-      'gh',
-      ['pr', 'close', opts.prUrl, '--delete-branch', '--comment', opts.comment],
-      opts.cwd ? { cwd: opts.cwd } : {},
+    prRef = parseForgejoPrUrl(opts.prUrl)
+  } catch (err) {
+    return { error: `closePullRequest: ${(err as Error).message.slice(0, 300)}` }
+  }
+
+  // 1. Comment (issues-endpoint deelt nummers met pulls in Forgejo/Gitea).
+  try {
+    await callForgejo(
+      `${repoPath(prRef.owner, prRef.repo)}/issues/${prRef.index}/comments`,
+      {
+        method: 'POST',
+        write: true,
+        host: prRef.host,
+        json: { body: opts.comment },
+      },
+    )
+  } catch (err) {
+    // Comment is best-effort — als het faalt willen we de close-actie nog wél proberen.
+    console.warn(
+      `[closePullRequest] comment failed for ${opts.prUrl}: ${(err as Error).message.slice(0, 200)}`,
+    )
+  }
+
+  // 2. State patch.
+  try {
+    await callForgejo(
+      `${repoPath(prRef.owner, prRef.repo)}/pulls/${prRef.index}`,
+      {
+        method: 'PATCH',
+        write: true,
+        host: prRef.host,
+        json: { state: 'closed' },
+      },
     )
     return { ok: true }
   } catch (err) {
-    const msg = (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''
-    return { error: `gh pr close failed: ${msg.slice(0, 300)}` }
+    return { error: `Forgejo pr-close failed: ${(err as Error).message.slice(0, 300)}` }
   }
 }
 
-// Creates a revert-PR for a merged PR. Uses an isolated worktree so it
-// never touches the user's main checkout. Returns the new PR URL or an
-// error string. The revert PR is opened WITHOUT auto-merge — the user
-// must review + merge it manually so an unintended cascade can be undone.
+// =========================================================================
+// createRevertPullRequest
+//
+// Worktree-revert (parent-count-aware: squash-merges hebben 1 parent; merge-
+// commits hebben er meerdere en vereisen `-m 1`). De revert-PR wordt
+// bewust ZONDER auto-merge geopend.
+// =========================================================================
+
 export async function createRevertPullRequest(opts: {
   repoRoot: string
   mergeSha: string
@@ -216,12 +421,11 @@ export async function createRevertPullRequest(opts: {
     await exec(cmd, args, { cwd })
   }
 
-  // Cleanup helper, best-effort
   const cleanup = async () => {
     try {
       await exec('git', ['worktree', 'remove', '--force', wtPath], { cwd: repoRoot })
     } catch {
-      // ignore — worktree may not exist if creation failed
+      // ignore — worktree mag al weg zijn als creatie faalde
     }
   }
 
@@ -229,8 +433,23 @@ export async function createRevertPullRequest(opts: {
     await run('git', ['fetch', 'origin', baseRef, mergeSha], repoRoot)
     await run('git', ['worktree', 'add', '-b', revertBranch, wtPath, `origin/${baseRef}`], repoRoot)
 
+    // Parent-count detectie: squash-merge = 1 parent (geen -m), echte
+    // merge-commit = ≥2 parents (vereist -m 1).
+    let revertArgs: string[]
     try {
-      await run('git', ['revert', '-m', '1', mergeSha, '--no-edit'], wtPath)
+      const { stdout } = await exec('git', ['cat-file', '-p', mergeSha], { cwd: wtPath })
+      const parents = stdout.split('\n').filter((l) => l.startsWith('parent '))
+      revertArgs = parents.length > 1
+        ? ['revert', '-m', '1', mergeSha, '--no-edit']
+        : ['revert', mergeSha, '--no-edit']
+    } catch (err) {
+      await cleanup()
+      const msg = (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''
+      return { error: `git cat-file failed for ${mergeSha}: ${msg.slice(0, 200)}` }
+    }
+
+    try {
+      await run('git', revertArgs, wtPath)
     } catch (err) {
       await cleanup()
       const msg = (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''
@@ -241,6 +460,14 @@ export async function createRevertPullRequest(opts: {
     }
 
     await run('git', ['push', '-u', 'origin', revertBranch], wtPath)
+
+    let repoRef
+    try {
+      repoRef = await getRepoRefFromWorktree(wtPath)
+    } catch (err) {
+      await cleanup()
+      return { error: `Forgejo repo-detectie faalde: ${(err as Error).message.slice(0, 300)}` }
+    }
 
     const pbiTag = pbiCode ? `PBI ${pbiCode}` : 'PBI'
     const title = `Revert: ${originalTitle}`
@@ -253,38 +480,30 @@ export async function createRevertPullRequest(opts: {
       `**Review carefully before merging** — auto-merge is intentionally NOT enabled on revert PRs.`,
     ].join('\n')
 
-    let prUrl: string
+    let pr: ForgejoPullResponse
     try {
-      const { stdout } = await exec(
-        'gh',
-        [
-          'pr',
-          'create',
-          '--base',
-          baseRef,
-          '--head',
-          revertBranch,
-          '--title',
-          title,
-          '--body',
-          body,
-        ],
-        { cwd: wtPath },
+      pr = await callForgejo<ForgejoPullResponse>(
+        `${repoPath(repoRef.owner, repoRef.repo)}/pulls`,
+        {
+          method: 'POST',
+          write: true,
+          host: repoRef.host,
+          json: { head: revertBranch, base: baseRef, title, body },
+        },
       )
-      const lines = stdout.trim().split('\n').filter(Boolean)
-      prUrl = lines[lines.length - 1]?.trim() ?? ''
-      if (!prUrl.startsWith('http')) {
-        await cleanup()
-        return { error: `gh pr create produced unexpected output: ${stdout.slice(0, 200)}` }
-      }
     } catch (err) {
       await cleanup()
-      const msg = (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''
-      return { error: `gh pr create (revert) failed: ${msg.slice(0, 300)}` }
+      return { error: `Forgejo pr-create (revert) failed: ${(err as Error).message.slice(0, 300)}` }
+    }
+
+    const url = pr.html_url || ''
+    if (!url.startsWith('http')) {
+      await cleanup()
+      return { error: `Forgejo pr-create produced unexpected html_url: ${String(url).slice(0, 200)}` }
     }
 
     await cleanup()
-    return { url: prUrl }
+    return { url }
   } catch (err) {
     await cleanup()
     const msg = (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''
