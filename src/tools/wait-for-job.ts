@@ -472,6 +472,17 @@ export async function getFullJobContext(jobId: string) {
           secondary_products: {
             include: { product: { select: { id: true, repo_url: true } } },
           },
+          // PBI-102: prefer ProductDoc.current_revision.content_md boven
+          // de legacy Idea.{grill,plan}_md kolommen. Fallback in de
+          // payload-bouw zorgt dat legacy-ideas blijven werken tot de
+          // backfill (scripts/migrate-idea-md-to-product-docs.ts) is
+          // gedraaid in productie.
+          plan_doc: {
+            select: { current_revision: { select: { content_md: true } } },
+          },
+          grill_doc: {
+            select: { current_revision: { select: { content_md: true } } },
+          },
         },
       },
       product: {
@@ -555,8 +566,9 @@ export async function getFullJobContext(jobId: string) {
         code: idea.code,
         title: idea.title,
         description: idea.description,
-        grill_md: idea.grill_md,
-        plan_md: idea.plan_md,
+        // PBI-102: revision-content wint; fallback naar legacy strings
+        grill_md: idea.grill_doc?.current_revision?.content_md ?? idea.grill_md,
+        plan_md: idea.plan_doc?.current_revision?.content_md ?? idea.plan_md,
         status: idea.status,
         product_id: idea.product_id,
       },

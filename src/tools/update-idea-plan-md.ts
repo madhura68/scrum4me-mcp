@@ -12,11 +12,31 @@ import { requireWriteAccess } from '../auth.js'
 import { userOwnsIdea } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { parsePlanMd } from '../lib/idea-plan-parser.js'
+import {
+  writeProductDoc,
+  ProductDocWriteError,
+} from '../lib/product-doc-write.js'
 
 const inputSchema = z.object({
   idea_id: z.string().min(1),
   markdown: z.string().min(1).max(64_000),
 })
+
+const FRONTMATTER_RE = /^---\r?\n/
+
+/**
+ * Wrap raw markdown met minimal frontmatter als het ontbreekt. parsePlanMd
+ * vereist eigen yaml-blok bovenaan — als die OK is, gaat hij ook door
+ * writeProductDoc's productDocFrontmatterSchema-validatie. Maar als de
+ * plan-frontmatter geen `status` heeft, voegen we hem hier toe.
+ */
+function ensureProductDocFrontmatter(md: string, title: string): string {
+  if (!FRONTMATTER_RE.test(md)) {
+    const safeTitle = title.replace(/"/g, '\\"').slice(0, 200)
+    return `---\ntitle: "${safeTitle}"\nstatus: draft\n---\n\n${md}`
+  }
+  return md
+}
 
 export function registerUpdateIdeaPlanMdTool(server: McpServer) {
   server.registerTool(
@@ -24,7 +44,7 @@ export function registerUpdateIdeaPlanMdTool(server: McpServer) {
     {
       title: 'Update idea plan_md',
       description:
-        'Save the make-plan-result markdown for an idea. Server validates yaml-frontmatter; on success status → PLAN_READY, on parse-fail → PLAN_FAILED. Forbidden for demo accounts.',
+        'Save the make-plan-result markdown for an idea: validates plan-yaml first; on success writes a ProductDoc (folder=PLANS) + immutable revision, sets Idea.plan_doc_id, dual-writes Idea.plan_md for backward-compat, and transitions status to PLAN_READY. On plan-parse-fail status → PLAN_FAILED (no ProductDoc-write). Requires Idea.product_id. Forbidden for demo accounts.',
       inputSchema,
     },
     async ({ idea_id, markdown }) =>
@@ -37,8 +57,9 @@ export function registerUpdateIdeaPlanMdTool(server: McpServer) {
         const parsed = parsePlanMd(markdown)
 
         if (!parsed.ok) {
-          // Persist md + flip to PLAN_FAILED + log de errors zodat de UI ze
-          // aan de user kan tonen.
+          // Plan-yaml parse failed → behoud bestaande dual-write naar
+          // Idea.plan_md, status PLAN_FAILED, GEEN ProductDoc-write
+          // (de content is corrupt; eerst fixen).
           const result = await prisma.$transaction([
             prisma.idea.update({
               where: { id: idea_id },
@@ -61,30 +82,71 @@ export function registerUpdateIdeaPlanMdTool(server: McpServer) {
           })
         }
 
-        const result = await prisma.$transaction([
-          prisma.idea.update({
-            where: { id: idea_id },
-            data: { plan_md: markdown, status: 'PLAN_READY' },
-            select: { id: true, status: true, code: true },
-          }),
-          prisma.ideaLog.create({
-            data: {
-              idea_id,
-              type: 'PLAN_RESULT',
-              content: `Plan ready: ${parsed.plan.stories.length} stories, ${parsed.plan.stories.reduce((n, s) => n + s.tasks.length, 0)} tasks`,
-              metadata: {
-                pbi_title: parsed.plan.pbi.title,
-                story_count: parsed.plan.stories.length,
-                task_count: parsed.plan.stories.reduce((n, s) => n + s.tasks.length, 0),
-              },
-            },
-          }),
-        ])
-
-        return toolJson({
-          ok: true,
-          idea: result[0],
+        const idea = await prisma.idea.findUnique({
+          where: { id: idea_id },
+          select: { id: true, code: true, user_id: true, product_id: true, title: true },
         })
+        if (!idea?.product_id) {
+          return toolError('Idea has no product_id — assign product before PLAN')
+        }
+
+        const content = ensureProductDocFrontmatter(markdown, idea.title)
+        const slug = `${idea.code.toLowerCase()}-plan`
+        const storyCount = parsed.plan.stories.length
+        const taskCount = parsed.plan.stories.reduce((n, s) => n + s.tasks.length, 0)
+
+        try {
+          const result = await prisma.$transaction(async (tx) => {
+            const wr = await writeProductDoc(tx, {
+              product_id: idea.product_id!,
+              folder: 'PLANS',
+              slug,
+              content_md: content,
+              actor_user_id: idea.user_id,
+            })
+            const updatedIdea = await tx.idea.update({
+              where: { id: idea_id },
+              data: {
+                plan_md: markdown, // dual-write voor wait-for-job compat
+                plan_doc_id: wr.doc_id,
+                status: 'PLAN_READY',
+              },
+              select: { id: true, status: true, code: true },
+            })
+            await tx.ideaLog.create({
+              data: {
+                idea_id,
+                type: 'PLAN_RESULT',
+                content: `Plan ready: ${storyCount} stories, ${taskCount} tasks (rev ${wr.revision})`,
+                metadata: {
+                  pbi_title: parsed.plan.pbi.title,
+                  story_count: storyCount,
+                  task_count: taskCount,
+                  doc_id: wr.doc_id,
+                  revision_id: wr.revision_id,
+                  revision: wr.revision,
+                  noop: wr.noop,
+                },
+              },
+            })
+            return { idea: updatedIdea, wr }
+          })
+
+          return toolJson({
+            ok: true,
+            idea: result.idea,
+            doc: {
+              id: result.wr.doc_id,
+              revision_id: result.wr.revision_id,
+              revision: result.wr.revision,
+            },
+          })
+        } catch (err) {
+          if (err instanceof ProductDocWriteError) {
+            return toolError(`Cannot save plan as ProductDoc: ${err.message}`)
+          }
+          throw err
+        }
       }),
   )
 }

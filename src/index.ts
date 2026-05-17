@@ -25,6 +25,9 @@ import { registerCleanupMyWorktreesTool } from './tools/cleanup-my-worktrees.js'
 import { registerCheckQueueEmptyTool } from './tools/check-queue-empty.js'
 import { registerSetPbiPrTool } from './tools/set-pbi-pr.js'
 import { registerMarkPbiPrMergedTool } from './tools/mark-pbi-pr-merged.js'
+// PBI-102: ProductDoc-revision tools
+import { registerCreateProductDocTool } from './tools/create-product-doc.js'
+import { registerLinkPbiDocTool } from './tools/link-pbi-doc.js'
 import { registerGetIdeaContextTool } from './tools/get-idea-context.js'
 import { registerUpdateIdeaGrillMdTool } from './tools/update-idea-grill-md.js'
 import { registerUpdateIdeaPlanMdTool } from './tools/update-idea-plan-md.js'
@@ -94,6 +97,9 @@ async function main() {
   registerCheckQueueEmptyTool(server)
   registerSetPbiPrTool(server)
   registerMarkPbiPrMergedTool(server)
+  // PBI-102: ProductDoc-revision tools
+  registerCreateProductDocTool(server)
+  registerLinkPbiDocTool(server)
   // M12: idee-job tools
   registerGetIdeaContextTool(server)
   registerUpdateIdeaGrillMdTool(server)
