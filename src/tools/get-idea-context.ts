@@ -42,6 +42,28 @@ export function registerGetIdeaContextTool(server: McpServer) {
               },
             },
             pbi: { select: { id: true, code: true, title: true } },
+            // PBI-102: laad content uit current_revision met fallback
+            // naar legacy Idea.{grill,plan}_md (tijdens dual-write).
+            plan_doc: {
+              select: {
+                id: true,
+                slug: true,
+                folder: true,
+                current_revision: {
+                  select: { id: true, revision: true, content_md: true },
+                },
+              },
+            },
+            grill_doc: {
+              select: {
+                id: true,
+                slug: true,
+                folder: true,
+                current_revision: {
+                  select: { id: true, revision: true, content_md: true },
+                },
+              },
+            },
           },
         })
         if (!idea) {
@@ -77,14 +99,20 @@ export function registerGetIdeaContextTool(server: McpServer) {
           }),
         ])
 
+        // PBI-102: prefer current_revision.content_md boven legacy
+        // idea.{grill,plan}_md zodat het canonieke ProductDoc-record
+        // de bron-van-waarheid is. Output-contract identiek.
+        const planMd = idea.plan_doc?.current_revision?.content_md ?? idea.plan_md
+        const grillMd = idea.grill_doc?.current_revision?.content_md ?? idea.grill_md
+
         return toolJson({
           idea: {
             id: idea.id,
             code: idea.code,
             title: idea.title,
             description: idea.description,
-            grill_md: idea.grill_md,
-            plan_md: idea.plan_md,
+            grill_md: grillMd,
+            plan_md: planMd,
             status: idea.status,
             product_id: idea.product_id,
             pbi_id: idea.pbi_id,
@@ -95,7 +123,34 @@ export function registerGetIdeaContextTool(server: McpServer) {
           product: idea.product,
           pbi: idea.pbi,
           repo_url: idea.product?.repo_url ?? null,
-          grill_md_so_far: idea.grill_md,
+          grill_md_so_far: grillMd,
+          // PBI-102: pointer-info voor revision-aware consumenten
+          plan_doc: idea.plan_doc
+            ? {
+                id: idea.plan_doc.id,
+                slug: idea.plan_doc.slug,
+                folder: idea.plan_doc.folder,
+                current_revision: idea.plan_doc.current_revision
+                  ? {
+                      id: idea.plan_doc.current_revision.id,
+                      revision: idea.plan_doc.current_revision.revision,
+                    }
+                  : null,
+              }
+            : null,
+          grill_doc: idea.grill_doc
+            ? {
+                id: idea.grill_doc.id,
+                slug: idea.grill_doc.slug,
+                folder: idea.grill_doc.folder,
+                current_revision: idea.grill_doc.current_revision
+                  ? {
+                      id: idea.grill_doc.current_revision.id,
+                      revision: idea.grill_doc.current_revision.revision,
+                    }
+                  : null,
+              }
+            : null,
           open_questions: openQuestions.map((q) => ({
             id: q.id,
             question: q.question,
