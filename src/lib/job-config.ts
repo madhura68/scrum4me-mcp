@@ -55,6 +55,10 @@ export type TaskInput = {
 const TASK_TOOLS = [
   'Read', 'Edit', 'Write', 'Bash', 'Grep', 'Glob',
   'mcp__scrum4me__get_claude_context',
+  'mcp__scrum4me__list_product_docs',
+  'mcp__scrum4me__get_product_doc',
+  'mcp__scrum4me__search_product_docs',
+  'mcp__scrum4me__related_product_docs',
   'mcp__scrum4me__update_task_status',
   'mcp__scrum4me__update_task_plan',
   'mcp__scrum4me__log_implementation',
@@ -96,6 +100,10 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
     max_turns: 20,
     allowed_tools: [
       'Read', 'Grep', 'Glob', 'WebSearch', 'AskUserQuestion', 'Write',
+      'mcp__scrum4me__list_product_docs',
+      'mcp__scrum4me__get_product_doc',
+      'mcp__scrum4me__search_product_docs',
+      'mcp__scrum4me__related_product_docs',
       'mcp__scrum4me__update_idea_plan_md',
       'mcp__scrum4me__log_idea_decision',
       'mcp__scrum4me__update_job_status',

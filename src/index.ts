@@ -28,6 +28,11 @@ import { registerMarkPbiPrMergedTool } from './tools/mark-pbi-pr-merged.js'
 // PBI-102: ProductDoc-revision tools
 import { registerCreateProductDocTool } from './tools/create-product-doc.js'
 import { registerLinkPbiDocTool } from './tools/link-pbi-doc.js'
+// product-docs MCP-retrieval (Deel B): 4 read-tools voor agents
+import { registerListProductDocsTool } from './tools/list-product-docs.js'
+import { registerGetProductDocTool } from './tools/get-product-doc.js'
+import { registerSearchProductDocsTool } from './tools/search-product-docs.js'
+import { registerRelatedProductDocsTool } from './tools/related-product-docs.js'
 import { registerGetIdeaContextTool } from './tools/get-idea-context.js'
 import { registerUpdateIdeaGrillMdTool } from './tools/update-idea-grill-md.js'
 import { registerUpdateIdeaPlanMdTool } from './tools/update-idea-plan-md.js'
@@ -68,7 +73,12 @@ async function main() {
     {
       instructions:
         'Scrum4Me dev-flow tools: read product/sprint/story context, update tasks, log activity. ' +
-        'Always call get_claude_context before starting work to fetch the next story.',
+        'Always call get_claude_context before starting work to fetch the next story. ' +
+        'Use search_product_docs before implementing when task touches architecture, patterns, ' +
+        'auth, status mapping, demo policy, job flow, or UI dialogs. ' +
+        'Use related_product_docs to follow cross-references between docs. ' +
+        'Use get_product_doc with `heading` parameter to focus on a section instead of ' +
+        'loading the full doc (content_md can be up to 100K chars).',
     },
   )
 
@@ -100,6 +110,11 @@ async function main() {
   // PBI-102: ProductDoc-revision tools
   registerCreateProductDocTool(server)
   registerLinkPbiDocTool(server)
+  // product-docs MCP-retrieval (Deel B)
+  registerListProductDocsTool(server)
+  registerGetProductDocTool(server)
+  registerSearchProductDocsTool(server)
+  registerRelatedProductDocsTool(server)
   // M12: idee-job tools
   registerGetIdeaContextTool(server)
   registerUpdateIdeaGrillMdTool(server)
