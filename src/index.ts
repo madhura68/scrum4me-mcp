@@ -74,11 +74,12 @@ async function main() {
       instructions:
         'Scrum4Me dev-flow tools: read product/sprint/story context, update tasks, log activity. ' +
         'Always call get_claude_context before starting work to fetch the next story. ' +
-        'Use search_product_docs before implementing when task touches architecture, patterns, ' +
-        'auth, status mapping, demo policy, job flow, or UI dialogs. ' +
-        'Use related_product_docs to follow cross-references between docs. ' +
-        'Use get_product_doc with `heading` parameter to focus on a section instead of ' +
-        'loading the full doc (content_md can be up to 100K chars).',
+        'Use search_product_docs before implementing, reviewing, grilling, or chatting ' +
+        'about work that touches architecture, patterns, auth, status mapping, demo policy, ' +
+        'job flow, sprint flow, MD3/styling, or UI dialogs. Use Read/Grep on docs/ only as ' +
+        'fallback when MCP tools return no useful result or a multi-file scan is required. ' +
+        'Use related_product_docs to follow cross-references between docs. Use get_product_doc ' +
+        'with `heading` parameter to focus on a section instead of loading the full doc.',
     },
   )
 
