@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__scrum4me__update_job_status",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tsx \"${SCRUM4ME_MCP_DIR:-$CLAUDE_PROJECT_DIR}/scripts/persist-job-usage.ts\""
+          }
+        ]
+      }
+    ]
+  }
+}
