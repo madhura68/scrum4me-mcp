@@ -1,5 +1,6 @@
 import { createHash } from 'crypto'
 import { prisma } from './prisma.js'
+import { getRequestToken } from './request-context.js'
 
 export type AuthContext = {
   userId: string
@@ -14,7 +15,9 @@ export async function getAuth(): Promise<AuthContext> {
   // lived cache would keep writing the old user_id into ClaudeWorker rows
   // and into `claude_jobs.user_id` SQL filters until the worker is restarted.
   // One findUnique on a unique-indexed hash per request is cheap.
-  const token = process.env.SCRUM4ME_TOKEN
+  // HTTP mode: token from the per-request ALS context (Bearer header).
+  // stdio mode: falls back to process.env.SCRUM4ME_TOKEN (unchanged behaviour).
+  const token = getRequestToken()
   if (!token) {
     throw new Error('SCRUM4ME_TOKEN is not set — see .env.example')
   }
