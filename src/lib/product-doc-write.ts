@@ -1,11 +1,19 @@
-// PBI-102 (T-1123): DRY-mirror van ~/Development/Scrum4Me/lib/product-doc-write.ts.
-// Wijzig BEIDE bestanden bij elke aanpassing — patroon zoals lib/job-config.ts.
+// PBI-102 (T-1119): shared write-laag voor ProductDoc create/update met
+// immutable revision-historie. Gebruikt door:
+//   - actions/product-docs.ts (server-action voor Idea-UI / Docs-UI)
+//   - scrum4me-mcp/src/lib/product-doc-write.ts (gespiegelde MCP-mirror)
 //
-// Invariant per call (zelfde als Scrum4Me-versie):
-//   1. Parse frontmatter + last_updated-normalize.
+// Geen Next-deps in deze module zodat dezelfde code-pad draait in
+// MCP-context. Patroon zoals lib/job-config.ts ↔ MCP-mirror.
+//
+// Invariant per call:
+//   1. Frontmatter parse + last_updated-normalize.
 //   2. SHA-256 hash van genormaliseerde content.
-//   3. No-op skip als hash == current_revision.content_hash.
-//   4. Anders: nieuwe revision (max+1), ProductDoc + Revision + Log binnen tx.
+//   3. Bij update én hash == current_revision.content_hash → no-op skip
+//      (geen nieuwe revision, geen log-rij).
+//   4. Anders: revision-nr = max(revision)+1, schrijf ProductDoc +
+//      ProductDocRevision + update current_revision_id + ProductDocLog,
+//      alles binnen één tx.
 
 import { createHash } from 'node:crypto'
 
@@ -19,8 +27,11 @@ import {
   setProductDocFrontmatterFields,
   todayIsoDate,
 } from './product-doc-frontmatter.js'
+import { buildProductDocSectionIndex } from './product-doc-section-index.js'
 
-export type WriteProductDocTx = PrismaClient | Prisma.TransactionClient
+export type WriteProductDocTx =
+  | PrismaClient
+  | Prisma.TransactionClient
 
 export interface WriteProductDocInput {
   product_id: string
@@ -28,6 +39,7 @@ export interface WriteProductDocInput {
   slug: string
   content_md: string
   actor_user_id: string
+  expected_revision_id?: string | null
 }
 
 export interface WriteProductDocResult {
@@ -53,6 +65,157 @@ export class ProductDocWriteError extends Error {
 
 function sha256(input: string): string {
   return createHash('sha256').update(input).digest('hex')
+}
+
+export async function rebuildProductDocSectionIndex(
+  tx: WriteProductDocTx,
+  input: {
+    product_id: string
+    doc_id: string
+    revision_id: string
+    folder: ProductDocFolder
+    slug: string
+    title: string
+    status: string
+    content_md: string
+  },
+): Promise<void> {
+  const productDocs = await tx.productDoc.findMany({
+    where: { product_id: input.product_id },
+    select: { id: true, folder: true, slug: true, title: true },
+  })
+  const productSections = await tx.productDocSection.findMany({
+    where: { product_id: input.product_id },
+    select: { id: true, doc_id: true, anchor: true },
+  })
+
+  const index = buildProductDocSectionIndex(
+    {
+      product_id: input.product_id,
+      doc_id: input.doc_id,
+      revision_id: input.revision_id,
+      folder: input.folder,
+      slug: input.slug,
+      title: input.title,
+      status: input.status,
+      content_md: input.content_md,
+    },
+    { productDocs, productSections },
+  )
+
+  await tx.productDocLink.deleteMany({
+    where: { source_doc_id: input.doc_id },
+  })
+
+  const sectionIdsByAnchor = new Map<string, string>()
+  for (const section of index.sections) {
+    const saved = await tx.productDocSection.upsert({
+      where: {
+        doc_id_anchor: {
+          doc_id: section.doc_id,
+          anchor: section.anchor,
+        },
+      },
+      create: {
+        product_id: section.product_id,
+        doc_id: section.doc_id,
+        revision_id: section.revision_id,
+        folder: section.folder,
+        slug: section.slug,
+        anchor: section.anchor,
+        heading_path: section.heading_path,
+        heading_level: section.heading_level,
+        sort_order: section.sort_order,
+        title: section.title,
+        status: section.status,
+        content_text: section.content_text,
+        content_hash: section.content_hash,
+      },
+      update: {
+        revision_id: section.revision_id,
+        folder: section.folder,
+        slug: section.slug,
+        heading_path: section.heading_path,
+        heading_level: section.heading_level,
+        sort_order: section.sort_order,
+        title: section.title,
+        status: section.status,
+        content_text: section.content_text,
+        content_hash: section.content_hash,
+      },
+      select: { id: true, anchor: true },
+    })
+    sectionIdsByAnchor.set(saved.anchor, saved.id)
+  }
+
+  await tx.productDocSection.deleteMany({
+    where: {
+      doc_id: input.doc_id,
+      anchor: { notIn: index.sections.map((section) => section.anchor) },
+    },
+  })
+
+  if (index.links.length > 0) {
+    await tx.productDocLink.createMany({
+      data: index.links.map((link) => {
+        const targetSectionId =
+          link.target_doc_id === input.doc_id && link.target_anchor
+            ? sectionIdsByAnchor.get(link.target_anchor) ?? null
+            : link.target_section_id
+        const linkType =
+          link.target_doc_id && link.target_anchor && !targetSectionId
+            ? 'broken'
+            : link.link_type
+
+        return {
+          product_id: link.product_id,
+          source_doc_id: link.source_doc_id,
+          source_section_id: link.source_anchor
+            ? sectionIdsByAnchor.get(link.source_anchor) ?? null
+            : null,
+          target_doc_id: link.target_doc_id,
+          target_section_id: targetSectionId,
+          raw_href: link.raw_href,
+          normalized_href: link.normalized_href,
+          target_folder: link.target_folder,
+          target_slug: link.target_slug,
+          target_anchor: link.target_anchor,
+          link_type: linkType,
+          anchor: link.source_anchor,
+        }
+      }),
+    })
+  }
+
+  const affected = await tx.productDocLink.findMany({
+    where: {
+      product_id: input.product_id,
+      OR: [
+        { target_doc_id: input.doc_id },
+        {
+          target_folder: input.folder,
+          target_slug: input.slug,
+          link_type: { in: ['broken', 'ambiguous'] },
+        },
+      ],
+    },
+    select: { id: true, target_anchor: true },
+  })
+
+  for (const link of affected) {
+    const targetSectionId = link.target_anchor
+      ? sectionIdsByAnchor.get(link.target_anchor) ?? null
+      : null
+
+    await tx.productDocLink.update({
+      where: { id: link.id },
+      data: {
+        target_doc_id: input.doc_id,
+        target_section_id: targetSectionId,
+        link_type: link.target_anchor && !targetSectionId ? 'broken' : 'resolved',
+      },
+    })
+  }
 }
 
 export async function writeProductDoc(
@@ -88,6 +251,16 @@ export async function writeProductDoc(
       current_revision: { select: { id: true, revision: true, content_hash: true } },
     },
   })
+
+  if (
+    input.expected_revision_id &&
+    existing?.current_revision_id !== input.expected_revision_id
+  ) {
+    throw new ProductDocWriteError('Doc is gewijzigd sinds laden', 409, {
+      expected_revision_id: input.expected_revision_id,
+      current_revision_id: existing?.current_revision_id ?? null,
+    })
+  }
 
   if (existing && existing.current_revision?.content_hash === content_hash) {
     return {
@@ -167,6 +340,17 @@ export async function writeProductDoc(
         new_status: parsed.frontmatter.status,
       },
     },
+  })
+
+  await rebuildProductDocSectionIndex(tx, {
+    product_id: input.product_id,
+    doc_id: docId,
+    revision_id: revision.id,
+    folder: input.folder,
+    slug: input.slug,
+    title: parsed.frontmatter.title,
+    status: parsed.frontmatter.status,
+    content_md: normalized,
   })
 
   return {

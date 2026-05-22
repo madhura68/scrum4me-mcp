@@ -255,6 +255,9 @@ model Product {
   idea_products             IdeaProduct[]
   docs                      ProductDoc[]
   doc_logs                  ProductDocLog[]
+  doc_sections              ProductDocSection[]
+  doc_links                 ProductDocLink[]
+  doc_index_config          ProductDocIndexConfig?
 
   @@unique([user_id, name])
   @@unique([user_id, code])
@@ -565,6 +568,9 @@ model ProductDoc {
   current_revision_id String?              @unique
   current_revision    ProductDocRevision?  @relation("CurrentRevision", fields: [current_revision_id], references: [id], onDelete: SetNull)
   revisions           ProductDocRevision[] @relation("DocRevisions")
+  sections            ProductDocSection[]  @relation("ProductDocSections")
+  source_links        ProductDocLink[]     @relation("ProductDocSourceLinks")
+  target_links        ProductDocLink[]     @relation("ProductDocTargetLinks")
   // PBI-102: één-op-één back-relations vanuit Idea (zelfde Idea kan
   // alleen één PLAN- en één GRILL-doc hebben — zie Idea.plan_doc_id /
   // grill_doc_id met @unique).
@@ -594,6 +600,7 @@ model ProductDocRevision {
   created_at   DateTime    @default(now())
   pbi_links    PbiDoc[]
   current_for  ProductDoc? @relation("CurrentRevision")
+  sections     ProductDocSection[] @relation("ProductDocRevisionSections")
 
   @@unique([doc_id, revision])
   @@index([doc_id, created_at])
@@ -618,6 +625,81 @@ model PbiDoc {
   @@index([pbi_id])
   @@index([doc_revision_id])
   @@map("pbi_docs")
+}
+
+// Current-revision derived sections for ProductDocs. Rebuildable; canonical
+// history remains ProductDocRevision.content_md.
+model ProductDocSection {
+  id            String             @id @default(cuid())
+  product       Product            @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id    String
+  doc           ProductDoc         @relation("ProductDocSections", fields: [doc_id], references: [id], onDelete: Cascade)
+  doc_id        String
+  revision      ProductDocRevision @relation("ProductDocRevisionSections", fields: [revision_id], references: [id], onDelete: Cascade)
+  revision_id   String
+  folder        ProductDocFolder
+  slug          String             @db.VarChar(80)
+  anchor        String             @db.VarChar(120)
+  heading_path  String             @db.VarChar(500)
+  heading_level Int
+  sort_order    Int
+  title         String             @db.VarChar(200)
+  status        String             @db.VarChar(20)
+  content_text  String             @db.Text
+  content_hash  String             @db.VarChar(64)
+  updated_at    DateTime           @updatedAt
+  source_links  ProductDocLink[]   @relation("ProductDocSectionSourceLinks")
+  target_links  ProductDocLink[]   @relation("ProductDocSectionTargetLinks")
+
+  @@unique([doc_id, anchor])
+  @@index([product_id, folder, slug])
+  @@index([revision_id])
+  @@index([doc_id])
+  @@map("product_doc_sections")
+}
+
+// Derived link graph for ProductDocs. Stores raw + normalized targets so
+// broken/ambiguous rows can be re-resolved when docs are created or renamed.
+model ProductDocLink {
+  id                String             @id @default(cuid())
+  product           Product            @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id        String
+  source_doc        ProductDoc         @relation("ProductDocSourceLinks", fields: [source_doc_id], references: [id], onDelete: Cascade)
+  source_doc_id     String
+  source_section    ProductDocSection? @relation("ProductDocSectionSourceLinks", fields: [source_section_id], references: [id], onDelete: Cascade)
+  source_section_id String?
+  target_doc        ProductDoc?        @relation("ProductDocTargetLinks", fields: [target_doc_id], references: [id], onDelete: SetNull)
+  target_doc_id     String?
+  target_section    ProductDocSection? @relation("ProductDocSectionTargetLinks", fields: [target_section_id], references: [id], onDelete: SetNull)
+  target_section_id String?
+  raw_href          String             @db.Text
+  normalized_href   String?            @db.Text
+  target_folder     ProductDocFolder?
+  target_slug       String?            @db.VarChar(80)
+  target_anchor     String?            @db.VarChar(120)
+  link_type         String             @db.VarChar(20)
+  anchor            String?            @db.VarChar(120)
+  created_at        DateTime           @default(now())
+  updated_at        DateTime           @updatedAt
+
+  @@index([product_id, source_doc_id])
+  @@index([target_doc_id])
+  @@index([target_folder, target_slug, target_anchor])
+  @@map("product_doc_links")
+}
+
+model ProductDocIndexConfig {
+  id            String   @id @default(cuid())
+  product       Product  @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id    String   @unique
+  curator_md    String   @db.Text
+  generated_md  String?  @db.Text
+  generated_at  DateTime?
+  index_version Int      @default(1)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  @@map("product_doc_index_configs")
 }
 
 model ProductDocLog {
