@@ -55,6 +55,7 @@ export type TaskInput = {
 const TASK_TOOLS = [
   'Read', 'Edit', 'Write', 'Bash', 'Grep', 'Glob',
   'mcp__scrum4me__get_claude_context',
+  'mcp__scrum4me__get_agent_guide',
   'mcp__scrum4me__list_product_docs',
   'mcp__scrum4me__get_product_doc',
   'mcp__scrum4me__search_product_docs',

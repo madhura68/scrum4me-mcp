@@ -144,6 +144,20 @@ describe('KIND_DEFAULTS.allowed_tools', () => {
   })
 })
 
+describe('agent-guide tool allowlist', () => {
+  it('TASK_IMPLEMENTATION may call get_agent_guide', () => {
+    expect(getKindDefault('TASK_IMPLEMENTATION').allowed_tools).toContain(
+      'mcp__scrum4me__get_agent_guide',
+    )
+  })
+
+  it('SPRINT_IMPLEMENTATION may call get_agent_guide (inherits TASK_TOOLS)', () => {
+    expect(getKindDefault('SPRINT_IMPLEMENTATION').allowed_tools).toContain(
+      'mcp__scrum4me__get_agent_guide',
+    )
+  })
+})
+
 describe('mapBudgetToEffort', () => {
   it.each([
     [0, null],
