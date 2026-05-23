@@ -12,7 +12,8 @@
 // Idempotent — running twice for the same job overwrites with the same values.
 // Designed to never block the agent: any failure logs a warning and exits 0.
 
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
+import { dirname, basename, join } from 'node:path'
 import { prisma } from '../src/prisma.js'
 
 export type HookInput = {
@@ -148,6 +149,44 @@ export function normalizeModelId(raw: string): string {
   return raw.replace(/\[(.*?)\]/g, '-$1')
 }
 
+export type UsageTotals = { input: number; output: number; cacheRead: number; cacheWrite: number }
+
+// Sum assistant-message usage across this session's sub-agent transcripts.
+// Layout (verified): <dir>/<session-id>/subagents/agent-*.jsonl, where <session-id>
+// is the main transcript filename without .jsonl. The per-session subdir scopes this
+// to ONE job. Sub-agent lines are sidechain=true and live ONLY in these files (not
+// inlined in the main transcript), so summing them adds no double-count with
+// computeUsageFromTranscript, which skips isSidechain lines in the main transcript.
+export async function sumSubagentUsage(mainTranscriptPath: string): Promise<UsageTotals> {
+  const totals: UsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+  const sessionId = basename(mainTranscriptPath, '.jsonl')
+  const subDir = join(dirname(mainTranscriptPath), sessionId, 'subagents')
+  let files: string[]
+  try {
+    files = (await readdir(subDir)).filter((f) => f.endsWith('.jsonl'))
+  } catch {
+    return totals // no sub-agents for this session
+  }
+  for (const f of files) {
+    let raw: string
+    try {
+      raw = await readFile(join(subDir, f), 'utf8')
+    } catch {
+      continue
+    }
+    for (const line of parseTranscript(raw)) {
+      if (line.type !== 'assistant') continue
+      const u = line.message?.usage
+      if (!u) continue
+      totals.input += u.input_tokens ?? 0
+      totals.output += u.output_tokens ?? 0
+      totals.cacheRead += u.cache_read_input_tokens ?? 0
+      totals.cacheWrite += u.cache_creation_input_tokens ?? 0
+    }
+  }
+  return totals
+}
+
 export async function readHookInput(): Promise<HookInput> {
   const chunks: Buffer[] = []
   for await (const chunk of process.stdin) {
@@ -181,6 +220,13 @@ export async function persistJobUsage(input: HookInput): Promise<'skipped' | 'wr
 
   const lines = parseTranscript(raw)
   const usage = computeUsageFromTranscript(lines)
+
+  // Add this session's sub-agent token usage (separate transcript files).
+  const sub = await sumSubagentUsage(transcriptPath)
+  usage.input_tokens += sub.input
+  usage.output_tokens += sub.output
+  usage.cache_read_tokens += sub.cacheRead
+  usage.cache_write_tokens += sub.cacheWrite
 
   // Skip pure no-op: no usage data and no model — nothing meaningful to persist.
   if (

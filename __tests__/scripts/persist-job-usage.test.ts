@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -15,6 +15,7 @@ import {
   computeUsageFromTranscript,
   normalizeModelId,
   persistJobUsage,
+  sumSubagentUsage,
 } from '../../scripts/persist-job-usage.js'
 
 const mockUpdate = (prisma as unknown as { claudeJob: { update: ReturnType<typeof vi.fn> } })
@@ -283,5 +284,62 @@ describe('persistJobUsage', () => {
     expect(result).toBe('noop')
     expect(mockUpdate).not.toHaveBeenCalled()
     cleanup()
+  })
+})
+
+describe('sumSubagentUsage', () => {
+  it("sums assistant usage from this session's subagent transcripts", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'usage-sa-'))
+    const sessionId = 'sess-fix'
+    const mainPath = join(dir, `${sessionId}.jsonl`)
+    writeFileSync(mainPath, '')
+    const subDir = join(dir, sessionId, 'subagents')
+    mkdirSync(subDir, { recursive: true })
+    const subLines = [
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 's_a1',
+        isSidechain: true,
+        message: {
+          role: 'assistant',
+          model: 'claude-sonnet-4-6',
+          usage: {
+            input_tokens: 3,
+            output_tokens: 1,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 12102,
+          },
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 's_a2',
+        isSidechain: true,
+        message: {
+          role: 'assistant',
+          model: 'claude-sonnet-4-6',
+          usage: {
+            input_tokens: 1,
+            output_tokens: 3,
+            cache_read_input_tokens: 12102,
+            cache_creation_input_tokens: 438,
+          },
+        },
+      }),
+    ].join('\n')
+    writeFileSync(join(subDir, 'agent-1.jsonl'), subLines)
+
+    const sub = await sumSubagentUsage(mainPath)
+    expect(sub).toEqual({ input: 4, output: 4, cacheRead: 12102, cacheWrite: 12540 })
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('returns zeros when there is no subagents directory', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'usage-sa-none-'))
+    const mainPath = join(dir, 'sess-none.jsonl')
+    writeFileSync(mainPath, '')
+    const sub = await sumSubagentUsage(mainPath)
+    expect(sub).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 })
+    rmSync(dir, { recursive: true, force: true })
   })
 })
