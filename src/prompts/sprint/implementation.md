@@ -46,10 +46,9 @@ Voor elke entry in `task_executions[]` (in order-volgorde):
    `task`/`story`/`pbi` in de payload.
 3. **Implementeer** de taak in `worktree_path`. Commit per logische laag met
    `git add -A && git commit`.
-4. **Per laag loggen**:
-   - `mcp__scrum4me__log_implementation`
-   - `mcp__scrum4me__log_commit`
-   - `mcp__scrum4me__log_test_result` (PASSED/FAILED)
+4. **Per laag loggen**: `mcp__scrum4me__log_implementation`,
+   `mcp__scrum4me__log_commit`, `mcp__scrum4me__log_test_result` (PASSED/FAILED) —
+   zie de agent-guide voor wat elk moet bevatten.
 5. **Verify-gate** (als `verify_required === true`):
    `mcp__scrum4me__verify_sprint_task({ execution_id })`. Bij DIVERGENT: stop de
    sprint en sluit af met `update_job_status('failed')`.
