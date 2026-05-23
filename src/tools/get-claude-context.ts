@@ -4,6 +4,7 @@ import { prisma } from '../prisma.js'
 import { getAuth } from '../auth.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { storyStatusToApi, taskStatusToApi } from '../status.js'
+import { resolveAgentGuide } from '../lib/agent-guide.js'
 
 const inputSchema = z.object({
   product_id: z.string().min(1),
@@ -39,6 +40,7 @@ export function registerGetClaudeContextTool(server: McpServer) {
             description: true,
             repo_url: true,
             definition_of_done: true,
+            enabled_doc_folders: true,
           },
         })
 
@@ -118,11 +120,22 @@ export function registerGetClaudeContextTool(server: McpServer) {
           },
         })
 
+        let agent_guide: string | null = null
+        let agent_guide_error: string | null = null
+        try {
+          const guide = await resolveAgentGuide(product)
+          agent_guide = guide.guide_md
+        } catch (err) {
+          agent_guide_error = err instanceof Error ? err.message : String(err)
+        }
+
         return toolJson({
           product,
           active_sprint: activeSprint,
           next_story: nextStory,
           open_ideas: openIdeas,
+          agent_guide,
+          agent_guide_error,
         })
       }),
   )
