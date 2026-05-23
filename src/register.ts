@@ -19,6 +19,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { registerHealthTool } from './tools/health.js'
 import { registerListProductsTool } from './tools/list-products.js'
 import { registerGetClaudeContextTool } from './tools/get-claude-context.js'
+import { registerGetAgentGuideTool } from './tools/get-agent-guide.js'
 import { registerUpdateTaskStatusTool } from './tools/update-task-status.js'
 import { registerUpdateTaskPlanTool } from './tools/update-task-plan.js'
 import { registerLogImplementationTool } from './tools/log-implementation.js'
@@ -68,6 +69,7 @@ export function registerSharedTools(server: McpServer): void {
   registerHealthTool(server)
   registerListProductsTool(server)
   registerGetClaudeContextTool(server)
+  registerGetAgentGuideTool(server)
   registerUpdateTaskStatusTool(server)
   registerUpdateTaskPlanTool(server)
   registerLogImplementationTool(server)
