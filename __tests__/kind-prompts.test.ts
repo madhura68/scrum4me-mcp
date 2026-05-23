@@ -51,6 +51,15 @@ describe('getKindPromptText', () => {
   )
 })
 
+describe('agent-guide rule in implementation prompts', () => {
+  it.each(['TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION'] as const)(
+    '%s-prompt instructs calling get_agent_guide',
+    (kind) => {
+      expect(getKindPromptText(kind)).toContain('get_agent_guide')
+    },
+  )
+})
+
 describe('getIdeaPromptText (back-compat)', () => {
   it('returnt content voor IDEA_GRILL', () => {
     expect(getIdeaPromptText('IDEA_GRILL').length).toBeGreaterThan(0)
