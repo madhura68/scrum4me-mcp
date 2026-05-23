@@ -60,6 +60,40 @@ describe('agent-guide rule in implementation prompts', () => {
   )
 })
 
+describe('implementation prompts: invariants preserved after dedupe', () => {
+  it('TASK keeps safety hardstops, worktree rule, guide pointer, logging tools', () => {
+    const t = getKindPromptText('TASK_IMPLEMENTATION')
+    expect(t).toMatch(/GEEN.*wait_for_job/)
+    expect(t).toContain('worktree')
+    expect(t).toContain('get_agent_guide')
+    expect(t).toContain('log_implementation')
+    expect(t).toContain('log_commit')
+    expect(t).toContain('log_test_result')
+  })
+
+  it('SPRINT keeps safety hardstops, worktree rule, guide pointer, logging tools', () => {
+    const s = getKindPromptText('SPRINT_IMPLEMENTATION')
+    expect(s).toMatch(/GEEN.*job_heartbeat/)
+    expect(s).toContain('worktree')
+    expect(s).toContain('get_agent_guide')
+    expect(s).toContain('log_implementation')
+    expect(s).toContain('log_commit')
+    expect(s).toContain('log_test_result')
+  })
+})
+
+describe('sprint prompt orchestrates sub-agents', () => {
+  it('SPRINT instructs Agent sub-agent dispatch and keeps the verify-gate in the main session', () => {
+    const s = getKindPromptText('SPRINT_IMPLEMENTATION')
+    expect(s).toContain('Agent')
+    expect(s).toContain('sub-agent')
+    expect(s).toContain('verify_sprint_task')
+    expect(s).toMatch(/GEEN.*job_heartbeat/)
+    expect(s).toContain('worktree')
+    expect(s).toContain('get_agent_guide')
+  })
+})
+
 describe('getIdeaPromptText (back-compat)', () => {
   it('returnt content voor IDEA_GRILL', () => {
     expect(getIdeaPromptText('IDEA_GRILL').length).toBeGreaterThan(0)

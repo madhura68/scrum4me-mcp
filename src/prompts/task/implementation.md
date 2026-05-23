@@ -34,15 +34,11 @@ verifies horen daar te landen.
 1. **Status op in_progress**: `mcp__scrum4me__update_task_status({ task_id, status: 'in_progress' })`.
 2. **Plan lezen**: Lees `task.implementation_plan` uit de payload + relevante
    project-docs (`docs/specs/functional.md`, eventueel `docs/patterns/*.md`).
-3. **Implementeer** de taak: lees → verander → test → commit per logische laag.
-   Gebruik `git add -A && git commit` per laag, **geen** `git push`.
-4. **Logging per laag**:
-   - `mcp__scrum4me__log_implementation` met een korte beschrijving van wat je
-     gewijzigd hebt en waarom.
-   - `mcp__scrum4me__log_commit` met `commit_hash` en `commit_message` na elke
-     commit (haal hash uit `git rev-parse HEAD`).
-   - `mcp__scrum4me__log_test_result` met PASSED/FAILED en uitleg na elke
-     `npm test` of build-run.
+3. **Implementeer** de taak. Commit per logische laag met `git add -A && git commit`,
+   **geen** `git push`. Volg de agent-guide voor commit- en test-discipline.
+4. **Logging per laag**: `mcp__scrum4me__log_implementation`,
+   `mcp__scrum4me__log_commit` (hash uit `git rev-parse HEAD`) en
+   `mcp__scrum4me__log_test_result` — zie de agent-guide voor wat elk moet bevatten.
 5. **Verify-gate**: roep `mcp__scrum4me__verify_task_against_plan({ task_id })`
    aan om de wijzigingen tegen het plan te toetsen.
 6. **Sluit af**:

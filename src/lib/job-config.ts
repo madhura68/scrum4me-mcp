@@ -162,6 +162,7 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
     // automatisch via setInterval (zie scrum4me-docker/bin/run-one-job.ts).
     allowed_tools: [
       ...TASK_TOOLS,
+      'Agent',
       'mcp__scrum4me__update_task_execution',
       'mcp__scrum4me__verify_sprint_task',
     ],

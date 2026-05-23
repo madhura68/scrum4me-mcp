@@ -158,6 +158,16 @@ describe('agent-guide tool allowlist', () => {
   })
 })
 
+describe('sub-agent allowlist', () => {
+  it('SPRINT_IMPLEMENTATION may dispatch sub-agents (Agent tool)', () => {
+    expect(getKindDefault('SPRINT_IMPLEMENTATION').allowed_tools).toContain('Agent')
+  })
+
+  it('TASK_IMPLEMENTATION may NOT dispatch sub-agents', () => {
+    expect(getKindDefault('TASK_IMPLEMENTATION').allowed_tools).not.toContain('Agent')
+  })
+})
+
 describe('mapBudgetToEffort', () => {
   it.each([
     [0, null],
