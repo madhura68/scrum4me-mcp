@@ -26,6 +26,8 @@ verifies horen daar te landen.
 - Werk in het toegewezen worktree-pad; geen edits in andere directories.
 - Volg `task.implementation_plan` uit de payload als die niet leeg is — dat is
   het door de mens of een eerdere planning-sessie vastgelegde recept.
+- Roep eerst `mcp__scrum4me__get_agent_guide({ product_id })` aan (product_id uit de
+  payload) en behandel `guide_md` als bindend voor hóé je bouwt en documenteert.
 
 ## Workflow
 

@@ -33,6 +33,8 @@ Lees die payload eerst. Belangrijke velden:
 - Werk uitsluitend in `worktree_path` op `branch_name`. Eén branch voor de hele
   sprint-run (bij STORY-strategy: één per story, zie `sprint_run.pr_strategy`).
 - Verwerk taken in de exacte `order`-volgorde uit `task_executions[]`.
+- Roep eerst `mcp__scrum4me__get_agent_guide({ product_id })` aan (product_id uit de
+  payload) en behandel `guide_md` als bindend voor hóé je bouwt en documenteert.
 
 ## Workflow per task_execution
 

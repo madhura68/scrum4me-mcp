@@ -31,6 +31,12 @@ vi.mock('../src/errors.js', () => ({
   withToolErrors: vi.fn(async (fn: () => Promise<unknown>) => fn()),
 }))
 
+vi.mock('../src/lib/agent-guide.js', () => ({
+  resolveAgentGuide: vi
+    .fn()
+    .mockResolvedValue({ guide_md: 'GUIDE', has_product_override: false, product_doc: null }),
+}))
+
 import { registerGetClaudeContextTool } from '../src/tools/get-claude-context.js'
 
 // Minimal McpServer stub that captures the registered handler
