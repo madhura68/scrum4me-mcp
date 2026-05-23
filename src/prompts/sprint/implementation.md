@@ -38,21 +38,24 @@ Lees die payload eerst. Belangrijke velden:
 
 ## Workflow per task_execution
 
-Voor elke entry in `task_executions[]` (in order-volgorde):
+Voor elke entry in `task_executions[]` (in order-volgorde) ben jij de **orchestrator** —
+delegeer de zware uitvoering aan een sub-agent zodat je eigen context slank blijft:
 
 1. **Start**: `update_task_execution({ execution_id, status: 'RUNNING' })` en
    `update_task_status({ task_id, status: 'in_progress', sprint_run_id })`.
-2. **Lees** het `plan_snapshot` uit de execution + de bredere context uit
-   `task`/`story`/`pbi` in de payload.
-3. **Implementeer** de taak in `worktree_path`. Commit per logische laag met
-   `git add -A && git commit`.
-4. **Per laag loggen**: `mcp__scrum4me__log_implementation`,
-   `mcp__scrum4me__log_commit`, `mcp__scrum4me__log_test_result` (PASSED/FAILED) —
-   zie de agent-guide voor wat elk moet bevatten.
-5. **Verify-gate** (als `verify_required === true`):
-   `mcp__scrum4me__verify_sprint_task({ execution_id })`. Bij DIVERGENT: stop de
-   sprint en sluit af met `update_job_status('failed')`.
-6. **Afronden taak**:
+2. **Delegeer naar een sub-agent** (de `Agent`-tool). Geef een zelfstandige opdracht met
+   het `plan_snapshot` van deze execution, de relevante `task`/`story`/`pbi`-context uit
+   de payload en het `worktree_path`. Instrueer de sub-agent om: uitsluitend in
+   `worktree_path` te werken, per logische laag te committen (`git add -A && git commit`,
+   **geen** `git push`), te loggen via `log_implementation` / `log_commit` /
+   `log_test_result`, en een **beknopte samenvatting** terug te geven (wat gewijzigd,
+   commit-hashes, testuitslagen). Lees zelf geen code-bestanden in — houd dat in de
+   sub-agent-context.
+3. **Verify-gate** (als `verify_required === true`):
+   `mcp__scrum4me__verify_sprint_task({ execution_id })`. Dit draait in jóúw sessie en is
+   **bepalend** — niet de zelf-inschatting van de sub-agent. Bij DIVERGENT: stop de sprint
+   en `update_job_status('failed')`.
+4. **Afronden taak**:
    - Bij ALIGNED/PARTIAL: `update_task_status({ task_id, status: 'done', sprint_run_id })`
      en `update_task_execution({ execution_id, status: 'DONE' })`.
    - Bij EMPTY (no-op): `update_task_execution({ execution_id, status: 'SKIPPED' })`

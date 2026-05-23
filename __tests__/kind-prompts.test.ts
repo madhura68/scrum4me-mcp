@@ -82,6 +82,18 @@ describe('implementation prompts: invariants preserved after dedupe', () => {
   })
 })
 
+describe('sprint prompt orchestrates sub-agents', () => {
+  it('SPRINT instructs Agent sub-agent dispatch and keeps the verify-gate in the main session', () => {
+    const s = getKindPromptText('SPRINT_IMPLEMENTATION')
+    expect(s).toContain('Agent')
+    expect(s).toContain('sub-agent')
+    expect(s).toContain('verify_sprint_task')
+    expect(s).toMatch(/GEEN.*job_heartbeat/)
+    expect(s).toContain('worktree')
+    expect(s).toContain('get_agent_guide')
+  })
+})
+
 describe('getIdeaPromptText (back-compat)', () => {
   it('returnt content voor IDEA_GRILL', () => {
     expect(getIdeaPromptText('IDEA_GRILL').length).toBeGreaterThan(0)
