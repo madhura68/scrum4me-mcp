@@ -19,6 +19,7 @@ import { getWorktreeRoot } from '../git/worktree-paths.js'
 import { setupProductWorktrees, releaseLocksOnTerminal } from '../git/job-locks.js'
 import { pushBranchForJob } from '../git/push.js'
 import { resolveJobConfig } from '../lib/job-config.js'
+import { claimLog } from '../lib/claim-log.js'
 
 /** Parse `https://github.com/<owner>/<name>(.git)?` → `<name>`. */
 export function repoNameFromUrl(repoUrl: string | null | undefined): string | null {
@@ -44,38 +45,47 @@ export async function resolveRepoRoot(
   productId: string,
   taskRepoUrl?: string | null,
 ): Promise<string | null> {
+  const resolved = (via: string, repoRoot: string): string => {
+    claimLog('repoRoot.resolved', { productId, via, repoRoot })
+    return repoRoot
+  }
+  const unresolved = (): null => {
+    claimLog('repoRoot.unresolved', { productId, taskRepoUrl: taskRepoUrl ?? null })
+    return null
+  }
+
   // 1. Task-level override: match by repo-name through config/convention
   if (taskRepoUrl) {
     const taskRepoName = repoNameFromUrl(taskRepoUrl)
     if (taskRepoName) {
       const overrideEnv = `SCRUM4ME_REPO_ROOT_REPO_${taskRepoName}`
-      if (process.env[overrideEnv]) return process.env[overrideEnv]!
+      if (process.env[overrideEnv]) return resolved('task-env', process.env[overrideEnv]!)
 
       const configPath = path.join(os.homedir(), '.scrum4me-agent-config.json')
       try {
         const raw = await fs.readFile(configPath, 'utf-8')
         const config = JSON.parse(raw) as { repoRoots?: Record<string, string> }
-        if (config.repoRoots?.[taskRepoName]) return config.repoRoots[taskRepoName]
+        if (config.repoRoots?.[taskRepoName]) return resolved('task-config', config.repoRoots[taskRepoName])
       } catch { /* fall through */ }
 
       const candidate = path.join(os.homedir(), 'Projects', taskRepoName)
       try {
         await fs.access(path.join(candidate, '.git'))
-        return candidate
+        return resolved('task-convention', candidate)
       } catch { /* fall through to product-level */ }
     }
   }
 
   // 2. Env var per-product
   const envKey = `SCRUM4ME_REPO_ROOT_${productId}`
-  if (process.env[envKey]) return process.env[envKey]!
+  if (process.env[envKey]) return resolved('product-env', process.env[envKey]!)
 
   // 3. Config file per-product
   const configPath = path.join(os.homedir(), '.scrum4me-agent-config.json')
   try {
     const raw = await fs.readFile(configPath, 'utf-8')
     const config = JSON.parse(raw) as { repoRoots?: Record<string, string> }
-    if (config.repoRoots?.[productId]) return config.repoRoots[productId]
+    if (config.repoRoots?.[productId]) return resolved('product-config', config.repoRoots[productId])
   } catch {
     // ignore — fall through
   }
@@ -87,12 +97,12 @@ export async function resolveRepoRoot(
       select: { repo_url: true },
     })
     const name = repoNameFromUrl(product?.repo_url)
-    if (!name) return null
+    if (!name) return unresolved()
     const candidate = path.join(os.homedir(), 'Projects', name)
     await fs.access(path.join(candidate, '.git'))
-    return candidate
+    return resolved('product-convention', candidate)
   } catch {
-    return null
+    return unresolved()
   }
 }
 
@@ -167,6 +177,7 @@ export async function attachWorktreeToJob(
   storyId: string,
   taskRepoUrl?: string | null,
 ): Promise<{ worktree_path: string; branch_name: string; reused_branch: boolean } | { error: string }> {
+  claimLog('attach.start', { jobId, productId })
   const repoRoot = await resolveRepoRoot(productId, taskRepoUrl)
   if (!repoRoot) {
     await rollbackClaim(jobId)
@@ -182,6 +193,7 @@ export async function attachWorktreeToJob(
   }
 
   const { branchName, reused } = await resolveBranchForJob(jobId, storyId)
+  claimLog('attach.branch', { jobId, branchName, reused })
   try {
     const { worktreePath, branchName: actualBranch } = await createWorktreeForJob({
       repoRoot,
@@ -200,7 +212,7 @@ export async function attachWorktreeToJob(
       const { stdout } = await execFileP('git', ['rev-parse', 'HEAD'], { cwd: worktreePath })
       baseSha = stdout.trim()
     } catch (err) {
-      console.warn(`[attachWorktreeToJob] failed to resolve base_sha for ${jobId}:`, err)
+      claimLog('attach.baseShaFailed', { jobId, error: String((err as Error).message).slice(0, 200) })
     }
     // Persist branch + base_sha. update_job_status (prepareDoneUpdate)
     // leest claudeJob.branch om naar de juiste ref te pushen — zonder deze
@@ -215,8 +227,10 @@ export async function attachWorktreeToJob(
       },
     })
 
+    claimLog('attach.done', { jobId, branchName: actualBranch, baseSha })
     return { worktree_path: worktreePath, branch_name: actualBranch, reused_branch: reused }
   } catch (err) {
+    claimLog('attach.failed', { jobId, error: String((err as Error).message).slice(0, 200) })
     await rollbackClaim(jobId)
     return { error: `Worktree creation failed: ${(err as Error).message}` }
   }
