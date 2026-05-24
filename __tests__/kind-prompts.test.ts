@@ -91,6 +91,8 @@ describe('sprint prompt orchestrates sub-agents', () => {
     expect(s).toMatch(/GEEN.*job_heartbeat/)
     expect(s).toContain('worktree')
     expect(s).toContain('get_agent_guide')
+    // hardening: the delegation step must pass guide_md INTO the sub-agent
+    expect(s).toMatch(/Delegeer naar een sub-agent[\s\S]*guide_md/)
   })
 })
 
