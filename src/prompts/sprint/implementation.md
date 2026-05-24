@@ -45,7 +45,8 @@ delegeer de zware uitvoering aan een sub-agent zodat je eigen context slank blij
    `update_task_status({ task_id, status: 'in_progress', sprint_run_id })`.
 2. **Delegeer naar een sub-agent** (de `Agent`-tool). Geef een zelfstandige opdracht met
    het `plan_snapshot` van deze execution, de relevante `task`/`story`/`pbi`-context uit
-   de payload en het `worktree_path`. Instrueer de sub-agent om: uitsluitend in
+   de payload, het `worktree_path`, en de volledige `guide_md` uit de agent-guide. Instrueer
+   de sub-agent om: de meegegeven `guide_md` als bindend te volgen, uitsluitend in
    `worktree_path` te werken, per logische laag te committen (`git add -A && git commit`,
    **geen** `git push`), te loggen via `log_implementation` / `log_commit` /
    `log_test_result`, en een **beknopte samenvatting** terug te geven (wat gewijzigd,

@@ -1,6 +1,7 @@
 import { ProductDocFolder } from '@prisma/client'
 import { prisma } from '../prisma.js'
 import { AGENT_GUIDE_DEFAULT } from './agent-guide-default.js'
+import { parseProductDocMd } from './product-doc-parser.js'
 
 export const AGENT_GUIDE_MAX_CHARS = 16_000
 
@@ -48,7 +49,9 @@ export async function resolveAgentGuide(
   let guide_md = AGENT_GUIDE_DEFAULT
   if (override) {
     const label = product.code ?? product.name
-    guide_md = `${AGENT_GUIDE_DEFAULT}\n\n---\n\n## Product-specifieke aanvullingen — ${label}\n\n${override.content_md}`
+    const parsed = parseProductDocMd(override.content_md)
+    const overrideBody = parsed.ok ? parsed.body.trim() : override.content_md.trim()
+    guide_md = `${AGENT_GUIDE_DEFAULT}\n\n---\n\n## Product-specifieke aanvullingen — ${label}\n\n${overrideBody}`
   }
 
   if (guide_md.length > AGENT_GUIDE_MAX_CHARS) {
