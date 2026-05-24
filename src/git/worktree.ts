@@ -114,6 +114,9 @@ export async function createWorktreeForJob(opts: {
       // `-B` create-or-resets <branch> to origin/<branch> and checks it out, so a
       // stale kept local ref can't make the worktree (and the base_sha captured next)
       // lag the real tip — which would otherwise cause a non-ff push.
+      // Safe under the sequential-sibling protocol: a reused branch was already pushed
+      // by an earlier sibling, so the local ref is at-or-behind origin — the reset
+      // discards no unpushed local commits.
       await gitRetry(['worktree', 'add', '-B', branchName, worktreePath, `origin/${branchName}`])
     } else if (await branchExists(repoRoot, branchName)) {
       await gitRetry(['worktree', 'add', worktreePath, branchName])
