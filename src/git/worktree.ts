@@ -3,6 +3,8 @@ import { promisify } from 'node:util'
 import * as path from 'node:path'
 import * as fs from 'node:fs/promises'
 import { getWorktreeRoot } from './worktree-paths.js'
+import { withRetry, isTransientGitError } from './retry.js'
+import { claimLog } from '../lib/claim-log.js'
 
 const exec = promisify(execFile)
 
@@ -69,6 +71,18 @@ export async function createWorktreeForJob(opts: {
 
   const worktreePath = path.join(parent, jobId)
 
+  const gitRetry = (args: string[]) =>
+    withRetry(() => exec('git', args, { cwd: repoRoot }), {
+      isRetryable: isTransientGitError,
+      onRetry: (attempt, err) =>
+        claimLog('worktree.git.retry', {
+          jobId,
+          args: args.join(' '),
+          attempt,
+          error: String((err as Error).message).slice(0, 200),
+        }),
+    })
+
   // Reject if worktree path already exists — caller must remove it first
   try {
     await fs.access(worktreePath)
@@ -79,7 +93,7 @@ export async function createWorktreeForJob(opts: {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
   }
 
-  await exec('git', ['fetch', 'origin', '--prune'], { cwd: repoRoot })
+  await gitRetry(['fetch', 'origin', '--prune'])
 
   if (reuseBranch) {
     // Sibling task already created the branch; check it out into a fresh worktree.
@@ -97,18 +111,13 @@ export async function createWorktreeForJob(opts: {
     //   - exists on origin only → recreate the local branch tracking origin
     //   - nowhere               → create it fresh from baseRef
     if (await branchExists(repoRoot, branchName)) {
-      await exec('git', ['worktree', 'add', worktreePath, branchName], { cwd: repoRoot })
+      await gitRetry(['worktree', 'add', worktreePath, branchName])
     } else if (await remoteBranchExists(repoRoot, branchName)) {
-      await exec(
-        'git',
-        ['worktree', 'add', '-b', branchName, worktreePath, `origin/${branchName}`],
-        { cwd: repoRoot },
-      )
+      await gitRetry(['worktree', 'add', '-b', branchName, worktreePath, `origin/${branchName}`])
     } else {
-      await exec('git', ['worktree', 'add', '-b', branchName, worktreePath, baseRef], {
-        cwd: repoRoot,
-      })
+      await gitRetry(['worktree', 'add', '-b', branchName, worktreePath, baseRef])
     }
+    claimLog('worktree.created', { jobId, branchName, worktreePath, reuse: reuseBranch })
     return { worktreePath, branchName }
   }
 
@@ -131,17 +140,16 @@ export async function createWorktreeForJob(opts: {
     }
     try {
       await exec('git', ['branch', '-D', branchName], { cwd: repoRoot })
-      console.warn(`[createWorktreeForJob] removed orphan branch ${branchName} before recreate`)
+      claimLog('worktree.orphanBranchRemoved', { jobId, branchName })
     } catch {
       // last resort: timestamp-suffix to avoid collision rather than fail
       branchName = `${branchName}-${Date.now()}`
     }
   }
 
-  await exec('git', ['worktree', 'add', '-b', branchName, worktreePath, baseRef], {
-    cwd: repoRoot,
-  })
+  await gitRetry(['worktree', 'add', '-b', branchName, worktreePath, baseRef])
 
+  claimLog('worktree.created', { jobId, branchName, worktreePath, reuse: reuseBranch })
   return { worktreePath, branchName }
 }
 
