@@ -74,6 +74,28 @@ describe('resolveAgentGuide', () => {
     })
   })
 
+  it('appends only the ProductDoc body, not YAML frontmatter', async () => {
+    mockProductDocFindFirst.mockResolvedValue({
+      slug: 'agent-guide',
+      status: 'active',
+      content_md: [
+        '---',
+        'title: Agent guide',
+        'status: active',
+        '---',
+        '',
+        'Always run the product smoke test.',
+      ].join('\n'),
+      updated_at: new Date('2026-05-24T00:00:00Z'),
+    })
+
+    const result = await resolveAgentGuide(productWithManual)
+
+    expect(result.guide_md).toContain('Always run the product smoke test.')
+    expect(result.guide_md).not.toContain('title: Agent guide')
+    expect(result.guide_md).not.toContain('status: active')
+  })
+
   it('throws AgentGuideTooLargeError when the merged guide exceeds the cap', async () => {
     mockProductDocFindFirst.mockResolvedValue({
       slug: 'agent-guide',
