@@ -158,6 +158,40 @@ describe('createWorktreeForJob', () => {
     expect(stdout.trim()).toBe('feat/sprint-xyz')
   })
 
+  it('reuseBranch: uses the current origin tip, not a stale local branch', async () => {
+    const { repoDir, originDir } = await setupRepo()
+    tmpDirs.push(repoDir, originDir)
+    await makeWorktreeParent()
+
+    // Branch exists on origin AND locally, both at the initial commit.
+    await git(['branch', 'feat/story-x', 'origin/main'], repoDir)
+    await git(['push', 'origin', 'feat/story-x'], repoDir)
+
+    // Another worker advances origin/feat/story-x; this clone's local ref stays behind.
+    const clone2 = await fs.mkdtemp(path.join(os.tmpdir(), 'scrum4me-clone2-'))
+    tmpDirs.push(clone2)
+    await git(['clone', originDir, clone2], os.tmpdir())
+    await git(['config', 'user.email', 'c2@test.com'], clone2)
+    await git(['config', 'user.name', 'C2'], clone2)
+    await git(['checkout', 'feat/story-x'], clone2)
+    await fs.writeFile(path.join(clone2, 'c2.txt'), 'c2')
+    await git(['add', '.'], clone2)
+    await git(['commit', '-m', 'C2 from another worker'], clone2)
+    await git(['push', 'origin', 'feat/story-x'], clone2)
+    const { stdout: c2sha } = await git(['rev-parse', 'HEAD'], clone2)
+
+    const result = await createWorktreeForJob({
+      repoRoot: repoDir,
+      jobId: 'job-reuse-stale-local',
+      branchName: 'feat/story-x',
+      baseRef: 'origin/main',
+      reuseBranch: true,
+    })
+
+    const { stdout: head } = await git(['rev-parse', 'HEAD'], result.worktreePath)
+    expect(head.trim()).toBe(c2sha.trim())
+  })
+
   it('reuseBranch: falls back to a fresh branch when it exists nowhere (cross-repo sprint)', async () => {
     const { repoDir, originDir } = await setupRepo()
     tmpDirs.push(repoDir, originDir)

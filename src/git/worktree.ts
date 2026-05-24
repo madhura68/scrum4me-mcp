@@ -107,13 +107,16 @@ export async function createWorktreeForJob(opts: {
     // even though the branch was never created here; a container recreate also
     // wipes the local clone. Fall back gracefully instead of failing with
     // "invalid reference":
-    //   - local branch exists   → reuse it
-    //   - exists on origin only → recreate the local branch tracking origin
+    //   - exists on origin      → reset local to origin/<branch> and use the current tip
+    //   - local-only (unpushed) → reuse the local branch as-is
     //   - nowhere               → create it fresh from baseRef
-    if (await branchExists(repoRoot, branchName)) {
+    if (await remoteBranchExists(repoRoot, branchName)) {
+      // `-B` create-or-resets <branch> to origin/<branch> and checks it out, so a
+      // stale kept local ref can't make the worktree (and the base_sha captured next)
+      // lag the real tip — which would otherwise cause a non-ff push.
+      await gitRetry(['worktree', 'add', '-B', branchName, worktreePath, `origin/${branchName}`])
+    } else if (await branchExists(repoRoot, branchName)) {
       await gitRetry(['worktree', 'add', worktreePath, branchName])
-    } else if (await remoteBranchExists(repoRoot, branchName)) {
-      await gitRetry(['worktree', 'add', '-b', branchName, worktreePath, `origin/${branchName}`])
     } else {
       await gitRetry(['worktree', 'add', '-b', branchName, worktreePath, baseRef])
     }
