@@ -4,9 +4,11 @@
 // (structuur) + markdown-body (vrije reasoning). Gebruikt door
 // update_idea_plan_md voor server-side validatie vóór persistentie.
 //
-// LET OP: deze code is BEWUST een duplicaat van de Scrum4Me-parser om
-// drift-detectie te krijgen via de vendor/scrum4me schema-watchdog. Houd
+// LET OP: deze code is BEWUST een duplicaat van de Scrum4Me-parser. Houd
 // het schema (zod-shape) in sync met scrum4me/lib/schemas/idea.ts.
+// Toekomstige verhuizing naar vendor/scrum4me-shared/lib/ kan deze
+// duplicatie elimineren (zie M16 platform-split design-spec sectie 3);
+// tot dan: handmatige sync per PR-review.
 
 import { parse as parseYaml, YAMLParseError } from 'yaml'
 import { z } from 'zod'

@@ -302,18 +302,24 @@ When `INTERNAL_PUSH_URL` and `INTERNAL_PUSH_SECRET` are set, the MCP server fire
 
 ## Schema sync
 
-The Prisma schema is the source of truth in the upstream Scrum4Me
-repo. It is vendored as a git submodule under `vendor/scrum4me`:
+The Prisma schema is canonical in the `scrum4me-shared` repo
+(Forgejo: `janpeter/scrum4me-shared`) and vendored here as a git
+submodule under `vendor/scrum4me-shared`. Both this MCP server,
+the main Scrum4Me-web app and scrum4me-workers consume the same
+canonical schema via that submodule.
 
 ```bash
-git submodule update --remote vendor/scrum4me
-npm run sync-schema      # copies prisma/schema.prisma, strips erd block
+git submodule update --remote vendor/scrum4me-shared
+npm run sync-schema      # regenerates prisma/schema.prisma from canonical
 npm run prisma:generate
-git commit -am "chore: sync schema with scrum4me@<sha>"
+git commit -am "chore: bump scrum4me-shared to <sha>"
 ```
 
-`sync-schema.sh` strips the upstream `generator erd` block so this
-package does not depend on `prisma-erd-generator`.
+`sync-schema.sh` calls `gen-schema.sh`, which wraps
+`vendor/scrum4me-shared/scripts/gen-consumer-schema.sh` and strips
+`url=` / `directUrl=` lines from the datasource block (Prisma 7 uses
+`prisma.config.ts` for connection URLs, so they would otherwise conflict).
+`postinstall` and `prebuild` invoke this pipeline automatically.
 
 ## Development
 
