@@ -1,28 +1,20 @@
 #!/usr/bin/env bash
-# Sync prisma/schema.prisma from the vendored Scrum4Me submodule.
+# Generate prisma/schema.prisma from scrum4me-shared canonical.
 #
-# Strips the `generator erd` block — that generator depends on
-# prisma-erd-generator which we don't ship in this MCP package. The
-# schema is otherwise byte-identical with upstream.
+# Bumps the submodule first to get latest shared content,
+# then runs gen-consumer-schema.sh (with Prisma-7 URL-strip if needed).
+
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SRC="$ROOT/vendor/scrum4me/prisma/schema.prisma"
-DST="$ROOT/prisma/schema.prisma"
+SHARED="$ROOT/vendor/scrum4me-shared"
 
-if [ ! -f "$SRC" ]; then
-  echo "error: $SRC not found — run 'git submodule update --init' first" >&2
+if [ ! -f "$SHARED/scripts/gen-consumer-schema.sh" ]; then
+  echo "error: shared submodule not initialized — run 'git submodule update --init'" >&2
   exit 1
 fi
 
 mkdir -p "$ROOT/prisma"
+bash "$ROOT/scripts/gen-schema.sh" > "$ROOT/prisma/schema.prisma"
 
-# Strip the `generator erd { ... }` block (multi-line, balanced braces).
-awk '
-  /^generator erd \{/ { skip = 1; next }
-  skip && /^\}/ { skip = 0; next }
-  skip { next }
-  { print }
-' "$SRC" > "$DST"
-
-echo "synced schema from $(cd "$ROOT/vendor/scrum4me" && git rev-parse --short HEAD) to prisma/schema.prisma"
+echo "synced schema from scrum4me-shared@$(cd "$SHARED" && git rev-parse --short HEAD) to prisma/schema.prisma"
