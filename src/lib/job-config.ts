@@ -1,12 +1,13 @@
-// PBI-67: model + mode-selectie per ClaudeJob-kind.
+// M16 platform-split: dit bestand wordt een re-export shim van
+// vendor/scrum4me-shared/lib/job-config.ts zodra de shared-lib is bijgewerkt
+// met get_agent_guide (in TASK_TOOLS) en Agent (in SPRINT_IMPLEMENTATION).
+// Gebruik @shared/job-config voor directe imports nadat die update gemerged is.
 //
-// Sync met Scrum4Me/lib/job-config.ts — als je hier een veld aanpast,
-// doe hetzelfde aan de webapp-kant. Bewust duplicate (geen gedeeld
-// package) om de MCP-server eigenstandig te houden.
+// PBI-67: model + mode-selectie per ClaudeJob-kind.
 //
 // Override-cascade (eerste match wint):
 //   1. task.requires_opus === true       → forceer Opus
-//   2. job.requested_*  (snapshot bij enqueue)
+//   2. job.requested_*  (snapshot bij enqueue, ingevuld door deze module)
 //   3. product.preferred_*
 //   4. KIND_DEFAULTS hieronder
 //
@@ -227,4 +228,22 @@ export function mapBudgetToEffort(budget: number): string | null {
   if (budget <= 12000) return 'high'
   if (budget <= 24000) return 'xhigh'
   return 'max'
+}
+
+// Snapshot-velden voor ClaudeJob.requested_*. Bij elke enqueue laden we
+// product (voor preferred_*) en optioneel task (voor requires_opus), draaien
+// de resolver, en schrijven het resultaat als auditspoor in de job-rij.
+// (Synced met vendor/scrum4me-shared/lib/job-config.ts)
+export type ClaudeJobSnapshotFields = {
+  requested_model: string
+  requested_thinking_budget: number
+  requested_permission_mode: string
+}
+
+export function snapshotFromConfig(cfg: JobConfig): ClaudeJobSnapshotFields {
+  return {
+    requested_model: cfg.model,
+    requested_thinking_budget: cfg.thinking_budget,
+    requested_permission_mode: cfg.permission_mode,
+  }
 }
