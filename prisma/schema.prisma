@@ -20,6 +20,12 @@ enum Role {
   ADMIN
 }
 
+enum ApiTokenKind {
+  IMPLEMENTATION
+  PLANNING
+  WORKERS_UI
+}
+
 enum StoryStatus {
   OPEN
   IN_SPRINT
@@ -225,10 +231,14 @@ model ApiToken {
   label         String?
   created_at    DateTime      @default(now())
   revoked_at    DateTime?
+  kind          ApiTokenKind  @default(IMPLEMENTATION)
+  scoped_repos  String[]      @default([])
+  expires_at    DateTime?
   claimed_jobs  ClaudeJob[]
   claude_worker ClaudeWorker?
 
   @@index([token_hash])
+  @@index([kind, revoked_at])
   @@map("api_tokens")
 }
 
