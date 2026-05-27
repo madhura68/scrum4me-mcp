@@ -59,9 +59,11 @@ export function registerWorkerHeartbeatTool(server: McpServer) {
           await pg.query('SELECT pg_notify($1, $2)', [
             'scrum4me_changes',
             JSON.stringify({
-              type: 'worker_heartbeat',
+              type: 'claude_worker_heartbeat',
+              worker_id: auth.tokenId,
               user_id: auth.userId,
               token_id: auth.tokenId,
+              runtime: 'CLAUDE',
               last_quota_pct,
               last_quota_check_at: checkAt.toISOString(),
             }),

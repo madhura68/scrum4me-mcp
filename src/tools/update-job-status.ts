@@ -639,6 +639,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             idea_id: true,
             sprint_run_id: true,
             kind: true,
+            runtime: true,
+            source: true,
             verify_result: true,
             task: { select: { verify_only: true, verify_required: true } },
           },
@@ -974,11 +976,14 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           const pg = new Client({ connectionString: process.env.DATABASE_URL })
           await pg.connect()
           const notifyPayload: Record<string, unknown> = {
-            type: 'claude_job_status',
+            type: 'claude_job_status_changed',
             job_id: updated.id,
             user_id: job.user_id,
             product_id: job.product_id,
-            status: actualStatus,
+            kind: job.kind,
+            status: updated.status,
+            runtime: job.runtime ?? 'CLAUDE',
+            source: job.source ?? 'SYSTEM',
             branch: updated.branch ?? undefined,
             pushed_at: updated.pushed_at?.toISOString() ?? undefined,
             pr_url: updated.pr_url ?? undefined,
@@ -989,7 +994,6 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           if (job.task_id) notifyPayload.task_id = job.task_id
           if (job.idea_id) {
             notifyPayload.idea_id = job.idea_id
-            notifyPayload.kind = job.kind
           }
           await pg.query(`SELECT pg_notify('scrum4me_changes', $1)`, [JSON.stringify(notifyPayload)])
           await pg.end()

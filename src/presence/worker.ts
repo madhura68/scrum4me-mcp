@@ -50,7 +50,8 @@ export async function registerWorker(opts: {
     await pg.query('SELECT pg_notify($1, $2)', [
       'scrum4me_changes',
       JSON.stringify({
-        type: 'worker_connected',
+        type: 'claude_worker_heartbeat',
+        worker_id: opts.tokenId,
         user_id: opts.userId,
         token_id: opts.tokenId,
         instance_id: opts.instanceId,
