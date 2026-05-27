@@ -3,6 +3,7 @@ import { unregisterWorker } from './worker.js'
 export function registerShutdownHandlers(opts: {
   userId: string
   tokenId: string
+  instanceId: string
   stopHeartbeat: () => void
 }): void {
   let exiting = false
@@ -11,7 +12,11 @@ export function registerShutdownHandlers(opts: {
     if (exiting) return
     exiting = true
     opts.stopHeartbeat()
-    await unregisterWorker({ userId: opts.userId, tokenId: opts.tokenId })
+    await unregisterWorker({
+      userId: opts.userId,
+      tokenId: opts.tokenId,
+      instanceId: opts.instanceId,
+    })
     process.exit(0)
   }
 

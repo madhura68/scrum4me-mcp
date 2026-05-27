@@ -62,7 +62,7 @@ describe('tryClaimJob', () => {
       return fn(mockTx as unknown as typeof prisma)
     })
 
-    const result = await tryClaimJob('user-1', 'token-1')
+    const result = await tryClaimJob('user-1', 'token-1', 'instance-1')
 
     expect(result).toBe(jobId)
 
@@ -94,7 +94,7 @@ describe('tryClaimJob', () => {
       return fn(mockTx as unknown as typeof prisma)
     })
 
-    const result = await tryClaimJob('user-1', 'token-1')
+    const result = await tryClaimJob('user-1', 'token-1', 'instance-1')
     expect(result).toBe(jobId)
 
     // Verify the snapshot value passed is '' (empty string, not null)
@@ -119,7 +119,7 @@ describe('tryClaimJob', () => {
       return fn(mockTx as unknown as typeof prisma)
     })
 
-    const result = await tryClaimJob('user-1', 'token-1')
+    const result = await tryClaimJob('user-1', 'token-1', 'instance-1')
     expect(result).toBeNull()
   })
 
@@ -132,7 +132,7 @@ describe('tryClaimJob', () => {
       return fn(mockTx as unknown as typeof prisma)
     })
 
-    await tryClaimJob('user-1', 'token-1', 'product-1')
+    await tryClaimJob('user-1', 'token-1', 'instance-1', 'product-1')
 
     const capturedTx = {
       $queryRaw: vi.fn().mockResolvedValue([]),

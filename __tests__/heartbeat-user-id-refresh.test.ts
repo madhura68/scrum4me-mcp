@@ -39,6 +39,7 @@ const mockPrisma = prisma as unknown as {
 }
 
 const TOKEN_ID = 'tok-1'
+const INSTANCE_ID = 'instance-1'
 const INTERVAL = 100
 
 beforeEach(() => {
@@ -60,7 +61,7 @@ describe('startHeartbeat — token user_id re-resolution', () => {
       revoked_at: null,
     })
 
-    const { stop } = startHeartbeat({ tokenId: TOKEN_ID, intervalMs: INTERVAL })
+    const { stop } = startHeartbeat({ tokenId: TOKEN_ID, instanceId: INSTANCE_ID, intervalMs: INTERVAL })
 
     await vi.advanceTimersByTimeAsync(INTERVAL)
     expect(mockPrisma.apiToken.findUnique).toHaveBeenCalledWith({
@@ -68,7 +69,7 @@ describe('startHeartbeat — token user_id re-resolution', () => {
       select: { user_id: true, revoked_at: true },
     })
     expect(mockPrisma.claudeWorker.updateMany).toHaveBeenLastCalledWith({
-      where: { token_id: TOKEN_ID },
+      where: { token_id: TOKEN_ID, instance_id: INSTANCE_ID },
       data: expect.objectContaining({ user_id: 'user-lars' }),
     })
 
@@ -80,7 +81,7 @@ describe('startHeartbeat — token user_id re-resolution', () => {
 
     await vi.advanceTimersByTimeAsync(INTERVAL)
     expect(mockPrisma.claudeWorker.updateMany).toHaveBeenLastCalledWith({
-      where: { token_id: TOKEN_ID },
+      where: { token_id: TOKEN_ID, instance_id: INSTANCE_ID },
       data: expect.objectContaining({ user_id: 'user-janpeter' }),
     })
 
@@ -96,14 +97,21 @@ describe('startHeartbeat — token user_id re-resolution', () => {
     })
     mockPrisma.claudeWorker.updateMany.mockResolvedValueOnce({ count: 0 })
 
-    const { stop } = startHeartbeat({ tokenId: TOKEN_ID, intervalMs: INTERVAL })
+    const { stop } = startHeartbeat({ tokenId: TOKEN_ID, instanceId: INSTANCE_ID, intervalMs: INTERVAL })
 
     await vi.advanceTimersByTimeAsync(INTERVAL)
     expect(mockPrisma.claudeWorker.upsert).toHaveBeenCalledWith({
-      where: { token_id: TOKEN_ID },
+      where: {
+        user_id_token_id_instance_id: {
+          user_id: 'user-janpeter',
+          token_id: TOKEN_ID,
+          instance_id: INSTANCE_ID,
+        },
+      },
       create: expect.objectContaining({
         user_id: 'user-janpeter',
         token_id: TOKEN_ID,
+        instance_id: INSTANCE_ID,
       }),
       update: expect.objectContaining({ user_id: 'user-janpeter' }),
     })
@@ -117,7 +125,7 @@ describe('startHeartbeat — token user_id re-resolution', () => {
       revoked_at: new Date(),
     })
 
-    const { stop } = startHeartbeat({ tokenId: TOKEN_ID, intervalMs: INTERVAL })
+    const { stop } = startHeartbeat({ tokenId: TOKEN_ID, instanceId: INSTANCE_ID, intervalMs: INTERVAL })
 
     await vi.advanceTimersByTimeAsync(INTERVAL)
     expect(mockPrisma.claudeWorker.updateMany).not.toHaveBeenCalled()
