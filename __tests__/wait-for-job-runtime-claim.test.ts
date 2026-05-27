@@ -26,7 +26,7 @@ describe('runtime-aware claim filter', () => {
     expect(sql).toContain('IDEA_REVIEW_PLAN')
   })
 
-  it('allows orchestrator follow-up jobs for the matching runtime and capability', () => {
+  it('allows only PLAN_CHAT orchestrator follow-up jobs for the matching runtime and capability', () => {
     const sql = buildClaimableJobWhereClause({
       runtime: 'CLAUDE',
       hasProductScope: true,
@@ -34,7 +34,7 @@ describe('runtime-aware claim filter', () => {
     })
 
     expect(sql).toContain("cj.source = 'ORCHESTRATOR'")
-    expect(sql).toContain("cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'PLAN_CHAT')")
+    expect(sql).toContain("cj.kind = 'PLAN_CHAT'")
     expect(sql).toContain('cj.task_id IS NULL')
     expect(sql).toContain('cj.idea_id IS NULL')
     expect(sql).toContain('cj.sprint_run_id IS NULL')
@@ -60,6 +60,7 @@ describe('runtime-aware claim filter', () => {
     for (const expected of [
       'cj.product_id = ',
       "cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'PLAN_CHAT')",
+      "cj.kind = 'PLAN_CHAT'",
       "cj.source = 'ORCHESTRATOR'",
       "OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'MANUAL')",
       'cj.sprint_run_id IS NOT NULL',

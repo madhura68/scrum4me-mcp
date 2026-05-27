@@ -318,7 +318,7 @@ const CLAIMABLE_STANDALONE_KINDS = "('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIE
 
 const CLAIMABLE_JOB_KIND_FILTER = `AND (
               (cj.kind IN ${CLAIMABLE_STANDALONE_KINDS} AND cj.source <> 'ORCHESTRATOR')
-              OR (cj.kind IN ${CLAIMABLE_STANDALONE_KINDS}
+              OR (cj.kind = 'PLAN_CHAT'
                   AND cj.source = 'ORCHESTRATOR'
                   AND cj.task_id IS NULL
                   AND cj.idea_id IS NULL
