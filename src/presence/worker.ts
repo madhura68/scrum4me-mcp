@@ -4,8 +4,10 @@ import { prisma } from '../prisma.js'
 export async function registerWorker(opts: {
   userId: string
   tokenId: string
-  instanceId: string
   productId?: string | null
+  runtime?: 'CLAUDE' | 'CODEX'
+  capabilities?: string[]
+  instanceId: string
   hostname?: string | null
   pid?: number | null
 }): Promise<void> {
@@ -20,6 +22,8 @@ export async function registerWorker(opts: {
     create: {
       user_id: opts.userId,
       token_id: opts.tokenId,
+      runtime: opts.runtime ?? 'CLAUDE',
+      capabilities: opts.capabilities ?? [],
       instance_id: opts.instanceId,
       product_id: opts.productId ?? null,
       hostname: opts.hostname ?? null,
@@ -32,7 +36,11 @@ export async function registerWorker(opts: {
       user_id: opts.userId,
       last_seen_at: new Date(),
       product_id: opts.productId ?? null,
-      // hostname/pid are create-time only; do not overwrite on heartbeat.
+      runtime: opts.runtime ?? 'CLAUDE',
+      capabilities: opts.capabilities ?? [],
+      instance_id: opts.instanceId,
+      hostname: opts.hostname ?? null,
+      pid: opts.pid ?? null,
     },
   })
 
@@ -47,6 +55,8 @@ export async function registerWorker(opts: {
         token_id: opts.tokenId,
         instance_id: opts.instanceId,
         product_id: opts.productId ?? null,
+        runtime: opts.runtime ?? 'CLAUDE',
+        capabilities: opts.capabilities ?? [],
       }),
     ])
     await pg.end()

@@ -15,6 +15,20 @@ const mockPrisma = prisma as unknown as {
   $transaction: ReturnType<typeof vi.fn>
 }
 
+function flattenQueryValues(values: unknown[]): unknown[] {
+  return values.flatMap((value) => {
+    if (
+      value &&
+      typeof value === 'object' &&
+      'values' in value &&
+      Array.isArray((value as { values: unknown[] }).values)
+    ) {
+      return flattenQueryValues((value as { values: unknown[] }).values)
+    }
+    return [value]
+  })
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   // Default: no stale jobs returned from either query
@@ -143,6 +157,6 @@ describe('tryClaimJob', () => {
 
     const queryCall = capturedTx.$queryRaw.mock.calls[0]
     // product_id should be passed as a parameter
-    expect(queryCall).toContain('product-1')
+    expect(flattenQueryValues(queryCall)).toContain('product-1')
   })
 })

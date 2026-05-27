@@ -3,6 +3,7 @@
 
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { Prisma } from '@prisma/client'
 import { Client } from 'pg'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
@@ -303,6 +304,48 @@ const MAX_WAIT_SECONDS = 600
 const POLL_INTERVAL_MS = 5_000
 const STALE_CLAIMED_INTERVAL = "30 minutes"
 
+export type ClaimFilterInput = {
+  runtime: 'CLAUDE' | 'CODEX'
+  hasProductScope: boolean
+}
+
+export type ClaimSqlFilterInput =
+  | (ClaimFilterInput & { userId: string; hasProductScope: false; productId?: undefined })
+  | (ClaimFilterInput & { userId: string; hasProductScope: true; productId: string })
+
+const CLAIMABLE_JOB_KIND_FILTER = `AND (
+              cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'PLAN_CHAT')
+              OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'MANUAL')
+              OR (cj.kind IN ('TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION')
+                  AND cj.sprint_run_id IS NOT NULL
+                  AND sr.status IN ('QUEUED', 'RUNNING'))
+            )`
+
+export function buildClaimableJobWhereClause(input: ClaimFilterInput): string {
+  const productScope = input.hasProductScope ? 'AND cj.product_id = ${productId}' : ''
+  return `
+          WHERE cj.user_id = \${userId}
+            ${productScope}
+            AND cj.runtime = '${input.runtime}'
+            AND cj.status = 'QUEUED'
+            ${CLAIMABLE_JOB_KIND_FILTER}
+  `
+}
+
+export function buildClaimableJobWhereFragment(input: ClaimSqlFilterInput): Prisma.Sql {
+  const productScope = input.hasProductScope
+    ? Prisma.sql`AND cj.product_id = ${input.productId}`
+    : Prisma.empty
+
+  return Prisma.sql`
+          WHERE cj.user_id = ${input.userId}
+            ${productScope}
+            AND cj.runtime = ${input.runtime}::"AgentRuntime"
+            AND cj.status = 'QUEUED'
+            ${Prisma.raw(CLAIMABLE_JOB_KIND_FILTER)}
+  `
+}
+
 const inputSchema = z.object({
   product_id: z.string().min(1).optional(),
   wait_seconds: z.number().int().min(1).max(MAX_WAIT_SECONDS).default(300),
@@ -444,11 +487,16 @@ export async function tryClaimJob(
   tokenId: string,
   instanceId: string,
   productId?: string,
+  runtime: 'CLAUDE' | 'CODEX' = 'CLAUDE',
+  capabilities: string[] = [],
 ): Promise<string | null> {
+  void capabilities
+
   // Atomic claim in a single transaction — also captures plan_snapshot from task.
   //
   // PBI-50: claim-filter discrimineert via cj.kind:
-  //   - IDEA_GRILL/IDEA_MAKE_PLAN/PLAN_CHAT: standalone idea-jobs.
+  //   - IDEA_GRILL/IDEA_MAKE_PLAN/IDEA_REVIEW_PLAN/PLAN_CHAT: standalone idea-jobs.
+  //   - TASK_IMPLEMENTATION + source MANUAL: handmatig gestart buiten sprint-flow.
   //   - TASK_IMPLEMENTATION/SPRINT_IMPLEMENTATION: alleen via actieve SprintRun
   //     (status QUEUED of RUNNING). Legacy task-jobs zonder sprint_run_id en
   //     jobs in PAUSED/FAILED/CANCELLED/DONE SprintRuns worden overgeslagen.
@@ -457,6 +505,18 @@ export async function tryClaimJob(
   // PBI-50 lease: lease_until = NOW() + 5min op claim. resetStaleClaimedJobs
   // reset bij verlopen lease.
   const rows = await prisma.$transaction(async (tx) => {
+    const whereClause = productId
+      ? buildClaimableJobWhereFragment({
+          userId,
+          productId,
+          runtime,
+          hasProductScope: true,
+        })
+      : buildClaimableJobWhereFragment({
+          userId,
+          runtime,
+          hasProductScope: false,
+        })
     const found = productId
       ? await tx.$queryRaw<
           Array<{ id: string; implementation_plan: string | null; sprint_run_id: string | null }>
@@ -465,15 +525,7 @@ export async function tryClaimJob(
           FROM claude_jobs cj
           LEFT JOIN tasks t ON t.id = cj.task_id
           LEFT JOIN sprint_runs sr ON sr.id = cj.sprint_run_id
-          WHERE cj.user_id = ${userId}
-            AND cj.product_id = ${productId}
-            AND cj.status = 'QUEUED'
-            AND (
-              cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'PLAN_CHAT')
-              OR (cj.kind IN ('TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION')
-                  AND cj.sprint_run_id IS NOT NULL
-                  AND sr.status IN ('QUEUED', 'RUNNING'))
-            )
+          ${whereClause}
           ORDER BY cj.created_at ASC
           LIMIT 1
           FOR UPDATE OF cj SKIP LOCKED
@@ -485,14 +537,7 @@ export async function tryClaimJob(
           FROM claude_jobs cj
           LEFT JOIN tasks t ON t.id = cj.task_id
           LEFT JOIN sprint_runs sr ON sr.id = cj.sprint_run_id
-          WHERE cj.user_id = ${userId}
-            AND cj.status = 'QUEUED'
-            AND (
-              cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'PLAN_CHAT')
-              OR (cj.kind IN ('TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION')
-                  AND cj.sprint_run_id IS NOT NULL
-                  AND sr.status IN ('QUEUED', 'RUNNING'))
-            )
+          ${whereClause}
           ORDER BY cj.created_at ASC
           LIMIT 1
           FOR UPDATE OF cj SKIP LOCKED
@@ -909,13 +954,18 @@ export function registerWaitForJobTool(server: McpServer) {
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
         const { userId, tokenId } = auth
-        const instanceId = getInstanceId()
+        const runtime = process.env.SCRUM4ME_WORKER_RUNTIME === 'CODEX' ? 'CODEX' : 'CLAUDE'
+        const instanceId = process.env.SCRUM4ME_WORKER_INSTANCE_ID?.trim() || getInstanceId()
+        const capabilities = (process.env.SCRUM4ME_WORKER_CAPABILITIES ?? 'code_edit,planning,review')
+          .split(',')
+          .map((value) => value.trim())
+          .filter(Boolean)
 
         // 1. Reset stale claimed jobs
         await resetStaleClaimedJobs(userId)
 
         // 2. Try immediate claim
-        let jobId = await tryClaimJob(userId, tokenId, instanceId, product_id)
+        let jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities)
         if (jobId) {
           const ctx = await getFullJobContext(jobId)
           if (!ctx) return toolError('Job claimed but context fetch failed')
@@ -967,7 +1017,7 @@ export function registerWaitForJobTool(server: McpServer) {
             })
 
             await resetStaleClaimedJobs(userId)
-            jobId = await tryClaimJob(userId, tokenId, instanceId, product_id)
+            jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities)
             if (jobId) {
               const ctx = await getFullJobContext(jobId)
               if (!ctx) return toolError('Job claimed but context fetch failed')
