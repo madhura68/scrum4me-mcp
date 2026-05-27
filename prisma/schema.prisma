@@ -26,6 +26,17 @@ enum ApiTokenKind {
   WORKERS_UI
 }
 
+enum AgentRuntime {
+  CLAUDE
+  CODEX
+}
+
+enum JobSource {
+  SYSTEM
+  MANUAL
+  ORCHESTRATOR
+}
+
 enum StoryStatus {
   OPEN
   IN_SPRINT
@@ -452,6 +463,13 @@ model ClaudeJob {
   sprint_run_id             String?
   kind                      ClaudeJobKind         @default(TASK_IMPLEMENTATION)
   status                    ClaudeJobStatus       @default(QUEUED)
+  runtime                   AgentRuntime          @default(CLAUDE)
+  source                    JobSource             @default(SYSTEM)
+  required_capability       String?
+  created_by_job            ClaudeJob?            @relation("JobCreatedByJob", fields: [created_by_job_id], references: [id], onDelete: SetNull)
+  created_by_job_id         String?
+  created_jobs              ClaudeJob[]           @relation("JobCreatedByJob")
+  orchestration_key         String?
   claimed_by_token          ApiToken?             @relation(fields: [claimed_by_token_id], references: [id], onDelete: SetNull)
   claimed_by_token_id       String?
   claimed_at                DateTime?
@@ -490,6 +508,12 @@ model ClaudeJob {
   @@index([status, finished_at])
   @@index([status, lease_until])
   @@index([worker_instance_id])
+  @@index([user_id, runtime, status])
+  @@index([product_id, runtime, status])
+  @@index([runtime, status, required_capability])
+  @@index([source, status])
+  @@index([created_by_job_id])
+  @@unique([created_by_job_id, orchestration_key])
   @@map("claude_jobs")
 }
 
@@ -545,6 +569,8 @@ model ClaudeWorker {
   token               ApiToken  @relation(fields: [token_id], references: [id], onDelete: Cascade)
   token_id            String
   product_id          String?
+  runtime             AgentRuntime @default(CLAUDE)
+  capabilities        String[]     @default([])
   instance_id         String    @default("legacy")
   hostname            String?
   pid                 Int?
@@ -555,6 +581,7 @@ model ClaudeWorker {
 
   @@unique([user_id, token_id, instance_id])
   @@index([user_id, last_seen_at])
+  @@index([runtime, last_seen_at])
   @@map("claude_workers")
 }
 
