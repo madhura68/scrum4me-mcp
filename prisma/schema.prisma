@@ -234,8 +234,8 @@ model ApiToken {
   kind          ApiTokenKind  @default(IMPLEMENTATION)
   scoped_repos  String[]      @default([])
   expires_at    DateTime?
-  claimed_jobs  ClaudeJob[]
-  claude_worker ClaudeWorker?
+  claimed_jobs   ClaudeJob[]
+  claude_workers ClaudeWorker[]
 
   @@index([token_hash])
   @@index([kind, revoked_at])
@@ -455,6 +455,7 @@ model ClaudeJob {
   claimed_by_token          ApiToken?             @relation(fields: [claimed_by_token_id], references: [id], onDelete: SetNull)
   claimed_by_token_id       String?
   claimed_at                DateTime?
+  worker_instance_id        String?
   started_at                DateTime?
   finished_at               DateTime?
   pushed_at                 DateTime?
@@ -488,6 +489,7 @@ model ClaudeJob {
   @@index([status, claimed_at])
   @@index([status, finished_at])
   @@index([status, lease_until])
+  @@index([worker_instance_id])
   @@map("claude_jobs")
 }
 
@@ -543,12 +545,15 @@ model ClaudeWorker {
   token               ApiToken  @relation(fields: [token_id], references: [id], onDelete: Cascade)
   token_id            String
   product_id          String?
+  instance_id         String    @default("legacy")
+  hostname            String?
+  pid                 Int?
   started_at          DateTime  @default(now())
   last_seen_at        DateTime  @default(now())
   last_quota_pct      Int?
   last_quota_check_at DateTime?
 
-  @@unique([token_id])
+  @@unique([user_id, token_id, instance_id])
   @@index([user_id, last_seen_at])
   @@map("claude_workers")
 }
