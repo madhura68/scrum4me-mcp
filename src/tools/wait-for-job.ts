@@ -363,6 +363,8 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
     task_id: string | null
     product_id: string
     kind: string
+    runtime: string
+    source: string
     sprint_run_id: string | null
     branch: string | null
   }
@@ -379,7 +381,7 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
         lease_until < NOW()
         OR (lease_until IS NULL AND claimed_at < NOW() - INTERVAL '30 minutes')
       )
-    RETURNING id, task_id, product_id, kind::text AS kind, sprint_run_id, branch
+    RETURNING id, task_id, product_id, kind::text AS kind, runtime::text AS runtime, source::text AS source, sprint_run_id, branch
   `
 
   const requeuedRows = await prisma.$queryRaw<
@@ -400,7 +402,7 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
         lease_until < NOW()
         OR (lease_until IS NULL AND claimed_at < NOW() - INTERVAL '30 minutes')
       )
-    RETURNING id, task_id, product_id, kind::text AS kind, sprint_run_id, branch, retry_count
+    RETURNING id, task_id, product_id, kind::text AS kind, runtime::text AS runtime, source::text AS source, sprint_run_id, branch, retry_count
   `
 
   if (failedRows.length === 0 && requeuedRows.length === 0) return
@@ -453,12 +455,15 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
       await pg.query('SELECT pg_notify($1, $2)', [
         'scrum4me_changes',
         JSON.stringify({
-          type: 'claude_job_status',
+          type: 'claude_job_status_changed',
           job_id: j.id,
           task_id: j.task_id,
           user_id: userId,
           product_id: j.product_id,
-          status: 'failed',
+          kind: j.kind,
+          runtime: j.runtime,
+          source: j.source,
+          status: 'FAILED',
           error: STALE_ERROR_MSG,
         }),
       ])
@@ -467,12 +472,15 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
       await pg.query('SELECT pg_notify($1, $2)', [
         'scrum4me_changes',
         JSON.stringify({
-          type: 'claude_job_status',
+          type: 'claude_job_status_changed',
           job_id: j.id,
           task_id: j.task_id,
           user_id: userId,
           product_id: j.product_id,
-          status: 'queued',
+          kind: j.kind,
+          runtime: j.runtime,
+          source: j.source,
+          status: 'QUEUED',
         }),
       ])
     }
