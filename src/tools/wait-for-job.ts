@@ -307,6 +307,7 @@ const STALE_CLAIMED_INTERVAL = "30 minutes"
 export type ClaimFilterInput = {
   runtime: 'CLAUDE' | 'CODEX'
   hasProductScope: boolean
+  capabilities?: string[]
 }
 
 export type ClaimSqlFilterInput =
@@ -323,11 +324,15 @@ const CLAIMABLE_JOB_KIND_FILTER = `AND (
 
 export function buildClaimableJobWhereClause(input: ClaimFilterInput): string {
   const productScope = input.hasProductScope ? 'AND cj.product_id = ${productId}' : ''
+  const capabilityFilter = input.capabilities && input.capabilities.length > 0
+    ? 'AND (cj.required_capability IS NULL OR cj.required_capability = ANY(${capabilities}::text[]))'
+    : 'AND cj.required_capability IS NULL'
   return `
           WHERE cj.user_id = \${userId}
             ${productScope}
             AND cj.runtime = '${input.runtime}'
             AND cj.status = 'QUEUED'
+            ${capabilityFilter}
             ${CLAIMABLE_JOB_KIND_FILTER}
   `
 }
@@ -336,12 +341,17 @@ export function buildClaimableJobWhereFragment(input: ClaimSqlFilterInput): Pris
   const productScope = input.hasProductScope
     ? Prisma.sql`AND cj.product_id = ${input.productId}`
     : Prisma.empty
+  const capabilities = input.capabilities ?? []
+  const capabilityFilter = capabilities.length > 0
+    ? Prisma.sql`AND (cj.required_capability IS NULL OR cj.required_capability = ANY(${capabilities}::text[]))`
+    : Prisma.sql`AND cj.required_capability IS NULL`
 
   return Prisma.sql`
           WHERE cj.user_id = ${input.userId}
             ${productScope}
             AND cj.runtime = ${input.runtime}::"AgentRuntime"
             AND cj.status = 'QUEUED'
+            ${capabilityFilter}
             ${Prisma.raw(CLAIMABLE_JOB_KIND_FILTER)}
   `
 }
@@ -498,8 +508,6 @@ export async function tryClaimJob(
   runtime: 'CLAUDE' | 'CODEX' = 'CLAUDE',
   capabilities: string[] = [],
 ): Promise<string | null> {
-  void capabilities
-
   // Atomic claim in a single transaction — also captures plan_snapshot from task.
   //
   // PBI-50: claim-filter discrimineert via cj.kind:
@@ -519,11 +527,13 @@ export async function tryClaimJob(
           productId,
           runtime,
           hasProductScope: true,
+          capabilities,
         })
       : buildClaimableJobWhereFragment({
           userId,
           runtime,
           hasProductScope: false,
+          capabilities,
         })
     const found = productId
       ? await tx.$queryRaw<

@@ -27,13 +27,18 @@ describe('runtime-aware claim filter', () => {
   })
 
   it('keeps the production SQL fragment aligned with the exported spec clause', () => {
-    const specSql = buildClaimableJobWhereClause({ runtime: 'CODEX', hasProductScope: true })
+    const specSql = buildClaimableJobWhereClause({
+      runtime: 'CODEX',
+      hasProductScope: true,
+      capabilities: ['planning'],
+    })
     const productionSql = sqlText(
       buildClaimableJobWhereFragment({
         userId: 'user-1',
         productId: 'product-1',
         runtime: 'CODEX',
         hasProductScope: true,
+        capabilities: ['planning'],
       }),
     )
 
@@ -43,6 +48,9 @@ describe('runtime-aware claim filter', () => {
       "OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'MANUAL')",
       'cj.sprint_run_id IS NOT NULL',
       "sr.status IN ('QUEUED', 'RUNNING')",
+      'cj.required_capability IS NULL',
+      'cj.required_capability = ANY',
+      '::text[]',
     ]) {
       expect(specSql).toContain(expected)
       expect(productionSql).toContain(expected)
@@ -50,5 +58,26 @@ describe('runtime-aware claim filter', () => {
 
     expect(productionSql).toContain('cj.runtime = ')
     expect(productionSql).toContain('::"AgentRuntime"')
+  })
+
+  it('requires NULL required_capability when worker has no capabilities', () => {
+    const specSql = buildClaimableJobWhereClause({
+      runtime: 'CLAUDE',
+      hasProductScope: false,
+      capabilities: [],
+    })
+    const productionSql = sqlText(
+      buildClaimableJobWhereFragment({
+        userId: 'user-1',
+        runtime: 'CLAUDE',
+        hasProductScope: false,
+        capabilities: [],
+      }),
+    )
+
+    expect(specSql).toContain('cj.required_capability IS NULL')
+    expect(specSql).not.toContain('ANY')
+    expect(productionSql).toContain('cj.required_capability IS NULL')
+    expect(productionSql).not.toContain('ANY')
   })
 })
