@@ -692,6 +692,14 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           if (job.source === 'MANUAL') {
             actualStatus = 'done'
             skipWorktreeCleanup = true
+          } else if (
+            job.source === 'ORCHESTRATOR' &&
+            !job.task_id &&
+            !job.idea_id &&
+            !job.sprint_run_id
+          ) {
+            actualStatus = 'done'
+            skipWorktreeCleanup = true
           } else if (job.kind === 'IDEA_GRILL' || job.kind === 'IDEA_MAKE_PLAN') {
             // M12: idea-jobs hebben geen task/plan_snapshot/branch — skip de
             // verify-gate én de prepareDoneUpdate (die doet git push). Voor
