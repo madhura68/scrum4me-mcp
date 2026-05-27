@@ -53,6 +53,31 @@ describe('cleanupWorktreeForTerminalStatus', () => {
     })
   })
 
+  it('resolves terminal cleanup through task.repo_url for cross-repo task jobs', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      task: {
+        story_id: 'story-cross',
+        repo_url: 'https://git.jp-visser.nl/janpeter/scrum4me-mcp.git',
+      },
+      sprint_run_id: null,
+      sprint_run: null,
+    })
+    mockResolve.mockResolvedValue('/repos/scrum4me-mcp')
+    mockRemove.mockResolvedValue({ removed: true })
+
+    await cleanupWorktreeForTerminalStatus('prod-001', 'job-cross', 'done', 'feat/x')
+
+    expect(mockResolve).toHaveBeenCalledWith(
+      'prod-001',
+      'https://git.jp-visser.nl/janpeter/scrum4me-mcp.git',
+    )
+    expect(mockRemove).toHaveBeenCalledWith({
+      repoRoot: '/repos/scrum4me-mcp',
+      jobId: 'job-cross',
+      keepBranch: true,
+    })
+  })
+
   it('calls removeWorktreeForJob with keepBranch=false when done but no branch', async () => {
     mockResolve.mockResolvedValue('/repos/my-project')
     mockRemove.mockResolvedValue({ removed: true })

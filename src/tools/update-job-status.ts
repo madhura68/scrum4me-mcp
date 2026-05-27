@@ -55,14 +55,6 @@ export async function cleanupWorktreeForTerminalStatus(
   status: 'done' | 'failed' | 'skipped',
   branch: string | undefined,
 ): Promise<void> {
-  const repoRoot = await resolveRepoRoot(productId)
-  if (!repoRoot) {
-    console.warn(
-      `[update_job_status] cleanup skip for job=${jobId}: no repoRoot configured for product ${productId}`,
-    )
-    return
-  }
-
   // Branch-shared check: bepaal welke siblings dezelfde branch reuse'n.
   //   - SPRINT pr_strategy → alle TASK_IMPLEMENTATION jobs in dezelfde
   //     sprint_run delen feat/sprint-<id>.
@@ -73,11 +65,19 @@ export async function cleanupWorktreeForTerminalStatus(
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     select: {
-      task: { select: { story_id: true } },
+      task: { select: { story_id: true, repo_url: true } },
       sprint_run_id: true,
       sprint_run: { select: { pr_strategy: true } },
     },
   })
+
+  const repoRoot = await resolveRepoRoot(productId, job?.task?.repo_url ?? null)
+  if (!repoRoot) {
+    console.warn(
+      `[update_job_status] cleanup skip for job=${jobId}: no repoRoot configured for product ${productId}`,
+    )
+    return
+  }
 
   let activeSiblings = 0
   let scope = ''
