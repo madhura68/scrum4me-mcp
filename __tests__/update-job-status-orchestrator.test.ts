@@ -121,4 +121,40 @@ describe('update_job_status orchestrator jobs', () => {
     }))
     expect(jobLockMocks.releaseLocksOnTerminal).toHaveBeenCalledWith('job-orch')
   })
+
+  it('does not skip verify for non-chat standalone orchestrator jobs', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      id: 'job-orch',
+      status: 'CLAIMED',
+      claimed_at: new Date('2026-05-27T10:00:00.000Z'),
+      started_at: null,
+      claimed_by_token_id: 'token-1',
+      user_id: 'user-1',
+      product_id: 'prod-1',
+      task_id: null,
+      idea_id: null,
+      sprint_run_id: null,
+      kind: 'IDEA_REVIEW_PLAN',
+      runtime: 'CLAUDE',
+      source: 'ORCHESTRATOR',
+      verify_result: null,
+      task: null,
+    })
+    let handler: ((input: { job_id: string; status: 'done'; summary: string }) => Promise<unknown>) | null = null
+    registerUpdateJobStatusTool({
+      registerTool: (_name: string, _config: unknown, callback: typeof handler) => {
+        handler = callback
+      },
+    } as never)
+
+    const result = await handler!({
+      job_id: 'job-orch',
+      status: 'done',
+      summary: 'Non-chat orchestrator should not bypass verify.',
+    })
+
+    expect(result).toMatchObject({ isError: true })
+    expect(mockPrisma.claudeJob.update).not.toHaveBeenCalled()
+    expect(jobLockMocks.releaseLocksOnTerminal).not.toHaveBeenCalled()
+  })
 })

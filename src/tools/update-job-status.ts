@@ -694,6 +694,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             skipWorktreeCleanup = true
           } else if (
             job.source === 'ORCHESTRATOR' &&
+            job.kind === 'PLAN_CHAT' &&
             !job.task_id &&
             !job.idea_id &&
             !job.sprint_run_id
