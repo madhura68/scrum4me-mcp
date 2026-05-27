@@ -14,7 +14,7 @@ import { prisma } from '../prisma.js'
 const execFileP = promisify(execFile)
 import { requireWriteAccess } from '../auth.js'
 import { toolJson, toolError, withToolErrors } from '../errors.js'
-import { createWorktreeForJob } from '../git/worktree.js'
+import { createWorktreeForJob, removeWorktreeForJob } from '../git/worktree.js'
 import { getWorktreeRoot } from '../git/worktree-paths.js'
 import { setupProductWorktrees, releaseLocksOnTerminal } from '../git/job-locks.js'
 import { pushBranchForJob } from '../git/push.js'
@@ -108,15 +108,69 @@ export async function resolveRepoRoot(
 }
 
 export async function rollbackClaim(jobId: string): Promise<void> {
+  // Eerst de DB-row terugzetten naar QUEUED, dan best-effort cleanen wat de
+  // claim had aangemaakt zodat een volgende claim-attempt niet stuck loopt.
+  //
+  // Pre-2026-05-27 deed deze functie alleen de UPDATE. Gevolg: bij een
+  // transient claude-fout (Anthropic 529, network blip, OOM) bleven de
+  // worktree (`/home/agent/.scrum4me-agent-worktrees/<jobId>`) en — voor
+  // SPRINT_IMPLEMENTATION — de zojuist gecreëerde `sprint_task_executions`
+  // hangen. De retry-iteratie hit dan `Worktree path already exists` of
+  // `Unique constraint failed (sprint_job_id, task_id)` → permanent stuck.
+  //
+  // Best-effort: cleanup-fouten mogen de rollback niet blokkeren. Een
+  // verloren worktree-cleanup blijft een handmatige cleanup-task, maar de
+  // rollback zelf moet altijd slagen.
+  const job = await prisma.claudeJob.findUnique({
+    where: { id: jobId },
+    select: { kind: true, product_id: true },
+  })
+
   await prisma.$executeRaw`
     UPDATE claude_jobs
     SET status = 'QUEUED',
         claimed_by_token_id = NULL,
         claimed_at = NULL,
         plan_snapshot = NULL,
-        worker_instance_id = NULL
+        worker_instance_id = NULL,
+        lease_until = NULL
     WHERE id = ${jobId}
   `
+
+  if (!job) return
+
+  // SPRINT-specifiek: getFullJobContext creëert sprint_task_executions rows
+  // via createMany met UNIQUE(sprint_job_id, task_id). Zonder cleanup faalt
+  // de tweede claim-attempt op die unique constraint.
+  if (job.kind === 'SPRINT_IMPLEMENTATION') {
+    try {
+      await prisma.sprintTaskExecution.deleteMany({ where: { sprint_job_id: jobId } })
+    } catch (err) {
+      claimLog('rollback.executions_cleanup_failed', {
+        jobId,
+        error: (err as Error).message,
+      })
+    }
+  }
+
+  // Worktree cleanup voor élke kind die er één had. `removeWorktreeForJob`
+  // doet `git worktree remove --force` (cleant bare-repo registratie) en
+  // verwijdert de branch indien op een rollback geen werk gepushed is.
+  // Best-effort: als repoRoot niet resolved (b.v. quota-probe failure vóór
+  // worktree-creation), is er ook geen worktree om te cleanen.
+  try {
+    if (job.product_id) {
+      const repoRoot = await resolveRepoRoot(job.product_id)
+      if (repoRoot) {
+        await removeWorktreeForJob({ repoRoot, jobId })
+      }
+    }
+  } catch (err) {
+    claimLog('rollback.worktree_cleanup_failed', {
+      jobId,
+      error: (err as Error).message,
+    })
+  }
 }
 
 /**
