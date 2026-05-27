@@ -121,10 +121,14 @@ export async function rollbackClaim(jobId: string): Promise<void> {
   // Best-effort: cleanup-fouten mogen de rollback niet blokkeren. Een
   // verloren worktree-cleanup blijft een handmatige cleanup-task, maar de
   // rollback zelf moet altijd slagen.
-  const job = await prisma.claudeJob.findUnique({
+  const job = (await prisma.claudeJob?.findUnique({
     where: { id: jobId },
-    select: { kind: true, product_id: true },
-  })
+    select: {
+      kind: true,
+      product_id: true,
+      task: { select: { repo_url: true } },
+    },
+  })) ?? null
 
   await prisma.$executeRaw`
     UPDATE claude_jobs
@@ -160,7 +164,7 @@ export async function rollbackClaim(jobId: string): Promise<void> {
   // worktree-creation), is er ook geen worktree om te cleanen.
   try {
     if (job.product_id) {
-      const repoRoot = await resolveRepoRoot(job.product_id)
+      const repoRoot = await resolveRepoRoot(job.product_id, job.task?.repo_url ?? null)
       if (repoRoot) {
         await removeWorktreeForJob({ repoRoot, jobId })
       }

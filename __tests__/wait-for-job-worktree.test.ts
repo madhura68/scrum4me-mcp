@@ -13,10 +13,11 @@ vi.mock('../src/prisma.js', () => ({
 
 vi.mock('../src/git/worktree.js', () => ({
   createWorktreeForJob: vi.fn(),
+  removeWorktreeForJob: vi.fn(),
 }))
 
 import { prisma } from '../src/prisma.js'
-import { createWorktreeForJob } from '../src/git/worktree.js'
+import { createWorktreeForJob, removeWorktreeForJob } from '../src/git/worktree.js'
 import { resolveRepoRoot, rollbackClaim, attachWorktreeToJob } from '../src/tools/wait-for-job.js'
 
 const mockPrisma = prisma as unknown as {
@@ -25,6 +26,7 @@ const mockPrisma = prisma as unknown as {
   product: { findUnique: ReturnType<typeof vi.fn> }
 }
 const mockCreateWorktree = createWorktreeForJob as ReturnType<typeof vi.fn>
+const mockRemoveWorktree = removeWorktreeForJob as ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -162,5 +164,34 @@ describe('attachWorktreeToJob', () => {
     expect(mockPrisma.$executeRaw).toHaveBeenCalledOnce()
     const sqlParts: string[] = mockPrisma.$executeRaw.mock.calls[0][0]
     expect(sqlParts.join('')).toContain("status = 'QUEUED'")
+  })
+})
+
+describe('rollbackClaim', () => {
+  const originalEnv = { ...process.env }
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('SCRUM4ME_REPO_ROOT_')) delete process.env[key]
+    }
+    Object.assign(process.env, originalEnv)
+  })
+
+  it('cleans rollback worktrees through task.repo_url when the task lives in another repo', async () => {
+    process.env['SCRUM4ME_REPO_ROOT_REPO_scrum4me-mcp'] = '/repos/scrum4me-mcp'
+    mockPrisma.claudeJob.findUnique.mockResolvedValueOnce({
+      kind: 'TASK_IMPLEMENTATION',
+      product_id: 'scrum4me-product',
+      task: { repo_url: 'https://git.jp-visser.nl/janpeter/scrum4me-mcp.git' },
+    })
+    mockPrisma.$executeRaw.mockResolvedValue(0)
+    mockRemoveWorktree.mockResolvedValue({ removed: true })
+
+    await rollbackClaim('job-cross-repo')
+
+    expect(mockRemoveWorktree).toHaveBeenCalledWith({
+      repoRoot: '/repos/scrum4me-mcp',
+      jobId: 'job-cross-repo',
+    })
   })
 })
