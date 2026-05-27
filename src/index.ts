@@ -7,6 +7,8 @@ import { INSTRUCTIONS } from './instructions.js'
 import { registerWorker } from './presence/worker.js'
 import { startHeartbeat } from './presence/heartbeat.js'
 import { registerShutdownHandlers } from './presence/shutdown.js'
+import { getInstanceId } from './presence/instance.js'
+import { hostname as osHostname } from 'node:os'
 
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -42,9 +44,21 @@ async function main() {
   // heartbeat first guarantees the UI sees the agent as soon as the process
   // is up, regardless of when the MCP client sends its first request.
   const auth = await getAuth()
-  await registerWorker({ userId: auth.userId, tokenId: auth.tokenId })
-  const { stop: stopHeartbeat } = startHeartbeat({ tokenId: auth.tokenId })
-  registerShutdownHandlers({ userId: auth.userId, tokenId: auth.tokenId, stopHeartbeat })
+  const instanceId = getInstanceId()
+  await registerWorker({
+    userId: auth.userId,
+    tokenId: auth.tokenId,
+    instanceId,
+    hostname: osHostname(),
+    pid: process.pid,
+  })
+  const { stop: stopHeartbeat } = startHeartbeat({ tokenId: auth.tokenId, instanceId })
+  registerShutdownHandlers({
+    userId: auth.userId,
+    tokenId: auth.tokenId,
+    instanceId,
+    stopHeartbeat,
+  })
 
   const transport = new StdioServerTransport()
   await server.connect(transport)

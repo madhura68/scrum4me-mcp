@@ -20,6 +20,7 @@ import { setupProductWorktrees, releaseLocksOnTerminal } from '../git/job-locks.
 import { pushBranchForJob } from '../git/push.js'
 import { resolveJobConfig } from '../lib/job-config.js'
 import { claimLog } from '../lib/claim-log.js'
+import { getInstanceId } from '../presence/instance.js'
 
 /** Parse `https://github.com/<owner>/<name>(.git)?` → `<name>`. */
 export function repoNameFromUrl(repoUrl: string | null | undefined): string | null {
@@ -109,7 +110,11 @@ export async function resolveRepoRoot(
 export async function rollbackClaim(jobId: string): Promise<void> {
   await prisma.$executeRaw`
     UPDATE claude_jobs
-    SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL, plan_snapshot = NULL
+    SET status = 'QUEUED',
+        claimed_by_token_id = NULL,
+        claimed_at = NULL,
+        plan_snapshot = NULL,
+        worker_instance_id = NULL
     WHERE id = ${jobId}
   `
 }
@@ -285,6 +290,7 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
         claimed_at = NULL,
         plan_snapshot = NULL,
         lease_until = NULL,
+        worker_instance_id = NULL,
         retry_count = retry_count + 1
     WHERE user_id = ${userId}
       AND status IN ('CLAIMED', 'RUNNING')
@@ -378,6 +384,7 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
 export async function tryClaimJob(
   userId: string,
   tokenId: string,
+  instanceId: string,
   productId?: string,
 ): Promise<string | null> {
   // Atomic claim in a single transaction — also captures plan_snapshot from task.
@@ -444,6 +451,7 @@ export async function tryClaimJob(
           claimed_by_token_id = ${tokenId},
           claimed_at = NOW(),
           plan_snapshot = ${snapshot},
+          worker_instance_id = ${instanceId},
           lease_until = NOW() + INTERVAL '5 minutes'
       WHERE id = ${jobId}
     `
@@ -843,12 +851,13 @@ export function registerWaitForJobTool(server: McpServer) {
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
         const { userId, tokenId } = auth
+        const instanceId = getInstanceId()
 
         // 1. Reset stale claimed jobs
         await resetStaleClaimedJobs(userId)
 
         // 2. Try immediate claim
-        let jobId = await tryClaimJob(userId, tokenId, product_id)
+        let jobId = await tryClaimJob(userId, tokenId, instanceId, product_id)
         if (jobId) {
           const ctx = await getFullJobContext(jobId)
           if (!ctx) return toolError('Job claimed but context fetch failed')
@@ -900,7 +909,7 @@ export function registerWaitForJobTool(server: McpServer) {
             })
 
             await resetStaleClaimedJobs(userId)
-            jobId = await tryClaimJob(userId, tokenId, product_id)
+            jobId = await tryClaimJob(userId, tokenId, instanceId, product_id)
             if (jobId) {
               const ctx = await getFullJobContext(jobId)
               if (!ctx) return toolError('Job claimed but context fetch failed')

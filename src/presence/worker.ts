@@ -4,14 +4,26 @@ import { prisma } from '../prisma.js'
 export async function registerWorker(opts: {
   userId: string
   tokenId: string
+  instanceId: string
   productId?: string | null
+  hostname?: string | null
+  pid?: number | null
 }): Promise<void> {
   await prisma.claudeWorker.upsert({
-    where: { token_id: opts.tokenId },
+    where: {
+      user_id_token_id_instance_id: {
+        user_id: opts.userId,
+        token_id: opts.tokenId,
+        instance_id: opts.instanceId,
+      },
+    },
     create: {
       user_id: opts.userId,
       token_id: opts.tokenId,
+      instance_id: opts.instanceId,
       product_id: opts.productId ?? null,
+      hostname: opts.hostname ?? null,
+      pid: opts.pid ?? null,
     },
     update: {
       // Heal stale rows after a token user-migration: if an admin re-points
@@ -20,6 +32,7 @@ export async function registerWorker(opts: {
       user_id: opts.userId,
       last_seen_at: new Date(),
       product_id: opts.productId ?? null,
+      // hostname/pid are create-time only; do not overwrite on heartbeat.
     },
   })
 
@@ -32,6 +45,7 @@ export async function registerWorker(opts: {
         type: 'worker_connected',
         user_id: opts.userId,
         token_id: opts.tokenId,
+        instance_id: opts.instanceId,
         product_id: opts.productId ?? null,
       }),
     ])
@@ -44,8 +58,19 @@ export async function registerWorker(opts: {
 export async function unregisterWorker(opts: {
   userId: string
   tokenId: string
+  instanceId: string
 }): Promise<void> {
-  await prisma.claudeWorker.deleteMany({ where: { token_id: opts.tokenId } }).catch(() => {})
+  // Scope delete by composite key so multi-worker setups only retire the
+  // exiting instance, not every worker sharing this token.
+  await prisma.claudeWorker
+    .deleteMany({
+      where: {
+        user_id: opts.userId,
+        token_id: opts.tokenId,
+        instance_id: opts.instanceId,
+      },
+    })
+    .catch(() => {})
 
   try {
     const pg = new Client({ connectionString: process.env.DATABASE_URL })
@@ -56,6 +81,7 @@ export async function unregisterWorker(opts: {
         type: 'worker_disconnected',
         user_id: opts.userId,
         token_id: opts.tokenId,
+        instance_id: opts.instanceId,
       }),
     ])
     await pg.end()

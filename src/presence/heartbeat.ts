@@ -3,6 +3,7 @@ import { registerWorker } from './worker.js'
 
 export function startHeartbeat(opts: {
   tokenId: string
+  instanceId: string
   intervalMs?: number
 }): { stop: () => void } {
   const timer = setInterval(async () => {
@@ -19,7 +20,7 @@ export function startHeartbeat(opts: {
       if (!token || token.revoked_at) return
 
       const result = await prisma.claudeWorker.updateMany({
-        where: { token_id: opts.tokenId },
+        where: { token_id: opts.tokenId, instance_id: opts.instanceId },
         data: { user_id: token.user_id, last_seen_at: new Date() },
       })
       if (result.count === 0) {
@@ -28,7 +29,11 @@ export function startHeartbeat(opts: {
         // Re-register so the UI's 'Agent verbonden'-indicator self-heals
         // instead of going dark for the rest of the process lifetime.
         try {
-          await registerWorker({ userId: token.user_id, tokenId: opts.tokenId })
+          await registerWorker({
+            userId: token.user_id,
+            tokenId: opts.tokenId,
+            instanceId: opts.instanceId,
+          })
         } catch (err) {
           console.error('[scrum4me-mcp] Heartbeat: re-register failed', err)
         }
