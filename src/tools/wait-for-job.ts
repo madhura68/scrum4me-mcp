@@ -633,6 +633,17 @@ export async function getFullJobContext(jobId: string) {
           grill_doc: {
             select: { current_revision: { select: { content_md: true } } },
           },
+          user_questions: {
+            where: { status: 'pending' },
+            orderBy: { created_at: 'desc' },
+            take: 1,
+            select: {
+              id: true,
+              question: true,
+              status: true,
+              created_at: true,
+            },
+          },
         },
       },
       product: {
@@ -735,6 +746,51 @@ export async function getFullJobContext(jobId: string) {
       repo_url: job.product.repo_url,
       prompt_text: job.summary ?? '',
       branch_suggestion: `feat/orchestrator-${job.id.slice(-8)}`,
+    }
+  }
+
+  if (job.kind === 'PLAN_CHAT' && job.source === 'SYSTEM') {
+    if (!job.idea) return null
+    const { idea } = job
+    const { getIdeaPromptText } = await import('../lib/kind-prompts.js')
+    const question = idea.user_questions[0] ?? null
+    const questionPayload = question
+      ? {
+          question_id: question.id,
+          question: question.question,
+          status: question.status,
+          created_at: question.created_at.toISOString(),
+        }
+      : null
+
+    return {
+      job_id: job.id,
+      kind: 'PLAN_CHAT',
+      source: 'SYSTEM',
+      status: 'claimed',
+      config,
+      idea: {
+        id: idea.id,
+        code: idea.code,
+        title: idea.title,
+        description: idea.description,
+        grill_md: idea.grill_doc?.current_revision?.content_md ?? idea.grill_md,
+        plan_md: idea.plan_doc?.current_revision?.content_md ?? idea.plan_md,
+        status: idea.status,
+        product_id: idea.product_id,
+      },
+      product: {
+        id: job.product.id,
+        name: job.product.name,
+        repo_url: job.product.repo_url,
+        definition_of_done: job.product.definition_of_done,
+      },
+      pbi: idea.pbi,
+      repo_url: job.product.repo_url,
+      plan_chat: questionPayload,
+      user_question: questionPayload,
+      prompt_text: getIdeaPromptText('PLAN_CHAT'),
+      branch_suggestion: `feat/idea-${idea.code.toLowerCase()}-chat`,
     }
   }
 

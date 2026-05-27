@@ -680,6 +680,17 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           }
         }
 
+        const isSystemPlanChat =
+          job.kind === 'PLAN_CHAT' &&
+          job.source === 'SYSTEM' &&
+          !!job.idea_id
+        const planChatAnswer = summary?.trim()
+        if (status === 'done' && isSystemPlanChat && !planChatAnswer) {
+          return toolError(
+            "PLAN_CHAT done vereist een non-empty summary; deze summary wordt als antwoord aan de gebruiker getoond.",
+          )
+        }
+
         // For DONE: push first, adjust DB status based on result
         let actualStatus = status
         let pushedAt: Date | undefined
@@ -699,6 +710,9 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             !job.idea_id &&
             !job.sprint_run_id
           ) {
+            actualStatus = 'done'
+            skipWorktreeCleanup = true
+          } else if (isSystemPlanChat) {
             actualStatus = 'done'
             skipWorktreeCleanup = true
           } else if (job.kind === 'IDEA_GRILL' || job.kind === 'IDEA_MAKE_PLAN') {
@@ -822,6 +836,20 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             head_sha: true,
           },
         })
+
+        if (actualStatus === 'done' && isSystemPlanChat && planChatAnswer) {
+          const pendingQuestion = await prisma.userQuestion.findFirst({
+            where: { idea_id: job.idea_id!, status: 'pending' },
+            orderBy: { created_at: 'desc' },
+            select: { id: true },
+          })
+          if (pendingQuestion) {
+            await prisma.userQuestion.updateMany({
+              where: { id: pendingQuestion.id, status: 'pending' },
+              data: { status: 'answered', answer: planChatAnswer },
+            })
+          }
+        }
 
         // PBI-46 sprint-flow: propageer Task → Story → PBI → Sprint → SprintRun
         // bij elke task-statusovergang (DONE of FAILED). De helper handelt ook

@@ -44,6 +44,11 @@ export function getKindPromptText(kind: ClaudeJobKind): string {
 // de drie idea-kinds; behouden zodat we de bestaande call-site niet hoeven
 // te wijzigen tot een aparte cleanup-pass.
 export function getIdeaPromptText(kind: ClaudeJobKind): string {
-  if (kind !== 'IDEA_GRILL' && kind !== 'IDEA_MAKE_PLAN' && kind !== 'IDEA_REVIEW_PLAN') return ''
+  if (
+    kind !== 'IDEA_GRILL' &&
+    kind !== 'IDEA_MAKE_PLAN' &&
+    kind !== 'IDEA_REVIEW_PLAN' &&
+    kind !== 'PLAN_CHAT'
+  ) return ''
   return getKindPromptText(kind)
 }
