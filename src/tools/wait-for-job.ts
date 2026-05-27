@@ -629,6 +629,16 @@ export async function getFullJobContext(jobId: string) {
           preferred_permission_mode: true,
         },
       },
+      manual_drafts: {
+        select: {
+          id: true,
+          title: true,
+          adapter: true,
+          required_capability: true,
+          prompt_md: true,
+          launch_preview_json: true,
+        },
+      },
     },
   })
   if (!job) return null
@@ -649,6 +659,42 @@ export async function getFullJobContext(jobId: string) {
     },
     job.task ? { requires_opus: job.task.requires_opus } : undefined,
   )
+
+  if (job.source === 'MANUAL') {
+    const draft = job.manual_drafts[0] ?? null
+    if (!draft) {
+      await rollbackClaim(job.id)
+      return null
+    }
+
+    const manualDraft = {
+      draft_id: draft.id,
+      title: draft.title,
+      adapter: draft.adapter,
+      required_capability: draft.required_capability,
+      prompt_md: draft.prompt_md,
+      launch_preview_json: draft.launch_preview_json,
+    }
+
+    return {
+      job_id: job.id,
+      kind: job.kind,
+      source: 'MANUAL',
+      status: 'claimed',
+      config,
+      manual_job: manualDraft,
+      manual_draft: manualDraft,
+      product: {
+        id: job.product.id,
+        name: job.product.name,
+        repo_url: job.product.repo_url,
+        definition_of_done: job.product.definition_of_done,
+      },
+      repo_url: job.product.repo_url,
+      prompt_text: draft.prompt_md,
+      branch_suggestion: `feat/manual-${job.id.slice(-8)}`,
+    }
+  }
 
   // M12: branch on kind. Idea-jobs hebben geen task/story/pbi/sprint; ze
   // hebben in plaats daarvan idea + embedded prompt_text.
@@ -980,7 +1026,7 @@ export function registerWaitForJobTool(server: McpServer) {
           // M12: idee-jobs hebben geen worktree nodig — de agent werkt in de
           // bestaande user-repo (geen branch/commit-flow). Alleen task-jobs
           // krijgen een worktree.
-          if (ctx.kind === 'TASK_IMPLEMENTATION') {
+          if (ctx.kind === 'TASK_IMPLEMENTATION' && !('source' in ctx && ctx.source === 'MANUAL')) {
             if (!ctx.story || !ctx.task) {
               return toolError('Task-job claimed but story/task context is incomplete')
             }
@@ -1029,7 +1075,7 @@ export function registerWaitForJobTool(server: McpServer) {
             if (jobId) {
               const ctx = await getFullJobContext(jobId)
               if (!ctx) return toolError('Job claimed but context fetch failed')
-              if (ctx.kind === 'TASK_IMPLEMENTATION') {
+              if (ctx.kind === 'TASK_IMPLEMENTATION' && !('source' in ctx && ctx.source === 'MANUAL')) {
                 if (!ctx.story || !ctx.task) {
                   return toolError('Task-job claimed but story/task context is incomplete')
                 }

@@ -689,11 +689,14 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         let headShaToWrite: string | undefined
 
         if (status === 'done') {
-          // M12: idea-jobs hebben geen task/plan_snapshot/branch — skip de
-          // verify-gate én de prepareDoneUpdate (die doet git push). Voor
-          // idea-jobs is `done` direct geldig: de bijhorende update_idea_*_md
-          // heeft de idea-status al naar GRILLED/PLAN_READY gezet.
-          if (job.kind === 'IDEA_GRILL' || job.kind === 'IDEA_MAKE_PLAN') {
+          if (job.source === 'MANUAL') {
+            actualStatus = 'done'
+            skipWorktreeCleanup = true
+          } else if (job.kind === 'IDEA_GRILL' || job.kind === 'IDEA_MAKE_PLAN') {
+            // M12: idea-jobs hebben geen task/plan_snapshot/branch — skip de
+            // verify-gate én de prepareDoneUpdate (die doet git push). Voor
+            // idea-jobs is `done` direct geldig: de bijhorende update_idea_*_md
+            // heeft de idea-status al naar GRILLED/PLAN_READY gezet.
             actualStatus = 'done'
             // pushedAt blijft undefined, branch/error overrides ook
             skipWorktreeCleanup = true
@@ -738,6 +741,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           pushedAt &&
           branchToWrite &&
           job.kind === 'TASK_IMPLEMENTATION' &&
+          job.source !== 'MANUAL' &&
           job.task_id
         ) {
           const worktreeDir = getWorktreeRoot()
@@ -819,6 +823,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         if (
           (actualStatus === 'done' || actualStatus === 'failed') &&
           job.kind === 'TASK_IMPLEMENTATION' &&
+          job.source !== 'MANUAL' &&
           job.task_id
         ) {
           try {
@@ -1026,7 +1031,12 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         // PBI-50: SPRINT_IMPLEMENTATION SKIPS this — cascade naar tasks/stories/
         // PBIs is al gebeurd via per-task update_task_status('failed')-calls
         // van de worker. Sprint-job heeft geen task_id; cancelPbi-flow past niet.
-        if (actualStatus === 'failed' && job.kind === 'TASK_IMPLEMENTATION' && job.task_id) {
+        if (
+          actualStatus === 'failed' &&
+          job.kind === 'TASK_IMPLEMENTATION' &&
+          job.source !== 'MANUAL' &&
+          job.task_id
+        ) {
           await cancelPbiOnFailure(job_id)
         }
 
