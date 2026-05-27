@@ -71,7 +71,8 @@ export async function cleanupWorktreeForTerminalStatus(
     },
   })
 
-  const repoRoot = await resolveRepoRoot(productId, job?.task?.repo_url ?? null)
+  const repoKey = job?.task?.repo_url ?? null
+  const repoRoot = await resolveRepoRoot(productId, repoKey)
   if (!repoRoot) {
     console.warn(
       `[update_job_status] cleanup skip for job=${jobId}: no repoRoot configured for product ${productId}`,
@@ -85,6 +86,7 @@ export async function cleanupWorktreeForTerminalStatus(
     activeSiblings = await prisma.claudeJob.count({
       where: {
         sprint_run_id: job.sprint_run_id,
+        ...(job.task ? { task: { repo_url: repoKey } } : {}),
         status: { in: ['QUEUED', 'CLAIMED', 'RUNNING'] },
         id: { not: jobId },
       },
@@ -93,7 +95,7 @@ export async function cleanupWorktreeForTerminalStatus(
   } else if (job?.task) {
     activeSiblings = await prisma.claudeJob.count({
       where: {
-        task: { story_id: job.task.story_id },
+        task: { story_id: job.task.story_id, repo_url: repoKey },
         status: { in: ['QUEUED', 'CLAIMED', 'RUNNING'] },
         id: { not: jobId },
       },
