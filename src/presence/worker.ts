@@ -71,6 +71,17 @@ export async function unregisterWorker(opts: {
   tokenId: string
   instanceId: string
 }): Promise<void> {
+  const worker = await prisma.claudeWorker
+    .findFirst({
+      where: {
+        user_id: opts.userId,
+        token_id: opts.tokenId,
+        instance_id: opts.instanceId,
+      },
+      select: { runtime: true },
+    })
+    .catch(() => null)
+
   // Scope delete by composite key so multi-worker setups only retire the
   // exiting instance, not every worker sharing this token.
   await prisma.claudeWorker
@@ -89,10 +100,12 @@ export async function unregisterWorker(opts: {
     await pg.query('SELECT pg_notify($1, $2)', [
       'scrum4me_changes',
       JSON.stringify({
-        type: 'worker_disconnected',
+        type: 'claude_worker_offline',
+        worker_id: opts.tokenId,
         user_id: opts.userId,
         token_id: opts.tokenId,
         instance_id: opts.instanceId,
+        runtime: worker?.runtime ?? 'CLAUDE',
       }),
     ])
     await pg.end()
