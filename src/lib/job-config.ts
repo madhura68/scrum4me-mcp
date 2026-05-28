@@ -97,6 +97,8 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
       'mcp__scrum4me__update_job_status',
       'mcp__scrum4me__ask_user_question',
       'mcp__scrum4me__get_question_answer',
+      'mcp__scrum4me__cancel_question',
+      'mcp__scrum4me__list_open_questions',
     ],
   },
   IDEA_MAKE_PLAN: {
@@ -131,6 +133,9 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
       'mcp__scrum4me__log_idea_decision',
       'mcp__scrum4me__update_job_status',
       'mcp__scrum4me__ask_user_question',
+      'mcp__scrum4me__get_question_answer',
+      'mcp__scrum4me__cancel_question',
+      'mcp__scrum4me__list_open_questions',
     ],
   },
   PLAN_CHAT: {
