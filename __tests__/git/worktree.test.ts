@@ -302,4 +302,24 @@ describe('removeWorktreeForJob', () => {
 
     expect(result.removed).toBe(false)
   })
+
+  it('force-removes a leftover directory that git does not track as a worktree', async () => {
+    const { repoDir, originDir } = await setupRepo()
+    tmpDirs.push(repoDir, originDir)
+    const wtParent = await makeWorktreeParent()
+
+    // A partially-failed `git worktree add`, a manual leftover, or a container
+    // recreate can leave a plain directory at the job's worktree path that git
+    // has no registration for. `git worktree remove` then errors; cleanup must
+    // still delete the directory so a later claim doesn't loop forever on
+    // "Worktree path already exists".
+    const leftover = path.join(wtParent, 'job-orphan-dir')
+    await fs.mkdir(leftover, { recursive: true })
+    await fs.writeFile(path.join(leftover, 'stale.txt'), 'leftover')
+
+    const result = await removeWorktreeForJob({ repoRoot: repoDir, jobId: 'job-orphan-dir' })
+
+    expect(result.removed).toBe(true)
+    await expect(fs.access(leftover)).rejects.toThrow()
+  })
 })

@@ -188,7 +188,17 @@ export async function removeWorktreeForJob(opts: {
     }
   }
 
-  await exec('git', ['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot })
+  try {
+    await exec('git', ['worktree', 'remove', '--force', worktreePath], { cwd: repoRoot })
+  } catch {
+    // The path exists but git doesn't track it as a worktree — a partially
+    // failed `git worktree add`, a manual leftover, or a container recreate
+    // that wiped the clone. Remove the directory directly and prune any stale
+    // worktree admin entry so a later `worktree add` to this path doesn't loop
+    // forever on "Worktree path already exists".
+    await fs.rm(worktreePath, { recursive: true, force: true })
+    await exec('git', ['worktree', 'prune'], { cwd: repoRoot }).catch(() => {})
+  }
 
   if (!keepBranch && branchName && (await branchExists(repoRoot, branchName))) {
     await exec('git', ['branch', '-D', branchName], { cwd: repoRoot })
