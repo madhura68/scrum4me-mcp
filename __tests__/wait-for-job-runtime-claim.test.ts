@@ -85,6 +85,25 @@ describe('runtime-aware claim filter', () => {
     expect(sql).toContain('cj.required_capability IS NULL OR cj.required_capability = ANY')
   })
 
+  it('preserves the orchestrator follow-up guard in the production claim fragment', () => {
+    const productionSql = sqlText(
+      buildClaimableJobWhereFragment({
+        userId: 'user-1',
+        productId: 'product-1',
+        runtime: 'CLAUDE',
+        hasProductScope: true,
+        capabilities: ['queue_orchestration'],
+      }),
+    )
+
+    expect(productionSql).toContain("cj.kind = 'PLAN_CHAT'")
+    expect(productionSql).toContain("cj.source = 'ORCHESTRATOR'")
+    expect(productionSql).toContain('cj.task_id IS NULL')
+    expect(productionSql).toContain('cj.idea_id IS NULL')
+    expect(productionSql).toContain('cj.sprint_run_id IS NULL')
+    expect(productionSql).toContain('cj.required_capability IS NULL OR cj.required_capability = ANY')
+  })
+
   it('keeps the production SQL fragment aligned with the exported spec clause', () => {
     const specSql = buildClaimableJobWhereClause({
       runtime: 'CODEX',
