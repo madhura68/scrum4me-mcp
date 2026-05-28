@@ -50,6 +50,35 @@ async function findWorktreeForBranch(
   }
 }
 
+// Symlink the repoRoot's node_modules into a fresh worktree. A git worktree
+// starts with an empty (gitignored) node_modules, so lint/typecheck/test tools
+// (eslint/tsc/vitest, incl. vitest's rolldown native binding) won't resolve.
+// repoRoot deps are installed once by repo-bootstrap.sh; symlinking avoids a
+// per-job npm install. Best-effort: never fail worktree creation over this.
+//
+// NOTE: requires the repoRoot/worktree filesystem to allow exec — on a noexec
+// mount the linked binaries still fail with EACCES (126) / ERR_DLOPEN_FAILED.
+async function linkNodeModules(repoRoot: string, worktreePath: string, jobId: string): Promise<void> {
+  const src = path.join(repoRoot, 'node_modules')
+  const dest = path.join(worktreePath, 'node_modules')
+  try {
+    await fs.access(src)
+  } catch {
+    return // repoRoot has no deps to share — nothing to do
+  }
+  try {
+    await fs.symlink(src, dest, 'dir')
+    claimLog('worktree.nodeModulesLinked', { jobId, src, dest })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+      claimLog('worktree.nodeModulesLinkFailed', {
+        jobId,
+        error: String((err as Error).message).slice(0, 200),
+      })
+    }
+  }
+}
+
 export async function createWorktreeForJob(opts: {
   repoRoot: string
   jobId: string
@@ -124,6 +153,7 @@ export async function createWorktreeForJob(opts: {
       await gitRetry(['worktree', 'add', '-b', branchName, worktreePath, baseRef])
     }
     claimLog('worktree.created', { jobId, branchName, worktreePath, reuse: reuseBranch })
+    await linkNodeModules(repoRoot, worktreePath, jobId)
     return { worktreePath, branchName }
   }
 
@@ -156,6 +186,7 @@ export async function createWorktreeForJob(opts: {
   await gitRetry(['worktree', 'add', '-b', branchName, worktreePath, baseRef])
 
   claimLog('worktree.created', { jobId, branchName, worktreePath, reuse: reuseBranch })
+  await linkNodeModules(repoRoot, worktreePath, jobId)
   return { worktreePath, branchName }
 }
 
