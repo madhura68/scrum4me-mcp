@@ -28,4 +28,40 @@ describe('ensureProductDocFrontmatter', () => {
     expect(fm.title).toBe('Keep')
     expect(fm.status).toBe('active')
   })
+
+  it('replaces a whitespace-only title with the provided title', () => {
+    const md = '---\ntitle: "   "\nstatus: draft\n---\n\nbody'
+    const out = ensureProductDocFrontmatter(md, 'Injected Title')
+    const fm = frontmatterOf(out) as Record<string, unknown>
+    expect(productDocFrontmatterSchema.safeParse(fm).success).toBe(true)
+    expect(fm.title).toBe('Injected Title')
+  })
+
+  it('overwrites a present-but-invalid status with draft', () => {
+    const md = '---\ntitle: My Plan\nstatus: published\n---\n\nbody'
+    const out = ensureProductDocFrontmatter(md, 'My Idea')
+    const fm = frontmatterOf(out) as Record<string, unknown>
+    expect(productDocFrontmatterSchema.safeParse(fm).success).toBe(true)
+    expect(fm.status).toBe('draft')
+    expect(fm.title).toBe('My Plan') // existing valid title kept
+  })
+
+  it('injects title+status for a scalar (non-object) frontmatter block', () => {
+    const md = '---\njust a string\n---\n\nbody'
+    const out = ensureProductDocFrontmatter(md, 'Injected')
+    expect(productDocFrontmatterSchema.safeParse(frontmatterOf(out)).success).toBe(true)
+  })
+
+  it('injects title+status for an array frontmatter block', () => {
+    const md = '---\n- a\n- b\n---\n\nbody'
+    const out = ensureProductDocFrontmatter(md, 'Injected')
+    expect(productDocFrontmatterSchema.safeParse(frontmatterOf(out)).success).toBe(true)
+  })
+
+  it('is idempotent: feeding already-valid output back returns the same string', () => {
+    const md = '# Plan body'
+    const out1 = ensureProductDocFrontmatter(md, 'My Idea')
+    const out2 = ensureProductDocFrontmatter(out1, 'My Idea')
+    expect(out2).toBe(out1)
+  })
 })

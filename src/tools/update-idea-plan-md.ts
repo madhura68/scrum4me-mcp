@@ -40,7 +40,11 @@ export function ensureProductDocFrontmatter(md: string, title: string): string {
   }
   let data: Record<string, unknown>
   try {
-    data = (parseYaml(m[1]) ?? {}) as Record<string, unknown>
+    const raw = parseYaml(m[1])
+    data =
+      raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>)
+        : {}
   } catch {
     return md // malformed YAML — let writeProductDoc surface the precise error
   }
@@ -163,7 +167,10 @@ export function registerUpdateIdeaPlanMdTool(server: McpServer) {
           })
         } catch (err) {
           if (err instanceof ProductDocWriteError) {
-            return toolError(`Cannot save plan as ProductDoc: ${err.message}. Details: ${JSON.stringify(err.details)}`)
+            return toolError(
+              `Cannot save plan as ProductDoc: ${err.message}` +
+              (err.details !== undefined ? `. Details: ${JSON.stringify(err.details)}` : ''),
+            )
           }
           throw err
         }
