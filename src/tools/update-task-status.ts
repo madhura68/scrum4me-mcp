@@ -2,7 +2,7 @@ import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
-import { userCanAccessTask } from '../access.js'
+import { resolveTaskRef } from '../lib/resolve-entity.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { TASK_STATUS_API_VALUES, taskStatusFromApi, taskStatusToApi } from '../status.js'
 import { updateTaskStatusWithStoryPromotion } from '../lib/tasks-status-update.js'
@@ -36,9 +36,9 @@ export function registerUpdateTaskStatusTool(server: McpServer) {
         if (!dbStatus) {
           return toolError(`Unknown status: ${status}`)
         }
-        if (!(await userCanAccessTask(task_id, auth.userId))) {
-          return toolError(`Task ${task_id} not found or not accessible`)
-        }
+        const ref = await resolveTaskRef(task_id, auth.userId)
+        if ('error' in ref) return toolError(ref.error)
+        const taskId = ref.id
 
         // PBI-50: validate explicit sprint_run_id binding.
         if (sprint_run_id) {
@@ -61,12 +61,12 @@ export function registerUpdateTaskStatusTool(server: McpServer) {
 
           // Task moet in deze sprint zitten
           const task = await prisma.task.findUnique({
-            where: { id: task_id },
+            where: { id: taskId },
             select: { story: { select: { sprint_id: true } } },
           })
           if (!task || task.story.sprint_id !== sprintRun.sprint_id) {
             return toolError(
-              `Task ${task_id} is not in sprint ${sprintRun.sprint_id} (sprint_run ${sprint_run_id})`,
+              `Task ${taskId} is not in sprint ${sprintRun.sprint_id} (sprint_run ${sprint_run_id})`,
             )
           }
 
@@ -88,7 +88,7 @@ export function registerUpdateTaskStatusTool(server: McpServer) {
         }
 
         const { task, storyStatusChange, sprintRunChanged } =
-          await updateTaskStatusWithStoryPromotion(task_id, dbStatus, undefined, sprint_run_id)
+          await updateTaskStatusWithStoryPromotion(taskId, dbStatus, undefined, sprint_run_id)
 
         // Voor SPRINT-flow: stuur expliciete sprint_run_status mee zodat
         // worker zijn loop kan breken bij FAILED/PAUSED zonder extra query.
