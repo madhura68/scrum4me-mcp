@@ -91,6 +91,69 @@ async function linkNodeModules(repoRoot: string, worktreePath: string, jobId: st
   }
 }
 
+// A fresh `git worktree add` checks out the branch tree but NOT its submodules,
+// so submodule-backed path aliases (e.g. tsconfig `@shared/*` →
+// vendor/<submodule>/) don't resolve and lint/typecheck/test fail on every
+// import of them. Init them in the worktree. Guarded on .gitmodules so this is
+// a no-op for repos without submodules. Best-effort: never fail worktree
+// creation over setup — verify will surface a genuine init failure instead.
+async function initSubmodules(worktreePath: string, jobId: string): Promise<void> {
+  try {
+    await fs.access(path.join(worktreePath, '.gitmodules'))
+  } catch {
+    return // no submodules in this repo
+  }
+  try {
+    await exec('git', ['submodule', 'update', '--init', '--recursive'], { cwd: worktreePath })
+    claimLog('worktree.submodulesInit', { jobId })
+  } catch (err) {
+    claimLog('worktree.submodulesInitFailed', {
+      jobId,
+      error: String((err as Error).message).slice(0, 200),
+    })
+  }
+}
+
+// Run the repo's optional worktree-prepare hook. `verify` (lint/typecheck/test)
+// expects gitignored generated files that are normally produced by a `prebuild`
+// step it never triggers (e.g. a typed manifest emitted by codegen). A fresh
+// worktree lacks them → spurious "Cannot find module './x.generated'" failures.
+// Convention: a repo declares an npm `prepare:worktree` script that regenerates
+// whatever its verify pipeline needs; we run it only when present, so this stays
+// repo-agnostic. node_modules is the symlink created by linkNodeModules above.
+// Best-effort: never fail worktree creation over setup.
+async function runWorktreePrepare(worktreePath: string, jobId: string): Promise<void> {
+  let hasHook = false
+  try {
+    const pkg = JSON.parse(await fs.readFile(path.join(worktreePath, 'package.json'), 'utf8')) as {
+      scripts?: Record<string, string>
+    }
+    hasHook = Boolean(pkg.scripts?.['prepare:worktree'])
+  } catch {
+    return // no/unreadable package.json — nothing to run
+  }
+  if (!hasHook) return
+  try {
+    await exec('npm', ['run', 'prepare:worktree'], { cwd: worktreePath })
+    claimLog('worktree.prepareHook', { jobId })
+  } catch (err) {
+    claimLog('worktree.prepareHookFailed', {
+      jobId,
+      error: String((err as Error).message).slice(0, 200),
+    })
+  }
+}
+
+// Set up a freshly-added worktree so `npm run verify` resolves the same imports
+// it would in a full checkout: shared deps (symlink), submodule checkouts, and
+// repo-specific gitignored codegen. Order matters — node_modules first so the
+// prepare hook can run its npm script.
+async function prepareWorktree(repoRoot: string, worktreePath: string, jobId: string): Promise<void> {
+  await linkNodeModules(repoRoot, worktreePath, jobId)
+  await initSubmodules(worktreePath, jobId)
+  await runWorktreePrepare(worktreePath, jobId)
+}
+
 export async function createWorktreeForJob(opts: {
   repoRoot: string
   jobId: string
@@ -165,7 +228,7 @@ export async function createWorktreeForJob(opts: {
       await gitRetry(['worktree', 'add', '-b', branchName, worktreePath, baseRef])
     }
     claimLog('worktree.created', { jobId, branchName, worktreePath, reuse: reuseBranch })
-    await linkNodeModules(repoRoot, worktreePath, jobId)
+    await prepareWorktree(repoRoot, worktreePath, jobId)
     return { worktreePath, branchName }
   }
 
@@ -198,7 +261,7 @@ export async function createWorktreeForJob(opts: {
   await gitRetry(['worktree', 'add', '-b', branchName, worktreePath, baseRef])
 
   claimLog('worktree.created', { jobId, branchName, worktreePath, reuse: reuseBranch })
-  await linkNodeModules(repoRoot, worktreePath, jobId)
+  await prepareWorktree(repoRoot, worktreePath, jobId)
   return { worktreePath, branchName }
 }
 
