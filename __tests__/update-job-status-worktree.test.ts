@@ -37,6 +37,8 @@ beforeEach(() => {
   // Default: job exists, no active siblings — cleanup proceeds
   mockPrisma.claudeJob.findUnique.mockResolvedValue({ task: { story_id: 'story-default' } })
   mockPrisma.claudeJob.count.mockResolvedValue(0)
+  mockResolve.mockResolvedValue('/repos/my-project')
+  mockRemove.mockResolvedValue({ removed: true })
 })
 
 describe('cleanupWorktreeForTerminalStatus', () => {
@@ -49,6 +51,31 @@ describe('cleanupWorktreeForTerminalStatus', () => {
     expect(mockRemove).toHaveBeenCalledWith({
       repoRoot: '/repos/my-project',
       jobId: 'job-abc',
+      keepBranch: true,
+    })
+  })
+
+  it('resolves terminal cleanup through task.repo_url for cross-repo task jobs', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      task: {
+        story_id: 'story-cross',
+        repo_url: 'https://git.jp-visser.nl/janpeter/scrum4me-mcp.git',
+      },
+      sprint_run_id: null,
+      sprint_run: null,
+    })
+    mockResolve.mockResolvedValue('/repos/scrum4me-mcp')
+    mockRemove.mockResolvedValue({ removed: true })
+
+    await cleanupWorktreeForTerminalStatus('prod-001', 'job-cross', 'done', 'feat/x')
+
+    expect(mockResolve).toHaveBeenCalledWith(
+      'prod-001',
+      'https://git.jp-visser.nl/janpeter/scrum4me-mcp.git',
+    )
+    expect(mockRemove).toHaveBeenCalledWith({
+      repoRoot: '/repos/scrum4me-mcp',
+      jobId: 'job-cross',
       keepBranch: true,
     })
   })
@@ -106,5 +133,57 @@ describe('cleanupWorktreeForTerminalStatus', () => {
     await cleanupWorktreeForTerminalStatus('prod-001', 'job-abc', 'done', 'feat/story-shared')
 
     expect(mockRemove).not.toHaveBeenCalled()
+  })
+
+  it('counts active story siblings only within the same task repo bucket', async () => {
+    mockResolve.mockResolvedValue('/repos/scrum4me-mcp')
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      task: {
+        story_id: 'story-cross-repo',
+        repo_url: 'https://git.jp-visser.nl/janpeter/scrum4me-mcp.git',
+      },
+      sprint_run_id: null,
+      sprint_run: null,
+    })
+    mockPrisma.claudeJob.count.mockResolvedValue(0)
+
+    await cleanupWorktreeForTerminalStatus('prod-001', 'job-cross', 'done', 'feat/story-shared')
+
+    expect(mockPrisma.claudeJob.count).toHaveBeenCalledWith({
+      where: {
+        task: {
+          story_id: 'story-cross-repo',
+          repo_url: 'https://git.jp-visser.nl/janpeter/scrum4me-mcp.git',
+        },
+        status: { in: ['QUEUED', 'CLAIMED', 'RUNNING'] },
+        id: { not: 'job-cross' },
+      },
+    })
+  })
+
+  it('counts active sprint siblings only within the same task repo bucket', async () => {
+    mockResolve.mockResolvedValue('/repos/scrum4me-mcp')
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      task: {
+        story_id: 'story-cross-repo',
+        repo_url: 'https://git.jp-visser.nl/janpeter/scrum4me-mcp.git',
+      },
+      sprint_run_id: 'sprint-run-cross',
+      sprint_run: { pr_strategy: 'SPRINT' },
+    })
+    mockPrisma.claudeJob.count.mockResolvedValue(0)
+
+    await cleanupWorktreeForTerminalStatus('prod-001', 'job-cross', 'done', 'feat/sprint-shared')
+
+    expect(mockPrisma.claudeJob.count).toHaveBeenCalledWith({
+      where: {
+        sprint_run_id: 'sprint-run-cross',
+        task: {
+          repo_url: 'https://git.jp-visser.nl/janpeter/scrum4me-mcp.git',
+        },
+        status: { in: ['QUEUED', 'CLAIMED', 'RUNNING'] },
+        id: { not: 'job-cross' },
+      },
+    })
   })
 })

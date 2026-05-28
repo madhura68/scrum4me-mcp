@@ -44,15 +44,30 @@ async function main() {
   // heartbeat first guarantees the UI sees the agent as soon as the process
   // is up, regardless of when the MCP client sends its first request.
   const auth = await getAuth()
-  const instanceId = getInstanceId()
+  const runtime = process.env.SCRUM4ME_WORKER_RUNTIME === 'CODEX' ? 'CODEX' : 'CLAUDE'
+  const instanceId = process.env.SCRUM4ME_WORKER_INSTANCE_ID?.trim() || getInstanceId()
+  const capabilities = (process.env.SCRUM4ME_WORKER_CAPABILITIES ?? 'code_edit,planning,review')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+  const hostname = process.env.HOSTNAME ?? osHostname()
   await registerWorker({
     userId: auth.userId,
     tokenId: auth.tokenId,
+    runtime,
+    capabilities,
     instanceId,
-    hostname: osHostname(),
+    hostname,
     pid: process.pid,
   })
-  const { stop: stopHeartbeat } = startHeartbeat({ tokenId: auth.tokenId, instanceId })
+  const { stop: stopHeartbeat } = startHeartbeat({
+    tokenId: auth.tokenId,
+    instanceId,
+    runtime,
+    capabilities,
+    hostname,
+    pid: process.pid,
+  })
   registerShutdownHandlers({
     userId: auth.userId,
     tokenId: auth.tokenId,

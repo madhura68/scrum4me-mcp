@@ -1,5 +1,28 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+const pgMocks = vi.hoisted(() => ({
+  connect: vi.fn(),
+  query: vi.fn(),
+  end: vi.fn(),
+}))
+
+const jobLockMocks = vi.hoisted(() => ({
+  setupProductWorktrees: vi.fn(),
+  releaseLocksOnTerminal: vi.fn(),
+}))
+
+vi.mock('pg', () => ({
+  Client: vi.fn(function Client() {
+    return {
+      connect: pgMocks.connect,
+      query: pgMocks.query,
+      end: pgMocks.end,
+    }
+  }),
+}))
+
+vi.mock('../src/git/job-locks.js', () => jobLockMocks)
+
 vi.mock('../src/prisma.js', () => ({
   prisma: {
     $queryRaw: vi.fn(),
@@ -15,10 +38,28 @@ const mockPrisma = prisma as unknown as {
   $transaction: ReturnType<typeof vi.fn>
 }
 
+function flattenQueryValues(values: unknown[]): unknown[] {
+  return values.flatMap((value) => {
+    if (
+      value &&
+      typeof value === 'object' &&
+      'values' in value &&
+      Array.isArray((value as { values: unknown[] }).values)
+    ) {
+      return flattenQueryValues((value as { values: unknown[] }).values)
+    }
+    return [value]
+  })
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   // Default: no stale jobs returned from either query
   mockPrisma.$queryRaw.mockResolvedValue([])
+  pgMocks.connect.mockResolvedValue(undefined)
+  pgMocks.query.mockResolvedValue({ rows: [] })
+  pgMocks.end.mockResolvedValue(undefined)
+  jobLockMocks.releaseLocksOnTerminal.mockResolvedValue(undefined)
 })
 
 describe('resetStaleClaimedJobs', () => {
@@ -46,6 +87,64 @@ describe('resetStaleClaimedJobs', () => {
     expect(requeueSql).toContain('plan_snapshot = NULL')
     expect(requeueSql).toContain('retry_count = retry_count + 1')
     expect(requeueSql).toContain('retry_count < 2')
+  })
+
+  it('emits shared realtime payloads with DB status values for stale transitions', async () => {
+    mockPrisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          id: 'job-failed',
+          task_id: 'task-1',
+          product_id: 'product-1',
+          kind: 'TASK_IMPLEMENTATION',
+          runtime: 'CODEX',
+          source: 'MANUAL',
+          sprint_run_id: null,
+          branch: null,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'job-requeued',
+          task_id: 'task-2',
+          product_id: 'product-1',
+          kind: 'TASK_IMPLEMENTATION',
+          runtime: 'CLAUDE',
+          source: 'SYSTEM',
+          sprint_run_id: null,
+          branch: null,
+          retry_count: 1,
+        },
+      ])
+
+    await resetStaleClaimedJobs('user-1')
+
+    const failedPayload = JSON.parse(pgMocks.query.mock.calls[0][1][1])
+    expect(failedPayload).toMatchObject({
+      type: 'claude_job_status_changed',
+      job_id: 'job-failed',
+      task_id: 'task-1',
+      user_id: 'user-1',
+      product_id: 'product-1',
+      kind: 'TASK_IMPLEMENTATION',
+      runtime: 'CODEX',
+      source: 'MANUAL',
+      status: 'FAILED',
+      error: 'agent did not complete job within 2 attempts',
+    })
+
+    const requeuedPayload = JSON.parse(pgMocks.query.mock.calls[1][1][1])
+    expect(requeuedPayload).toMatchObject({
+      type: 'claude_job_status_changed',
+      job_id: 'job-requeued',
+      task_id: 'task-2',
+      user_id: 'user-1',
+      product_id: 'product-1',
+      kind: 'TASK_IMPLEMENTATION',
+      runtime: 'CLAUDE',
+      source: 'SYSTEM',
+      status: 'QUEUED',
+    })
   })
 })
 
@@ -143,6 +242,6 @@ describe('tryClaimJob', () => {
 
     const queryCall = capturedTx.$queryRaw.mock.calls[0]
     // product_id should be passed as a parameter
-    expect(queryCall).toContain('product-1')
+    expect(flattenQueryValues(queryCall)).toContain('product-1')
   })
 })

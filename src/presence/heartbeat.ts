@@ -4,6 +4,11 @@ import { registerWorker } from './worker.js'
 export function startHeartbeat(opts: {
   tokenId: string
   instanceId: string
+  productId?: string | null
+  runtime?: 'CLAUDE' | 'CODEX'
+  capabilities?: string[]
+  hostname?: string | null
+  pid?: number | null
   intervalMs?: number
 }): { stop: () => void } {
   const timer = setInterval(async () => {
@@ -33,6 +38,11 @@ export function startHeartbeat(opts: {
             userId: token.user_id,
             tokenId: opts.tokenId,
             instanceId: opts.instanceId,
+            productId: opts.productId ?? null,
+            runtime: opts.runtime,
+            capabilities: opts.capabilities,
+            hostname: opts.hostname ?? null,
+            pid: opts.pid ?? null,
           })
         } catch (err) {
           console.error('[scrum4me-mcp] Heartbeat: re-register failed', err)

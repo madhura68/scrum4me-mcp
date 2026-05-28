@@ -64,7 +64,7 @@ beforeEach(() => {
 })
 
 describe('registerWorker — instance_id', () => {
-  it('UPSERTs with the composite (user, token, instance) key and create-time hostname/pid', async () => {
+  it('UPSERTs with the composite (user, token, instance) key and refreshes runtime diagnostics', async () => {
     await registerWorker({
       userId: 'test-user',
       tokenId: 'test-token',
@@ -76,8 +76,24 @@ describe('registerWorker — instance_id', () => {
     expect(mockPrisma.claudeWorker.upsert).toHaveBeenCalledOnce()
     const callArg = mockPrisma.claudeWorker.upsert.mock.calls[0][0] as {
       where: { user_id_token_id_instance_id: { user_id: string; token_id: string; instance_id: string } }
-      create: { user_id: string; token_id: string; instance_id: string; hostname: string | null; pid: number | null }
-      update: { last_seen_at: Date; hostname?: unknown; pid?: unknown }
+      create: {
+        user_id: string
+        token_id: string
+        runtime: string
+        capabilities: string[]
+        instance_id: string
+        hostname: string | null
+        pid: number | null
+      }
+      update: {
+        user_id: string
+        runtime: string
+        capabilities: string[]
+        instance_id: string
+        last_seen_at: Date
+        hostname: string | null
+        pid: number | null
+      }
     }
 
     // Composite key lookup (matches @@unique([user_id, token_id, instance_id]))
@@ -89,19 +105,26 @@ describe('registerWorker — instance_id', () => {
       },
     })
 
-    // Create payload: instance_id, hostname and pid all present
+    // Create payload: runtime/capabilities, instance_id, hostname and pid all present
     expect(callArg.create).toMatchObject({
       user_id: 'test-user',
       token_id: 'test-token',
+      runtime: 'CLAUDE',
+      capabilities: [],
       instance_id: 'test-instance-1',
       hostname: 'localhost',
       pid: 12345,
     })
 
-    // Update payload: hostname/pid are create-only; should NOT appear here
-    expect(callArg.update).not.toHaveProperty('hostname')
-    expect(callArg.update).not.toHaveProperty('pid')
-    expect(callArg.update).toMatchObject({ user_id: 'test-user' })
+    // Update payload refreshes runtime diagnostics for self-healed/stale rows.
+    expect(callArg.update).toMatchObject({
+      user_id: 'test-user',
+      runtime: 'CLAUDE',
+      capabilities: [],
+      instance_id: 'test-instance-1',
+      hostname: 'localhost',
+      pid: 12345,
+    })
     expect(callArg.update.last_seen_at).toBeInstanceOf(Date)
   })
 

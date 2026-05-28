@@ -26,6 +26,23 @@ enum ApiTokenKind {
   WORKERS_UI
 }
 
+enum AgentRuntime {
+  CLAUDE
+  CODEX
+}
+
+enum JobSource {
+  SYSTEM
+  MANUAL
+  ORCHESTRATOR
+}
+
+enum ManualJobDraftStatus {
+  DRAFT
+  QUEUED
+  ARCHIVED
+}
+
 enum StoryStatus {
   OPEN
   IN_SPRINT
@@ -205,6 +222,7 @@ model User {
   asked_questions     ClaudeQuestion[]   @relation("ClaudeQuestionAsker")
   answered_questions  ClaudeQuestion[]   @relation("ClaudeQuestionAnswerer")
   claude_jobs         ClaudeJob[]
+  manual_job_drafts   ManualJobDraft[]
   claude_workers      ClaudeWorker[]
   started_sprint_runs SprintRun[]        @relation("SprintRunStartedBy")
   push_subscriptions  PushSubscription[]
@@ -268,6 +286,7 @@ model Product {
   active_for_users          User[]             @relation("UserActiveProduct")
   claude_questions          ClaudeQuestion[]
   claude_jobs               ClaudeJob[]
+  manual_job_drafts         ManualJobDraft[]
   ideas                     Idea[]
   idea_products             IdeaProduct[]
   docs                      ProductDoc[]
@@ -452,6 +471,13 @@ model ClaudeJob {
   sprint_run_id             String?
   kind                      ClaudeJobKind         @default(TASK_IMPLEMENTATION)
   status                    ClaudeJobStatus       @default(QUEUED)
+  runtime                   AgentRuntime          @default(CLAUDE)
+  source                    JobSource             @default(SYSTEM)
+  required_capability       String?
+  created_by_job            ClaudeJob?            @relation("JobCreatedByJob", fields: [created_by_job_id], references: [id], onDelete: SetNull)
+  created_by_job_id         String?
+  created_jobs              ClaudeJob[]           @relation("JobCreatedByJob")
+  orchestration_key         String?
   claimed_by_token          ApiToken?             @relation(fields: [claimed_by_token_id], references: [id], onDelete: SetNull)
   claimed_by_token_id       String?
   claimed_at                DateTime?
@@ -479,6 +505,7 @@ model ClaudeJob {
   retry_count               Int                   @default(0)
   lease_until               DateTime?
   task_executions           SprintTaskExecution[] @relation("SprintJobExecutions")
+  manual_drafts             ManualJobDraft[]
   created_at                DateTime              @default(now())
   updated_at                DateTime              @updatedAt
 
@@ -490,7 +517,40 @@ model ClaudeJob {
   @@index([status, finished_at])
   @@index([status, lease_until])
   @@index([worker_instance_id])
+  @@index([user_id, runtime, status])
+  @@index([product_id, runtime, status])
+  @@index([runtime, status, required_capability])
+  @@index([source, status])
+  @@index([created_by_job_id])
+  @@unique([created_by_job_id, orchestration_key])
   @@map("claude_jobs")
+}
+
+model ManualJobDraft {
+  id                  String               @id @default(cuid())
+  user                User                 @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id             String
+  product             Product              @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id          String
+  queued_job          ClaudeJob?           @relation(fields: [queued_job_id], references: [id], onDelete: SetNull)
+  queued_job_id       String?
+  title               String
+  kind                ClaudeJobKind
+  runtime             AgentRuntime         @default(CLAUDE)
+  source              JobSource            @default(MANUAL)
+  adapter             String
+  required_capability String?
+  prompt_md           String               @db.Text
+  validation_json     Json?
+  launch_preview_json Json?
+  status              ManualJobDraftStatus @default(DRAFT)
+  created_at          DateTime             @default(now())
+  updated_at          DateTime             @updatedAt
+
+  @@index([user_id, status])
+  @@index([product_id, status])
+  @@index([queued_job_id])
+  @@map("manual_job_drafts")
 }
 
 // PBI-50: frozen scope-snapshot per SPRINT_IMPLEMENTATION-claim. Bij claim
@@ -545,6 +605,8 @@ model ClaudeWorker {
   token               ApiToken  @relation(fields: [token_id], references: [id], onDelete: Cascade)
   token_id            String
   product_id          String?
+  runtime             AgentRuntime @default(CLAUDE)
+  capabilities        String[]     @default([])
   instance_id         String    @default("legacy")
   hostname            String?
   pid                 Int?
@@ -555,6 +617,7 @@ model ClaudeWorker {
 
   @@unique([user_id, token_id, instance_id])
   @@index([user_id, last_seen_at])
+  @@index([runtime, last_seen_at])
   @@map("claude_workers")
 }
 

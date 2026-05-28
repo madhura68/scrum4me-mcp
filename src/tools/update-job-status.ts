@@ -55,14 +55,6 @@ export async function cleanupWorktreeForTerminalStatus(
   status: 'done' | 'failed' | 'skipped',
   branch: string | undefined,
 ): Promise<void> {
-  const repoRoot = await resolveRepoRoot(productId)
-  if (!repoRoot) {
-    console.warn(
-      `[update_job_status] cleanup skip for job=${jobId}: no repoRoot configured for product ${productId}`,
-    )
-    return
-  }
-
   // Branch-shared check: bepaal welke siblings dezelfde branch reuse'n.
   //   - SPRINT pr_strategy → alle TASK_IMPLEMENTATION jobs in dezelfde
   //     sprint_run delen feat/sprint-<id>.
@@ -73,11 +65,20 @@ export async function cleanupWorktreeForTerminalStatus(
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     select: {
-      task: { select: { story_id: true } },
+      task: { select: { story_id: true, repo_url: true } },
       sprint_run_id: true,
       sprint_run: { select: { pr_strategy: true } },
     },
   })
+
+  const repoKey = job?.task?.repo_url ?? null
+  const repoRoot = await resolveRepoRoot(productId, repoKey)
+  if (!repoRoot) {
+    console.warn(
+      `[update_job_status] cleanup skip for job=${jobId}: no repoRoot configured for product ${productId}`,
+    )
+    return
+  }
 
   let activeSiblings = 0
   let scope = ''
@@ -85,6 +86,7 @@ export async function cleanupWorktreeForTerminalStatus(
     activeSiblings = await prisma.claudeJob.count({
       where: {
         sprint_run_id: job.sprint_run_id,
+        ...(job.task ? { task: { repo_url: repoKey } } : {}),
         status: { in: ['QUEUED', 'CLAIMED', 'RUNNING'] },
         id: { not: jobId },
       },
@@ -93,7 +95,7 @@ export async function cleanupWorktreeForTerminalStatus(
   } else if (job?.task) {
     activeSiblings = await prisma.claudeJob.count({
       where: {
-        task: { story_id: job.task.story_id },
+        task: { story_id: job.task.story_id, repo_url: repoKey },
         status: { in: ['QUEUED', 'CLAIMED', 'RUNNING'] },
         id: { not: jobId },
       },
@@ -637,6 +639,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             idea_id: true,
             sprint_run_id: true,
             kind: true,
+            runtime: true,
+            source: true,
             verify_result: true,
             task: { select: { verify_only: true, verify_required: true } },
           },
@@ -676,6 +680,17 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           }
         }
 
+        const isSystemPlanChat =
+          job.kind === 'PLAN_CHAT' &&
+          job.source === 'SYSTEM' &&
+          !!job.idea_id
+        const planChatAnswer = summary?.trim()
+        if (status === 'done' && isSystemPlanChat && !planChatAnswer) {
+          return toolError(
+            "PLAN_CHAT done vereist een non-empty summary; deze summary wordt als antwoord aan de gebruiker getoond.",
+          )
+        }
+
         // For DONE: push first, adjust DB status based on result
         let actualStatus = status
         let pushedAt: Date | undefined
@@ -685,11 +700,26 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         let headShaToWrite: string | undefined
 
         if (status === 'done') {
-          // M12: idea-jobs hebben geen task/plan_snapshot/branch — skip de
-          // verify-gate én de prepareDoneUpdate (die doet git push). Voor
-          // idea-jobs is `done` direct geldig: de bijhorende update_idea_*_md
-          // heeft de idea-status al naar GRILLED/PLAN_READY gezet.
-          if (job.kind === 'IDEA_GRILL' || job.kind === 'IDEA_MAKE_PLAN') {
+          if (job.source === 'MANUAL') {
+            actualStatus = 'done'
+            skipWorktreeCleanup = true
+          } else if (
+            job.source === 'ORCHESTRATOR' &&
+            job.kind === 'PLAN_CHAT' &&
+            !job.task_id &&
+            !job.idea_id &&
+            !job.sprint_run_id
+          ) {
+            actualStatus = 'done'
+            skipWorktreeCleanup = true
+          } else if (isSystemPlanChat) {
+            actualStatus = 'done'
+            skipWorktreeCleanup = true
+          } else if (job.kind === 'IDEA_GRILL' || job.kind === 'IDEA_MAKE_PLAN') {
+            // M12: idea-jobs hebben geen task/plan_snapshot/branch — skip de
+            // verify-gate én de prepareDoneUpdate (die doet git push). Voor
+            // idea-jobs is `done` direct geldig: de bijhorende update_idea_*_md
+            // heeft de idea-status al naar GRILLED/PLAN_READY gezet.
             actualStatus = 'done'
             // pushedAt blijft undefined, branch/error overrides ook
             skipWorktreeCleanup = true
@@ -734,6 +764,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           pushedAt &&
           branchToWrite &&
           job.kind === 'TASK_IMPLEMENTATION' &&
+          job.source !== 'MANUAL' &&
           job.task_id
         ) {
           const worktreeDir = getWorktreeRoot()
@@ -806,6 +837,20 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           },
         })
 
+        if (actualStatus === 'done' && isSystemPlanChat && planChatAnswer) {
+          const pendingQuestion = await prisma.userQuestion.findFirst({
+            where: { idea_id: job.idea_id!, status: 'pending' },
+            orderBy: { created_at: 'desc' },
+            select: { id: true },
+          })
+          if (pendingQuestion) {
+            await prisma.userQuestion.updateMany({
+              where: { id: pendingQuestion.id, status: 'pending' },
+              data: { status: 'answered', answer: planChatAnswer },
+            })
+          }
+        }
+
         // PBI-46 sprint-flow: propageer Task → Story → PBI → Sprint → SprintRun
         // bij elke task-statusovergang (DONE of FAILED). De helper handelt ook
         // sibling-cancel binnen dezelfde SprintRun af bij FAILED.
@@ -815,6 +860,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         if (
           (actualStatus === 'done' || actualStatus === 'failed') &&
           job.kind === 'TASK_IMPLEMENTATION' &&
+          job.source !== 'MANUAL' &&
           job.task_id
         ) {
           try {
@@ -972,11 +1018,14 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           const pg = new Client({ connectionString: process.env.DATABASE_URL })
           await pg.connect()
           const notifyPayload: Record<string, unknown> = {
-            type: 'claude_job_status',
+            type: 'claude_job_status_changed',
             job_id: updated.id,
             user_id: job.user_id,
             product_id: job.product_id,
-            status: actualStatus,
+            kind: job.kind,
+            status: updated.status,
+            runtime: job.runtime ?? 'CLAUDE',
+            source: job.source ?? 'SYSTEM',
             branch: updated.branch ?? undefined,
             pushed_at: updated.pushed_at?.toISOString() ?? undefined,
             pr_url: updated.pr_url ?? undefined,
@@ -987,7 +1036,6 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           if (job.task_id) notifyPayload.task_id = job.task_id
           if (job.idea_id) {
             notifyPayload.idea_id = job.idea_id
-            notifyPayload.kind = job.kind
           }
           await pg.query(`SELECT pg_notify('scrum4me_changes', $1)`, [JSON.stringify(notifyPayload)])
           await pg.end()
@@ -1020,7 +1068,12 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         // PBI-50: SPRINT_IMPLEMENTATION SKIPS this — cascade naar tasks/stories/
         // PBIs is al gebeurd via per-task update_task_status('failed')-calls
         // van de worker. Sprint-job heeft geen task_id; cancelPbi-flow past niet.
-        if (actualStatus === 'failed' && job.kind === 'TASK_IMPLEMENTATION' && job.task_id) {
+        if (
+          actualStatus === 'failed' &&
+          job.kind === 'TASK_IMPLEMENTATION' &&
+          job.source !== 'MANUAL' &&
+          job.task_id
+        ) {
           await cancelPbiOnFailure(job_id)
         }
 

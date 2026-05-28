@@ -3,6 +3,7 @@
 
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { Prisma } from '@prisma/client'
 import { Client } from 'pg'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
@@ -121,10 +122,14 @@ export async function rollbackClaim(jobId: string): Promise<void> {
   // Best-effort: cleanup-fouten mogen de rollback niet blokkeren. Een
   // verloren worktree-cleanup blijft een handmatige cleanup-task, maar de
   // rollback zelf moet altijd slagen.
-  const job = await prisma.claudeJob.findUnique({
+  const job = (await prisma.claudeJob?.findUnique({
     where: { id: jobId },
-    select: { kind: true, product_id: true },
-  })
+    select: {
+      kind: true,
+      product_id: true,
+      task: { select: { repo_url: true } },
+    },
+  })) ?? null
 
   await prisma.$executeRaw`
     UPDATE claude_jobs
@@ -160,7 +165,7 @@ export async function rollbackClaim(jobId: string): Promise<void> {
   // worktree-creation), is er ook geen worktree om te cleanen.
   try {
     if (job.product_id) {
-      const repoRoot = await resolveRepoRoot(job.product_id)
+      const repoRoot = await resolveRepoRoot(job.product_id, job.task?.repo_url ?? null)
       if (repoRoot) {
         await removeWorktreeForJob({ repoRoot, jobId })
       }
@@ -299,6 +304,65 @@ const MAX_WAIT_SECONDS = 600
 const POLL_INTERVAL_MS = 5_000
 const STALE_CLAIMED_INTERVAL = "30 minutes"
 
+export type ClaimFilterInput = {
+  runtime: 'CLAUDE' | 'CODEX'
+  hasProductScope: boolean
+  capabilities?: string[]
+}
+
+export type ClaimSqlFilterInput =
+  | (ClaimFilterInput & { userId: string; hasProductScope: false; productId?: undefined })
+  | (ClaimFilterInput & { userId: string; hasProductScope: true; productId: string })
+
+const CLAIMABLE_STANDALONE_KINDS = "('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'PLAN_CHAT')"
+
+const CLAIMABLE_JOB_KIND_FILTER = `AND (
+              (cj.kind IN ${CLAIMABLE_STANDALONE_KINDS} AND cj.source <> 'ORCHESTRATOR')
+              OR (cj.kind = 'PLAN_CHAT'
+                  AND cj.source = 'ORCHESTRATOR'
+                  AND cj.task_id IS NULL
+                  AND cj.idea_id IS NULL
+                  AND cj.sprint_run_id IS NULL)
+              OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'MANUAL')
+              OR (cj.kind IN ('TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION')
+                  AND cj.sprint_run_id IS NOT NULL
+                  AND sr.status IN ('QUEUED', 'RUNNING'))
+            )`
+
+export function buildClaimableJobWhereClause(input: ClaimFilterInput): string {
+  const productScope = input.hasProductScope ? 'AND cj.product_id = ${productId}' : ''
+  const capabilityFilter = input.capabilities && input.capabilities.length > 0
+    ? 'AND (cj.required_capability IS NULL OR cj.required_capability = ANY(${capabilities}::text[]))'
+    : 'AND cj.required_capability IS NULL'
+  return `
+          WHERE cj.user_id = \${userId}
+            ${productScope}
+            AND cj.runtime = '${input.runtime}'
+            AND cj.status = 'QUEUED'
+            ${capabilityFilter}
+            ${CLAIMABLE_JOB_KIND_FILTER}
+  `
+}
+
+export function buildClaimableJobWhereFragment(input: ClaimSqlFilterInput): Prisma.Sql {
+  const productScope = input.hasProductScope
+    ? Prisma.sql`AND cj.product_id = ${input.productId}`
+    : Prisma.empty
+  const capabilities = input.capabilities ?? []
+  const capabilityFilter = capabilities.length > 0
+    ? Prisma.sql`AND (cj.required_capability IS NULL OR cj.required_capability = ANY(${capabilities}::text[]))`
+    : Prisma.sql`AND cj.required_capability IS NULL`
+
+  return Prisma.sql`
+          WHERE cj.user_id = ${input.userId}
+            ${productScope}
+            AND cj.runtime = ${input.runtime}::"AgentRuntime"
+            AND cj.status = 'QUEUED'
+            ${capabilityFilter}
+            ${Prisma.raw(CLAIMABLE_JOB_KIND_FILTER)}
+  `
+}
+
 const inputSchema = z.object({
   product_id: z.string().min(1).optional(),
   wait_seconds: z.number().int().min(1).max(MAX_WAIT_SECONDS).default(300),
@@ -316,6 +380,8 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
     task_id: string | null
     product_id: string
     kind: string
+    runtime: string
+    source: string
     sprint_run_id: string | null
     branch: string | null
   }
@@ -332,7 +398,7 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
         lease_until < NOW()
         OR (lease_until IS NULL AND claimed_at < NOW() - INTERVAL '30 minutes')
       )
-    RETURNING id, task_id, product_id, kind::text AS kind, sprint_run_id, branch
+    RETURNING id, task_id, product_id, kind::text AS kind, runtime::text AS runtime, source::text AS source, sprint_run_id, branch
   `
 
   const requeuedRows = await prisma.$queryRaw<
@@ -353,7 +419,7 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
         lease_until < NOW()
         OR (lease_until IS NULL AND claimed_at < NOW() - INTERVAL '30 minutes')
       )
-    RETURNING id, task_id, product_id, kind::text AS kind, sprint_run_id, branch, retry_count
+    RETURNING id, task_id, product_id, kind::text AS kind, runtime::text AS runtime, source::text AS source, sprint_run_id, branch, retry_count
   `
 
   if (failedRows.length === 0 && requeuedRows.length === 0) return
@@ -406,12 +472,15 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
       await pg.query('SELECT pg_notify($1, $2)', [
         'scrum4me_changes',
         JSON.stringify({
-          type: 'claude_job_status',
+          type: 'claude_job_status_changed',
           job_id: j.id,
           task_id: j.task_id,
           user_id: userId,
           product_id: j.product_id,
-          status: 'failed',
+          kind: j.kind,
+          runtime: j.runtime,
+          source: j.source,
+          status: 'FAILED',
           error: STALE_ERROR_MSG,
         }),
       ])
@@ -420,12 +489,15 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
       await pg.query('SELECT pg_notify($1, $2)', [
         'scrum4me_changes',
         JSON.stringify({
-          type: 'claude_job_status',
+          type: 'claude_job_status_changed',
           job_id: j.id,
           task_id: j.task_id,
           user_id: userId,
           product_id: j.product_id,
-          status: 'queued',
+          kind: j.kind,
+          runtime: j.runtime,
+          source: j.source,
+          status: 'QUEUED',
         }),
       ])
     }
@@ -440,11 +512,14 @@ export async function tryClaimJob(
   tokenId: string,
   instanceId: string,
   productId?: string,
+  runtime: 'CLAUDE' | 'CODEX' = 'CLAUDE',
+  capabilities: string[] = [],
 ): Promise<string | null> {
   // Atomic claim in a single transaction — also captures plan_snapshot from task.
   //
   // PBI-50: claim-filter discrimineert via cj.kind:
-  //   - IDEA_GRILL/IDEA_MAKE_PLAN/PLAN_CHAT: standalone idea-jobs.
+  //   - IDEA_GRILL/IDEA_MAKE_PLAN/IDEA_REVIEW_PLAN/PLAN_CHAT: standalone idea-jobs.
+  //   - TASK_IMPLEMENTATION + source MANUAL: handmatig gestart buiten sprint-flow.
   //   - TASK_IMPLEMENTATION/SPRINT_IMPLEMENTATION: alleen via actieve SprintRun
   //     (status QUEUED of RUNNING). Legacy task-jobs zonder sprint_run_id en
   //     jobs in PAUSED/FAILED/CANCELLED/DONE SprintRuns worden overgeslagen.
@@ -453,6 +528,20 @@ export async function tryClaimJob(
   // PBI-50 lease: lease_until = NOW() + 5min op claim. resetStaleClaimedJobs
   // reset bij verlopen lease.
   const rows = await prisma.$transaction(async (tx) => {
+    const whereClause = productId
+      ? buildClaimableJobWhereFragment({
+          userId,
+          productId,
+          runtime,
+          hasProductScope: true,
+          capabilities,
+        })
+      : buildClaimableJobWhereFragment({
+          userId,
+          runtime,
+          hasProductScope: false,
+          capabilities,
+        })
     const found = productId
       ? await tx.$queryRaw<
           Array<{ id: string; implementation_plan: string | null; sprint_run_id: string | null }>
@@ -461,15 +550,7 @@ export async function tryClaimJob(
           FROM claude_jobs cj
           LEFT JOIN tasks t ON t.id = cj.task_id
           LEFT JOIN sprint_runs sr ON sr.id = cj.sprint_run_id
-          WHERE cj.user_id = ${userId}
-            AND cj.product_id = ${productId}
-            AND cj.status = 'QUEUED'
-            AND (
-              cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'PLAN_CHAT')
-              OR (cj.kind IN ('TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION')
-                  AND cj.sprint_run_id IS NOT NULL
-                  AND sr.status IN ('QUEUED', 'RUNNING'))
-            )
+          ${whereClause}
           ORDER BY cj.created_at ASC
           LIMIT 1
           FOR UPDATE OF cj SKIP LOCKED
@@ -481,14 +562,7 @@ export async function tryClaimJob(
           FROM claude_jobs cj
           LEFT JOIN tasks t ON t.id = cj.task_id
           LEFT JOIN sprint_runs sr ON sr.id = cj.sprint_run_id
-          WHERE cj.user_id = ${userId}
-            AND cj.status = 'QUEUED'
-            AND (
-              cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'PLAN_CHAT')
-              OR (cj.kind IN ('TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION')
-                  AND cj.sprint_run_id IS NOT NULL
-                  AND sr.status IN ('QUEUED', 'RUNNING'))
-            )
+          ${whereClause}
           ORDER BY cj.created_at ASC
           LIMIT 1
           FOR UPDATE OF cj SKIP LOCKED
@@ -559,6 +633,17 @@ export async function getFullJobContext(jobId: string) {
           grill_doc: {
             select: { current_revision: { select: { content_md: true } } },
           },
+          user_questions: {
+            where: { status: 'pending' },
+            orderBy: { created_at: 'desc' },
+            take: 1,
+            select: {
+              id: true,
+              question: true,
+              status: true,
+              created_at: true,
+            },
+          },
         },
       },
       product: {
@@ -570,6 +655,16 @@ export async function getFullJobContext(jobId: string) {
           preferred_model: true,
           thinking_budget_default: true,
           preferred_permission_mode: true,
+        },
+      },
+      manual_drafts: {
+        select: {
+          id: true,
+          title: true,
+          adapter: true,
+          required_capability: true,
+          prompt_md: true,
+          launch_preview_json: true,
         },
       },
     },
@@ -592,6 +687,112 @@ export async function getFullJobContext(jobId: string) {
     },
     job.task ? { requires_opus: job.task.requires_opus } : undefined,
   )
+
+  if (job.source === 'MANUAL') {
+    const draft = job.manual_drafts[0] ?? null
+    if (!draft) {
+      await rollbackClaim(job.id)
+      return null
+    }
+
+    const manualDraft = {
+      draft_id: draft.id,
+      title: draft.title,
+      adapter: draft.adapter,
+      required_capability: draft.required_capability,
+      prompt_md: draft.prompt_md,
+      launch_preview_json: draft.launch_preview_json,
+    }
+
+    return {
+      job_id: job.id,
+      kind: job.kind,
+      source: 'MANUAL',
+      status: 'claimed',
+      config,
+      manual_job: manualDraft,
+      manual_draft: manualDraft,
+      product: {
+        id: job.product.id,
+        name: job.product.name,
+        repo_url: job.product.repo_url,
+        definition_of_done: job.product.definition_of_done,
+      },
+      repo_url: job.product.repo_url,
+      prompt_text: draft.prompt_md,
+      branch_suggestion: `feat/manual-${job.id.slice(-8)}`,
+    }
+  }
+
+  if (job.source === 'ORCHESTRATOR') {
+    return {
+      job_id: job.id,
+      kind: job.kind,
+      source: 'ORCHESTRATOR',
+      status: 'claimed',
+      config,
+      orchestrator_job: {
+        parent_job_id: job.created_by_job_id,
+        orchestration_key: job.orchestration_key,
+        required_capability: job.required_capability,
+        summary: job.summary,
+      },
+      product: {
+        id: job.product.id,
+        name: job.product.name,
+        repo_url: job.product.repo_url,
+        definition_of_done: job.product.definition_of_done,
+      },
+      repo_url: job.product.repo_url,
+      prompt_text: job.summary ?? '',
+      branch_suggestion: `feat/orchestrator-${job.id.slice(-8)}`,
+    }
+  }
+
+  if (job.kind === 'PLAN_CHAT' && job.source === 'SYSTEM') {
+    if (!job.idea) return null
+    const { idea } = job
+    const { getIdeaPromptText } = await import('../lib/kind-prompts.js')
+    const question = idea.user_questions[0] ?? null
+    const questionPayload = question
+      ? {
+          question_id: question.id,
+          question: question.question,
+          status: question.status,
+          created_at: question.created_at.toISOString(),
+        }
+      : null
+
+    return {
+      job_id: job.id,
+      kind: 'PLAN_CHAT',
+      source: 'SYSTEM',
+      status: 'claimed',
+      config,
+      idea: {
+        id: idea.id,
+        code: idea.code,
+        title: idea.title,
+        description: idea.description,
+        grill_md: idea.grill_doc?.current_revision?.content_md ?? idea.grill_md,
+        plan_md: idea.plan_doc?.current_revision?.content_md ?? idea.plan_md,
+        status: idea.status,
+        product_id: idea.product_id,
+      },
+      product: {
+        id: job.product.id,
+        name: job.product.name,
+        repo_url: job.product.repo_url,
+        definition_of_done: job.product.definition_of_done,
+      },
+      pbi: idea.pbi,
+      repo_url: job.product.repo_url,
+      plan_chat: questionPayload,
+      user_question: questionPayload,
+      prompt_text: getIdeaPromptText('PLAN_CHAT'),
+      branch_suggestion: `feat/idea-${idea.code.toLowerCase()}-chat`,
+    }
+  }
 
   // M12: branch on kind. Idea-jobs hebben geen task/story/pbi/sprint; ze
   // hebben in plaats daarvan idea + embedded prompt_text.
@@ -905,20 +1106,25 @@ export function registerWaitForJobTool(server: McpServer) {
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
         const { userId, tokenId } = auth
-        const instanceId = getInstanceId()
+        const runtime = process.env.SCRUM4ME_WORKER_RUNTIME === 'CODEX' ? 'CODEX' : 'CLAUDE'
+        const instanceId = process.env.SCRUM4ME_WORKER_INSTANCE_ID?.trim() || getInstanceId()
+        const capabilities = (process.env.SCRUM4ME_WORKER_CAPABILITIES ?? 'code_edit,planning,review')
+          .split(',')
+          .map((value) => value.trim())
+          .filter(Boolean)
 
         // 1. Reset stale claimed jobs
         await resetStaleClaimedJobs(userId)
 
         // 2. Try immediate claim
-        let jobId = await tryClaimJob(userId, tokenId, instanceId, product_id)
+        let jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities)
         if (jobId) {
           const ctx = await getFullJobContext(jobId)
           if (!ctx) return toolError('Job claimed but context fetch failed')
           // M12: idee-jobs hebben geen worktree nodig — de agent werkt in de
           // bestaande user-repo (geen branch/commit-flow). Alleen task-jobs
           // krijgen een worktree.
-          if (ctx.kind === 'TASK_IMPLEMENTATION') {
+          if (ctx.kind === 'TASK_IMPLEMENTATION' && !('source' in ctx && ctx.source === 'MANUAL')) {
             if (!ctx.story || !ctx.task) {
               return toolError('Task-job claimed but story/task context is incomplete')
             }
@@ -963,11 +1169,11 @@ export function registerWaitForJobTool(server: McpServer) {
             })
 
             await resetStaleClaimedJobs(userId)
-            jobId = await tryClaimJob(userId, tokenId, instanceId, product_id)
+            jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities)
             if (jobId) {
               const ctx = await getFullJobContext(jobId)
               if (!ctx) return toolError('Job claimed but context fetch failed')
-              if (ctx.kind === 'TASK_IMPLEMENTATION') {
+              if (ctx.kind === 'TASK_IMPLEMENTATION' && !('source' in ctx && ctx.source === 'MANUAL')) {
                 if (!ctx.story || !ctx.task) {
                   return toolError('Task-job claimed but story/task context is incomplete')
                 }

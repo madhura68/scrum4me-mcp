@@ -16,6 +16,7 @@ import { Client } from 'pg'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
+import { getInstanceId } from '../presence/instance.js'
 
 const inputSchema = z.object({
   last_quota_pct: z.number().int().min(0).max(100),
@@ -35,9 +36,10 @@ export function registerWorkerHeartbeatTool(server: McpServer) {
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
         const checkAt = last_quota_check_at ? new Date(last_quota_check_at) : new Date()
+        const instanceId = process.env.SCRUM4ME_WORKER_INSTANCE_ID?.trim() || getInstanceId()
 
         const result = await prisma.claudeWorker.updateMany({
-          where: { token_id: auth.tokenId },
+          where: { token_id: auth.tokenId, instance_id: instanceId },
           data: {
             last_seen_at: new Date(),
             last_quota_pct,
@@ -51,6 +53,17 @@ export function registerWorkerHeartbeatTool(server: McpServer) {
           )
         }
 
+        const worker = await prisma.claudeWorker.findFirst({
+          where: { token_id: auth.tokenId, instance_id: instanceId },
+          select: { runtime: true, instance_id: true },
+        })
+
+        if (!worker) {
+          return toolError(
+            'Worker record not found — call register_worker first or wait for the next heartbeat tick',
+          )
+        }
+
         // pg_notify zodat NavBar realtime kan updaten. Failure is non-fatal:
         // de DB-write is al gebeurd, alleen de live-update mist dan.
         try {
@@ -59,9 +72,12 @@ export function registerWorkerHeartbeatTool(server: McpServer) {
           await pg.query('SELECT pg_notify($1, $2)', [
             'scrum4me_changes',
             JSON.stringify({
-              type: 'worker_heartbeat',
+              type: 'claude_worker_heartbeat',
+              worker_id: auth.tokenId,
               user_id: auth.userId,
               token_id: auth.tokenId,
+              instance_id: worker.instance_id,
+              runtime: worker.runtime ?? 'CLAUDE',
               last_quota_pct,
               last_quota_check_at: checkAt.toISOString(),
             }),
