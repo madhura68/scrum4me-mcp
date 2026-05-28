@@ -58,6 +58,18 @@ async function findWorktreeForBranch(
 //
 // NOTE: requires the repoRoot/worktree filesystem to allow exec — on a noexec
 // mount the linked binaries still fail with EACCES (126) / ERR_DLOPEN_FAILED.
+//
+// Absolute target is intentional: worktrees live outside repoRoot (under
+// SCRUM4ME_AGENT_WORKTREE_DIR), so a relative symlink would resolve against
+// the worktree directory and point nowhere.
+//
+// The symlink is shared across all concurrent worktrees for this repo. Tools
+// that write to node_modules/.cache (vitest, eslint, rolldown) may contend on
+// the same cache directory; this is self-healing (cache misses / re-builds)
+// and not a source of data loss.
+//
+// The repoRoot deps are installed by the container's repo-bootstrap step.
+// That bootstrap script lives in scrum4me-docker, not in this repository.
 async function linkNodeModules(repoRoot: string, worktreePath: string, jobId: string): Promise<void> {
   const src = path.join(repoRoot, 'node_modules')
   const dest = path.join(worktreePath, 'node_modules')
