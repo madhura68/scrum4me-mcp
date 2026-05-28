@@ -22,6 +22,7 @@ import { pushBranchForJob } from '../git/push.js'
 import { resolveJobConfig } from '../lib/job-config.js'
 import { claimLog } from '../lib/claim-log.js'
 import { getInstanceId } from '../presence/instance.js'
+import { getWorkerRuntimeFromEnv, type WorkerRuntime } from '../worker-runtime.js'
 
 /** Parse `https://github.com/<owner>/<name>(.git)?` → `<name>`. */
 export function repoNameFromUrl(repoUrl: string | null | undefined): string | null {
@@ -305,7 +306,7 @@ const POLL_INTERVAL_MS = 5_000
 const STALE_CLAIMED_INTERVAL = "30 minutes"
 
 export type ClaimFilterInput = {
-  runtime: 'CLAUDE' | 'CODEX'
+  runtime: WorkerRuntime
   hasProductScope: boolean
   capabilities?: string[]
 }
@@ -512,7 +513,7 @@ export async function tryClaimJob(
   tokenId: string,
   instanceId: string,
   productId?: string,
-  runtime: 'CLAUDE' | 'CODEX' = 'CLAUDE',
+  runtime: WorkerRuntime = 'CLAUDE',
   capabilities: string[] = [],
 ): Promise<string | null> {
   // Atomic claim in a single transaction — also captures plan_snapshot from task.
@@ -1106,7 +1107,7 @@ export function registerWaitForJobTool(server: McpServer) {
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
         const { userId, tokenId } = auth
-        const runtime = process.env.SCRUM4ME_WORKER_RUNTIME === 'CODEX' ? 'CODEX' : 'CLAUDE'
+        const runtime = getWorkerRuntimeFromEnv()
         const instanceId = process.env.SCRUM4ME_WORKER_INSTANCE_ID?.trim() || getInstanceId()
         const capabilities = (process.env.SCRUM4ME_WORKER_CAPABILITIES ?? 'code_edit,planning,review')
           .split(',')

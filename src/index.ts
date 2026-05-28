@@ -8,6 +8,7 @@ import { registerWorker } from './presence/worker.js'
 import { startHeartbeat } from './presence/heartbeat.js'
 import { registerShutdownHandlers } from './presence/shutdown.js'
 import { getInstanceId } from './presence/instance.js'
+import { getWorkerRuntimeFromEnv } from './worker-runtime.js'
 import { hostname as osHostname } from 'node:os'
 
 import { readFileSync } from 'node:fs'
@@ -44,7 +45,7 @@ async function main() {
   // heartbeat first guarantees the UI sees the agent as soon as the process
   // is up, regardless of when the MCP client sends its first request.
   const auth = await getAuth()
-  const runtime = process.env.SCRUM4ME_WORKER_RUNTIME === 'CODEX' ? 'CODEX' : 'CLAUDE'
+  const runtime = getWorkerRuntimeFromEnv()
   const instanceId = process.env.SCRUM4ME_WORKER_INSTANCE_ID?.trim() || getInstanceId()
   const capabilities = (process.env.SCRUM4ME_WORKER_CAPABILITIES ?? 'code_edit,planning,review')
     .split(',')
