@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
 import { getAuth } from '../auth.js'
+import { resolveProductRef } from '../lib/resolve-entity.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { storyStatusToApi, taskStatusToApi } from '../status.js'
 import { resolveAgentGuide } from '../lib/agent-guide.js'
@@ -25,14 +26,12 @@ export function registerGetClaudeContextTool(server: McpServer) {
       withToolErrors(async () => {
         const auth = await getAuth()
 
+        const ref = await resolveProductRef(product_id, auth.userId)
+        if ('error' in ref) return toolError(ref.error)
+        const productId = ref.id
+
         const product = await prisma.product.findFirst({
-          where: {
-            id: product_id,
-            OR: [
-              { user_id: auth.userId },
-              { members: { some: { user_id: auth.userId } } },
-            ],
-          },
+          where: { id: productId },
           select: {
             id: true,
             code: true,
@@ -45,11 +44,11 @@ export function registerGetClaudeContextTool(server: McpServer) {
         })
 
         if (!product) {
-          return toolError(`Product ${product_id} not found or not accessible`)
+          return toolError(`Product ${productId} not found or not accessible`)
         }
 
         const activeSprint = await prisma.sprint.findFirst({
-          where: { product_id, status: 'OPEN' },
+          where: { product_id: productId, status: 'OPEN' },
           orderBy: { created_at: 'desc' },
           select: { id: true, sprint_goal: true, status: true },
         })
@@ -106,7 +105,7 @@ export function registerGetClaudeContextTool(server: McpServer) {
             user_id: auth.userId,
             archived: false,
             status: { not: 'PLANNED' },
-            OR: [{ product_id: product_id }, { product_id: null }],
+            OR: [{ product_id: productId }, { product_id: null }],
           },
           orderBy: { created_at: 'asc' },
           take: 50,

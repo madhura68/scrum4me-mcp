@@ -3,7 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
-import { userCanAccessStory } from '../access.js'
+import { resolveStoryRef } from '../lib/resolve-entity.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 
 const inputSchema = z.object({
@@ -25,12 +25,11 @@ export function registerLogImplementationTool(server: McpServer) {
     async ({ story_id, content, metadata }) =>
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
-        if (!(await userCanAccessStory(story_id, auth.userId))) {
-          return toolError(`Story ${story_id} not found or not accessible`)
-        }
+        const ref = await resolveStoryRef(story_id, auth.userId)
+        if ('error' in ref) return toolError(ref.error)
         const log = await prisma.storyLog.create({
           data: {
-            story_id,
+            story_id: ref.id,
             type: 'IMPLEMENTATION_PLAN',
             content,
             metadata: (metadata ?? undefined) as Prisma.InputJsonValue | undefined,

@@ -4,7 +4,7 @@ import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
 import { getAuth } from '../auth.js'
-import { userCanAccessTask } from '../access.js'
+import { resolveTaskRef } from '../lib/resolve-entity.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { classifyDiffAgainstPlan, type VerifyResultValue } from '../verify/classify.js'
 
@@ -52,12 +52,12 @@ export function registerVerifyTaskAgainstPlanTool(server: McpServer) {
       withToolErrors(async () => {
         const auth = await getAuth()
         if (!auth) return toolError('Unauthorized')
-        if (!(await userCanAccessTask(task_id, auth.userId))) {
-          return toolError(`Task ${task_id} not found or not accessible`)
-        }
+        const ref = await resolveTaskRef(task_id, auth.userId)
+        if ('error' in ref) return toolError(ref.error)
+        const taskId = ref.id
 
         const task = await prisma.task.findUnique({
-          where: { id: task_id },
+          where: { id: taskId },
           select: {
             id: true,
             verify_only: true,
@@ -70,7 +70,7 @@ export function registerVerifyTaskAgainstPlanTool(server: McpServer) {
           },
         })
 
-        if (!task) return toolError(`Task ${task_id} not found`)
+        if (!task) return toolError(`Task ${taskId} not found`)
 
         const activeJob = task.claude_jobs[0] ?? null
 
@@ -106,7 +106,7 @@ export function registerVerifyTaskAgainstPlanTool(server: McpServer) {
           result: result.toLowerCase() as 'aligned' | 'partial' | 'empty' | 'divergent',
           reasoning,
           verify_only: task.verify_only,
-          task_id,
+          task_id: taskId,
           job_id: activeJob?.id ?? null,
         })
       }),
