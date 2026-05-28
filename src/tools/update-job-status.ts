@@ -39,7 +39,7 @@ const inputSchema = z.object({
   job_id: z.string().min(1),
   status: z.enum(['running', 'done', 'failed', 'skipped']),
   branch: z.string().min(1).optional(),
-  summary: z.string().max(1_000).optional(),
+  summary: z.string().max(4_000).optional(),
   error: z.string().max(2_000).optional(),
   model_id: z.string().min(1).max(200).optional(),
   input_tokens: z.number().int().nonnegative().optional(),
