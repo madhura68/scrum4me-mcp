@@ -50,6 +50,47 @@ async function findWorktreeForBranch(
   }
 }
 
+// Symlink the repoRoot's node_modules into a fresh worktree. A git worktree
+// starts with an empty (gitignored) node_modules, so lint/typecheck/test tools
+// (eslint/tsc/vitest, incl. vitest's rolldown native binding) won't resolve.
+// repoRoot deps are installed once by repo-bootstrap.sh; symlinking avoids a
+// per-job npm install. Best-effort: never fail worktree creation over this.
+//
+// NOTE: requires the repoRoot/worktree filesystem to allow exec — on a noexec
+// mount the linked binaries still fail with EACCES (126) / ERR_DLOPEN_FAILED.
+//
+// Absolute target is intentional: worktrees live outside repoRoot (under
+// SCRUM4ME_AGENT_WORKTREE_DIR), so a relative symlink would resolve against
+// the worktree directory and point nowhere.
+//
+// The symlink is shared across all concurrent worktrees for this repo. Tools
+// that write to node_modules/.cache (vitest, eslint, rolldown) may contend on
+// the same cache directory; this is self-healing (cache misses / re-builds)
+// and not a source of data loss.
+//
+// The repoRoot deps are installed by the container's repo-bootstrap step.
+// That bootstrap script lives in scrum4me-docker, not in this repository.
+async function linkNodeModules(repoRoot: string, worktreePath: string, jobId: string): Promise<void> {
+  const src = path.join(repoRoot, 'node_modules')
+  const dest = path.join(worktreePath, 'node_modules')
+  try {
+    await fs.access(src)
+  } catch {
+    return // repoRoot has no deps to share — nothing to do
+  }
+  try {
+    await fs.symlink(src, dest, 'dir')
+    claimLog('worktree.nodeModulesLinked', { jobId, src, dest })
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+      claimLog('worktree.nodeModulesLinkFailed', {
+        jobId,
+        error: String((err as Error).message).slice(0, 200),
+      })
+    }
+  }
+}
+
 export async function createWorktreeForJob(opts: {
   repoRoot: string
   jobId: string
@@ -124,6 +165,7 @@ export async function createWorktreeForJob(opts: {
       await gitRetry(['worktree', 'add', '-b', branchName, worktreePath, baseRef])
     }
     claimLog('worktree.created', { jobId, branchName, worktreePath, reuse: reuseBranch })
+    await linkNodeModules(repoRoot, worktreePath, jobId)
     return { worktreePath, branchName }
   }
 
@@ -156,6 +198,7 @@ export async function createWorktreeForJob(opts: {
   await gitRetry(['worktree', 'add', '-b', branchName, worktreePath, baseRef])
 
   claimLog('worktree.created', { jobId, branchName, worktreePath, reuse: reuseBranch })
+  await linkNodeModules(repoRoot, worktreePath, jobId)
   return { worktreePath, branchName }
 }
 

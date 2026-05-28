@@ -212,6 +212,43 @@ describe('createWorktreeForJob', () => {
     expect(stdout.trim()).toBe('feat/sprint-newrepo')
     expect(result.branchName).toBe('feat/sprint-newrepo')
   })
+
+  it('symlinks repoRoot node_modules into the worktree when present', async () => {
+    const { repoDir, originDir } = await setupRepo()
+    tmpDirs.push(repoDir, originDir)
+    await makeWorktreeParent()
+
+    // repoRoot has installed deps
+    await fs.mkdir(path.join(repoDir, 'node_modules', '.bin'), { recursive: true })
+    await fs.writeFile(path.join(repoDir, 'node_modules', 'marker.txt'), 'deps')
+
+    const { worktreePath } = await createWorktreeForJob({
+      repoRoot: repoDir,
+      jobId: 'job-nm',
+      branchName: 'feat/job-nm',
+      baseRef: 'origin/main',
+    })
+
+    const link = path.join(worktreePath, 'node_modules')
+    expect((await fs.lstat(link)).isSymbolicLink()).toBe(true)
+    // resolves THROUGH the symlink to the repoRoot's node_modules
+    expect(await fs.readFile(path.join(link, 'marker.txt'), 'utf8')).toBe('deps')
+  })
+
+  it('skips the node_modules symlink when repoRoot has none', async () => {
+    const { repoDir, originDir } = await setupRepo()
+    tmpDirs.push(repoDir, originDir)
+    await makeWorktreeParent()
+
+    const { worktreePath } = await createWorktreeForJob({
+      repoRoot: repoDir,
+      jobId: 'job-nonm',
+      branchName: 'feat/job-nonm',
+      baseRef: 'origin/main',
+    })
+
+    await expect(fs.access(path.join(worktreePath, 'node_modules'))).rejects.toThrow()
+  })
 })
 
 describe('removeWorktreeForJob', () => {
@@ -301,6 +338,25 @@ describe('removeWorktreeForJob', () => {
     const result = await removeWorktreeForJob({ repoRoot: repoDir, jobId: 'job-rm-nonexistent' })
 
     expect(result.removed).toBe(false)
+  })
+
+  it('removal unlinks the node_modules symlink without deleting the shared repoRoot node_modules', async () => {
+    const { repoDir, originDir } = await setupRepo()
+    tmpDirs.push(repoDir, originDir)
+    await makeWorktreeParent()
+
+    await fs.mkdir(path.join(repoDir, 'node_modules'), { recursive: true })
+    await fs.writeFile(path.join(repoDir, 'node_modules', 'marker.txt'), 'deps')
+
+    const { worktreePath } = await createWorktreeForJob({
+      repoRoot: repoDir, jobId: 'job-rm-nm', branchName: 'feat/job-rm-nm', baseRef: 'origin/main',
+    })
+    expect((await fs.lstat(path.join(worktreePath, 'node_modules'))).isSymbolicLink()).toBe(true)
+
+    await removeWorktreeForJob({ repoRoot: repoDir, jobId: 'job-rm-nm' })
+
+    await expect(fs.access(worktreePath)).rejects.toThrow()                     // worktree gone
+    expect(await fs.readFile(path.join(repoDir, 'node_modules', 'marker.txt'), 'utf8')).toBe('deps') // shared deps intact
   })
 
   it('force-removes a leftover directory that git does not track as a worktree', async () => {
