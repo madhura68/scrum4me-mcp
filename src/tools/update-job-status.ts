@@ -18,6 +18,11 @@ import { requireWriteAccess } from '../auth.js'
 import { toolJson, toolError, withToolErrors } from '../errors.js'
 import { removeWorktreeForJob } from '../git/worktree.js'
 import { getWorktreeRoot } from '../git/worktree-paths.js'
+import {
+  markWorktreeCleanupPending,
+  isWorktreeCleanupPending,
+  clearWorktreeCleanupPending,
+} from '../git/worktree-cleanup-queue.js'
 import { releaseLocksOnTerminal } from '../git/job-locks.js'
 import { resolveRepoRoot } from './wait-for-job.js'
 import { pushBranchForJob } from '../git/push.js'
@@ -123,6 +128,36 @@ export async function cleanupWorktreeForTerminalStatus(
       `[update_job_status] cleanup FAILED for job=${jobId} keepBranch=${keepBranch}:`,
       err,
     )
+  }
+}
+
+function terminalStatusForCleanup(dbStatus: string): 'done' | 'failed' | 'skipped' | null {
+  if (dbStatus === 'DONE') return 'done'
+  if (dbStatus === 'FAILED') return 'failed'
+  if (dbStatus === 'SKIPPED') return 'skipped'
+  return null
+}
+
+// Perform the worktree removal that update_job_status deferred (marked pending),
+// using the same sibling-aware logic. Called by the worker runner AFTER the
+// agent's Claude process has exited — i.e. after the PostToolUse usage-capture
+// hook (cwd = worktree) has had its chance to run. No-op if nothing is pending.
+// Best-effort: never throws.
+export async function runDeferredWorktreeCleanup(jobId: string): Promise<void> {
+  if (!(await isWorktreeCleanupPending(jobId))) return
+  try {
+    const job = await prisma.claudeJob.findUnique({
+      where: { id: jobId },
+      select: { product_id: true, status: true, branch: true },
+    })
+    const status = job ? terminalStatusForCleanup(job.status) : null
+    if (job?.product_id && status) {
+      await cleanupWorktreeForTerminalStatus(job.product_id, jobId, status, job.branch ?? undefined)
+    }
+  } catch (err) {
+    console.warn(`[update_job_status] deferred worktree cleanup FAILED for job=${jobId}:`, err)
+  } finally {
+    await clearWorktreeCleanupPending(jobId).catch(() => {})
   }
 }
 
@@ -1053,12 +1088,17 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           })
         }
 
-        // Best-effort worktree cleanup on terminal transitions (skip if push failed — worktree preserved)
+        // Worktree cleanup on terminal transitions (skip if push failed — worktree preserved).
+        // DEFER the actual removal: the PostToolUse usage-capture hook is spawned by
+        // Claude Code with cwd = this worktree and fires after update_job_status returns;
+        // removing the worktree inline would make the hook spawn fail (ENOENT) and token
+        // usage would never be persisted. We mark cleanup pending here; the worker runner
+        // (run-one-job) calls runDeferredWorktreeCleanup() once the agent process exits.
         if (
           (actualStatus === 'done' || actualStatus === 'failed' || actualStatus === 'skipped') &&
           !skipWorktreeCleanup
         ) {
-          await cleanupWorktreeForTerminalStatus(job.product_id, job_id, actualStatus, branchToWrite)
+          await markWorktreeCleanupPending(job_id)
         }
 
         // PBI fail-cascade: when a TASK_IMPLEMENTATION job ends in FAILED,
