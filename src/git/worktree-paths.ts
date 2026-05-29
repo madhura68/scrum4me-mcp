@@ -1,7 +1,7 @@
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-export const SYSTEM_WORKTREE_DIRS = new Set(['_products'])
+export const SYSTEM_WORKTREE_DIRS = new Set(['_products', '.cleanup-queue'])
 
 export function getWorktreeRoot(): string {
   return (
