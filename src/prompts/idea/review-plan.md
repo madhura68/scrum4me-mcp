@@ -15,6 +15,7 @@ Je context (meegegeven in `wait_for_job`-payload):
 - `idea.grill_md`: context uit de grill-fase (scope, acceptatie, risico's)
 - `product`: gekoppeld product met `definition_of_done` en repo-context
 - `repo_url`: lokale repo om bestaande patronen/code te raadplegen
+- `doc_index`: bestaande ProductDocs per folder (beschrijving + titels). Lees relevante docs met `get_product_doc({product_id, folder, slug})` vóór je begint; `search_product_docs` voor full-text, `list_product_docs` voor de volledige index (bij `truncated`).
 
 ## Doel
 

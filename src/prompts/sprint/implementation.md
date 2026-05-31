@@ -23,6 +23,7 @@ Lees die payload eerst. Belangrijke velden:
 - `pbis[]`, `stories[]`: context voor begrip; geen wijzigingen daarop.
 - `sprint_run.id`: nodig voor `update_task_status` cascade-prop. Geef altijd
   `sprint_run_id` mee aan `update_task_status`.
+- `doc_index`: bestaande ProductDocs per folder (beschrijving + titels). Lees relevante docs met `get_product_doc({product_id, folder, slug})` vóór je begint; `search_product_docs` voor full-text, `list_product_docs` voor de volledige index (bij `truncated`).
 
 ## Hard regels
 

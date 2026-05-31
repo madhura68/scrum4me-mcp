@@ -20,6 +20,7 @@ import { getWorktreeRoot } from '../git/worktree-paths.js'
 import { setupProductWorktrees, releaseLocksOnTerminal } from '../git/job-locks.js'
 import { pushBranchForJob } from '../git/push.js'
 import { resolveJobConfig } from '../lib/job-config.js'
+import { buildDocIndex } from '../lib/doc-index.js'
 import { claimLog } from '../lib/claim-log.js'
 import { getInstanceId } from '../presence/instance.js'
 import { getWorkerRuntimeFromEnv, type WorkerRuntime } from '../worker-runtime.js'
@@ -689,6 +690,14 @@ export async function getFullJobContext(jobId: string) {
     job.task ? { requires_opus: job.task.requires_opus } : undefined,
   )
 
+  // Push a compact doc-index into every payload so the worker sees which
+  // ProductDocs exist (per folder) instead of guessing search terms/folders.
+  // Best-effort: an index failure must never block claiming.
+  const docIndex = await buildDocIndex(job.product.id).catch((err) => {
+    console.warn(`[wait-for-job] buildDocIndex failed for ${job.product.id}:`, err)
+    return null
+  })
+
   if (job.source === 'MANUAL') {
     const draft = job.manual_drafts[0] ?? null
     if (!draft) {
@@ -711,6 +720,7 @@ export async function getFullJobContext(jobId: string) {
       source: 'MANUAL',
       status: 'claimed',
       config,
+      doc_index: docIndex,
       manual_job: manualDraft,
       manual_draft: manualDraft,
       product: {
@@ -732,6 +742,7 @@ export async function getFullJobContext(jobId: string) {
       source: 'ORCHESTRATOR',
       status: 'claimed',
       config,
+      doc_index: docIndex,
       orchestrator_job: {
         parent_job_id: job.created_by_job_id,
         orchestration_key: job.orchestration_key,
@@ -770,6 +781,7 @@ export async function getFullJobContext(jobId: string) {
       source: 'SYSTEM',
       status: 'claimed',
       config,
+      doc_index: docIndex,
       idea: {
         id: idea.id,
         code: idea.code,
@@ -839,6 +851,7 @@ export async function getFullJobContext(jobId: string) {
       kind: job.kind,
       status: 'claimed',
       config,
+      doc_index: docIndex,
       idea: {
         id: idea.id,
         code: idea.code,
@@ -989,6 +1002,7 @@ export async function getFullJobContext(jobId: string) {
       kind: job.kind,
       status: 'claimed',
       config,
+      doc_index: docIndex,
       sprint: {
         id: sprintRun.sprint.id,
         sprint_goal: sprintRun.sprint.sprint_goal,
@@ -1055,6 +1069,7 @@ export async function getFullJobContext(jobId: string) {
     kind: job.kind,
     status: 'claimed',
     config,
+    doc_index: docIndex,
     task: {
       id: task.id,
       title: task.title,
