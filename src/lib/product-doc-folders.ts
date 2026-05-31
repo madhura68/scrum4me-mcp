@@ -52,3 +52,17 @@ export function productDocFolderFromApi(s: string): ProductDocFolder | null {
   const lower = s.toLowerCase()
   return (FOLDER_API_TO_DB as Record<string, ProductDocFolder>)[lower] ?? null
 }
+
+// 1-regel "wat hoort hier" per folder. Gespiegeld van Scrum4Me's canonieke
+// taxonomie — houd in sync met lib/product-doc-folder.ts daar.
+export const PRODUCT_DOC_FOLDER_DESCRIPTIONS: Record<ProductDocFolderApi, string> = {
+  adr: 'Architecture Decision Records: vastgelegde keuzes met context, alternatieven en consequenties.',
+  architecture: 'Systeem- en service-ontwerp: componenten, grenzen, data-flow, integraties.',
+  grills: 'Resultaten van idee-grill-sessies: probleemverkenning, scope-afbakening, beslissingen.',
+  patterns: "Herbruikbare code- en gebruikspatronen, conventies en do/don't.",
+  plans: 'Implementatieplannen per PBI/idee: stories en taken.',
+  runbooks: 'Operationele procedures: deploy, incident-respons, onderhoud.',
+  specs: 'Functionele en technische specificaties van features.',
+  manual: 'Eindgebruikers- en producthandleiding.',
+  api: "API-referentie: endpoints, schema's, contracten.",
+}
