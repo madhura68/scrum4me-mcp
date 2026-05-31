@@ -24,6 +24,7 @@ Dat JSON-bestand bevat de volledige context die je nodig hebt:
 - `product`: gekoppeld product met `repo_url`, `definition_of_done`,
   bestaande architectuur in repo.
 - `primary_worktree_path`: lokale repo (je `cwd` zit daar al).
+- `doc_index`: bestaande ProductDocs per folder (beschrijving + titels). Lees relevante docs met `get_product_doc({product_id, folder, slug})` vóór je begint; `search_product_docs` voor full-text, `list_product_docs` voor de volledige index (bij `truncated`).
 
 ## Doel
 

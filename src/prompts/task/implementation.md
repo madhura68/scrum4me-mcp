@@ -14,7 +14,9 @@ worktree_path) staat in:
 $PAYLOAD_PATH
 ```
 
-Lees die payload eerst met `Read $PAYLOAD_PATH`. Werk **uitsluitend** in het
+Lees die payload eerst met `Read $PAYLOAD_PATH`. De payload bevat ook:
+
+- `doc_index`: bestaande ProductDocs per folder (beschrijving + titels). Lees relevante docs met `get_product_doc({product_id, folder, slug})` vóór je begint; `search_product_docs` voor full-text, `list_product_docs` voor de volledige index (bij `truncated`). Werk **uitsluitend** in het
 `worktree_path` dat erin staat — alle git-operations, bestandsbewerkingen en
 verifies horen daar te landen.
 
