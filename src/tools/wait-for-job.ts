@@ -365,6 +365,42 @@ export function buildClaimableJobWhereFragment(input: ClaimSqlFilterInput): Pris
   `
 }
 
+export type HigherTierIdleInput = {
+  selfUserId: string
+  selfInstanceId: string
+  selfRuntime: WorkerRuntime
+  selfCapability: 'HIGH_P' | 'MEDIUM_P' | 'LOW_P' | null
+}
+
+/**
+ * Returns a SQL fragment that the caller appends inside the WHERE-clause of a
+ * claim query. Excludes claims when any other alive idle worker with strictly
+ * higher capability exists for the same user + runtime.
+ *
+ * Null-capability semantics: if either self or peer has NULL capability, the
+ * comparison `w.capability > NULL` yields NULL and the row drops out —
+ * preserving today's first-come behaviour until both sides are populated.
+ */
+export function buildHigherTierIdleFragment(input: HigherTierIdleInput): Prisma.Sql {
+  return Prisma.sql`
+    AND NOT EXISTS (
+      SELECT 1 FROM claude_workers w
+      LEFT JOIN users u ON u.id = w.user_id
+      WHERE w.user_id = ${input.selfUserId}
+        AND w.runtime = ${input.selfRuntime}::"AgentRuntime"
+        AND w.instance_id <> ${input.selfInstanceId}
+        AND w.capability > ${input.selfCapability}::"WorkerCapability"
+        AND w.last_seen_at > NOW() - INTERVAL '30 seconds'
+        AND (w.last_quota_pct IS NULL OR w.last_quota_pct >= COALESCE(u.min_quota_pct, 0))
+        AND NOT EXISTS (
+          SELECT 1 FROM claude_jobs k
+          WHERE k.worker_instance_id = w.instance_id
+            AND k.status IN ('CLAIMED','RUNNING')
+        )
+    )
+  `
+}
+
 const inputSchema = z.object({
   product_id: z.string().min(1).optional(),
   wait_seconds: z.number().int().min(1).max(MAX_WAIT_SECONDS).default(300),
