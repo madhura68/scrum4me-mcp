@@ -404,6 +404,7 @@ export function buildHigherTierIdleFragment(input: HigherTierIdleInput): Prisma.
 const inputSchema = z.object({
   product_id: z.string().min(1).optional(),
   wait_seconds: z.number().int().min(1).max(MAX_WAIT_SECONDS).default(300),
+  capability: z.enum(['HIGH_P', 'MEDIUM_P', 'LOW_P']).nullable().optional(),
 })
 
 const STALE_ERROR_MSG = 'agent did not complete job within 2 attempts'
@@ -552,6 +553,7 @@ export async function tryClaimJob(
   productId?: string,
   runtime: WorkerRuntime = 'CLAUDE',
   capabilities: string[] = [],
+  capability: 'HIGH_P' | 'MEDIUM_P' | 'LOW_P' | null = null,
 ): Promise<string | null> {
   // Atomic claim in a single transaction — also captures plan_snapshot from task.
   //
@@ -580,6 +582,14 @@ export async function tryClaimJob(
           hasProductScope: false,
           capabilities,
         })
+    const tierClause = capability !== null
+      ? buildHigherTierIdleFragment({
+          selfUserId: userId,
+          selfInstanceId: instanceId,
+          selfRuntime: runtime,
+          selfCapability: capability,
+        })
+      : Prisma.empty
     const found = productId
       ? await tx.$queryRaw<
           Array<{ id: string; implementation_plan: string | null; sprint_run_id: string | null }>
@@ -589,6 +599,7 @@ export async function tryClaimJob(
           LEFT JOIN tasks t ON t.id = cj.task_id
           LEFT JOIN sprint_runs sr ON sr.id = cj.sprint_run_id
           ${whereClause}
+          ${tierClause}
           ORDER BY cj.created_at ASC
           LIMIT 1
           FOR UPDATE OF cj SKIP LOCKED
@@ -601,6 +612,7 @@ export async function tryClaimJob(
           LEFT JOIN tasks t ON t.id = cj.task_id
           LEFT JOIN sprint_runs sr ON sr.id = cj.sprint_run_id
           ${whereClause}
+          ${tierClause}
           ORDER BY cj.created_at ASC
           LIMIT 1
           FOR UPDATE OF cj SKIP LOCKED
@@ -1154,7 +1166,7 @@ export function registerWaitForJobTool(server: McpServer) {
         'Forbidden for demo accounts.',
       inputSchema,
     },
-    async ({ product_id, wait_seconds }) =>
+    async ({ product_id, wait_seconds, capability }) =>
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
         const { userId, tokenId } = auth
@@ -1169,7 +1181,7 @@ export function registerWaitForJobTool(server: McpServer) {
         await resetStaleClaimedJobs(userId)
 
         // 2. Try immediate claim
-        let jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities)
+        let jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities, capability ?? null)
         if (jobId) {
           const ctx = await getFullJobContext(jobId)
           if (!ctx) return toolError('Job claimed but context fetch failed')
@@ -1221,7 +1233,7 @@ export function registerWaitForJobTool(server: McpServer) {
             })
 
             await resetStaleClaimedJobs(userId)
-            jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities)
+            jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities, capability ?? null)
             if (jobId) {
               const ctx = await getFullJobContext(jobId)
               if (!ctx) return toolError('Job claimed but context fetch failed')
