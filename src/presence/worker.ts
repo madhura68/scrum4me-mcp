@@ -1,12 +1,15 @@
 import { Client } from 'pg'
 import { prisma } from '../prisma.js'
 
+export type WorkerCapability = 'HIGH_P' | 'MEDIUM_P' | 'LOW_P'
+
 export async function registerWorker(opts: {
   userId: string
   tokenId: string
   productId?: string | null
   runtime?: 'CLAUDE' | 'CODEX'
   capabilities?: string[]
+  capability?: WorkerCapability | null
   instanceId: string
   hostname?: string | null
   pid?: number | null
@@ -24,6 +27,7 @@ export async function registerWorker(opts: {
       token_id: opts.tokenId,
       runtime: opts.runtime ?? 'CLAUDE',
       capabilities: opts.capabilities ?? [],
+      capability: opts.capability ?? undefined,
       instance_id: opts.instanceId,
       product_id: opts.productId ?? null,
       hostname: opts.hostname ?? null,
@@ -38,6 +42,7 @@ export async function registerWorker(opts: {
       product_id: opts.productId ?? null,
       runtime: opts.runtime ?? 'CLAUDE',
       capabilities: opts.capabilities ?? [],
+      capability: opts.capability ?? undefined,
       instance_id: opts.instanceId,
       hostname: opts.hostname ?? null,
       pid: opts.pid ?? null,
