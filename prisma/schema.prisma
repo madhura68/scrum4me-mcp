@@ -31,6 +31,12 @@ enum AgentRuntime {
   CODEX
 }
 
+enum WorkerCapability {
+  HIGH_P
+  MEDIUM_P
+  LOW_P
+}
+
 enum JobSource {
   SYSTEM
   MANUAL
@@ -226,6 +232,7 @@ model User {
   claude_workers      ClaudeWorker[]
   started_sprint_runs SprintRun[]        @relation("SprintRunStartedBy")
   push_subscriptions  PushSubscription[]
+  idea_notifications  IdeaNotification[]
 
   @@index([active_product_id])
   @@map("users")
@@ -506,6 +513,7 @@ model ClaudeJob {
   lease_until               DateTime?
   task_executions           SprintTaskExecution[] @relation("SprintJobExecutions")
   manual_drafts             ManualJobDraft[]
+  idea_notification         IdeaNotification?
   created_at                DateTime              @default(now())
   updated_at                DateTime              @updatedAt
 
@@ -614,6 +622,7 @@ model ClaudeWorker {
   last_seen_at        DateTime  @default(now())
   last_quota_pct      Int?
   last_quota_check_at DateTime?
+  capability          WorkerCapability?
 
   @@unique([user_id, token_id, instance_id])
   @@index([user_id, last_seen_at])
@@ -838,6 +847,7 @@ model Idea {
   logs               IdeaLog[]
   user_questions     UserQuestion[]
   secondary_products IdeaProduct[]
+  notifications      IdeaNotification[]
 
   @@unique([user_id, code])
   @@index([user_id, archived, status])
@@ -950,4 +960,22 @@ model PushSubscription {
 
   @@index([user_id])
   @@map("push_subscriptions")
+}
+
+model IdeaNotification {
+  id         String        @id @default(cuid())
+  idea_id    String
+  user_id    String
+  product_id String
+  job_id     String        @unique
+  kind       ClaudeJobKind
+  read_at    DateTime?
+  created_at DateTime      @default(now())
+
+  idea Idea      @relation(fields: [idea_id], references: [id], onDelete: Cascade)
+  user User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  job  ClaudeJob @relation(fields: [job_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id, read_at])
+  @@map("idea_notifications")
 }
