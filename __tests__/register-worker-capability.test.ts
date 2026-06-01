@@ -47,4 +47,17 @@ describe('registerWorker capability', () => {
     expect(call.create.capability).toBeUndefined()
     expect(call.update.capability).toBeUndefined()
   })
+
+  it('writes null when capability=null (explicit clear)', async () => {
+    await registerWorker({
+      userId: 'u1',
+      tokenId: 't1',
+      instanceId: 'i1',
+      capability: null,
+    })
+    expect(mocks.upsert).toHaveBeenCalledOnce()
+    const call = mocks.upsert.mock.calls[0][0]
+    expect(call.create.capability).toBeNull()
+    expect(call.update.capability).toBeNull()
+  })
 })
