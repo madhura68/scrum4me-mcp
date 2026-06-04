@@ -21,6 +21,7 @@ import { setupProductWorktrees, releaseLocksOnTerminal } from '../git/job-locks.
 import { pushBranchForJob } from '../git/push.js'
 import { resolveJobConfig } from '../lib/job-config.js'
 import { buildDocIndex } from '../lib/doc-index.js'
+import { loadManualIdeaContext } from '../lib/manual-idea-context.js'
 import { claimLog } from '../lib/claim-log.js'
 import { getInstanceId } from '../presence/instance.js'
 import { getWorkerRuntimeFromEnv, type WorkerRuntime } from '../worker-runtime.js'
@@ -762,6 +763,12 @@ export async function getFullJobContext(jobId: string) {
       launch_preview_json: draft.launch_preview_json,
     }
 
+    const {
+      idea: manualIdea,
+      pbi: manualPbi,
+      instruction,
+    } = await loadManualIdeaContext(draft.launch_preview_json, job.kind)
+
     return {
       job_id: job.id,
       kind: job.kind,
@@ -771,6 +778,9 @@ export async function getFullJobContext(jobId: string) {
       doc_index: docIndex,
       manual_job: manualDraft,
       manual_draft: manualDraft,
+      idea: manualIdea,
+      pbi: manualPbi,
+      instruction: instruction,
       product: {
         id: job.product.id,
         name: job.product.name,
