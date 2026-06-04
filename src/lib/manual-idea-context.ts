@@ -51,6 +51,13 @@ export interface MappedIdea {
   product_id: string | null
 }
 
+/** PBI summary attached to the idea (mirrors the SYSTEM idea-branch select). */
+export interface MappedPbi {
+  id: string
+  code: string
+  title: string
+}
+
 /**
  * Load idea context for a MANUAL idea-job.
  *
@@ -61,7 +68,7 @@ export interface MappedIdea {
 export async function loadManualIdeaContext(
   launchPreviewJson: unknown,
   kind: string,
-): Promise<{ idea: MappedIdea | null; pbi: unknown | null; instruction: string | null }> {
+): Promise<{ idea: MappedIdea | null; pbi: MappedPbi | null; instruction: string | null }> {
   if (!isManualIdeaKind(kind)) {
     return { idea: null, pbi: null, instruction: null }
   }
