@@ -24,6 +24,7 @@ Dat JSON-bestand bevat de volledige context die je nodig hebt:
 - `product`: het gekoppelde product (incl. `repo_url` en `definition_of_done`)
 - `primary_worktree_path`: lokale repo om te lezen (je `cwd` zit daar al)
 - `doc_index`: bestaande ProductDocs per folder (beschrijving + titels). Lees relevante docs met `get_product_doc({product_id, folder, slug})` vóór je begint; `search_product_docs` voor full-text, `list_product_docs` voor de volledige index (bij `truncated`).
+- `instruction` (optioneel): aanvullende sturing van de gebruiker; als aanwezig, volg deze bovenop de standaard-werkwijze.
 
 ## Doel
 
@@ -32,6 +33,8 @@ PBI van kan maken. Eindresultaat is een markdown-document dat je via
 `mcp__scrum4me__update_idea_grill_md` opslaat.
 
 ## Werkwijze (loop, één vraag per cyclus)
+
+Als `payload.instruction` aanwezig is, weeg die expliciet mee in je vragen/plan.
 
 1. **Lees `$PAYLOAD_PATH`** met de `Read`-tool. Bewaar `idea.id`, `idea.code`,
    `idea.title`, `idea.grill_md` (mag null zijn), `product.id`, en `job_id` —
