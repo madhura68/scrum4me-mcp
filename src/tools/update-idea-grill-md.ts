@@ -14,23 +14,12 @@ import {
   writeProductDoc,
   ProductDocWriteError,
 } from '../lib/product-doc-write.js'
+import { ensureProductDocFrontmatter } from '../lib/ensure-product-doc-frontmatter.js'
 
 const inputSchema = z.object({
   idea_id: z.string().min(1),
   markdown: z.string().min(1).max(64_000),
 })
-
-const FRONTMATTER_RE = /^---\r?\n/
-
-/**
- * Wrap raw markdown met minimal frontmatter als het ontbreekt — Idea.grill_md
- * was historisch ruwe MD; writeProductDoc vereist title/status frontmatter.
- */
-function ensureFrontmatter(md: string, title: string): string {
-  if (FRONTMATTER_RE.test(md)) return md
-  const safeTitle = title.replace(/"/g, '\\"').slice(0, 200)
-  return `---\ntitle: "${safeTitle}"\nstatus: draft\n---\n\n${md}`
-}
 
 export function registerUpdateIdeaGrillMdTool(server: McpServer) {
   server.registerTool(
@@ -56,7 +45,7 @@ export function registerUpdateIdeaGrillMdTool(server: McpServer) {
           return toolError('Idea has no product_id — assign product before GRILL')
         }
 
-        const content = ensureFrontmatter(markdown, idea.title)
+        const content = ensureProductDocFrontmatter(markdown, idea.title)
         const slug = `${idea.code.toLowerCase()}-grill`
 
         try {

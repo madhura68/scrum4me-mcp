@@ -6,7 +6,6 @@
 
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
@@ -17,50 +16,16 @@ import {
   writeProductDoc,
   ProductDocWriteError,
 } from '../lib/product-doc-write.js'
-import { PRODUCT_DOC_STATUSES } from '../lib/product-doc-schemas.js'
+import { ensureProductDocFrontmatter } from '../lib/ensure-product-doc-frontmatter.js'
+
+// Backwards-compat re-export: this helper used to live here. Keep the path
+// stable for existing importers (e.g. update-idea-plan-frontmatter.test.ts).
+export { ensureProductDocFrontmatter }
 
 const inputSchema = z.object({
   idea_id: z.string().min(1),
   markdown: z.string().min(1).max(64_000),
 })
-
-const FM_BLOCK_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/
-
-/**
- * Merge ProductDoc-required `title`/`status` into existing plan frontmatter
- * (which has its own plan-yaml keys like pbi/stories). Injects both when no
- * frontmatter exists at all. Leaves already-valid frontmatter unchanged.
- */
-export function ensureProductDocFrontmatter(md: string, title: string): string {
-  const safeTitle = title.slice(0, 200)
-  const m = md.match(FM_BLOCK_RE)
-  if (!m) {
-    const fm = stringifyYaml({ title: safeTitle, status: 'draft' }).trimEnd()
-    return `---\n${fm}\n---\n\n${md}`
-  }
-  let data: Record<string, unknown>
-  try {
-    const raw = parseYaml(m[1])
-    data =
-      raw && typeof raw === 'object' && !Array.isArray(raw)
-        ? (raw as Record<string, unknown>)
-        : {}
-  } catch {
-    return md // malformed YAML — let writeProductDoc surface the precise error
-  }
-  let changed = false
-  if (typeof data.title !== 'string' || data.title.trim() === '') {
-    data.title = safeTitle
-    changed = true
-  }
-  if (!PRODUCT_DOC_STATUSES.includes(data.status as (typeof PRODUCT_DOC_STATUSES)[number])) {
-    data.status = 'draft'
-    changed = true
-  }
-  if (!changed) return md
-  const fm = stringifyYaml(data).trimEnd()
-  return md.replace(FM_BLOCK_RE, `---\n${fm}\n---\n\n`)
-}
 
 export function registerUpdateIdeaPlanMdTool(server: McpServer) {
   server.registerTool(
@@ -167,10 +132,8 @@ export function registerUpdateIdeaPlanMdTool(server: McpServer) {
           })
         } catch (err) {
           if (err instanceof ProductDocWriteError) {
-            return toolError(
-              `Cannot save plan as ProductDoc: ${err.message}` +
-              (err.details !== undefined ? `. Details: ${JSON.stringify(err.details)}` : ''),
-            )
+            // err.message now carries the precise parse detail (zie product-doc-write).
+            return toolError(`Cannot save plan as ProductDoc: ${err.message}`)
           }
           throw err
         }

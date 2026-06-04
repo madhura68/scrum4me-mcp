@@ -224,8 +224,13 @@ export async function writeProductDoc(
 ): Promise<WriteProductDocResult> {
   const parsed = parseProductDocMd(input.content_md)
   if (!parsed.ok) {
+    const detail = parsed.errors
+      .map((e) => (e.line != null ? `regel ${e.line}: ${e.message}` : e.message))
+      .join('; ')
     throw new ProductDocWriteError(
-      'content_md is niet parseerbaar',
+      detail
+        ? `content_md is niet parseerbaar — ${detail}`
+        : 'content_md is niet parseerbaar',
       422,
       parsed.errors satisfies ProductDocParseError[],
     )
