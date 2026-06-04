@@ -25,6 +25,7 @@ Dat JSON-bestand bevat de volledige context die je nodig hebt:
   bestaande architectuur in repo.
 - `primary_worktree_path`: lokale repo (je `cwd` zit daar al).
 - `doc_index`: bestaande ProductDocs per folder (beschrijving + titels). Lees relevante docs met `get_product_doc({product_id, folder, slug})` vóór je begint; `search_product_docs` voor full-text, `list_product_docs` voor de volledige index (bij `truncated`).
+- `instruction` (optioneel): aanvullende sturing van de gebruiker; als aanwezig, volg deze bovenop de standaard-werkwijze.
 
 ## Doel
 
@@ -34,6 +35,8 @@ server-side `parsePlanMd` (zie `lib/idea-plan-parser.ts`) en omgezet in
 PBI + stories + taken via `materializeIdeaPlanAction`.
 
 ## Werkwijze (single-pass)
+
+Als `payload.instruction` aanwezig is, weeg die expliciet mee in je vragen/plan.
 
 1. **Lees `$PAYLOAD_PATH`** met de `Read`-tool. Bewaar `idea.id`, `idea.code`,
    `idea.grill_md`, `idea.plan_md` (mag null zijn), `product.id`, en `job_id` —
