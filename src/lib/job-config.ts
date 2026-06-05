@@ -1,6 +1,7 @@
 // M16 platform-split: dit bestand wordt een re-export shim van
 // vendor/scrum4me-shared/lib/job-config.ts zodra de shared-lib is bijgewerkt
-// met get_agent_guide (in TASK_TOOLS) en Agent (in SPRINT_IMPLEMENTATION).
+// met get_agent_guide (in TASK_TOOLS + de idea/plan-kinds) en Agent (in
+// SPRINT_IMPLEMENTATION).
 // Gebruik @shared/job-config voor directe imports nadat die update gemerged is.
 //
 // PBI-67: model + mode-selectie per ClaudeJob-kind.
@@ -88,6 +89,7 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
     max_turns: 15,
     allowed_tools: [
       'Read', 'Grep', 'Glob', 'WebSearch', 'AskUserQuestion',
+      'mcp__scrum4me__get_agent_guide',
       'mcp__scrum4me__list_product_docs',
       'mcp__scrum4me__get_product_doc',
       'mcp__scrum4me__search_product_docs',
@@ -108,6 +110,7 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
     max_turns: 20,
     allowed_tools: [
       'Read', 'Grep', 'Glob', 'WebSearch', 'AskUserQuestion', 'Write',
+      'mcp__scrum4me__get_agent_guide',
       'mcp__scrum4me__list_product_docs',
       'mcp__scrum4me__get_product_doc',
       'mcp__scrum4me__search_product_docs',
@@ -124,6 +127,7 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
     max_turns: 1,
     allowed_tools: [
       'Read', 'Write', 'Grep', 'Glob',
+      'mcp__scrum4me__get_agent_guide',
       'mcp__scrum4me__list_product_docs',
       'mcp__scrum4me__get_product_doc',
       'mcp__scrum4me__search_product_docs',
@@ -145,6 +149,7 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
     max_turns: 5,
     allowed_tools: [
       'Read', 'Grep', 'AskUserQuestion',
+      'mcp__scrum4me__get_agent_guide',
       'mcp__scrum4me__list_product_docs',
       'mcp__scrum4me__get_product_doc',
       'mcp__scrum4me__search_product_docs',
