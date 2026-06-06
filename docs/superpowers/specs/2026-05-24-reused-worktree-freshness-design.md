@@ -5,6 +5,8 @@ author: janpetervisser
 version: 0.1
 date: 2026-05-24
 follows: ./2026-05-23-claim-observability-worktree-retry-design.md
+verified: 2026-06-06
+audit_verdict: done
 ---
 
 # Reused worktree freshness: prefer origin/<branch> over a stale local ref

@@ -3,6 +3,8 @@ title: "Doc-index in job-payload (worker doc-discovery)"
 status: draft
 author: claude
 date: 2026-05-31
+verified: 2026-06-06
+audit_verdict: done
 ---
 
 # Doc-index in de job-payload

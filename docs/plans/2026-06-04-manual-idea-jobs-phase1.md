@@ -3,6 +3,8 @@ title: "Manual idea-jobs fase 1: grill → plan handoff + instruction-sturing"
 status: draft
 author: claude
 date: 2026-06-04
+verified: 2026-06-06
+audit_verdict: done
 ---
 
 # Manual idea-jobs — fase 1

@@ -3,6 +3,8 @@ title: Worker context overview
 status: active
 date: 2026-05-24
 product: scrum4me-mcp
+verified: 2026-06-06
+audit_verdict: partial
 ---
 
 # Worker Context Overview
