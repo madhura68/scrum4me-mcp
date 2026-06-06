@@ -5,6 +5,8 @@ author: janpetervisser
 version: 0.2
 date: 2026-05-23
 review: ../reviews/2026-05-23-agent-guide-prompt-design-review.md
+verified: 2026-06-06
+audit_verdict: done
 ---
 
 # Agent-guide: aanpasbare bouw- & documenteer-prompt via MCP

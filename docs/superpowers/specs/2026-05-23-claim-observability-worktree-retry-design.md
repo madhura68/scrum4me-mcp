@@ -5,6 +5,8 @@ author: janpetervisser
 version: 0.1
 date: 2026-05-23
 follows: ./2026-05-23-sprint-subagent-execution-design.md
+verified: 2026-06-06
+audit_verdict: partial
 ---
 
 # Claim-flow observability + worktree-creation retry
