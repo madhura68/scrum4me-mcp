@@ -3,20 +3,16 @@
   "version": "0.8.0",
   "description": "MCP server for Scrum4Me — exposes dev-flow tools and prompts via the Model Context Protocol",
   "type": "module",
-  "bin": {
-    "scrum4me-mcp": "./dist/index.js"
-  },
   "files": [
-    "dist",
     "prisma",
     "README.md"
   ],
   "scripts": {
     "dev": "tsx src/index.ts",
     "dev:http": "tsx src/http.ts",
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "start:http": "node dist/http.js",
+    "build": "tsc --noEmit",
+    "start": "node_modules/.bin/tsx src/index.ts",
+    "start:http": "node_modules/.bin/tsx src/http.ts",
     "prisma:generate": "bash scripts/gen-schema.sh > prisma/schema.prisma && prisma generate",
     "postinstall": "bash scripts/gen-schema.sh > prisma/schema.prisma && prisma generate || true",
     "prebuild": "bash scripts/gen-schema.sh > prisma/schema.prisma && prisma generate",

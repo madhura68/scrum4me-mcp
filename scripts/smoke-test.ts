@@ -1,14 +1,18 @@
 // One-shot e2e smoke test against the live Scrum4Me database.
-// Reads .env, spawns the built server over stdio, calls each tool.
+// Reads .env, spawns the server over stdio via tsx, calls each tool.
 //
-//   npm run build && npx tsx scripts/smoke-test.ts
+//   npx tsx scripts/smoke-test.ts
 //
 // Exits 0 on success, 1 on any tool failure.
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { readFileSync } from 'fs'
-import { resolve } from 'path'
+import { resolve, dirname } from 'path'
+import { fileURLToPath } from 'url'
+
+const __filename = fileURLToPath(import.meta.url)
+const repoRoot = resolve(dirname(__filename), '..')
 
 function loadEnv(): Record<string, string> {
   const file = readFileSync(resolve(process.cwd(), '.env'), 'utf8')
@@ -35,9 +39,12 @@ async function main() {
   if (!env.SCRUM4ME_TOKEN) throw new Error('SCRUM4ME_TOKEN missing')
 
   const transport = new StdioClientTransport({
-    command: 'node',
-    args: ['dist/index.js'],
-    env,
+    command: resolve(repoRoot, 'node_modules/.bin/tsx'),
+    args: ['src/index.ts'],
+    env: {
+      ...env,
+      TSX_TSCONFIG_PATH: resolve(repoRoot, 'tsconfig.json'),
+    },
   })
   const client = new Client({ name: 'smoke-test', version: '0.0.1' })
   await client.connect(transport)
