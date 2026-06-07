@@ -21,6 +21,8 @@
     "postinstall": "bash scripts/gen-schema.sh > prisma/schema.prisma && prisma generate || true",
     "prebuild": "bash scripts/gen-schema.sh > prisma/schema.prisma && prisma generate",
     "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.type-tests.json",
+    "pretest": "npm run typecheck:tests",
     "sync-schema": "bash scripts/sync-schema.sh",
     "test": "vitest run"
   },

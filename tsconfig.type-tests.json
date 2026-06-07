@@ -1,0 +1,13 @@
+{
+  "//": "CI-enforces the type-only guards in the product-doc parity test (assignability + enum mutual-assignability) that the base tsconfig never checks (it excludes __tests__). Scoped to the product-doc closure so the unrelated pre-existing src/presence/worker.ts errors stay out. Run via `npm run typecheck:tests` (also wired into `pretest`).",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": [
+    "__tests__/product-doc-shared-parity.test.ts",
+    "src/lib/product-doc-*.ts"
+  ],
+  "exclude": ["node_modules", "dist", "vendor"]
+}
