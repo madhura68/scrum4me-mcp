@@ -194,9 +194,11 @@ git clone --recurse-submodules https://github.com/madhura68/scrum4me-mcp.git
 cd scrum4me-mcp
 npm install              # postinstall runs prisma generate
 cp .env.example .env     # fill in DATABASE_URL and SCRUM4ME_TOKEN
-npm run build
-npm link                 # exposes the `scrum4me-mcp` bin globally
+npm run dev              # starts the server via tsx (no build step required)
 ```
+
+> **Note:** `dist` is not emitted and is unsupported. The package consumes
+> `@shared` TypeScript at runtime via `tsx`.
 
 `SCRUM4ME_TOKEN` comes from Scrum4Me → **Instellingen → Tokens**
 (`/settings/tokens`). The token is hashed with SHA-256 and looked up in
@@ -214,10 +216,12 @@ Add to `~/.claude/mcp_servers.json`:
 {
   "mcpServers": {
     "scrum4me": {
-      "command": "scrum4me-mcp",
+      "command": "npx",
+      "args": ["tsx", "/absolute/path/to/scrum4me-mcp/src/index.ts"],
       "env": {
         "DATABASE_URL": "postgresql://...",
-        "SCRUM4ME_TOKEN": "..."
+        "SCRUM4ME_TOKEN": "...",
+        "TSX_TSCONFIG_PATH": "/absolute/path/to/scrum4me-mcp/tsconfig.json"
       }
     }
   }
@@ -326,13 +330,13 @@ git commit -am "chore: bump scrum4me-shared to <sha>"
 ```bash
 npm run dev              # tsx src/index.ts (stdio)
 npm run typecheck
-npm run build
+npm run build            # tsc --noEmit (type-check only; dist is not emitted)
 ```
 
 Quick local smoke-test with the official MCP inspector:
 
 ```bash
-npx @modelcontextprotocol/inspector node dist/index.js
+npx @modelcontextprotocol/inspector npx tsx src/index.ts
 ```
 
 ## Risks
