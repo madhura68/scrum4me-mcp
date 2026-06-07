@@ -115,6 +115,37 @@ const KNOWN_SECTIONS = [
   { id: 'sec-1', doc_id: 'doc-worker-spec-id', anchor: 'overview' },
 ]
 
+// Duplicate headings → exercises anchor de-duplication.
+const DUP_HEADINGS_DOC = `---
+title: "Duplicate headings"
+status: draft
+---
+
+# Setup
+
+first
+
+## Setup
+
+second
+
+## Setup
+
+third
+`
+
+// Fenced code block → its inner markdown link must be stripped, not extracted.
+// Built via join to avoid embedding triple-backticks in a template literal.
+const FENCE = '\`\`\`'
+const FENCED_CODE_DOC = [
+  '---', 'title: "Fenced code"', 'status: draft', '---', '',
+  '# Intro', '',
+  FENCE + 'md',
+  '[not a real link](../specs/should-be-ignored.md)',
+  FENCE, '',
+  'Real [link](../specs/worker-spec.md) outside the fence.', '',
+].join('\n')
+
 // ---------------------------------------------------------------------------
 // 1. parseProductDocMd parity
 // ---------------------------------------------------------------------------
@@ -206,6 +237,22 @@ describe('buildProductDocSectionIndex parity', () => {
     const known = { productDocs: KNOWN_DOCS, productSections: KNOWN_SECTIONS }
     expect(buildProductDocSectionIndex(SECTION_SOURCE, known)).toEqual(
       sharedBuildProductDocSectionIndex(SECTION_SOURCE, known),
+    )
+  })
+
+  it('handles duplicate headings (anchor de-dup) identically', () => {
+    const known = { productDocs: KNOWN_DOCS, productSections: KNOWN_SECTIONS }
+    const src = { ...SECTION_SOURCE, content_md: DUP_HEADINGS_DOC }
+    expect(buildProductDocSectionIndex(src, known)).toEqual(
+      sharedBuildProductDocSectionIndex(src, known),
+    )
+  })
+
+  it('strips fenced code (inner links ignored) identically', () => {
+    const known = { productDocs: KNOWN_DOCS, productSections: KNOWN_SECTIONS }
+    const src = { ...SECTION_SOURCE, content_md: FENCED_CODE_DOC }
+    expect(buildProductDocSectionIndex(src, known)).toEqual(
+      sharedBuildProductDocSectionIndex(src, known),
     )
   })
 })
