@@ -2,12 +2,12 @@ import { describe, it, expect } from 'vitest'
 import {
   writeProductDoc,
   ProductDocWriteError,
-  type WriteProductDocTx,
 } from '../../src/lib/product-doc-write.js'
+import type { ProductDocDb } from '@shared/product-doc-db.js'
 
 // The frontmatter parse runs before any DB access in writeProductDoc, so this
 // dummy tx is never actually touched on the parse-failure paths under test.
-const dummyTx = {} as unknown as WriteProductDocTx
+const dummyTx = {} as unknown as ProductDocDb
 
 const baseInput = {
   product_id: 'p1',

@@ -21,7 +21,6 @@ import { buildProductDocSectionIndex }  from '../src/lib/product-doc-section-ind
 import {
   writeProductDoc      as mcpWriteProductDoc,
   ProductDocWriteError as McpProductDocWriteError,
-  type WriteProductDocTx,
 }                                        from '../src/lib/product-doc-write.js'
 
 // --- @shared imports ---------------------------------------------------------
@@ -270,9 +269,9 @@ describe('writeProductDoc parse-error parity: mcp == @shared', () => {
     actor_user_id: 'u-parity',
   }
 
-  // mcp takes WriteProductDocTx (PrismaClient | Prisma.TransactionClient),
-  // @shared takes ProductDocDb. Neither DB is ever reached on a parse failure.
-  const mcpDummy  = {} as unknown as WriteProductDocTx
+  // Both mcp (re-exports @shared) and @shared take ProductDocDb.
+  // Neither DB is ever reached on a parse failure.
+  const mcpDummy  = {} as unknown as ProductDocDb
   const sharedDummy = {} as unknown as ProductDocDb
 
   async function captureError(fn: () => Promise<unknown>): Promise<Error> {
