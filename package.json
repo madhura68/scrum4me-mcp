@@ -3,6 +3,7 @@
   "version": "0.8.0",
   "description": "MCP server for Scrum4Me — exposes dev-flow tools and prompts via the Model Context Protocol",
   "type": "module",
+  "//files": "Repo-only package: run from a `git clone --recurse-submodules` (tsx over src/ + vendored @shared), never from an npm registry/tarball. src/, vendor/, scripts/ and tsconfig.json — needed by the tsx runtime scripts — are intentionally NOT listed here, so `npm pack` is deliberately minimal and unsupported. See README › Setup.",
   "files": [
     "prisma",
     "README.md"

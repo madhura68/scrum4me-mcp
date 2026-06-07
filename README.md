@@ -197,8 +197,13 @@ cp .env.example .env     # fill in DATABASE_URL and SCRUM4ME_TOKEN
 npm run dev              # starts the server via tsx (no build step required)
 ```
 
-> **Note:** `dist` is not emitted and is unsupported. The package consumes
-> `@shared` TypeScript at runtime via `tsx`.
+> **Note:** `dist` is not emitted and is unsupported — the package consumes
+> `@shared` TypeScript at runtime via `tsx`. It is also **repo-only**: run it
+> from a `git clone --recurse-submodules` (as above), never from an npm
+> registry or `npm pack` tarball. The `tsx` runtime scripts (`dev`, `start`,
+> `start:http`) need `src/`, `vendor/`, `scripts/` and `tsconfig.json`, which
+> are intentionally kept out of the `files` allow-list — so the npm tarball is
+> deliberately minimal and not a supported install path.
 
 `SCRUM4ME_TOKEN` comes from Scrum4Me → **Instellingen → Tokens**
 (`/settings/tokens`). The token is hashed with SHA-256 and looked up in
