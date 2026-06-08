@@ -161,7 +161,7 @@ Phase 0 draait al (§1); de canary bewijst alleen de **Phase 1-prompt + de schri
 |---|---|
 | **Prompt-portabiliteit onder codex** — de zwaardere schrijftools (`update_idea_plan_md`/`update_idea_plan_reviewed`) + codex' eigen file-ops i.p.v. Claude Read/Glob | De Phase 1-canary **is** de gate hiervoor; enig aanpassingspunt = `review-plan.codex.md`. Phase 0 bewees al de MCP-init + een lees-tool. |
 | Codex herschrijft het plan anders dan Claude (kwaliteit/format-drift) | Strikt `review_log`-JSON-contract behouden; convergentie-/error-severity-regel begrenst; canary inspecteert het herziene `plan_md`. |
-| Misleidend model-snapshot op een codex-job | Workers-only `model_id`-override (`'codex-default'`), geen migratie. |
+| Misleidend model-snapshot op een codex-job | Workers-only `requested_model`-override (`'codex-default'`), geen migratie (codex-review P1-1). |
 | Twee promptbronnen (runner vs payload) raken uit sync | Planning-P1 (§4 docker): bevestig de gezaghebbende bron en maak die runtime-bewust. |
 | Blast-radius op Claude | Runtime-bewuste selectie raakt **alleen** `(IDEA_REVIEW_PLAN, CODEX)`; Claude-prompt + alle andere paden byte-identiek; tests borgen dit. |
 
