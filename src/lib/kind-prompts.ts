@@ -1,19 +1,19 @@
-// Loader voor embedded prompts per ClaudeJob-kind.
+// Loader voor embedded prompts per ClaudeJob-kind (+ optionele runtime-variant).
 //
-// De .md-bestanden in src/prompts/<kind>/ worden bewust meegebakken zodat
-// elke runner ze kan inlezen zonder externe plugin-dependency. De runner
-// (scrum4me-docker/bin/run-one-job.ts) leest de juiste prompt via
-// getKindPromptText() en geeft die door als `claude -p`-prompt.
+// De .md-bestanden in src/prompts/<kind>/ worden meegebakken zodat elke runner ze
+// kan inlezen zonder externe plugin-dependency. De docker-runner leest de juiste
+// prompt via getKindPromptText(ctx.kind, runtime) en geeft die door als prompt.
 //
-// Variabele-vervanging gebeurt door de runner zelf (bv. $PAYLOAD_PATH).
+// Variabele-vervanging ($PAYLOAD_PATH) gebeurt door de runner zelf.
 
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import type { ClaudeJobKind } from '@prisma/client'
+import type { WorkerRuntime } from '../worker-runtime.js'
 
-const cache: Partial<Record<ClaudeJobKind, string>> = {}
+const cache = new Map<string, string>()
 
 function loadPrompt(rel: string): string {
   const here = dirname(fileURLToPath(import.meta.url))
@@ -31,24 +31,32 @@ const KIND_TO_PROMPT_PATH: Partial<Record<ClaudeJobKind, string>> = {
   PLAN_CHAT: 'plan-chat/chat.md',
 }
 
-export function getKindPromptText(kind: ClaudeJobKind): string {
-  if (cache[kind]) return cache[kind]!
-  const rel = KIND_TO_PROMPT_PATH[kind]
+// Runtime-specifieke overrides. Ontbreekt een (runtime, kind)-override, dan valt de
+// selectie terug op KIND_TO_PROMPT_PATH (= het bestaande, runtime-neutrale pad).
+const RUNTIME_PROMPT_OVERRIDES: Partial<Record<WorkerRuntime, Partial<Record<ClaudeJobKind, string>>>> = {
+  CODEX: {
+    IDEA_REVIEW_PLAN: 'idea/review-plan.codex.md',
+  },
+}
+
+export function getKindPromptText(kind: ClaudeJobKind, runtime: WorkerRuntime = 'CLAUDE'): string {
+  const rel = RUNTIME_PROMPT_OVERRIDES[runtime]?.[kind] ?? KIND_TO_PROMPT_PATH[kind]
   if (!rel) return ''
+  const key = `${runtime}:${kind}`
+  const cached = cache.get(key)
+  if (cached !== undefined) return cached
   const text = loadPrompt(rel)
-  cache[kind] = text
+  cache.set(key, text)
   return text
 }
 
-// Back-compat re-export. wait-for-job.ts roept getIdeaPromptText aan voor
-// de drie idea-kinds; behouden zodat we de bestaande call-site niet hoeven
-// te wijzigen tot een aparte cleanup-pass.
-export function getIdeaPromptText(kind: ClaudeJobKind): string {
+// Back-compat re-export voor de idea-kinds + PLAN_CHAT; threadt runtime door.
+export function getIdeaPromptText(kind: ClaudeJobKind, runtime: WorkerRuntime = 'CLAUDE'): string {
   if (
     kind !== 'IDEA_GRILL' &&
     kind !== 'IDEA_MAKE_PLAN' &&
     kind !== 'IDEA_REVIEW_PLAN' &&
     kind !== 'PLAN_CHAT'
   ) return ''
-  return getKindPromptText(kind)
+  return getKindPromptText(kind, runtime)
 }
