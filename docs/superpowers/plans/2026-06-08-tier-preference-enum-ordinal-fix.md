@@ -1,9 +1,10 @@
 # Fix-plan — tier-preferentie enum-ordinal in `buildHigherTierIdleFragment`
 
-**Status:** draft (awaiting codex review)
+**Status:** r2 (codex round-1 GO na twee P2-edits + twee P3-nuances — verwerkt hieronder)
 **Author:** mac:claude
 **Datum:** 2026-06-08
 **Diagnose-bestand:** s4m-queue task `bd8a083d-8a92-44f8-bf8a-2ea9b1995141` (scrum4me-server:claude diagnose, 2026-06-08 10:37 UTC)
+**Review-bestand r1:** `/Users/janpetervisser/Development/s4m-queue/reviews/2026-06-08-scrum4me-mcp-tier-preference-fix-plan-review-codex.md`
 
 ## Goal
 
@@ -41,11 +42,19 @@ enum WorkerCapability {
 
 ### Het gevolg
 
-De subquery vindt nooit een rij. `NOT EXISTS (...)` is altijd `TRUE`. Het tier-fragment is dus een **complete no-op** voor élke combinatie van capabilities. Claims gaan first-come via `FOR UPDATE OF cj SKIP LOCKED`.
+De expressie `w.capability > selfCapability` is **semantisch omgekeerd**, niet leeg (P2.2 uit codex r1: mijn oorspronkelijke "complete no-op"-statement was te beknopt). Drie subscenario's per caller-tier:
 
-Live evidence: PLAN_CHAT CODEX-canary `cmq523mlc0002mooixjp3xabn` (s4m-queue `fd5f2b7d` seed) werd om 10:16:51 UTC geclaimd door 154's LOW_P codex `b9c507061b82` terwijl max2's HIGH_P codex `9d9858c45d5b` healthy + idle was. Q5 in de diagnose herconstrueerde de subquery vanuit 154's perspectief en bevestigde: alle voorwaarden behalve `higher_tier` waren TRUE; `higher_tier` was FALSE → subquery 0 rijen → claim niet geweigerd.
+| Caller-tier | Zoekt peers met ordinal | Vindt in praktijk | Gevolg |
+|---|---|---|---|
+| **LOW_P** (ordinal 3) | `> 3` | geen (LOW_P is grootste) | claim nooit geblokkeerd (toevallig "correct" maar om de verkeerde reden) |
+| **MEDIUM_P** (ordinal 2) | `> 2` | LOW_P (ordinal 3) | **geblokkeerd door een lager-tier idle worker** |
+| **HIGH_P** (ordinal 1) | `> 1` | MEDIUM_P + LOW_P | **geblokkeerd door beide lager-tier idle workers** |
 
-> **Niet codex-specifiek.** De bug was altijd actief; tot Phase B (worker-capability rollout) hadden alle workers dezelfde tier (null of LOW_P), waardoor het no-op-zijn van de fragment geen waarneembare consequentie had. De canary op divergente tiers (max2=HIGH_P, scrum4me-server=LOW_P) bracht het aan het licht.
+Dat verklaart onze canary precies: 154 LOW_P claim passed altijd (alle peers hebben lagere ordinal); max2 HIGH_P claim werd **actief geblokkeerd door 154's idle LOW_P-aanwezigheid**. Niet first-come, actief omgedraaide voorrang. Live evidence: PLAN_CHAT CODEX-canary `cmq523mlc0002mooixjp3xabn` (s4m-queue `fd5f2b7d` seed) werd om 10:16:51 UTC geclaimd door 154's LOW_P codex `b9c507061b82` terwijl max2's HIGH_P codex `9d9858c45d5b` healthy + idle was. Q5 in de diagnose herconstrueerde de subquery vanuit 154's perspectief en bevestigde `higher_tier=FALSE` → subquery 0 rijen → claim niet geweigerd.
+
+Claims gaan in praktijk via `FOR UPDATE OF cj SKIP LOCKED`, maar de tier-clause beïnvloedt de winnende worker NIET naar wens.
+
+> **Niet codex-specifiek.** De bug was altijd actief; tot Phase B (worker-capability rollout) hadden alle workers dezelfde tier (null of LOW_P), waardoor de omgekeerde-prioriteit geen waarneembare consequentie had. De canary op divergente tiers (max2=HIGH_P, scrum4me-server=LOW_P) bracht het aan het licht.
 
 ## Options considered
 
@@ -161,9 +170,28 @@ export function buildHigherTierIdleFragment(input: HigherTierIdleInput): Prisma.
 
 Geen wijziging in de input-type (`HigherTierIdleInput`); geen call-site changes elders.
 
-### Step 2: Aanvullen `__tests__/build-higher-tier-idle-fragment.test.ts`
+### Step 2: Update + uitbreiden `__tests__/build-higher-tier-idle-fragment.test.ts`
 
-Het bestaande test-bestand dekt structurele SQL-text-shape. Voeg **regression tests** toe die expliciet de ordinal-bug onmogelijk maken — niet enkel via tekst-match, maar via SQL-text die de CASE-priority bewijst:
+**P2.1 uit codex r1:** het bestaande test-bestand asserteert nu de bare `w.capability > ?::"WorkerCapability"`-vorm — dat is precies wat de fix vervangt. De P1-versie van dit plan zei abusievelijk "bestaande tests blijven onveranderd"; dat klopt niet. Twee aanpassingen in hetzelfde test-bestand:
+
+**A. Edit de bestaande structurele test** (`it('emits NOT EXISTS guarded by higher capability, alive, idle, quota', ...)`):
+
+Vervang de regel:
+```ts
+expect(text).toMatch(/w\.capability\s*>\s*\?::"WorkerCapability"/i)
+```
+
+door asserties die de CASE-priority-shape verifiëren:
+```ts
+expect(text).toMatch(/CASE w\.capability\s+WHEN 'HIGH_P' THEN 3\s+WHEN 'MEDIUM_P' THEN 2\s+WHEN 'LOW_P' THEN 1\s+END/i)
+expect(text).toMatch(/CASE \?::"WorkerCapability"\s+WHEN 'HIGH_P' THEN 3\s+WHEN 'MEDIUM_P' THEN 2\s+WHEN 'LOW_P' THEN 1\s+END/i)
+```
+
+De overige asserties in dezelfde test (`AND NOT EXISTS`, `FROM claude_workers w`, runtime/instance-clauses, `last_seen_at`-window, quota-clause, idle-NOT-EXISTS) blijven onveranderd.
+
+De andere twee bestaande tests in dit bestand (`binds the right values in order`, `passes null capability through`) blijven volledig onveranderd; de `frag.values`-volgorde (`userId, runtime, instanceId, capability`) stays identiek omdat we de selfCapability gewoon op een ander syntactisch pad consumeren (CASE-rhs i.p.v. de directe vergelijking).
+
+**B. Voeg regression-tests toe** in een nieuwe `describe('priority mapping (regression for 2026-06-08 enum-ordinal bug)', ...)`-blok onderaan het bestand:
 
 ```ts
 describe('priority mapping (regression for 2026-06-08 enum-ordinal bug)', () => {
@@ -208,7 +236,9 @@ describe('priority mapping (regression for 2026-06-08 enum-ordinal bug)', () => 
 })
 ```
 
-De bestaande tests in dit bestand (`AND NOT EXISTS`, `FROM claude_workers w`, etc.) blijven onveranderd én moeten nog passeren — de fragment is functioneel equivalent op alle dimensies behalve de priority-vergelijking.
+Eindstaat in dit test-bestand: **3 updated structural tests** (één edit, twee passthrough) + **3 nieuwe regression-tests** = 6 totaal. (De r1-versie van dit plan beweerde "3 oud + 3 nieuw" naast elkaar; dat was niet sluitend zoals codex r1 P2.1 aanwees.)
+
+**Tijdens implementatie ontdekt:** `__tests__/try-claim-job-capability-filter.test.ts` heeft óók asserties tegen de bare `w.capability >` vorm (regels 30 + 40). Die test verifieert dat `tryClaimJob` de fragment wel/niet appliceert op basis van `capability !== null`. De bare-comparison marker is daar geen invariant van het test-doel; vervang door de CASE-priority marker (`CASE w.capability WHEN 'HIGH_P' THEN 3...`) zodat het test-doel behouden blijft. Eén-locatie-edit per assertie.
 
 ### Step 3: Local verify
 
@@ -274,8 +304,16 @@ Rollout-volgorde na merge:
 ## Risks
 
 - **Live load-balance-shift na merge.** HIGH_P gaat alle jobs eten als 'ie idle is. Mitigatie: monitor 1 dag; als LOW_P essentieel actief moet blijven (bv. voor specifieke kind-affiniteit), heroverweeg een aanvullende routing-feature (out of scope voor deze fix).
-- **NULL-capability legacy-pad.** De CASE retourneert NULL voor onbekende waarden; `NULL > X` is NULL. Dit moet bestaande "legacy worker zonder capability"-rijen niet uit de fleet sluiten. Mitigatie: bestaande Step-2 test (`passes null capability through (legacy worker semantics: no blocking)`) blijft staan en valideert het.
-- **PostgreSQL CASE-expression semantiek.** Een lange CASE-clause is iets duurder dan een directe enum-vergelijking. Voor een subquery die per claim-poging één keer evalueert is dit verwaarloosbaar; geen index nodig.
+- **NULL-capability legacy-pad — peer-side.** De CASE retourneert NULL voor onbekende waarden; `NULL > X` is NULL. Dit moet bestaande "legacy worker zonder capability"-rijen niet uit de fleet sluiten. Mitigatie: bestaande Step-2 test (`passes null capability through (legacy worker semantics: no blocking)`) blijft staan en valideert het.
+- **NULL-capability legacy-pad — caller-side (P3.1 uit codex r1).** [`src/tools/wait-for-job.ts:586-593`](src/tools/wait-for-job.ts:586) wrapt de fragment-injectie in `capability !== null ? buildHigherTierIdleFragment(...) : Prisma.empty`. Dat betekent: een **actieve** legacy worker met `capability=NULL` omzeilt de tier-clause **volledig** en kan first-come claimen alsof tier niet bestond — ook na deze fix. Dit is bewuste backward-compat, niet een bug. Maar **strikte tier-preferentie** geldt pas zodra elke actieve worker een non-null capability rapporteert. Mitigatie + verificatie tijdens rollout:
+  ```sql
+  SELECT instance_id, capability, last_seen_at
+  FROM claude_workers
+  WHERE last_seen_at > NOW() - INTERVAL '2 minutes'
+    AND capability IS NULL;
+  ```
+  Verwacht: 0 rijen. Phase B-rollout heeft alle drie productie-hosts (mac=MEDIUM_P, max2=HIGH_P, scrum4me-server=LOW_P) inmiddels op non-null gezet — `worker_capability=` env-var loopt via `entrypoint.sh` + `run-one-job.ts:readWorkerCapability`. Als er toch nog actieve NULL-rijen opduiken: identificeer de bron-worker (geen `WORKER_CAPABILITY` in z'n env) en zet 'm vóór de fix-rollout.
+- **PostgreSQL CASE-expression semantiek.** Een lange CASE-clause is iets duurder dan een directe enum-vergelijking. Voor een subquery die per claim-poging één keer evalueert is dit verwaarloosbaar; geen index nodig. (Codex r1 P3.2 bevestigt: drie WHEN-branches in een per-claim-subquery zijn negligible — geen blocker.)
 
 ## Out of scope
 
@@ -284,3 +322,4 @@ Rollout-volgorde na merge:
 - Migratie van de enum-volgorde in Prisma-schema (Optie B — actief afgewezen).
 - Een SQL-functie maken voor priority-mapping. YAGNI tot er een tweede call-site is.
 - Capability-tags op jobs (`required_capability`) — die werken al via `buildClaimableJobWhereFragment` en raakt niet door deze fix.
+- **Dedicated DB integration test** in CI (vereist `S4M_TEST_DATABASE_URL` setup). De tekstuele regression-tests (Step 2) + de post-merge canary (Step 5) dekken het primaire pad af; een CI integration-test met live Postgres CASE-evaluatie is nice-to-have voor later, geen blocker voor deze PR. (Codex r1 P3.2 bevestigt: "DB integration test is optional, not required for this PR".)
