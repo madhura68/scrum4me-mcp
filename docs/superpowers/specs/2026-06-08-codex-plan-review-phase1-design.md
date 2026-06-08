@@ -55,7 +55,7 @@ Hergebruikt de bestaande job-levenscyclus volledig; alleen de **promptselectie**
 enqueue (workers-UI of seed-script)
   → ClaudeJob{ kind: IDEA_REVIEW_PLAN, runtime: CODEX, source: MANUAL|SYSTEM, status: QUEUED }
   → agent-codex claimt        [runtime-filter: wait-for-job.ts:362 — parameterized cj.runtime = ${input.runtime}::AgentRuntime]
-  → wait_for_job payload      [IDEA_REVIEW_PLAN-tak: wait-for-job.ts:870-943 → idea/plan_md/grill_md/doc_index/worktree]
+  → wait_for_job payload      [IDEA_REVIEW_PLAN-tak: wait-for-job.ts:895-968 → idea/plan_md/grill_md/doc_index/worktree]
   → runner kiest prompt       [getKindPromptText(ctx.kind, runtime) → codex-variant]   ← NIEUW (runtime-arg)
   → codex exec                [buildCodexArgs, Phase 0]
   → 3 rondes review+herschrijf → update_idea_plan_md per ronde      [bestaande tool]
@@ -71,7 +71,7 @@ enqueue (workers-UI of seed-script)
 | `IDEA_REVIEW_PLAN`-kind | `prisma/schema.prisma:149` (`ClaudeJobKind`) | bestaat |
 | Claude-prompt | `src/prompts/idea/review-plan.md` | bestaat (3-ronde + `ask_user_question`-gate) |
 | Promptselectie | `src/lib/kind-prompts.ts:34` `getKindPromptText(kind)`, `:46` `getIdeaPromptText(kind)` | **kind-only** (cache op kind) |
-| Payload-assembly | `src/tools/wait-for-job.ts:870-943` | bestaat (idea/grill/plan/worktree) |
+| Payload-assembly | `src/tools/wait-for-job.ts:895-968` (`prompt_text: getIdeaPromptText(job.kind)` op `:957`) | bestaat (idea/grill/plan/worktree) |
 | Sink | `src/tools/update-idea-plan-reviewed.ts:17-126`, geregistreerd `src/register.ts:49` | bestaat |
 | Runtime-routing | `AgentRuntime` (`schema.prisma:29-32`), `ClaudeJob.runtime` (`:481`), claim-filter (`wait-for-job.ts:362`), `getWorkerRuntimeFromEnv` (`src/worker-runtime.ts`) | bestaat (Phase 0) |
 | Codex-substrate-libs | `src/lib/codex-args.ts`, `src/lib/codex-output.ts`, `scripts/seed-codex-canary.ts` | bestaat (PR #41, `a9b6125`) |
@@ -89,11 +89,11 @@ enqueue (workers-UI of seed-script)
 
 ### scrum4me-docker — *inspanning S · risico L*
 - **`bin/run-one-job.ts`** — geef de runtime door aan de promptselectie: `getKindPromptText(ctx.kind, runtime)` (Phase 0's `runtime`-var bestaat al in deze functie; ~1 regel).
-- **Planning-check (P1 voor het plan):** bevestig of de **runner** de prompt kiest via `getKindPromptText(ctx.kind)` (zoals de Phase 0-plan-grounded-facts stellen) **of** dat `payload.prompt_text` uit `getFullJobContext`/`getIdeaPromptText` gezaghebbend is. Het runtime-arg moet landen op de daadwerkelijk-gebruikte selectie. Als beide bestaan: maak ze consistent (beide runtime-bewust) of kies de runner-prompt als bron.
+- **Promptbron — RESOLVED (codex-review P1-2):** de **docker-runner is gezaghebbend**. `origin/master:bin/run-one-job.ts:364` bouwt `promptText = getKindPromptText(ctx.kind).replace('$PAYLOAD_PATH', …)` en geeft dat aan `buildCodexArgs({ promptText, cwd })` voor CODEX. `payload.prompt_text` (uit `getIdeaPromptText`, `wait-for-job.ts:957`) wordt door deze runner **niet** gebruikt. De Phase 1-fix is dus: `run-one-job.ts` → `getKindPromptText(ctx.kind, runtime)`. `getIdeaPromptText`/`payload.prompt_text` runtime-bewust maken is optioneel (consistentie/documentatie), niet de runner-bron.
 
 ### scrum4me-workers — *inspanning S · risico laag*
 - **`lib/manual-jobs/templates.ts:343`** — `allowedRuntimes: [DEFAULT_MANUAL_RUNTIME, 'codex']` voor **alléén** de `idea-review-plan`-template (id `:336`, kind `:341`); `defaultRuntime` blijft claude.
-- **`actions/manual-jobs.ts:98`** — codex-snapshot-override (workers-only, géén `@shared`-wijziging): na `snapshotFromConfig(resolveJobConfig({kind: draft.kind}, product))`, bij `draft.runtime === 'CODEX'` overschrijf `model_id` naar een codex-label (`'codex-default'`). `ClaudeJob.model_id` is een vrije `String?` (`schema.prisma:496`) → geen migratie. Spiegel dezelfde override in `actions/orchestrator-jobs.ts:104` **niet** (orchestrator-jobs zijn PLAN_CHAT/claude — buiten Phase 1-scope).
+- **`actions/manual-jobs.ts:98`** — codex-snapshot-override (workers-only, géén `@shared`-wijziging). `snapshotFromConfig(resolveJobConfig(...))` geeft **`requested_model`/`requested_thinking_budget`/`requested_permission_mode`** terug (`job-config.ts:253-259`) — **niet** `model_id`. Override daarom het **`requested_model`** in het snapshot-object: `const snapshot = { ...snapshotFromConfig(resolveJobConfig({ kind: draft.kind }, product)), ...(draft.runtime === 'CODEX' ? { requested_model: 'codex-default' } : {}) }`. **Schrijf géén fake `model_id`** — dat is het runtime/usage-veld dat de worker zet met token-tellingen (`wait-for-job.ts:752-759`), niet de queue-time config-snapshot. `requested_model` is een vrije `String` → geen migratie. Test: CODEX queue't met `requested_model: 'codex-default'`, CLAUDE blijft byte-identiek. Orchestrator-jobs (`orchestrator-jobs.ts:104`) blijven buiten scope (PLAN_CHAT/claude). (codex-review P1-1)
 - **`SCRUM4ME_ENABLE_CODEX_WORKERS=true`** op de workers-env (gate-check in `lib/codex-runtime-gate.ts`).
 - **Niet** wijzigen: de codex-hard-block (`manual-jobs.ts:87-88`) — besluit 3.
 
@@ -106,6 +106,7 @@ enqueue (workers-UI of seed-script)
 **Vervangt de approval-gate door een autonoom verdict** (besluit 1/2):
 - **Beslisregel:** `approval_status = 'approved'` ⇔ het plan is **geconvergeerd** én er staan **geen `error`-severity issues** open na de laatste ronde; anders `'rejected'`.
 - Roept `update_idea_plan_reviewed({ idea_id, review_log, approval_status })` met dat verdict; daarna `update_job_status({ job_id, status: 'done', summary })`.
+- **Verdict-sync (codex-review P2-3):** zet het geneste `review_log.approval.status` gelijk aan het top-level `approval_status`. De sink transitioneert de idee-status op `approval_status` (`update-idea-plan-reviewed.ts:17-40`), maar de `IdeaLog`-summary leest `review_log.approval.status` (`:114-118`) — zonder sync zegt het auditlog "Status: pending" terwijl de idee `PLAN_REVIEWED` is. Borg dit in het prompt-output-contract + een canary-assertie.
 - **Geen** `ask_user_question`/`get_question_answer`/`list_open_questions`/`cancel_question` in de codex-flow.
 
 **Codex-portable** (verschillen met de Claude-prompt):
@@ -138,6 +139,7 @@ Phase 0 draait al (§1); de canary bewijst alleen de **Phase 1-prompt + de schri
 - job → `DONE`;
 - idea → `PLAN_REVIEWED` (of `PLAN_REVIEW_FAILED` mét reden in `plan_review_log`);
 - `plan_review_log` gevuld (rondes + convergence + summary);
+- `review_log.approval.status` == top-level `approval_status` — géén "Status: pending" in het `IdeaLog`-auditlog bij een approved review (codex-review P2-3);
 - `plan_md` is **substantieel herzien** t.o.v. de (rijke) seed-versie — zichtbare `update_idea_plan_md`-schrijf, géén triviale convergentie-op-ronde-0;
 - 0 auth/MCP-fouten in de run-log; **geen hang** (geen wachten op een mens);
 - de Claude-`worker-idea`-fleet liep ongestoord door.
@@ -149,7 +151,7 @@ Phase 0 draait al (§1); de canary bewijst alleen de **Phase 1-prompt + de schri
 ## 9. Error-handling (codex-prompt)
 
 - **Plan parse-fout** → `update_job_status('failed', error: 'plan_parse_failed')`, stop.
-- **`update_idea_plan_md` mislukt** → log in `review_log`, ga door met de review (niet fataal) — gelijk aan de Claude-prompt.
+- **`update_idea_plan_md` mislukt** → leg vast als een **`error`-severity issue** in `review_log` en **blokkeer `approved`** (codex-review P2-4). Phase 1 bewijst juist de schrijftools-keten; een review die autonoom approve't terwijl de plan-herschrijf nooit persisteerde is een false-positive. Bij herhaalde/laatste-ronde-schrijffout: roep `update_idea_plan_reviewed(..., approval_status: 'rejected')` met de faal-reden, of faal de job. (De §8-canary-assertie "plan_md substantieel herzien" blijft de na-controle.)
 - **Geen vraag-timeout-pad meer** (gate verwijderd). Bij een onverwacht onvolledige review: schrijf het partiële `review_log` weg via `update_idea_plan_reviewed` met `approval_status: 'rejected'`.
 - Runner-niveau (Phase 0): token-expiry/overload via `classifyCodexOutput` → exit 3/4 + rollbackClaim (ongewijzigd).
 
@@ -192,3 +194,4 @@ Elke PR: codex-gereviewd plan/diff via de s4m-queue (`push --to mac:codex --type
 
 - **scrum4me-server:claude (154) — operationeel: GO ✅** (2026-06-08, msg d081c386). Getoetst tegen deployed `origin/main 247c85e` = de live HEAD; geen P1. Verwerkt: Phase-0-live-correctie (§1), rijk seed-`plan_md` (§4/§8, P2-2), claimer-tier-notitie (§8, P2-1), no-op rescale (§8, P3-1), UI-gate-env (§8, P3-2), build-zonder-`--target` (§12, P3-3), parameterized claim-filter-nit (§3, P3-4), product_id-advies (§8).
 - **mac:codex — bron-correctheid: opnieuw aangevraagd.** Eerste aanvraag faalde op scoping: `cwd` was alleen de mcp-worktree, terwijl de verificatie ook `scrum4me-workers`-bestanden raakt, en codex werkt strikt binnen de gedeclareerde `cwd`. Heraanvraag met `cwd` = de gemeenschappelijke parent (`/Users/janpetervisser/Development`) zodat zowel de mcp-worktree als `scrum4me-workers` leesbaar zijn.
+- **mac:codex — bron-correctheid round-1: NO-GO → fixes verwerkt** (msg 74573d76). 2× P1 (workers `requested_model` i.p.v. fake `model_id`; runner-promptbron RESOLVED → `getKindPromptText(ctx.kind, runtime)`), 2× P2 (`review_log.approval.status`-sync; plan-write-fout blokkeert `approved`), 1× P3 (ankers → `wait-for-job.ts:895-968`, `run-one-job.ts:364`). Alle 5 geverifieerd tegen de bron en verwerkt. Codex gaf conditionele GO ("GO after those edits"); round-2-confirm aangevraagd.
