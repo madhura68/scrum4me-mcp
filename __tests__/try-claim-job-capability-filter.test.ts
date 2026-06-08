@@ -27,7 +27,9 @@ describe('tryClaimJob with caller capability', () => {
       .flat()
       .filter((v): v is { strings: string[] } => v && typeof v === 'object' && 'strings' in v)
     const text = fragments.flatMap((f) => f.strings).join(' ')
-    expect(text).toMatch(/w\.capability\s*>/i)
+    // 2026-06-08: tier-fragment uses CASE-priority instead of bare w.capability > selfCapability
+    // (see docs/superpowers/plans/2026-06-08-tier-preference-enum-ordinal-fix.md).
+    expect(text).toMatch(/CASE w\.capability\s+WHEN 'HIGH_P' THEN 3\s+WHEN 'MEDIUM_P' THEN 2\s+WHEN 'LOW_P' THEN 1\s+END/i)
     expect(text).toMatch(/k\.status IN \('CLAIMED','RUNNING'\)/i)
   })
 
@@ -37,6 +39,8 @@ describe('tryClaimJob with caller capability', () => {
       .flat()
       .filter((v): v is { strings: string[] } => v && typeof v === 'object' && 'strings' in v)
     const text = fragments.flatMap((f) => f.strings).join(' ')
-    expect(text).not.toMatch(/w\.capability\s*>/i)
+    // Tier-fragment must be omitted entirely (Prisma.empty) when caller capability is null —
+    // post-fix the marker is the CASE-priority shape, not the bare comparison.
+    expect(text).not.toMatch(/CASE w\.capability\s+WHEN 'HIGH_P'/i)
   })
 })

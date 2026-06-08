@@ -378,9 +378,25 @@ export type HigherTierIdleInput = {
  * claim query. Excludes claims when any other alive idle worker with strictly
  * higher capability exists for the same user + runtime.
  *
+ * Priority mapping (NOT the enum ordinal — see below):
+ *   HIGH_P   = 3
+ *   MEDIUM_P = 2
+ *   LOW_P    = 1
+ *
+ * Why explicit CASE instead of `w.capability > selfCapability`:
+ * The WorkerCapability enum is declared HIGH_P, MEDIUM_P, LOW_P (descending
+ * priority), which gives Postgres-ordinals HIGH_P=1, MEDIUM_P=2, LOW_P=3 —
+ * exactly inverted vs. semantic priority. A direct `>` comparison therefore
+ * finds LOWER-tier workers, not higher ones (the 2026-06-08 canary bug; see
+ * docs/superpowers/plans/2026-06-08-tier-preference-enum-ordinal-fix.md).
+ *
  * Null-capability semantics: if either self or peer has NULL capability, the
- * comparison `w.capability > NULL` yields NULL and the row drops out —
- * preserving today's first-come behaviour until both sides are populated.
+ * CASE evaluates to NULL (no WHEN matched) and the comparison drops the row —
+ * preserving the pre-fix "legacy worker without capability blocks no-one"
+ * behaviour. Note: the call-site in tryClaimJob also bypasses this fragment
+ * entirely when selfCapability === null (see wait-for-job.ts ~L586), so
+ * active legacy NULL workers can still first-come claim until rollout
+ * populates capability everywhere.
  */
 export function buildHigherTierIdleFragment(input: HigherTierIdleInput): Prisma.Sql {
   return Prisma.sql`
@@ -390,7 +406,16 @@ export function buildHigherTierIdleFragment(input: HigherTierIdleInput): Prisma.
       WHERE w.user_id = ${input.selfUserId}
         AND w.runtime = ${input.selfRuntime}::"AgentRuntime"
         AND w.instance_id <> ${input.selfInstanceId}
-        AND w.capability > ${input.selfCapability}::"WorkerCapability"
+        AND CASE w.capability
+              WHEN 'HIGH_P' THEN 3
+              WHEN 'MEDIUM_P' THEN 2
+              WHEN 'LOW_P' THEN 1
+            END
+          > CASE ${input.selfCapability}::"WorkerCapability"
+              WHEN 'HIGH_P' THEN 3
+              WHEN 'MEDIUM_P' THEN 2
+              WHEN 'LOW_P' THEN 1
+            END
         AND w.last_seen_at > NOW() - INTERVAL '30 seconds'
         AND (w.last_quota_pct IS NULL OR w.last_quota_pct >= COALESCE(u.min_quota_pct, 0))
         AND NOT EXISTS (
