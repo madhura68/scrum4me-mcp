@@ -22,14 +22,13 @@ parent: "Impact report — Codex-als-worker voor alle reviews §9 (scrum4me-work
 3. **Codex-enqueue-override-parity = uitgesteld**: de bestaande harde block "geen codex-worker online → kan niet queuen" (`manual-jobs.ts:87-88`) blijft in Phase 1 staan; de canary heeft toch een online `agent-codex`. Parity-override is een latere, op zichzelf staande workers-tweak.
 4. **Cross-repo PR-volgorde = mcp → docker → workers → canary** (zie §12).
 
-## 1. Voorwaarde (Phase 0 — hard)
+## 1. Voorwaarde (Phase 0 — VERVULD)
 
-Phase 1's **executie-canary** kan pas draaien als de Phase 0-substrate live is op 154:
-- `bin/run-one-job.ts` heeft de runtime-tak (spawnt `codex` voor `runtime=CODEX`, `buildCodexArgs`/`classifyCodexOutput` bedraad).
-- De `agent-codex`-service draait (multi-stage image, `config.toml` met `[mcp_servers.scrum4me]`, dedicated `/home/agent/.codex`-mount met `auth.json`).
-- De Phase 0-canary (read-only `PLAN_CHAT` → `list_products`) is **DONE**.
+Phase 1 bouwt op de Phase 0-substrate. **Status: LIVE** (geverifieerd 2026-06-08 via de scrum4me-server:claude operationele review + docker `origin/master`):
+- Phase 0 is gemerged op `scrum4me-docker` master (`ee8c647`): multi-stage Dockerfile (`base`/`codex`/`claude`), `agent-codex`-service (`docker-compose.yml:106`, `SCRUM4ME_WORKER_RUNTIME: CODEX`), runtime-tak in `bin/run-one-job.ts`, `config.toml` met `[mcp_servers.scrum4me]` + env_vars-forwarding, dedicated `/home/agent/.codex`-mount.
+- `agent-codex` draait op **154 (LOW_P)** én **max2 (HIGH_P)**; de read-only Phase 0-canary (`PLAN_CHAT` → `list_products`) is **DONE** (geclaimd door codex op max2).
 
-Phase 1 mag **op papier** (spec + plan + code-PRs) nu, vóór Phase 0 live is; alleen de canary-stap (§8) is gegate.
+De §1-voorwaarde is dus **vervuld**: de Phase 1-canary (§8) kan draaien zodra de Phase 1-code-PRs (mcp/docker/workers) landen. (NB: dit corrigeert de eerdere aanname dat Phase 0 nog open stond — Phase 0 is afgerond sinds de vorige sessie.)
 
 ## 2. Scope
 
@@ -55,7 +54,7 @@ Hergebruikt de bestaande job-levenscyclus volledig; alleen de **promptselectie**
 ```
 enqueue (workers-UI of seed-script)
   → ClaudeJob{ kind: IDEA_REVIEW_PLAN, runtime: CODEX, source: MANUAL|SYSTEM, status: QUEUED }
-  → agent-codex claimt        [runtime-filter: wait-for-job.ts:362 `cj.runtime = CODEX`]
+  → agent-codex claimt        [runtime-filter: wait-for-job.ts:362 — parameterized cj.runtime = ${input.runtime}::AgentRuntime]
   → wait_for_job payload      [IDEA_REVIEW_PLAN-tak: wait-for-job.ts:870-943 → idea/plan_md/grill_md/doc_index/worktree]
   → runner kiest prompt       [getKindPromptText(ctx.kind, runtime) → codex-variant]   ← NIEUW (runtime-arg)
   → codex exec                [buildCodexArgs, Phase 0]
@@ -86,7 +85,7 @@ enqueue (workers-UI of seed-script)
   - `(IDEA_REVIEW_PLAN, CODEX)` → `idea/review-plan.codex.md`; **alle andere (kind, runtime)-combinaties → ongewijzigd** (default `CLAUDE`, bestaande paden).
   - `runtime` default `'CLAUDE'` zodat bestaande call-sites zonder arg identiek blijven.
 - **Tests (vitest)** — selectie: `(IDEA_REVIEW_PLAN, CODEX)` → codex-pad; `(IDEA_REVIEW_PLAN, CLAUDE)` en alle overige kinds → bestaande paden; default-arg = CLAUDE.
-- **Nieuw `scripts/seed-idea-review-codex-canary.ts`** — maakt/gebruikt een PLAN_READY-idee mét `plan_md` (+ grill-context) en een `IDEA_REVIEW_PLAN`/`CODEX`/`QUEUED`/`SYSTEM`-job. Patroon = `scripts/seed-codex-canary.ts`; alleen-inserts, geen deletes.
+- **Nieuw `scripts/seed-idea-review-codex-canary.ts`** — maakt een throwaway PLAN_READY-idee + een `IDEA_REVIEW_PLAN`/`CODEX`/`QUEUED`/`SYSTEM`-job. Patroon = `scripts/seed-codex-canary.ts`; alleen-inserts, geen deletes. **Het geseede `plan_md` + `grill_md` moeten substantieel en bewust-verbeterbaar zijn** (niet de quasi-lege Phase 0-seed), zodat de 3-ronde-herschrijf echt bijt en het GO-criterium "plan_md daadwerkelijk herzien" (§8) ondubbelzinnig is (154-review P2-2).
 
 ### scrum4me-docker — *inspanning S · risico L*
 - **`bin/run-one-job.ts`** — geef de runtime door aan de promptselectie: `getKindPromptText(ctx.kind, runtime)` (Phase 0's `runtime`-var bestaat al in deze functie; ~1 regel).
@@ -127,21 +126,23 @@ De autonome beslisregel mapt dus rechtstreeks op de bestaande binaire transitie;
 
 Geen nieuwe UI nodig. Het verdict landt op `Idea` (status + `plan_review_log`) en op de job (`source/runtime/summary` op het job-board). De job-runtime (`CODEX`) en het codex-snapshot-label tonen al via de bestaande job-board-/worker-insights-mappers.
 
-## 8. Canary & succescriteria (host 154, ná Phase 0)
+## 8. Canary & succescriteria (ná de Phase 1-PRs)
+
+Phase 0 draait al (§1); de canary bewijst alleen de **Phase 1-prompt + de schrijftools-keten** end-to-end.
 
 **Seed-first** (canary-discipline, net als Phase 0):
-1. `CANARY_PRODUCT_ID=<echt product op 154> npx tsx scripts/seed-idea-review-codex-canary.ts` → een `IDEA_REVIEW_PLAN`/`CODEX`/`QUEUED`-job tegen een PLAN_READY-idee met `plan_md`.
-2. `--scale agent-codex=1` (deployed compose). De codex-worker claimt (runtime=CODEX), reviewt + herschrijft, legt autonoom verdict vast.
+1. Seed centraal tegen de DB: `CANARY_PRODUCT_ID=cmopqumt9000004joksfaf3wc npx tsx scripts/seed-idea-review-codex-canary.ts` → een `IDEA_REVIEW_PLAN`/`CODEX`/`QUEUED`-job met een **rijk, verbeterbaar** `plan_md`+`grill_md`. (`cmopqumt9000004joksfaf3wc` = scrum4me-docker, ook in Phase 0 gebruikt, niet-verstorend; 154-review-advies.)
+2. Geen rescale nodig — `agent-codex` draait al op scale 1 op 154 én max2 (154-review P3-1). **Claimer-tier (154-review P2-1):** een centraal geseede CODEX-job wordt geclaimd door de eerste vrije `agent-codex` — doorgaans **max2 (HIGH_P)**, precies zoals de Phase 0-canary. Elke `agent-codex` bewijst de prompt; is 154-lokaal bewijs vereist, forceer dan via `required_capability=LOW_P` of pauzeer max2 tijdelijk.
 
 **GO ⇔ alle:**
 - job → `DONE`;
 - idea → `PLAN_REVIEWED` (of `PLAN_REVIEW_FAILED` mét reden in `plan_review_log`);
 - `plan_review_log` gevuld (rondes + convergence + summary);
-- `plan_md` is **daadwerkelijk herzien** (zichtbare `update_idea_plan_md`-schrijf t.o.v. de seed-versie);
+- `plan_md` is **substantieel herzien** t.o.v. de (rijke) seed-versie — zichtbare `update_idea_plan_md`-schrijf, géén triviale convergentie-op-ronde-0;
 - 0 auth/MCP-fouten in de run-log; **geen hang** (geen wachten op een mens);
 - de Claude-`worker-idea`-fleet liep ongestoord door.
 
-**Daarna UI-pad:** een admin queue't `idea-review-plan` met runtime=codex → identiek resultaat (bewijst template/gate/snapshot).
+**Daarna UI-pad:** zet `SCRUM4ME_ENABLE_CODEX_WORKERS=true` op de workers/web-env (gate in `lib/codex-runtime-gate.ts`; de seed-canary heeft dit niet nodig, het UI-pad wél — 154-review P3-2), dan queue't een admin `idea-review-plan` met runtime=codex → identiek resultaat (bewijst template/gate/snapshot).
 
 **NO-GO →** run-log vastleggen, fix-forward in de juiste repo (vrijwel zeker de codex-prompt), canary herhalen. Niet door naar fase 2 tot de canary `DONE` is.
 
@@ -172,7 +173,7 @@ Geen nieuwe UI nodig. Het verdict landt op `Idea` (status + `plan_review_log`) e
 ## 12. Cross-repo volgorde & PR-plan
 
 1. **mcp-PR** (`feat/codex-plan-review-phase1`): `review-plan.codex.md` + runtime-bewuste `getKindPromptText`/`getIdeaPromptText` + vitest + seed-script. Codex-review (s4m-queue) → merge.
-2. **docker-PR**: 1-regel runtime-doorgifte in `run-one-job.ts` (+ eventueel de prompt-bron-consolidatie uit §4). Pint `MCP_GIT_REF` op de mcp-branch tot die merget. Codex-review → merge.
+2. **docker-PR**: 1-regel runtime-doorgifte in `run-one-job.ts` (+ eventueel de prompt-bron-consolidatie uit §4). Pint `MCP_GIT_REF` op de mcp-branch tot die merget. **Build-gotcha (154-review P3-3):** bouw de `agent-codex`-service zónder een `--target`-flag (de target staat in de compose-service-def) en mét cache-bust, anders blijft de mcp-clone-laag gecached en faalt `docker compose build --target codex` op een unknown flag. Codex-review → merge.
 3. **workers-PR**: `idea-review-plan`-template `allowedRuntimes` + codex-snapshot-override + gate-env. Codex-review → merge.
 4. **Canary** op 154 (ná Phase 0 live): seed → UI. Gegate; NO-GO = fix-forward.
 
@@ -186,3 +187,8 @@ Elke PR: codex-gereviewd plan/diff via de s4m-queue (`push --to mac:codex --type
 - Claude's `IDEA_REVIEW_PLAN`-gedrag wijzigen (de mens-gate blijft voor Claude).
 - Runtime-aware `resolveJobConfig` in `@shared` + echte codex-model-ID's in het `ClaudeModel`-type.
 - Codex-enqueue-override-parity (`manual-jobs.ts:87-88`).
+
+## 14. Review-log
+
+- **scrum4me-server:claude (154) — operationeel: GO ✅** (2026-06-08, msg d081c386). Getoetst tegen deployed `origin/main 247c85e` = de live HEAD; geen P1. Verwerkt: Phase-0-live-correctie (§1), rijk seed-`plan_md` (§4/§8, P2-2), claimer-tier-notitie (§8, P2-1), no-op rescale (§8, P3-1), UI-gate-env (§8, P3-2), build-zonder-`--target` (§12, P3-3), parameterized claim-filter-nit (§3, P3-4), product_id-advies (§8).
+- **mac:codex — bron-correctheid: opnieuw aangevraagd.** Eerste aanvraag faalde op scoping: `cwd` was alleen de mcp-worktree, terwijl de verificatie ook `scrum4me-workers`-bestanden raakt, en codex werkt strikt binnen de gedeclareerde `cwd`. Heraanvraag met `cwd` = de gemeenschappelijke parent (`/Users/janpetervisser/Development`) zodat zowel de mcp-worktree als `scrum4me-workers` leesbaar zijn.
