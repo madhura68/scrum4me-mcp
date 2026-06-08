@@ -115,7 +115,7 @@ convergentie af (< 5% wijziging twee rondes achtereen). **Je bepaalt zelf het ve
 2. Herschrijf `plan_md` met de gevonden verbeteringen.
 3. Bereken `diff_pct = changed_lines / total_lines * 100`.
 4. Sla `plan_after` + `issues` + `score` + `diff_pct` op in `review_log.rounds[N]`.
-5. Persisteer via `mcp__scrum4me__update_idea_plan_md({ idea_id: <idea.id>, plan_md: <herziene tekst> })`.
+5. Persisteer via `mcp__scrum4me__update_idea_plan_md({ idea_id: <idea.id>, markdown: <herziene tekst> })` (het inputveld heet `markdown`, niet `plan_md` — `update-idea-plan-md.ts:27`).
    **Als deze call faalt**: log het als een `error`-severity issue in
    `review_log.rounds[N].issues` en zet `review_log.plan_write_failed = true`.
    Een schrijffout blokkeert `approved` (zie Verdict).
@@ -441,12 +441,46 @@ naar:
 ```
 (`runtime` is al in scope — Phase 0; bewezen door `if (runtime === 'CODEX')` op :367.)
 
-- [ ] **Step 2: Verify it loads under tsx** (geen docker tsc). Run:
+- [ ] **Step 1b: Publiceer `capabilities` op de worker-rij** (codex plan-review P1-3). De UI-enqueue-gate telt `claudeWorker.capabilities has <required_capability>` (`workers actions/manual-jobs.ts:200`), maar `run-one-job.ts:220` registreert de worker zónder de `capabilities`-array (alleen `capability`+`runtime`), terwijl `capabilities` wél naar `tryClaimJob` gaat (:249). Gevolg: een CODEX-review-job wordt in de UI geblokkeerd ondanks claimbare agents. `registerWorker` (`worker.ts:11,29`) én `startHeartbeat` (`heartbeat.ts:9,43`) accepteren `capabilities` al; `const capabilities = readWorkerCapabilities()` staat al op :204.
+
+Verander `registerWorker(...)` (origin/master:220) van:
+```ts
+    await registerWorker({ userId, tokenId, instanceId, hostname, pid: process.pid, capability, runtime })
+```
+naar:
+```ts
+    await registerWorker({ userId, tokenId, instanceId, hostname, pid: process.pid, capability, capabilities, runtime })
+```
+
+Verander `startHeartbeat(...)` (origin/master:224) van:
+```ts
+  const workerHeartbeat = startHeartbeat({
+    userId,
+    tokenId,
+    instanceId,
+    intervalMs: WORKER_HEARTBEAT_INTERVAL_MS,
+    runtime,
+  })
+```
+naar:
+```ts
+  const workerHeartbeat = startHeartbeat({
+    userId,
+    tokenId,
+    instanceId,
+    intervalMs: WORKER_HEARTBEAT_INTERVAL_MS,
+    capabilities,
+    runtime,
+  })
+```
+(Additief + voor beide runtimes correct: de rij krijgt een gevulde `capabilities`-array i.p.v. `[]`. De claim-mechaniek verandert niet — alleen de worker-rij adverteert nu z'n capabilities zodat de UI-gate matcht. Geen test raakt dit; de workers-test mockt `claudeWorker.count`.)
+
+- [ ] **Step 2: Optionele tsx-rooktest (niet-bindend — codex plan-review P3-5)** (geen docker tsc). Run:
 ```bash
 cd <docker-worktree>
 SCRUM4ME_WORKER_RUNTIME=CODEX node --import tsx --eval "import('./bin/run-one-job.ts').catch(e=>{console.error(String(e).slice(0,200));process.exit(0)})" 2>&1 | head -5
 ```
-Expected: importeert zonder syntax-/resolutie-fout (vroege exit op ontbrekende DB/auth-env is OK; `Cannot find module '/opt/scrum4me-mcp/...'` is verwacht op de mac — die paden bestaan alleen in de image). **Bindende gate: de canary (Task 8).**
+Informatief (niet-bindend): op de mac resolven de `/opt/scrum4me-mcp/...`-imports niet, dus een `Cannot find module`-fout is verwacht en géén falen. Deze stap vervangt geen gate. **De bindende gate is de canary (Task 8)** (of, indien gewenst, een container/image-smoke).
 
 - [ ] **Step 3: Commit + PR + codex-review + merge** (zelfde discipline als Task 4). De image-build pint `MCP_GIT_REF` op de mcp-branch tot Task 4 gemerged is; daarna `main`.
 ```bash
@@ -484,6 +518,10 @@ Maak een geisoleerde workers-worktree off `origin/main` (branch `feat/codex-plan
       runtime: 'CODEX',
       required_capability: 'review',
       status: 'DRAFT',
+      // idea-kinds vereisen ideaId uit launch_preview (manual-jobs.ts:44-60), anders
+      // faalt de RED-test op "Idea is verplicht" i.p.v. op requested_model (P1-2).
+      // mockIdeaFindFirst geeft al { id: 'idea-1' } in beforeEach.
+      launch_preview_json: { context: { ideaId: 'idea-1' } },
     })
     const { enqueueManualJobAction } = await import('@/actions/manual-jobs')
 
@@ -577,9 +615,9 @@ Dit draait op een fleet-host (154/max2) — niet de mac. Phase 0 is live; de can
 
 - [ ] **Step 1: Build de agent-codex-image** met `MCP_GIT_REF` op de Phase 1-mcp-ref. **Build-gotcha (spec §12 P3-3):** bouw de `agent-codex`-service **zonder** `--target`-flag (de target staat in de compose-service-def) en mét cache-bust — `docker compose build --target codex` faalt op een unknown flag, en zonder cache-bust blijft de mcp-clone-laag gecached.
 - [ ] **Step 2: Seed** — `CANARY_PRODUCT_ID=cmopqumt9000004joksfaf3wc npx tsx /opt/scrum4me-mcp/scripts/seed-idea-review-codex-canary.ts` → een `IDEA_REVIEW_PLAN`/`CODEX`/`QUEUED`-job met het rijke `plan_md`. (Product = scrum4me-docker, Phase-0-product, niet-verstorend.)
-- [ ] **Step 3: Laat `agent-codex` claimen** (draait al op scale 1 op 154 én max2; doorgaans claimt **max2 HIGH_P** — elke agent-codex bewijst de prompt; wil je 154-lokaal bewijs, forceer `required_capability=LOW_P` of pauzeer max2). Observeer de run-log.
+- [ ] **Step 3: Laat `agent-codex` claimen** (draait al op scale 1 op 154 én max2; doorgaans claimt **max2 HIGH_P** — elke agent-codex bewijst de prompt; wil je 154-lokaal bewijs, pauzeer max2 tijdelijk of gebruik een tijdelijke semantische tag bv. `review_154` — NIET `required_capability=LOW_P`, want `required_capability` filtert semantische tags, niet de tier HIGH_P/LOW_P; codex plan-review P2-4). Observeer de run-log.
 - [ ] **Step 4: GO ⇔ alle:** job → `DONE`; idea → `PLAN_REVIEWED` (of `PLAN_REVIEW_FAILED` mét reden); `plan_review_log` gevuld (rondes + convergence + summary); `review_log.approval.status` == `approval_status` (géén "Status: pending" in het `IdeaLog`); `plan_md` **substantieel herzien** t.o.v. de seed (zichtbare `update_idea_plan_md`-schrijf); 0 auth/MCP-fouten; geen hang; de Claude-`worker-idea`-fleet liep ongestoord door.
-- [ ] **Step 5: UI-pad** — met `SCRUM4ME_ENABLE_CODEX_WORKERS=true` queue't een admin de `idea-review-plan`-template met runtime=codex → identiek resultaat (bewijst template/gate/`requested_model`-snapshot).
+- [ ] **Step 5: UI-pad** — **prereq (codex plan-review P1-3):** de live `agent-codex`-worker-rij moet `review` adverteren in `capabilities` (= Task 5's registerWorker/startHeartbeat-fix + de fleet-env `SCRUM4ME_WORKER_CAPABILITIES` bevat `review`); verifieer met een query op `claude_workers` (bv. `capabilities @> '{review}'` voor de codex-worker), anders blokkeert de UI-gate ondanks claimbare agents. Daarna: met `SCRUM4ME_ENABLE_CODEX_WORKERS=true` queue't een admin de `idea-review-plan`-template met runtime=codex → identiek resultaat (bewijst template/gate/`requested_model`-snapshot).
 - [ ] **Step 6: NO-GO →** run-log vastleggen, fix-forward in de juiste repo (vrijwel zeker `review-plan.codex.md`), canary herhalen. Niet door naar fase 2 tot de canary `DONE` is.
 
 ---
@@ -591,3 +629,5 @@ Dit draait op een fleet-host (154/max2) — niet de mac. Phase 0 is live; de can
 **Placeholder-scan:** geen TBD/TODO. Elke code-/content-stap toont de volledige inhoud. Task 5 Step 2's tsx-load is best-effort op de mac (de `/opt/scrum4me-mcp`-imports resolven alleen in de image) — expliciet gemarkeerd, bindende gate = de canary.
 
 **Type-consistentie:** `getKindPromptText(kind, runtime: WorkerRuntime = 'CLAUDE')` (Task 2) wordt identiek aangeroepen in Task 5; `WorkerRuntime` = `'CLAUDE'|'CODEX'` (mcp) vs `'claude'|'codex'` (workers-template, Task 7) — bewust onderscheiden en beide correct toegepast; `requested_model` (Task 6) matcht `snapshotFromConfig`-output; de prompt-discriminators `Runtime: CODEX` / géén `ask_user_question` (Task 1) matchen de test-asserties (Task 2).
+
+**Plan-review (codex, round-1 NO-GO → verwerkt):** P1-1 `update_idea_plan_md({ idea_id, markdown })` (Task 1); P1-2 test-mock met `launch_preview_json.context.ideaId` (Task 6); P1-3 `capabilities` → `registerWorker`+`startHeartbeat` zodat de UI-gate de codex-worker telt (Task 5 Step 1b) + canary-verificatie (Task 8 Step 5); P2-4 host forceren via pauze/semantische-tag i.p.v. `required_capability=LOW_P` (Task 8 Step 3); P3-5 tsx-rooktest expliciet niet-bindend (Task 5 Step 2). Alle tegen de bron geverifieerd; round-2-confirm aangevraagd.
