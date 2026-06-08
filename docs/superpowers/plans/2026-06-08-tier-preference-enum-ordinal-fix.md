@@ -259,18 +259,20 @@ git add src/tools/wait-for-job.ts __tests__/build-higher-tier-idle-fragment.test
 git commit -m "fix(claim): tier-preferentie gebruikt CASE-priority i.p.v. enum-ordinal
 
 WorkerCapability is gedeclareerd HIGH→MEDIUM→LOW (aflopende prioriteit),
-zodat Postgres HIGH_P als kleinste ordinal ziet. buildHigherTierIdleFragment's
-'w.capability > selfCapability' was daardoor altijd een no-op — de subquery
-vond nooit een hogere-tier worker, en first-come-wins via SKIP LOCKED.
-Vervang door expliciete CASE-priority (HIGH=3, MEDIUM=2, LOW=1) zodat de
-fragment robuust is tegen enum-declaratie-volgorde en matched met de doc.
+zodat Postgres HIGH_P als kleinste ordinal ordent. buildHigherTierIdleFragment's
+'w.capability > selfCapability' was daardoor semantisch omgekeerd:
+LOW_P-callers werden nooit geblokkeerd (toevallig correct), maar
+HIGH_P/MEDIUM_P-callers werden actief geblokkeerd door lager-tier idle
+workers. Vervang door expliciete CASE-priority (HIGH=3, MEDIUM=2, LOW=1)
+zodat de fragment robuust is tegen enum-declaratie-volgorde en matched
+met de doc-comment + functienaam.
 
 Bug-evidence: PLAN_CHAT CODEX-canary cmq523mlc0002mooixjp3xabn werd
 geclaimd door 154's LOW_P codex terwijl max2's HIGH_P codex idle was
 (2026-06-08 10:16:51 UTC, diagnose s4m-queue bd8a083d).
 
 Plan: docs/superpowers/plans/2026-06-08-tier-preference-enum-ordinal-fix.md
-(codex-review gepland)."
+(plan r2, codex round-1 GO na P2-edits)."
 git push -u origin fix/tier-preference-enum-ordinal
 ```
 
@@ -297,8 +299,9 @@ Rollout-volgorde na merge:
 ## Verification (rolled up)
 
 - Diagnose bewijst de bug (s4m-queue `bd8a083d`). **Gate.**
-- tsc + vitest tier-test 6/6 + volledige suite groen (Step 3). **Gate.**
-- Codex r1 review GO (Step 4 voor PR-open). **Gate.**
+- Vitest tier-test (build-higher-tier-idle-fragment) en de aangepaste try-claim-job-capability-filter test groen + volledige suite groen (Step 3). **Gate.** TSC heeft pre-existing errors elders in `wait-for-job.ts` die niet door deze PR worden geïntroduceerd of opgelost (bevestigd door tsc-run op `origin/main` pre-fix); die zijn dus niet onderdeel van deze gate.
+- Codex r1 plan-review GO na P2-edits (Step 4 voor PR-open). **Gate.**
+- Codex PR-code-review GO post-merge (geen P1/P2; twee P3 doc-hygiene-notes in deze update verwerkt). **Gate.**
 - Post-merge canary: re-run de seed van 2026-06-08 10:16 en verwacht dat de HIGH_P-replica claimt, niet de LOW_P (Step 5). **Final gate.**
 
 ## Risks
