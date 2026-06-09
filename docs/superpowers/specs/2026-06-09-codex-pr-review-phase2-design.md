@@ -52,7 +52,7 @@ Phase 2 kan dus volledig op de huidige `origin/main` (mcp `eeee8c7`) + master ge
 enqueue (workers-UI /jobs/new: pr_url + instructie)
   → ClaudeJob{ kind: PR_REVIEW, runtime: CODEX, source: MANUAL, status: QUEUED, pr_url }
   → agent-codex claimt        [runtime-filter + CLAIMABLE_STANDALONE_KINDS (wait-for-job.ts:320 → + 'PR_REVIEW')]
-  → getFullJobContext         [NIEUWE PR_REVIEW-tak: parseForgejoPrUrl + fetchPrDiff + getPullRequestState + plan/acceptatie-resolutie]
+  → getFullJobContext         [NIEUWE PR_REVIEW-tak, op kind VOOR de MANUAL-branch (wait-for-job.ts:775): parseForgejoPrUrl + fetchPrDiff + PR-meta + plan/acceptatie-resolutie]
   → payload.json              { pr{url,owner,repo,index,meta}, pr_diff, linked_plan?, doc_index, config }
   → runner kiest prompt       [getKindPromptText('PR_REVIEW', 'CODEX') → pr/review.codex.md]   (runner gezaghebbend, Phase 1)
   → codex exec                [GEEN worktree-attach — read-only]
@@ -88,11 +88,11 @@ enqueue (workers-UI /jobs/new: pr_url + instructie)
 - **Nieuw `src/prompts/pr/review.codex.md`** — codex-portable PR-review-prompt (zie §5).
 - **`src/lib/kind-prompts.ts`** — twee entries: `KIND_TO_PROMPT_PATH.PR_REVIEW = 'pr/review.md'` (Claude-fallback/placeholder) en `RUNTIME_PROMPT_OVERRIDES.CODEX.PR_REVIEW = 'pr/review.codex.md'`. `getKindPromptText` is al runtime-bewust; geen handtekening-wijziging. **Besluit voor de plan-fase:** lever een dunne `pr/review.md` Claude-variant zodat een per-ongeluk claude-enqueue niet leeg-draait (de template default + bedoeling is codex).
 - **`src/git/pr.ts`** — twee nieuwe helpers bovenop `callForgejo`/`parseForgejoPrUrl`/`requireToken`:
-  - `fetchPrDiff(prUrl)` → unified diff. Pin de bron bij implementatie: ofwel de raw `.diff`-media-endpoint via `forgejoFetch` (text/plain, niet-JSON), ofwel aggregeren uit `listPullRequestFiles` (JSON-patches). Voorkeur: raw `.diff` (compacter voor codex).
+  - `fetchPrDiff(prUrl)` → unified diff via de raw `.diff`-media-endpoint met **`forgejoFetch`** (text/plain — **niet** `callForgejo`, dat JSON parset; codex-review non-blocking). Fallback bij problemen: aggregeren uit `listPullRequestFiles` (JSON-patches).
   - `postPullRequestReview({ prUrl, event, body, commitId? })` → `requireToken()` + `callForgejo('POST', /repos/{owner}/{repo}/pulls/{index}/reviews, { body, event, commit_id? })`. `event` ∈ `{ APPROVED, REQUEST_CHANGES, COMMENT }` (exacte enum-strings tegen de live swagger pinnen; een foute waarde geeft 422 — de canary vangt dat).
 - **`src/tools/wait-for-job.ts`** —
-  - `CLAIMABLE_STANDALONE_KINDS` (`:320`) += `'PR_REVIEW'` zodat de claim-SQL een standalone PR_REVIEW-job (geen task/sprint) oppikt; en het standalone-pad rond `:587`/`:895` krijgt een PR_REVIEW-tak.
-  - **Nieuwe PR_REVIEW-tak in `getFullJobContext`** (`:681`): parse `job.pr_url` → `fetchPrDiff` + een PR-meta-call (`GET /pulls/{index}` voor titel/branches/head-sha; `getPullRequestState:264` levert de open/closed/merge-state — verifieer de exacte return-shape bij implementatie) + plan/acceptatie-resolutie (§7) → payload `{ pr, pr_diff, linked_plan?, doc_index, config }`. `prompt_text` mag runtime-neutraal blijven (de runner is gezaghebbend, net als Phase 1, `wait-for-job.ts:957`).
+  - `CLAIMABLE_STANDALONE_KINDS` (`:320`) += `'PR_REVIEW'` zodat de claim-SQL een standalone PR_REVIEW-job (geen task/sprint) oppikt. (De payload-tak zelf staat op kind vóór de MANUAL-branch — zie hieronder.)
+  - **Nieuwe PR_REVIEW-tak in `getFullJobContext`** (`:681`) — **plaats deze op kind vóór de generieke `if (job.source === 'MANUAL')`-branch** (`:775`, die op `:797-818` de generieke manual-payload returnt), ná de `config`/`doc_index`-setup. Een MANUAL PR_REVIEW zou anders die generieke branch raken en `pr`/`pr_diff`/`linked_plan` missen (codex-review P1). De tak: valideer `job.pr_url` → laad de manual-draft voor de review-instructie (zoals de MANUAL-branch via `loadManualIdeaContext`) → `fetchPrDiff` + een PR-meta-call (`GET /pulls/{index}` voor titel/branches/head-sha; `getPullRequestState:264` levert de merge-state — verifieer de return-shape bij implementatie) → plan/acceptatie-resolutie (§7) → payload `{ pr, pr_diff, linked_plan?, instruction, doc_index, config }`. `prompt_text` mag runtime-neutraal blijven (de runner is gezaghebbend, `wait-for-job.ts:957`).
 - **Nieuw `src/tools/post-pr-review.ts`** + registratie in `src/register.ts` — de sink (zie §6).
 
 ### scrum4me-docker — *inspanning S · risico L*
@@ -135,7 +135,7 @@ Nieuw `src/tools/post-pr-review.ts`, geregistreerd als MCP-tool `post_pr_review`
 
 Best-effort resolutie in de PR_REVIEW-tak van `getFullJobContext`, in volgorde:
 
-1. **Implementerende job:** `prisma.claudeJob.findFirst({ where: { pr_url }, orderBy: { created_at: 'desc' } })` → als gevonden: `plan_snapshot` (exact het plan dat de implementer gebruikte) + via `task_id` → `Task.implementation_plan` + de bovenliggende `Story.acceptance_criteria`.
+1. **Implementerende job** — zoek de job die deze PR heeft geopend, **exclusief de huidige review-job zelf**. De PR_REVIEW-job draagt dezelfde `pr_url` en is de nieuwste, dus een naïeve `findFirst({ where: { pr_url }, orderBy: created_at desc })` self-matcht en verliest het plan (codex-review P2). Filter op implementatie-dragers: `where: { pr_url, id: { not: job.id }, OR: [ { kind: 'TASK_IMPLEMENTATION', task_id: { not: null } }, { kind: 'SPRINT_IMPLEMENTATION', sprint_run_id: { not: null } } ] }`, nieuwste eerst. Accepteer dit pad **alleen** bij bruikbare plan-context (`plan_snapshot`, of via `task_id` → `Task.implementation_plan` + `Story.acceptance_criteria`, of sprint-task-snapshots); anders door naar (2).
 2. **PBI-koppeling:** anders `prisma.pbi.findFirst({ where: { pr_url } })` → gekoppelde plan-doc / acceptatie.
 3. **Geen koppeling:** `linked_plan` blijft leeg → de prompt reviewt op **diff + product-docs** en zet dat expliciet in de body.
 
@@ -145,7 +145,7 @@ Best-effort resolutie in de PR_REVIEW-tak van `getFullJobContext`, in volgorde:
 
 **Manual-enqueue-first** (bewijst meteen het echte pad, anders dan Phase 1's SYSTEM-seed):
 1. Maak een **wegwerp-PR** op een testrepo onder `git.jp-visser.nl` (binnen `FORGEJO_HOSTS`) met een kleine, bewust-verbeterbare diff.
-2. **Herbouw beide `agent-codex`-workers** naar de nieuwe mcp-`main` vóór de enqueue (canary-mechaniek, anders claimt een pre-PR_REVIEW-worker en faalt op een onbekend kind).
+2. **Herbouw beide `agent-codex`-workers** (154 + max2) naar de nieuwe mcp-`main` mét de PR_REVIEW-prompt + `post_pr_review`-sink, en **laat een oude codex-worker eerst uitsterven** vóór de enqueue (154-review P3) — anders claimt een pre-Phase-2-worker en faalt op een onbekend kind of een ontbrekende sink.
 3. Enqueue via de workers-UI (of een seed met `source=MANUAL`) een `PR_REVIEW`/`CODEX`-job met de `pr_url`. Claimer doorgaans max2 (HIGH_P).
 
 **GO ⇔ alle:**
@@ -183,7 +183,7 @@ Best-effort resolutie in de PR_REVIEW-tak van `getFullJobContext`, in volgorde:
 - **mcp (vitest):**
   - `kind-prompts`: `(PR_REVIEW, CODEX)` → `pr/review.codex.md`; `(PR_REVIEW, CLAUDE)` → `pr/review.md`; overige kinds ongewijzigd.
   - `pr.ts`: `fetchPrDiff` (Forgejo-call-shape + host/token) en `postPullRequestReview` (POST-pad + `event`-mapping + `requireToken`), met gemockte `callForgejo`/`forgejoFetch`.
-  - `getFullJobContext` PR_REVIEW-tak: payload-vorm + plan/acceptatie-resolutie incl. alle 3 fallbacks (job-koppeling, pbi-koppeling, geen koppeling).
+  - `getFullJobContext` PR_REVIEW-tak: een **MANUAL** PR_REVIEW-job retourneert `pr`/`pr_diff`/`linked_plan` (níet de generieke manual-payload — borgt de plaatsing vóór de MANUAL-branch, codex-review P1); plan/acceptatie-resolutie met **current-job-self-match uitgesloten** + task-PR + sprint-PR + pbi-fallback + geen-koppeling (codex-review P2).
   - `post_pr_review`-sink: happy-path (post + summary-trace), `event`-mapping, **fail-on-Forgejo-error**, ownership-guard.
   - claim: `PR_REVIEW` in `CLAIMABLE_STANDALONE_KINDS` → een standalone PR_REVIEW-job is claimbaar.
 - **workers (vitest):** `pr-review`-template + enqueue (codex `requested_model`-override, `pr_url` → job, capability-gate, geen idea-binding-eis).
@@ -212,4 +212,8 @@ Elke PR: codex-gereviewd plan/diff via de s4m-queue (`push --to mac:codex --type
 
 ## 14. Review-log
 
-*(Nog te vullen na de s4m-queue-review door codex(mac) + scrum4me-server:claude(154) en de gebruikers-review-gate.)*
+- **scrum4me-server:claude (154) — operationele verificatie: GO ✅** (2026-06-09, msg 23667835). Getoetst tegen de deployed mcp-clone op 154 (`/srv/scrum4me/repos/scrum4me-mcp` @ `eeee8c7`) + het live schema. Alle 5 load-bearing aannames bevestigd met regelnummers: `ClaudeJob.plan_snapshot:505`/`pr_url:509`, done-handler MANUAL-exemptie `update-job-status.ts:738`, `CLAIMABLE_STANDALONE_KINDS` `wait-for-job.ts:320` (mist PR_REVIEW — correct), Forgejo-client + PR-helpers, runtime-bewuste `getKindPromptText:42`. P3 (niet-blokkerend): dubbel-rebuild + oude-codex-laten-uitsterven vóór de canary-seed → verwerkt in §8.
+- **mac:codex — bron-correctheid round-1: NO-GO → fixes verwerkt** (msg 75c0b768). 2 findings, beide geverifieerd tegen de bron en gegrond:
+  - **P1:** een MANUAL PR_REVIEW raakt de generieke `if (job.source === 'MANUAL')`-branch (`wait-for-job.ts:775`, return `:797-818`) vóór de kind-specifieke takken → mist `pr`/`pr_diff`/`linked_plan`. Fix: de PR_REVIEW-tak op kind plaatsen **vóór** de MANUAL-branch + de instructie uit de draft laden + een regressietest (§3/§4/§11).
+  - **P2:** de linked-job-lookup `findFirst({ where: { pr_url }, orderBy: created_at desc })` self-matcht de zojuist aangemaakte PR_REVIEW-job → verliest het plan. Fix: `id != job.id` + filter op implementatie-dragers (TASK_IMPLEMENTATION+task_id / SPRINT_IMPLEMENTATION+sprint_run_id) + alleen accepteren bij bruikbare plan-context, anders PBI-fallback (§7/§11).
+  - Niet-blokkerend bevestigd: Forgejo `CreatePullReview`/`event`-shape, MANUAL-done-gate `:738`, CLAIMABLE_STANDALONE-vereiste `:320`, `fetchPrDiff` via `forgejoFetch` (raw `.diff`, niet `callForgejo`) — verwerkt in §4. Round-2-confirm aangevraagd.
