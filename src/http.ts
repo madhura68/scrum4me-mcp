@@ -18,7 +18,8 @@ import { getAuth } from './auth.js'
 import { requestContext } from './request-context.js'
 import { INSTRUCTIONS } from './instructions.js'
 
-import { readFileSync } from 'node:fs'
+import type { Server } from 'node:http'
+import { readFileSync, realpathSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -116,6 +117,45 @@ function methodNotAllowed(_req: Request, res: Response): void {
 app.get('/mcp', methodNotAllowed)
 app.delete('/mcp', methodNotAllowed)
 
-app.listen(port, host, () => {
-  console.log(`scrum4me-mcp HTTP ${VERSION} listening on ${host}:${port}`)
-})
+function installGracefulShutdown(server: Server): void {
+  let closing = false
+  const shutdown = (signal: string): void => {
+    if (closing) return
+    closing = true
+    console.log(JSON.stringify({ event: 'shutdown', signal }))
+    const timer = setTimeout(() => {
+      // keep-alive/hangende verbindingen mogen de container-restart niet blokkeren
+      server.closeAllConnections?.()
+      process.exit(1)
+    }, 10_000)
+    timer.unref?.()
+    server.close(() => {
+      clearTimeout(timer)
+      process.exit(0)
+    })
+  }
+  for (const sig of ['SIGTERM', 'SIGINT'] as const) {
+    process.on(sig, () => shutdown(sig))
+  }
+}
+
+export function startHttpServer(): Server {
+  const server = app.listen(port, host, () => {
+    console.log(`scrum4me-mcp HTTP ${VERSION} listening on ${host}:${port}`)
+  })
+  installGracefulShutdown(server)
+  return server
+}
+
+// Start alleen wanneer dit bestand het entrypoint is (node dist/http.js / tsx src/http.ts),
+// niet bij import vanuit een test. realpathSync resolveert relatieve argv + symlinks.
+function isMainModule(): boolean {
+  try {
+    return Boolean(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
+  } catch {
+    return false
+  }
+}
+if (isMainModule()) {
+  startHttpServer()
+}
