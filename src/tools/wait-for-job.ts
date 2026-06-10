@@ -320,7 +320,7 @@ export type ClaimSqlFilterInput =
   | (ClaimFilterInput & { userId: string; hasProductScope: false; productId?: undefined })
   | (ClaimFilterInput & { userId: string; hasProductScope: true; productId: string })
 
-const CLAIMABLE_STANDALONE_KINDS = "('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'PLAN_CHAT', 'PR_REVIEW')"
+const CLAIMABLE_STANDALONE_KINDS = "('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'PLAN_CHAT', 'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW')"
 
 const CLAIMABLE_JOB_KIND_FILTER = `AND (
               (cj.kind IN ${CLAIMABLE_STANDALONE_KINDS} AND cj.source <> 'ORCHESTRATOR')
@@ -819,6 +819,56 @@ export async function getFullJobContext(jobId: string) {
       },
       pr_diff: typeof diff === 'string' ? diff : null,
       linked_plan: linkedPlan,
+      instruction,
+      product: {
+        id: job.product.id,
+        name: job.product.name,
+        repo_url: job.product.repo_url,
+        definition_of_done: job.product.definition_of_done,
+      },
+      repo_url: job.product.repo_url,
+      prompt_text: '', // runner is gezaghebbend: getKindPromptText(kind, runtime)
+    }
+  }
+
+  if (job.kind === 'SPEC_REVIEW') {
+    if (!job.doc_id) {
+      await rollbackClaim(job.id)
+      return null
+    }
+    const doc = await prisma.productDoc.findUnique({
+      where: { id: job.doc_id },
+      select: {
+        id: true,
+        slug: true,
+        folder: true,
+        title: true,
+        status: true,
+        current_revision: { select: { id: true, revision: true, content_md: true } },
+      },
+    })
+    if (!doc || doc.folder !== 'SPECS' || !doc.current_revision?.content_md) {
+      await rollbackClaim(job.id)
+      return null
+    }
+    const instruction = job.manual_drafts[0]?.prompt_md ?? ''
+    return {
+      job_id: job.id,
+      kind: 'SPEC_REVIEW',
+      source: job.source,
+      status: 'claimed',
+      config,
+      doc_index: docIndex,
+      spec_doc: {
+        id: doc.id,
+        slug: doc.slug,
+        folder: doc.folder,
+        title: doc.title,
+        status: doc.status,
+        revision_id: doc.current_revision.id,
+        revision: doc.current_revision.revision,
+        content_md: doc.current_revision.content_md,
+      },
       instruction,
       product: {
         id: job.product.id,
