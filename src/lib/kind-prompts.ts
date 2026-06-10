@@ -29,6 +29,7 @@ const KIND_TO_PROMPT_PATH: Partial<Record<ClaudeJobKind, string>> = {
   TASK_IMPLEMENTATION: 'task/implementation.md',
   SPRINT_IMPLEMENTATION: 'sprint/implementation.md',
   PLAN_CHAT: 'plan-chat/chat.md',
+  PR_REVIEW: 'pr/review.md',
 }
 
 // Runtime-specifieke overrides. Ontbreekt een (runtime, kind)-override, dan valt de
@@ -36,6 +37,7 @@ const KIND_TO_PROMPT_PATH: Partial<Record<ClaudeJobKind, string>> = {
 const RUNTIME_PROMPT_OVERRIDES: Partial<Record<WorkerRuntime, Partial<Record<ClaudeJobKind, string>>>> = {
   CODEX: {
     IDEA_REVIEW_PLAN: 'idea/review-plan.codex.md',
+    PR_REVIEW: 'pr/review.codex.md',
   },
 }
 
