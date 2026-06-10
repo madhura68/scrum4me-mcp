@@ -54,11 +54,11 @@ enqueue (workers-UI /jobs/new: spec-review met doc_slug | task-review met task)
   → agent-codex claimt        [CLAIMABLE_STANDALONE_KINDS += beide kinds]
   → getFullJobContext         [nieuwe kind-takken VÓÓR de MANUAL-branch (Phase 2-patroon)]
         SPEC_REVIEW: doc-content (huidige revisie) + doc-meta + doc_index + instruction
-        TASK_REVIEW: plan/acceptatie (+ sprint-executie-snapshot) + diff (compare-API) + doc_index + instruction
+        TASK_REVIEW: plan/acceptatie (+ sprint-executie-snapshot) + diff (compare web-.diff / PR-diff) + doc_index + instruction
   → runner kiest prompt       [getKindPromptText(kind, CODEX) → spec/review.codex.md | task/review.codex.md]
   → codex beoordeelt → verdict (APPROVED|CHANGES_REQUESTED|REJECTED) + findings
   → submit_review({ job_id, verdict, findings, summary })   ← NIEUWE generieke sink
-        → INSERT ReviewLog (target uit de job; doc-revisie vastgepind)
+        → UPSERT ReviewLog op review_job_id (target uit de job; doc-revisie vastgepind)
         → ClaudeJob.summary = verdict-trace (incl. findings-telling)
   → update_job_status(done)   [source=MANUAL → DONE zonder verify-gate, bewezen in Phase 2]
 ```
@@ -70,7 +70,7 @@ enqueue (workers-UI /jobs/new: spec-review met doc_slug | task-review met task)
 | ProductDoc + revisies + SPECS-folder | shared `prisma/schema.prisma:627-683` (`ProductDoc`, `ProductDocRevision`, folder-enum) | bestaat; doc-status is VarChar (draft/active/deprecated/archived); audit-precedent `ProductDocLog:780-795` |
 | Task + plan + acceptatie | `Task:413-448` (`implementation_plan`, status-enum mét ongebruikt `REVIEW`), `Story.acceptance_criteria` | bestaat |
 | Sprint-executie-snapshots | `SprintTaskExecution:551-575` (`plan_snapshot`, `base_sha`/`head_sha`, `verify_result`) | bestaat (Phase 2 gebruikt ze al in `resolvePrLinkedPlan`) |
-| Diff-bronnen | `ClaudeJob.base_sha/head_sha` (claim/push), `pr_url`; executie-sha's per sprint-task | betrouwbaar gevuld (verify-tools vullen lazy bij) |
+| Diff-bronnen | `ClaudeJob.base_sha/head_sha` (claim/push), `pr_url`; executie-sha's per sprint-task | live gemeten (154, 2026-06-10): executies DONE 56/56 = 100%; claude_jobs TASK_IMPLEMENTATION sha's ~36-42%, pr_url ~55% |
 | Verify-zelfcheck (≠ deze review) | `verify_task_against_plan`, `verify_sprint_task`, `checkVerifyGate` (`update-job-status.ts:261-305`) | bestaat — TASK_REVIEW is het onafhankelijke oordeel ernaast |
 | Sink-patroon (job-gebonden) | `src/tools/post-pr-review.ts` (Phase 2: kind-check + target-uit-job + fail-on-error + summary-trace) | model voor `submit_review` |
 | Payload-tak-patroon | `wait-for-job.ts` PR_REVIEW-tak vóór MANUAL-branch; `CLAIMABLE_STANDALONE_KINDS` | model voor beide takken |
@@ -94,18 +94,18 @@ enum ReviewVerdict {
 
 model ReviewLog {
   id                       String         @id @default(cuid())
-  review_job               ClaudeJob      @relation(fields: [review_job_id], references: [id], onDelete: Cascade)
-  review_job_id            String
+  review_job               ClaudeJob      @relation("JobReviewLog", fields: [review_job_id], references: [id], onDelete: Cascade)
+  review_job_id            String         @unique // 1 verdict-rij per review-job (idempotentie, §6)
   kind                     ClaudeJobKind
-  product                  Product        @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product                  Product        @relation("ProductReviewLogs", fields: [product_id], references: [id], onDelete: Cascade)
   product_id               String
-  doc                      ProductDoc?    @relation(fields: [doc_id], references: [id], onDelete: SetNull)
+  doc                      ProductDoc?    @relation("DocReviewLogs", fields: [doc_id], references: [id], onDelete: SetNull)
   doc_id                   String?
-  doc_revision             ProductDocRevision? @relation(fields: [doc_revision_id], references: [id], onDelete: SetNull)
+  doc_revision             ProductDocRevision? @relation("DocRevisionReviewLogs", fields: [doc_revision_id], references: [id], onDelete: SetNull)
   doc_revision_id          String?
-  task                     Task?          @relation(fields: [task_id], references: [id], onDelete: SetNull)
+  task                     Task?          @relation("TaskReviewLogs", fields: [task_id], references: [id], onDelete: SetNull)
   task_id                  String?
-  sprint_task_execution    SprintTaskExecution? @relation(fields: [sprint_task_execution_id], references: [id], onDelete: SetNull)
+  sprint_task_execution    SprintTaskExecution? @relation("ExecutionReviewLogs", fields: [sprint_task_execution_id], references: [id], onDelete: SetNull)
   sprint_task_execution_id String?
   verdict                  ReviewVerdict
   findings                 Json
@@ -119,9 +119,26 @@ model ReviewLog {
 }
 ```
 
-Plus op `ClaudeJob`: `doc_id String?` + relatie naar `ProductDoc` (SPEC_REVIEW-target; `task_id` bestaat al voor TASK_REVIEW). Meerdere `ReviewLog`-rijen per artefact = herreview-historie (geen overschrijven). `doc_revision_id` pint de beoordeelde revisie (de doc kan daarna muteren). Exacte veldnamen/relatie-stijl spiegelen aan de bestaande modellen bij implementatie; `onDelete`-keuzes: log blijft bestaan als het target verdwijnt (SetNull), verdwijnt mét de job (Cascade — de job is de bron).
+**Back-relaties + nieuwe FK (migration-ready — Prisma vereist beide kanten expliciet):**
 
-**Migrator-volgorde (Phase 2-les, bindend):** shared-PR → Scrum4Me-bump + migratie (`prisma migrate deploy`, ADD VALUEs idempotent waar relevant) → pas dán mcp/workers-rollout + worker-rebuilds.
+```prisma
+model ClaudeJob {
+  // …bestaand…
+  doc_id     String?
+  doc        ProductDoc? @relation("JobReviewDoc", fields: [doc_id], references: [id], onDelete: SetNull)
+  review_log ReviewLog?  @relation("JobReviewLog") // 1:1 — review_job_id is @unique
+}
+model Product             { review_logs ReviewLog[] @relation("ProductReviewLogs") }
+model ProductDoc          { review_logs ReviewLog[] @relation("DocReviewLogs")
+                            review_jobs ClaudeJob[] @relation("JobReviewDoc") }
+model ProductDocRevision  { review_logs ReviewLog[] @relation("DocRevisionReviewLogs") }
+model Task                { review_logs ReviewLog[] @relation("TaskReviewLogs") }
+model SprintTaskExecution { review_logs ReviewLog[] @relation("ExecutionReviewLogs") }
+```
+
+`ClaudeJob.doc_id` is het SPEC_REVIEW-target (`task_id` bestaat al voor TASK_REVIEW). **Idempotentie:** `review_job_id @unique` maakt de job-relatie 1:1 — één verdict-rij per review-job; `submit_review` doet een upsert op die sleutel (§6), dus een retry of dubbele aanroep dupliceert niet. **Herreview-historie** = meerdere review-jóbs per artefact, elk hun eigen rij — niet meerdere rijen per job. `doc_revision_id` pint de beoordeelde revisie (de doc kan daarna muteren; `current_revision_id` is in prod 100% gevuld — 154-meting 2026-06-10, alle folders 0 nulls). Relatie-namen expliciet zodat de migratie-PR Prisma-validatie haalt zonder ad-hoc-naamgeving; `onDelete`-keuzes: log blijft bestaan als het target verdwijnt (SetNull), verdwijnt mét de job (Cascade — de job is de bron).
+
+**Migrator-volgorde (Phase 2-les, bindend):** shared-PR → Scrum4Me-bump + migratie (`prisma migrate deploy`, ADD VALUEs idempotent waar relevant) → pas dán mcp/workers-rollout + worker-rebuilds. Daarbovenop de **consumer-regel** (§9): álle `claude_jobs`-lezers herdeployen vóór de eerste canary-seed.
 
 ## 5. Payload-takken (mcp, `getFullJobContext`)
 
@@ -132,18 +149,23 @@ Beide takken op kind, **vóór** de generieke MANUAL-branch (het Phase 2-patroon
 - Payload: `{ job_id, kind, source, status, config, doc_index, spec_doc: { id, slug, folder, title?, status, revision_id, content_md }, instruction, product, repo_url, prompt_text: '' }`. Instructie uit `manual_drafts[0].prompt_md` (Phase 2-patroon).
 
 **TASK_REVIEW** — vereist `job.task_id`:
-- Task + story-acceptatie + `implementation_plan` laden; recentste relevante implementatie-context: nieuwste `TASK_IMPLEMENTATION`-job van die task (`plan_snapshot`, `base_sha`/`head_sha`, `pr_url`) én nieuwste `SprintTaskExecution` van die task (`plan_snapshot`, `base_sha`/`head_sha`) — executie wint indien aanwezig en DONE.
-- **Diff-resolutie** (best-effort, in volgorde): (1) `fetchCompareDiff(repoRef, base_sha, head_sha)` via de Forgejo compare-API; (2) fallback `fetchPrDiff(pr_url)` (Phase 2-helper) als sha's ontbreken maar er een PR is; (3) geen van beide → `rollbackClaim` + null (een implementatie-review zonder diff is zinloos).
-- Payload: `{ …, task: { id, title, status, implementation_plan, acceptance_criteria }, impl: { plan_snapshot, base_sha, head_sha, pr_url, execution_id? }, task_diff, instruction, … }`.
+- Task + story-acceptatie + `implementation_plan` laden; recentste relevante implementatie-context: nieuwste `TASK_IMPLEMENTATION`-job van die task (`plan_snapshot`, `base_sha`/`head_sha`, `pr_url`) én nieuwste `SprintTaskExecution` van die task (`plan_snapshot`, `base_sha`/`head_sha`) — executie wint indien aanwezig en DONE. Vulgraad live (154-meting 2026-06-10): executies DONE 56/56 base+head+plan_snapshot = 100%; claude_jobs TASK_IMPLEMENTATION sha's ~36-42%, `pr_url` ~55% — de executie-voorkeur én de PR-fallback zijn dus beide load-bearing.
+- **Diff-repo (cross-repo-taken):** `task.repo_url ?? product.repo_url` (`Task.repo_url` is de gedocumenteerde override, schema:449-453; zelfde bucket-regel als de PR-hergebruik-logica, `update-job-status.ts:489`). Nooit alleen `product.repo_url` — een task kan een ander repo targeten en de review zou anders een verkeerd (of toevallig gelijknamig) bereik beoordelen.
+- **Diff-resolutie** (best-effort, in volgorde): (1) `fetchCompareDiff(repoRef, base_sha, head_sha)` — alléén bij `base_sha !== head_sha` (gelijke sha's = lege diff, in live data waargenomen → behandelen als "geen diff"); (2) fallback `fetchPrDiff(pr_url)` (Phase 2-helper, API + token — werkt ook op private repos) als (1) niet kan of faalt; (3) geen van beide → `rollbackClaim` + null (een implementatie-review zonder diff is zinloos).
+- Payload: `{ …, task: { id, title, status, implementation_plan, acceptance_criteria }, impl: { plan_snapshot, base_sha, head_sha, pr_url, execution_id?, diff_source }, task_diff, instruction, … }`.
 
-**Nieuwe helper `fetchCompareDiff`** in `src/git/pr.ts`: raw diff via de Forgejo compare-endpoint (`GET /repos/{owner}/{repo}/compare/{base}...{head}` met diff-accept/`.diff`-vorm) over `forgejoFetch` (text, niet `callForgejo`). De exacte endpoint-vorm/diff-media-variant bij implementatie pinnen tegen de live swagger (zoals het `event`-enum in Phase 2); de repo-ref komt uit `product.repo_url` (`parseForgejoRemoteUrl`). De canary vangt een verkeerde vorm.
+**Nieuwe helper `fetchCompareDiff`** in `src/git/pr.ts` — via de **web-route**, niet de API (live geverifieerd 2026-06-10 op Forgejo 15.0.2, door beide reviewers + mac onafhankelijk):
+- `GET https://<host>/<owner>/<repo>/compare/<base>...<head>.diff` → `200 text/plain` met een echte unified diff (134 KB in de mcp-test).
+- De **API**-route `/api/v1/repos/{owner}/{repo}/compare/{basehead}` produceert alléén JSON (`Accept: text/x-diff` wordt genegeerd; `files` kwam in de live test zelfs leeg terug) en `.diff` op het API-pad is 404 (Forgejo parseert `head.diff` als ref) — onbruikbaar als diff-bron.
+- Implementatie: absolute web-URL uit de repo-ref (`parseForgejoRemoteUrl`), anonieme GET, **niet** over `forgejoFetch` (die hangt aan `/api/v1`). Response-sanity: 200 + body begint met `diff --git`, anders `{error}`.
+- **Beperking (bewust):** de web-route kent géén token-/basic-auth (live getest op een private repo: 404 mét geldige PAT). Alle huidige product-repos zijn publiek; voor een private repo valt (1) dus altijd door naar de PR-diff (API, token) of rollback. Git-backed diff (bare fetch) is de aangewezen follow-up zodra een private product-repo bestaat — buiten Phase 3.
 
 ## 6. Sink: `submit_review` (nieuw, model `post_pr_review`)
 
 `src/tools/submit-review.ts`, geregistreerd als `submit_review`:
 - **inputSchema:** `{ job_id: string, verdict: 'APPROVED'|'CHANGES_REQUESTED'|'REJECTED', findings: Array<{ severity: string, ref?: string, message: string }>, summary: string (1..65535), review_log?: passthrough }`.
 - **Guards (de job is de autoriteit):** `requireWriteAccess()` + eigenaar; `job.kind ∈ {SPEC_REVIEW, TASK_REVIEW}`; target aanwezig op de job (`doc_id` voor SPEC_REVIEW — bij insert óók de huidige `current_revision_id` van de doc vastpinnen; `task_id` voor TASK_REVIEW — nieuwste executie-id meepinnen indien aanwezig). Target komt nooit uit de input.
-- **Gedrag:** één `ReviewLog`-INSERT (kind, product uit de job, target-refs, verdict, findings, summary) + verdict-trace naar `ClaudeJob.summary` (`<KIND> <verdict> (<n> findings): <summary-slice>`). DB-fout → tool FAALT (prompt faalt de job; geen stille verlies — Phase 2-principe).
+- **Gedrag:** één `ReviewLog`-**upsert op `review_job_id`** (retry-idempotent — een dubbele aanroep overschrijft de eigen rij i.p.v. te dupliceren; kind, product uit de job, target-refs, verdict, findings, summary) + verdict-trace naar `ClaudeJob.summary` (`<KIND> <verdict> (<n> findings): <summary-slice>`). DB-fout → tool FAALT (prompt faalt de job; geen stille verlies — Phase 2-principe).
 - **Revisie-pin-moment (expliciet):** de sink pint `doc_revision_id` op submit-moment (de dan-geldende `current_revision_id`). De payload draagt de op claim-moment gelezen `revision_id`; muteert de doc tussen claim en submit, dan kan de pin één revisie verschuiven — geaccepteerde race (reviews zijn advisory; de canary draait op een stilstaand doc).
 - **Safe-default bewaakt in de prompt:** nooit `APPROVED` bij twijfel/ontbrekende kerninput.
 
@@ -158,16 +180,18 @@ Gemeenschappelijk contract (Phase 1/2-conventies): payload via `$PAYLOAD_PATH`; 
 
 ## 8. Workers (templates + target-ketens, Phase 2-discipline)
 
-- **`spec-review`-template:** velden product + `doc_slug` (string, required — folder vast SPECS) + `instruction` (optioneel). Keten: `MANUAL_JOB_KINDS` (beide modules!) += `SPEC_REVIEW`; `ManualJobDraftInput.docSlug` + zod + validatie (verplicht, slug-formaat) + `LaunchPreview.context.docSlug` + editor-mapping + rehydratie + context-patch-guard; **enqueue resolvet slug → doc** (`prisma.productDoc.findUnique({ product_id, folder: SPECS, slug })`, bestaat-check, anders weigeren) → `ClaudeJob.doc_id`.
+- **`spec-review`-template:** velden product + `doc_slug` (string, required — folder vast SPECS) + `instruction` (optioneel). Keten: `MANUAL_JOB_KINDS` (beide modules!) += `SPEC_REVIEW`; `ManualJobDraftInput.docSlug` + zod + validatie (verplicht, slug-formaat) + `LaunchPreview.context.docSlug` + editor-mapping + rehydratie + context-patch-guard; **enqueue resolvet slug → doc** via de compound unique — `findUnique({ where: { product_id_folder_slug: { product_id, folder: 'SPECS', slug } } })` (`@@unique([product_id, folder, slug])`, schema:675; géén losse scalars in een `findUnique`) — bestaat-check, anders weigeren → `ClaudeJob.doc_id`. Save→enqueue-test bewijst dat `docSlug` als `doc_id` landt én dat onbekende/non-SPECS slugs geweigerd worden.
 - **`task-review`-template:** hergebruik de bestaande task-picker-keten (`taskId` bestaat end-to-end voor TASK_IMPLEMENTATION) + `instruction`; enqueue-guard: task verplicht + bestaat binnen het product → `ClaudeJob.task_id`. Geen idea-binding.
 - Beide: `defaultRuntime: 'codex'` + `defaultAdapter: 'codex_cli'` (coherentie-les Phase 2), `allowedRuntimes: ['claude','codex']`, `defaultCapability: 'review'`, echte `promptSections` (lege secties blokkeren de save — Phase 2-les), codex-snapshot-override automatisch.
 
 ## 9. Canary's & succescriteria (gestaffeld)
 
-**Volgorde (bindend):** shared-merge → web-migratie toegepast → mcp/workers gemerged → beide `agent-codex`-workers herbouwd (cache-bust!) → canary's. Seeds vanaf 154 (lokale postgres; max2-harness blokkeert prod-DB-writes). Bot-token staat al.
+**Volgorde (bindend):** shared-merge → web-migratie toegepast + web herdeployed → mcp/workers gemerged → **workers-UI-image herbouwd/herdeployed** → beide `agent-codex`-workers herbouwd (cache-bust!) → canary's. Seeds vanaf 154 (lokale postgres; max2-harness blokkeert prod-DB-writes). Bot-token staat al.
+
+**Consumer-regel (bindend, live bewezen 2026-06-10):** élke `claude_jobs`-lezer (workers-UI én web) draait een enum-bewuste Prisma-client **vóór** de eerste canary-seed — een oude client crasht met **P2023** ("Value … not found in enum ClaudeJobKind") zodra hij een rij met de nieuwe kind leest. Phase 2-bewijs: workers `/jobs` crashte op de PR_REVIEW-rijen omdat de workers-image (2026-06-08) niet herbouwd was. De migrator-volgorde (22P02 op de worker-claim) dekt dit níet; het is een aparte stap.
 
 - **Canary A — SPEC_REVIEW:** seed een wegwerp-SPECS-ProductDoc met geplante gebreken (TBD's, een interne tegenspraak, een dubbelzinnige eis) op het canary-product + een `SPEC_REVIEW`/`CODEX`/`MANUAL`-job met `doc_id`. GO ⇔ job DONE + `ReviewLog`-rij (kind SPEC_REVIEW, doc+revisie gepind, verdict `CHANGES_REQUESTED`/`REJECTED` met findings die de geplante gebreken raken) + summary-trace + fleet ongestoord.
-- **Canary B — TASK_REVIEW:** kies een bestaande DONE-task op het canary-product (of seed task+job met echte sha's) + een `TASK_REVIEW`-job met `task_id`. GO ⇔ job DONE + `ReviewLog`-rij (task gepind, diff beoordeeld tegen plan/acceptatie) + summary-trace.
+- **Canary B — TASK_REVIEW:** kies een bestaande DONE-task **mét DONE-`SprintTaskExecution`** (sha-vulling daar 100%; check expliciet `base_sha !== head_sha`) op het canary-product, of seed task+job met echte sha's + een `TASK_REVIEW`-job met `task_id`. GO ⇔ job DONE + `ReviewLog`-rij (task gepind, diff beoordeeld tegen plan/acceptatie, `diff_source` benoemd) + summary-trace. Canary B pint daarmee ook de web-`.diff`-route-vorm live.
 - NO-GO → run-log vastleggen, fix-forward, herseeden (bekende mechaniek).
 
 ## 10. Error-handling
@@ -175,24 +199,24 @@ Gemeenschappelijk contract (Phase 1/2-conventies): payload via `$PAYLOAD_PATH`; 
 - Doc weg / leeg / folder ≠ SPECS (spec) of task weg / geen diff-bron (task) → `rollbackClaim` + null bij claim (geen zinloze run).
 - `submit_review`-DB-fout → tool faalt → prompt zet `failed` (geen vals done).
 - MANUAL-done-pad: al exempt van de verify-gate (Phase 2-bewezen).
-- Herreview = nieuwe `ReviewLog`-rij (historie; geen dedup).
-- Compare-API-fout met wél een `pr_url` → PR-diff-fallback; beide stuk → rollback.
+- Herreview = nieuwe review-jób met eigen `ReviewLog`-rij (historie); bínnen één job is `submit_review` idempotent (upsert op `review_job_id`).
+- Compare-fout, lege range (`base === head`) of private-repo-404 met wél een `pr_url` → PR-diff-fallback; beide stuk → rollback.
 
 ## 11. Risico's & mitigatie
 
 | Risico | Mitigatie |
 |---|---|
-| Compare-endpoint-vorm onzeker (Forgejo-versie) | Bij implementatie pinnen tegen de live swagger; PR-diff-fallback; canary B vangt het. |
+| Compare-diff hangt aan de web-route (geen API-contract) | Vorm + gedrag live geverifieerd (2026-06-10, drie onafhankelijke tests: 154, codex, mac); response-sanity (`diff --git`); PR-diff-fallback; canary B pint het. |
 | Schema-coördinatie (tabel + 2 enums + kolom) | Eén migrator-cyclus, volgorde bindend (§4); `ReviewLog` is additief, geen backfill. |
 | Stale sha's / diff dekt niet de hele task | Executie-sha's winnen; expliciet in de payload welke bron gebruikt is; de prompt benoemt de diff-bron in de findings. |
-| Verdent-vocabulaire drift t.o.v. Phase 1/2 | Bewust nieuw uniform enum (`ReviewVerdict`) alleen voor de ReviewLog; Phase 1/2-sinks blijven ongewijzigd. |
+| Verdict-vocabulaire drift t.o.v. Phase 1/2 | Bewust nieuw uniform enum (`ReviewVerdict`) alleen voor de ReviewLog; Phase 1/2-sinks blijven ongewijzigd. Bij een latere PR_REVIEW-migratie de mapping documenteren (APPROVED↔APPROVED, REQUEST_CHANGES↔CHANGES_REQUESTED, COMMENT→geen verdict). |
 | Workers-keten-gaten (zoals Phase 2 P1's) | Zelfde checklist als Phase 2: beide kinds-arrays, validatie-module, editor-rehydratie, context-patch-guard, save→enqueue-tests, promptSections niet leeg, adapter-coherentie. |
 | Blast-radius | Alles additief; bestaande kinds/paden byte-identiek; tests borgen. |
 
 ## 12. Test-strategie & cross-repo-volgorde
 
 - **TDD per slice** (Phase 2-stijl): kind-prompts-selectie; `fetchCompareDiff` (mock `forgejoFetch`); payload-takken (MANUAL-jobs krijgen de kind-payload, rollback-paden); `submit_review` (guards, target-uit-job, revisie-pin, fail-on-DB-error, summary-trace); workers-ketens (save→enqueue, validatie, rehydratie, context-patch).
-- **Volgorde:** 1) shared-PR (enums + ReviewLog + ClaudeJob.doc_id) → merge; 2) Scrum4Me-migratie-PR → merge → deploy/migrate; 3) mcp-PR (alles van §5-7) → merge; 4) workers-PR (§8) → merge; 5) rebuilds + canary A; 6) canary B. Elke PR codex-gereviewd via s4m-queue; merges user-gated; subagent-driven met spec+quality-reviews per slice.
+- **Volgorde:** 1) shared-PR (enums + ReviewLog + ClaudeJob.doc_id + back-relaties) → merge; 2) Scrum4Me-migratie-PR → merge → deploy/migrate (web-client daarmee enum-bewust); 3) mcp-PR (alles van §5-7) → merge; 4) workers-PR (§8) → merge → **workers-image herbouwen/herdeployen (claude_jobs-lezer — consumer-regel §9)**; 5) agent-codex-rebuilds (cache-bust) + canary A; 6) canary B. Elke PR codex-gereviewd via s4m-queue; merges user-gated; subagent-driven met spec+quality-reviews per slice.
 
 ## 13. Out of scope (expliciet)
 
@@ -206,4 +230,9 @@ Gemeenschappelijk contract (Phase 1/2-conventies): payload via `$PAYLOAD_PATH`; 
 
 ## 14. Review-log
 
-*(Te vullen na de s4m-queue-reviews door codex(mac) + scrum4me-server:claude(154) en de gebruikers-review-gate.)*
+**Ronde 1 — 2026-06-10** (spec-commit `362c2d1`; alle anchors vóór verwerking tegen de bron geverifieerd: schema:449/675, `wait-for-job.ts:1221`, `update-job-status.ts:489`, live curl op de compare-routes incl. private-repo-authtest):
+
+- **154 (operationeel, reply `f466677b`): GO** met 4 findings — (1) compare-diff moet via de **web**-`.diff`-route, de API is JSON-only → §5 herschreven; (2) bindende **consumer-regel**: alle `claude_jobs`-lezers enum-bewust herdeployen vóór de canary-seeds (P2023 live bewezen op workers `/jobs`) → §4/§9/§12; (3) canary B = DONE-executie-task + `base !== head`-guard → §5/§9; (4) `ReviewVerdict`↔Forgejo-event-mapping documenteren bij een latere PR_REVIEW-migratie → §11. Plus DB-vulgraadcijfers (executies 100%, job-sha's ~36-42%, pr_url ~55%; `current_revision_id` 0 nulls) → §3/§4/§5.
+- **codex (bron, reply `5d5e7773`): NO-GO** — **P1** compare-API levert geen raw diff (zelfde wortel als 154-finding 1; opgelost via de web-route — mac-verificatie: 200 text/plain op publieke repos, géén token-auth op private → beperking expliciet in §5 + PR-diff-fallback); **P2** diff-repo moet `task.repo_url ?? product.repo_url` zijn (cross-repo-taken) → §5; **P2** ReviewLog niet migration-ready (back-relaties, relatie-namen, idempotentie) → §4 herschreven: expliciete back-relaties, `review_job_id @unique` (1:1), sink-upsert (§6/§10); **P3** doc_slug-lookup moet de compound-unique-vorm gebruiken → §8. Artifact: `s4m-queue/reviews/2026-06-10-scrum4me-mcp-phase3-spec-task-review-design-codex.md`.
+
+**Ronde 2 — 2026-06-10:** codex-herreview aangevraagd op de verwerkte spec — *uitkomst volgt*.
