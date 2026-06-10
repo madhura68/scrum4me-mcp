@@ -115,6 +115,7 @@ model ReviewLog {
   @@index([product_id, kind, created_at])
   @@index([doc_id, created_at])
   @@index([task_id, created_at])
+  @@index([sprint_task_execution_id, created_at])
   @@map("review_logs")
 }
 ```

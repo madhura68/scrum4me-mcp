@@ -147,6 +147,7 @@ model ReviewLog {
   @@index([product_id, kind, created_at])
   @@index([doc_id, created_at])
   @@index([task_id, created_at])
+  @@index([sprint_task_execution_id, created_at])
   @@map("review_logs")
 }
 ```
@@ -253,7 +254,7 @@ Checklist — de migratie moet exact bevatten (namen volgen uit de generator; co
 1. de 2 enum-ADD VALUEs (idempotent);
 2. `CREATE TYPE "ReviewVerdict" AS ENUM ('APPROVED','CHANGES_REQUESTED','REJECTED');`
 3. `ALTER TABLE "claude_jobs" ADD COLUMN "doc_id" TEXT;` + FK naar `product_docs(id)` ON DELETE SET NULL + index;
-4. `CREATE TABLE "review_logs" (…)` met UNIQUE op `review_job_id`, de 3 indexen en 6 FK's (Cascade voor review_job/product; SetNull voor doc/doc_revision/task/sprint_task_execution).
+4. `CREATE TABLE "review_logs" (…)` met UNIQUE op `review_job_id`, de 4 indexen (product_id+kind, doc_id, task_id, sprint_task_execution_id — alle met created_at) en 6 FK's (Cascade voor review_job/product; SetNull voor doc/doc_revision/task/sprint_task_execution).
 
 NB: Postgres staat `ADD VALUE` niet toe in hetzelfde transaction-block als gebruik van de waarde; de migratie gebruikt de nieuwe waarden zelf niet (review_logs.kind krijgt geen default), dus dit is veilig. Splits NIET handmatig in losse migraties.
 
