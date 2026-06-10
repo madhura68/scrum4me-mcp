@@ -26,3 +26,20 @@ describe('getKindPromptText runtime-awareness', () => {
     expect(getIdeaPromptText('IDEA_REVIEW_PLAN', 'CODEX')).toBe(getKindPromptText('IDEA_REVIEW_PLAN', 'CODEX'))
   })
 })
+
+describe('getKindPromptText — PR_REVIEW', () => {
+  it('(PR_REVIEW, CODEX) → codex-portable prompt zonder Claude-toolnamen', () => {
+    const text = getKindPromptText('PR_REVIEW', 'CODEX')
+    expect(text).toContain('post_pr_review')
+    expect(text).not.toContain('ask_user_question')
+    expect(text).not.toMatch(/\bGlob\b|\bGrep\b/)
+  })
+  it('(PR_REVIEW, CLAUDE) → niet-leeg Claude-fallback-pad', () => {
+    const text = getKindPromptText('PR_REVIEW', 'CLAUDE')
+    expect(text.length).toBeGreaterThan(0)
+    expect(text).not.toEqual(getKindPromptText('PR_REVIEW', 'CODEX'))
+  })
+  it('default-runtime = CLAUDE', () => {
+    expect(getKindPromptText('PR_REVIEW')).toEqual(getKindPromptText('PR_REVIEW', 'CLAUDE'))
+  })
+})

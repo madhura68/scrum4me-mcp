@@ -14,6 +14,7 @@ import {
   callForgejo,
   discoverForgejo,
   encodePathSegment,
+  forgejoFetch,
   getRepoRefFromWorktree,
   parseForgejoPrUrl,
 } from './forgejo-rest.js'
@@ -508,5 +509,67 @@ export async function createRevertPullRequest(opts: {
     await cleanup()
     const msg = (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''
     return { error: `revert worktree setup failed: ${msg.slice(0, 300)}` }
+  }
+}
+
+// =========================================================================
+// fetchPrDiff — Phase 2: unified diff van een PR via de .diff-endpoint.
+// .diff is text/plain → forgejoFetch (callForgejo zou JSON parsen).
+// Forgejo's `.diff` path-suffix wint van de meegezonden `Accept: application/json`-header
+// (path-based content-negotiation), dus de raw-Response-route is veilig.
+// =========================================================================
+
+export async function fetchPrDiff(opts: {
+  prUrl: string
+}): Promise<string | { error: string }> {
+  let prRef
+  try {
+    prRef = parseForgejoPrUrl(opts.prUrl)
+  } catch (err) {
+    return { error: `fetchPrDiff: ${(err as Error).message.slice(0, 300)}` }
+  }
+  try {
+    const res = await forgejoFetch(
+      `${repoPath(prRef.owner, prRef.repo)}/pulls/${prRef.index}.diff`,
+      { host: prRef.host },
+    )
+    if (!res.ok) {
+      return { error: `Forgejo pr-diff failed: ${res.status}` }
+    }
+    return await res.text()
+  } catch (err) {
+    return { error: `Forgejo pr-diff failed: ${(err as Error).message.slice(0, 300)}` }
+  }
+}
+
+// =========================================================================
+// postPullRequestReview — Phase 2: post een review-state op een PR.
+// =========================================================================
+
+export async function postPullRequestReview(opts: {
+  prUrl: string
+  event: 'APPROVED' | 'REQUEST_CHANGES' | 'COMMENT'
+  body: string
+  commitId?: string
+}): Promise<{ ok: true; reviewId?: number } | { error: string }> {
+  let prRef
+  try {
+    prRef = parseForgejoPrUrl(opts.prUrl)
+  } catch (err) {
+    return { error: `postPullRequestReview: ${(err as Error).message.slice(0, 300)}` }
+  }
+  try {
+    const review = await callForgejo<{ id?: number }>(
+      `${repoPath(prRef.owner, prRef.repo)}/pulls/${prRef.index}/reviews`,
+      {
+        method: 'POST',
+        write: true,
+        host: prRef.host,
+        json: { event: opts.event, body: opts.body, commit_id: opts.commitId },
+      },
+    )
+    return { ok: true, reviewId: review?.id }
+  } catch (err) {
+    return { error: `Forgejo pr-review-post failed: ${(err as Error).message.slice(0, 300)}` }
   }
 }

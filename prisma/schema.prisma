@@ -149,6 +149,7 @@ enum ClaudeJobKind {
   IDEA_REVIEW_PLAN
   PLAN_CHAT
   SPRINT_IMPLEMENTATION
+  PR_REVIEW
 }
 
 enum SprintTaskExecutionStatus {

@@ -1,0 +1,91 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+
+const findFirstJob = vi.fn()
+const findFirstPbi = vi.fn()
+const findManyExec = vi.fn()
+vi.mock('../../src/prisma.js', () => ({
+  prisma: {
+    claudeJob: { findFirst: (...a: any[]) => findFirstJob(...a) },
+    pbi: { findFirst: (...a: any[]) => findFirstPbi(...a) },
+    sprintTaskExecution: { findMany: (...a: any[]) => findManyExec(...a) },
+  },
+}))
+
+import { resolvePrLinkedPlan } from '../../src/lib/pr-linked-plan.js'
+
+const JOB = { id: 'review-job', pr_url: 'https://git.jp-visser.nl/o/r/pulls/9' }
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  findFirstJob.mockResolvedValue(null)
+  findFirstPbi.mockResolvedValue(null)
+  findManyExec.mockResolvedValue([])
+})
+
+describe('resolvePrLinkedPlan', () => {
+  it('sluit de huidige review-job uit in de query', async () => {
+    await resolvePrLinkedPlan(JOB as any)
+    const where = findFirstJob.mock.calls[0][0].where
+    expect(where.id).toEqual({ not: 'review-job' })
+    expect(where.pr_url).toBe(JOB.pr_url)
+  })
+  it('job-pad: task-implementatie met plan_snapshot', async () => {
+    findFirstJob.mockResolvedValue({
+      id: 'impl', kind: 'TASK_IMPLEMENTATION', plan_snapshot: 'PLAN',
+      task: { implementation_plan: 'TP', story: { acceptance_criteria: 'AC' } },
+    })
+    const out = await resolvePrLinkedPlan(JOB as any)
+    expect(out).toMatchObject({ source: 'job', plan_snapshot: 'PLAN', acceptance_criteria: 'AC' })
+  })
+  it('impl-job zonder bruikbare plan-context → door naar pbi-fallback', async () => {
+    findFirstJob.mockResolvedValue({ id: 'impl', kind: 'TASK_IMPLEMENTATION', plan_snapshot: null, task: null })
+    findFirstPbi.mockResolvedValue({ id: 'pbi1', docs: [{ doc_revision: { content_md: 'PM' } }] })
+    const out = await resolvePrLinkedPlan(JOB as any)
+    expect(out).toMatchObject({ source: 'pbi', plan_md: 'PM' })
+  })
+  it('pbi-fallback via PbiDoc(role=PLAN) → doc_revision.content_md', async () => {
+    findFirstPbi.mockResolvedValue({ id: 'pbi1', docs: [{ doc_revision: { content_md: 'PM' } }] })
+    const out = await resolvePrLinkedPlan(JOB as any)
+    expect(out).toMatchObject({ source: 'pbi', plan_md: 'PM' })
+  })
+  it('pbi zonder PLAN-doc → null (geen bruikbaar plan)', async () => {
+    findFirstPbi.mockResolvedValue({ id: 'pbi1', docs: [] })
+    const out = await resolvePrLinkedPlan(JOB as any)
+    expect(out).toBeNull()
+  })
+  it('niets matcht → null', async () => {
+    const out = await resolvePrLinkedPlan(JOB as any)
+    expect(out).toBeNull()
+  })
+  it('job zonder pr_url → null zonder queries', async () => {
+    const out = await resolvePrLinkedPlan({ id: 'x', pr_url: null } as any)
+    expect(out).toBeNull()
+    expect(findFirstJob).not.toHaveBeenCalled()
+  })
+
+  // Sprint-pad tests
+  it('sprint-pad: SPRINT_IMPLEMENTATION zonder task_id → sprint_tasks uit SprintTaskExecution', async () => {
+    findFirstJob.mockResolvedValue({ id: 'sprint-impl', kind: 'SPRINT_IMPLEMENTATION', plan_snapshot: null, task: null })
+    findManyExec.mockResolvedValue([
+      { plan_snapshot: 'P1', task: { title: 'T1', story: { acceptance_criteria: 'AC1' } } },
+      { plan_snapshot: 'P2', task: { title: 'T2', story: { acceptance_criteria: null } } },
+    ])
+    const out = await resolvePrLinkedPlan(JOB as any)
+    expect(out).toMatchObject({
+      source: 'job',
+      sprint_tasks: [
+        { task_title: 'T1', plan_snapshot: 'P1', acceptance_criteria: 'AC1' },
+        { task_title: 'T2', plan_snapshot: 'P2', acceptance_criteria: null },
+      ],
+    })
+    const where = findManyExec.mock.calls[0][0].where
+    expect(where.sprint_job_id).toBe('sprint-impl')
+  })
+  it('sprint-job zonder execution-rows → door naar pbi-fallback', async () => {
+    findFirstJob.mockResolvedValue({ id: 'sprint-impl', kind: 'SPRINT_IMPLEMENTATION', plan_snapshot: null, task: null })
+    findManyExec.mockResolvedValue([])
+    findFirstPbi.mockResolvedValue({ id: 'pbi1', docs: [{ doc_revision: { content_md: 'PM' } }] })
+    const out = await resolvePrLinkedPlan(JOB as any)
+    expect(out).toMatchObject({ source: 'pbi', plan_md: 'PM' })
+  })
+})
