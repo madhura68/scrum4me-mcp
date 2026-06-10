@@ -28,14 +28,23 @@ beforeEach(() => {
 })
 
 describe('post_pr_review', () => {
-  it('post de review + schrijft summary-trace', async () => {
+  it('post de review + schrijft summary-trace met findings-telling', async () => {
     vi.mocked(postPullRequestReview).mockResolvedValue({ ok: true, reviewId: 3 })
-    const res = await handlePostPrReview({ job_id: 'job1', pr_url: PR, event: 'APPROVED', body: 'lgtm' })
+    const res = await handlePostPrReview({
+      job_id: 'job1',
+      pr_url: PR,
+      event: 'APPROVED',
+      body: 'lgtm',
+      review_log: { findings: [{}, {}] },
+    })
     expect(postPullRequestReview).toHaveBeenCalledWith(
       expect.objectContaining({ prUrl: PR, event: 'APPROVED', body: 'lgtm' }),
     )
     expect(prisma.claudeJob.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'job1' } }),
+      expect.objectContaining({
+        where: { id: 'job1' },
+        data: expect.objectContaining({ summary: expect.stringContaining('(2 findings)') }),
+      }),
     )
     expect(res.isError).toBeFalsy()
   })
@@ -54,6 +63,13 @@ describe('post_pr_review', () => {
       pr_url: PR,
       kind: 'IDEA_REVIEW_PLAN',
     } as any)
+    const res = await handlePostPrReview({ job_id: 'job1', pr_url: PR, event: 'COMMENT', body: 'x' })
+    expect(res.isError).toBe(true)
+    expect(postPullRequestReview).not.toHaveBeenCalled()
+  })
+
+  it('PR_REVIEW-job zonder opgeslagen pr_url → error (geen post)', async () => {
+    vi.mocked(prisma.claudeJob.findUnique).mockResolvedValue({ id: 'job1', user_id: 'u1', pr_url: null, kind: 'PR_REVIEW' } as any)
     const res = await handlePostPrReview({ job_id: 'job1', pr_url: PR, event: 'COMMENT', body: 'x' })
     expect(res.isError).toBe(true)
     expect(postPullRequestReview).not.toHaveBeenCalled()

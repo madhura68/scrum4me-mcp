@@ -16,13 +16,13 @@ export const inputSchema = z.object({
   job_id: z.string().min(1),
   pr_url: z.string().min(1),
   event: z.enum(['APPROVED', 'REQUEST_CHANGES', 'COMMENT'] as const),
-  body: z.string().min(1),
+  body: z.string().min(1).max(65_535),
   commit_id: z.string().optional(),
   review_log: z.object({}).passthrough().optional(),
 })
 
 export async function handlePostPrReview(
-  { job_id, pr_url, event, body, commit_id }: z.infer<typeof inputSchema>,
+  { job_id, pr_url, event, body, commit_id, review_log }: z.infer<typeof inputSchema>,
 ) {
   return withToolErrors(async () => {
     const auth = await requireWriteAccess()
@@ -49,9 +49,17 @@ export async function handlePostPrReview(
       return toolError(`post_pr_review failed: ${posted.error}`)
     }
 
+    // review_log is passthrough-traceering: ClaudeJob heeft geen log-tabel
+    // (Phase 2: geen nieuwe kolom) — de Forgejo-review zelf is de primaire
+    // sink. We verrijken wel de summary-trace met de findings-telling.
+    const findings = Array.isArray((review_log as { findings?: unknown } | undefined)?.findings)
+      ? ((review_log as { findings: unknown[] }).findings.length)
+      : null
+    const findingsSuffix = findings !== null ? ` (${findings} findings)` : ''
+
     await prisma.claudeJob.update({
       where: { id: job_id },
-      data: { summary: `PR review ${event}: ${body.slice(0, 280)}` },
+      data: { summary: `PR review ${event}${findingsSuffix}: ${body.slice(0, 280)}` },
     })
 
     return toolJson({ ok: true, event, review_id: posted.reviewId ?? null })
