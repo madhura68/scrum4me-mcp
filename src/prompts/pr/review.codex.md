@@ -29,4 +29,4 @@ Geen inline-comments.
 ## Afsluiten
 1. Roep `mcp__scrum4me__post_pr_review({ job_id: <payload.job_id>, pr_url: <pr.url>, event: <APPROVED|REQUEST_CHANGES|COMMENT>, body: <de markdown-body>, commit_id: <pr.head_sha indien aanwezig>, review_log: { findings: [...], verdict: <event> } })`.
    - Faalt deze call (Forgejo-fout), roep dan `mcp__scrum4me__update_job_status({ job_id, status: 'failed', error: 'post_pr_review_failed' })` en stop. Post NOOIT een vals "done".
-2. Bij succes: `mcp__scrum4me__update_job_status({ job_id, status: 'done', summary: <event + 1-regel-samenvatting> })`.
+2. Bij succes: `mcp__scrum4me__update_job_status({ job_id, status: 'done' })` — geef GEEN summary mee: `post_pr_review` zette de verdict-trace al op de job en een done-summary zou die overschrijven.

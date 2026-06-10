@@ -28,4 +28,4 @@ Elke finding: `{ severity: 'error'|'warning'|'info', ref: '<bestand:regel>', mes
 ## Afsluiten
 1. Roep `mcp__scrum4me__submit_review({ job_id: <payload.job_id>, verdict, findings: [...], summary })`.
    - Faalt deze call, roep dan `mcp__scrum4me__update_job_status({ job_id, status: 'failed', error: 'submit_review_failed' })` en stop. Post NOOIT een vals "done".
-2. Bij succes: `mcp__scrum4me__update_job_status({ job_id, status: 'done', summary: <verdict + 1-regel> })`.
+2. Bij succes: `mcp__scrum4me__update_job_status({ job_id, status: 'done' })` — geef GEEN summary mee: `submit_review` zette de verdict-trace al op de job en een done-summary zou die overschrijven.
