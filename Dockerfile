@@ -11,6 +11,12 @@
 # We keep the full node_modules (no --omit=dev) because tsx is a devDependency.
 FROM node:22-alpine AS deps
 WORKDIR /app
+# bash is vereist: de postinstall draait `bash scripts/gen-schema.sh` (en de
+# gevendorde gen-consumer-schema.sh) om prisma/schema.prisma te genereren vóór
+# `prisma generate`. node:22-alpine heeft geen bash → zonder dit faalt de
+# schema-generatie stil (postinstall eindigt op `|| true`) en blijft de Prisma-
+# client een lege stub → typecheck faalt op ontbrekende @prisma/client-exports.
+RUN apk add --no-cache bash
 COPY package*.json ./
 COPY prisma ./prisma
 COPY scripts ./scripts
