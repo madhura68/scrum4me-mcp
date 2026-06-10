@@ -150,6 +150,14 @@ enum ClaudeJobKind {
   PLAN_CHAT
   SPRINT_IMPLEMENTATION
   PR_REVIEW
+  SPEC_REVIEW
+  TASK_REVIEW
+}
+
+enum ReviewVerdict {
+  APPROVED
+  CHANGES_REQUESTED
+  REJECTED
 }
 
 enum SprintTaskExecutionStatus {
@@ -302,6 +310,7 @@ model Product {
   doc_sections              ProductDocSection[]
   doc_links                 ProductDocLink[]
   doc_index_config          ProductDocIndexConfig?
+  review_logs               ReviewLog[]         @relation("ProductReviewLogs")
 
   @@unique([user_id, name])
   @@unique([user_id, code])
@@ -457,6 +466,7 @@ model Task {
   claude_jobs            ClaudeJob[]
   sprint_run_failures    SprintRun[]           @relation("SprintRunFailedTask")
   sprint_task_executions SprintTaskExecution[]
+  review_logs            ReviewLog[]           @relation("TaskReviewLogs")
 
   @@unique([product_id, code])
   @@index([story_id, priority, sort_order])
@@ -475,6 +485,9 @@ model ClaudeJob {
   task_id                   String?
   idea                      Idea?                 @relation(fields: [idea_id], references: [id], onDelete: Cascade)
   idea_id                   String?
+  // Phase 3: SPEC_REVIEW-target (task_id bestaat al voor TASK_REVIEW).
+  doc                       ProductDoc?           @relation("JobReviewDoc", fields: [doc_id], references: [id], onDelete: SetNull)
+  doc_id                    String?
   sprint_run                SprintRun?            @relation(fields: [sprint_run_id], references: [id], onDelete: SetNull)
   sprint_run_id             String?
   kind                      ClaudeJobKind         @default(TASK_IMPLEMENTATION)
@@ -515,12 +528,14 @@ model ClaudeJob {
   task_executions           SprintTaskExecution[] @relation("SprintJobExecutions")
   manual_drafts             ManualJobDraft[]
   idea_notification         IdeaNotification?
+  review_log                ReviewLog?            @relation("JobReviewLog")
   created_at                DateTime              @default(now())
   updated_at                DateTime              @updatedAt
 
   @@index([user_id, status])
   @@index([task_id, status])
   @@index([idea_id, status])
+  @@index([doc_id])
   @@index([sprint_run_id, status])
   @@index([status, claimed_at])
   @@index([status, finished_at])
@@ -587,10 +602,43 @@ model SprintTaskExecution {
   finished_at              DateTime?
   created_at               DateTime                  @default(now())
   updated_at               DateTime                  @updatedAt
+  review_logs              ReviewLog[]               @relation("ExecutionReviewLogs")
 
   @@unique([sprint_job_id, task_id])
   @@index([sprint_job_id, order])
   @@map("sprint_task_executions")
+}
+
+// Phase 3: generieke verdict-opslag voor judge-only reviews (SPEC_REVIEW,
+// TASK_REVIEW). Eén rij per review-job (review_job_id @unique; sink doet
+// upsert). Herreview-historie = meerdere review-jobs per artefact.
+// Target-refs SetNull (log overleeft het target); Cascade op de job (de job
+// is de bron van de rij).
+model ReviewLog {
+  id                       String              @id @default(cuid())
+  review_job               ClaudeJob           @relation("JobReviewLog", fields: [review_job_id], references: [id], onDelete: Cascade)
+  review_job_id            String              @unique
+  kind                     ClaudeJobKind
+  product                  Product             @relation("ProductReviewLogs", fields: [product_id], references: [id], onDelete: Cascade)
+  product_id               String
+  doc                      ProductDoc?         @relation("DocReviewLogs", fields: [doc_id], references: [id], onDelete: SetNull)
+  doc_id                   String?
+  doc_revision             ProductDocRevision? @relation("DocRevisionReviewLogs", fields: [doc_revision_id], references: [id], onDelete: SetNull)
+  doc_revision_id          String?
+  task                     Task?               @relation("TaskReviewLogs", fields: [task_id], references: [id], onDelete: SetNull)
+  task_id                  String?
+  sprint_task_execution    SprintTaskExecution? @relation("ExecutionReviewLogs", fields: [sprint_task_execution_id], references: [id], onDelete: SetNull)
+  sprint_task_execution_id String?
+  verdict                  ReviewVerdict
+  findings                 Json
+  summary                  String              @db.Text
+  created_at               DateTime            @default(now())
+
+  @@index([product_id, kind, created_at])
+  @@index([doc_id, created_at])
+  @@index([task_id, created_at])
+  @@index([sprint_task_execution_id, created_at])
+  @@map("review_logs")
 }
 
 model ModelPrice {
@@ -669,8 +717,10 @@ model ProductDoc {
   // PBI-102: één-op-één back-relations vanuit Idea (zelfde Idea kan
   // alleen één PLAN- en één GRILL-doc hebben — zie Idea.plan_doc_id /
   // grill_doc_id met @unique).
-  idea_plan           Idea?                @relation("IdeaPlanDoc")
-  idea_grill          Idea?                @relation("IdeaGrillDoc")
+  idea_plan            Idea?                @relation("IdeaPlanDoc")
+  idea_grill           Idea?                @relation("IdeaGrillDoc")
+  review_logs          ReviewLog[]          @relation("DocReviewLogs")
+  review_jobs          ClaudeJob[]          @relation("JobReviewDoc")
 
   @@unique([product_id, folder, slug])
   @@index([product_id, folder, updated_at])
@@ -696,6 +746,7 @@ model ProductDocRevision {
   pbi_links    PbiDoc[]
   current_for  ProductDoc? @relation("CurrentRevision")
   sections     ProductDocSection[] @relation("ProductDocRevisionSections")
+  review_logs  ReviewLog[] @relation("DocRevisionReviewLogs")
 
   @@unique([doc_id, revision])
   @@index([doc_id, created_at])

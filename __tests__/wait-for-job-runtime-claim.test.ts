@@ -122,7 +122,7 @@ describe('runtime-aware claim filter', () => {
 
     for (const expected of [
       'cj.product_id = ',
-      "cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'PLAN_CHAT', 'PR_REVIEW')",
+      "cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'PLAN_CHAT', 'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW')",
       "cj.kind = 'PLAN_CHAT'",
       "cj.source = 'ORCHESTRATOR'",
       "OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'MANUAL')",

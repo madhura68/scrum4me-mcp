@@ -17,6 +17,7 @@ import {
   forgejoFetch,
   getRepoRefFromWorktree,
   parseForgejoPrUrl,
+  parseForgejoRemoteUrl,
 } from './forgejo-rest.js'
 
 const exec = promisify(execFile)
@@ -571,5 +572,44 @@ export async function postPullRequestReview(opts: {
     return { ok: true, reviewId: review?.id }
   } catch (err) {
     return { error: `Forgejo pr-review-post failed: ${(err as Error).message.slice(0, 300)}` }
+  }
+}
+
+// =========================================================================
+// fetchCompareDiff — Phase 3: unified diff van een commit-range via de
+// Forgejo WEB-route (/{owner}/{repo}/compare/{base}...{head}.diff).
+// Bewust NIET via forgejoFetch: die hangt aan /api/v1, en de API-compare
+// produceert alléén JSON (geen raw diff; `.diff` op het API-pad is 404).
+// De web-route kent géén token-auth: een private repo geeft 404 → caller
+// valt terug op de PR-diff (API + token) of rolt de claim terug.
+// =========================================================================
+
+export async function fetchCompareDiff(opts: {
+  repoUrl: string
+  baseSha: string
+  headSha: string
+}): Promise<string | { error: string }> {
+  if (!opts.baseSha || !opts.headSha || opts.baseSha === opts.headSha) {
+    return { error: 'fetchCompareDiff: lege range (base/head ontbreekt of base === head)' }
+  }
+  let repoRef
+  try {
+    repoRef = parseForgejoRemoteUrl(opts.repoUrl)
+  } catch (err) {
+    return { error: `fetchCompareDiff: ${(err as Error).message.slice(0, 300)}` }
+  }
+  const url = `https://${repoRef.host}/${repoRef.owner}/${repoRef.repo}/compare/${opts.baseSha}...${opts.headSha}.diff`
+  try {
+    const res = await fetch(url, { redirect: 'follow' })
+    if (!res.ok) {
+      return { error: `Forgejo compare-diff failed: ${res.status}` }
+    }
+    const text = await res.text()
+    if (!text.startsWith('diff --git')) {
+      return { error: `Forgejo compare-diff: geen unified diff in response: ${text.slice(0, 120)}` }
+    }
+    return text
+  } catch (err) {
+    return { error: `Forgejo compare-diff failed: ${(err as Error).message.slice(0, 300)}` }
   }
 }
