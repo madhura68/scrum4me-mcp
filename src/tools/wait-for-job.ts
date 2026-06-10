@@ -19,12 +19,13 @@ import { createWorktreeForJob, removeWorktreeForJob } from '../git/worktree.js'
 import { getWorktreeRoot } from '../git/worktree-paths.js'
 import { setupProductWorktrees, releaseLocksOnTerminal } from '../git/job-locks.js'
 import { pushBranchForJob } from '../git/push.js'
-import { fetchPrDiff, getPullRequestState } from '../git/pr.js'
+import { fetchPrDiff, fetchCompareDiff, getPullRequestState } from '../git/pr.js'
 import { parseForgejoPrUrl } from '../git/forgejo-rest.js'
 import { resolveJobConfig } from '../lib/job-config.js'
 import { buildDocIndex } from '../lib/doc-index.js'
 import { loadManualIdeaContext } from '../lib/manual-idea-context.js'
 import { resolvePrLinkedPlan, type LinkedPlan } from '../lib/pr-linked-plan.js'
+import { resolveTaskImplContext } from '../lib/task-review-context.js'
 import { claimLog } from '../lib/claim-log.js'
 import { getInstanceId } from '../presence/instance.js'
 import { getWorkerRuntimeFromEnv, type WorkerRuntime } from '../worker-runtime.js'
@@ -878,6 +879,93 @@ export async function getFullJobContext(jobId: string) {
       },
       repo_url: job.product.repo_url,
       prompt_text: '', // runner is gezaghebbend: getKindPromptText(kind, runtime)
+    }
+  }
+
+  if (job.kind === 'TASK_REVIEW') {
+    if (!job.task_id) {
+      await rollbackClaim(job.id)
+      return null
+    }
+    const task = await prisma.task.findUnique({
+      where: { id: job.task_id },
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        implementation_plan: true,
+        repo_url: true,
+        story: { select: { acceptance_criteria: true } },
+      },
+    })
+    if (!task) {
+      await rollbackClaim(job.id)
+      return null
+    }
+    const impl = await resolveTaskImplContext(task.id)
+    // Diff-repo: task-override wint (spec §5 — cross-repo-taken; zelfde
+    // bucket-regel als de PR-hergebruik-logica in update-job-status.ts).
+    const diffRepoUrl = task.repo_url ?? job.product.repo_url
+
+    let taskDiff: string | null = null
+    let diffSource: 'compare' | 'pr' | null = null
+    if (diffRepoUrl && impl.base_sha && impl.head_sha && impl.base_sha !== impl.head_sha) {
+      const compared = await fetchCompareDiff({
+        repoUrl: diffRepoUrl,
+        baseSha: impl.base_sha,
+        headSha: impl.head_sha,
+      })
+      if (typeof compared === 'string') {
+        taskDiff = compared
+        diffSource = 'compare'
+      }
+    }
+    if (!taskDiff && impl.pr_url) {
+      const prDiff = await fetchPrDiff({ prUrl: impl.pr_url })
+      if (typeof prDiff === 'string') {
+        taskDiff = prDiff
+        diffSource = 'pr'
+      }
+    }
+    if (!taskDiff) {
+      // Een implementatie-review zonder diff is zinloos (spec §5/§10).
+      await rollbackClaim(job.id)
+      return null
+    }
+
+    const instruction = job.manual_drafts[0]?.prompt_md ?? ''
+    return {
+      job_id: job.id,
+      kind: 'TASK_REVIEW',
+      source: job.source,
+      status: 'claimed',
+      config,
+      doc_index: docIndex,
+      task: {
+        id: task.id,
+        title: task.title,
+        status: task.status,
+        implementation_plan: task.implementation_plan,
+        acceptance_criteria: task.story?.acceptance_criteria ?? null,
+      },
+      impl: {
+        plan_snapshot: impl.plan_snapshot,
+        base_sha: impl.base_sha,
+        head_sha: impl.head_sha,
+        pr_url: impl.pr_url,
+        execution_id: impl.execution_id,
+        diff_source: diffSource,
+      },
+      task_diff: taskDiff,
+      instruction,
+      product: {
+        id: job.product.id,
+        name: job.product.name,
+        repo_url: job.product.repo_url,
+        definition_of_done: job.product.definition_of_done,
+      },
+      repo_url: diffRepoUrl,
+      prompt_text: '',
     }
   }
 
