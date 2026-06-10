@@ -515,6 +515,8 @@ export async function createRevertPullRequest(opts: {
 // =========================================================================
 // fetchPrDiff — Phase 2: unified diff van een PR via de .diff-endpoint.
 // .diff is text/plain → forgejoFetch (callForgejo zou JSON parsen).
+// Forgejo's `.diff` path-suffix wint van de meegezonden `Accept: application/json`-header
+// (path-based content-negotiation), dus de raw-Response-route is veilig.
 // =========================================================================
 
 export async function fetchPrDiff(opts: {

@@ -35,6 +35,11 @@ describe('fetchPrDiff', () => {
     expect(out).toHaveProperty('error')
     expect(forgejoFetch).not.toHaveBeenCalled()
   })
+  it('lege diff-body (200) → lege string, geen error', async () => {
+    vi.mocked(forgejoFetch).mockResolvedValue(new Response('', { status: 200 }))
+    const out = await fetchPrDiff({ prUrl: PR })
+    expect(out).toBe('')
+  })
 })
 
 describe('postPullRequestReview', () => {
@@ -58,5 +63,10 @@ describe('postPullRequestReview', () => {
     vi.mocked(callForgejo).mockRejectedValue(new Error('boom'))
     const out = await postPullRequestReview({ prUrl: PR, event: 'COMMENT', body: 'x' })
     expect(out).toHaveProperty('error')
+  })
+  it('ongeldige PR-URL → { error } zonder POST', async () => {
+    const out = await postPullRequestReview({ prUrl: 'https://github.com/x/y/pulls/1', event: 'COMMENT', body: 'x' })
+    expect(out).toHaveProperty('error')
+    expect(callForgejo).not.toHaveBeenCalled()
   })
 })
