@@ -4,6 +4,7 @@
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { Prisma } from '@prisma/client'
+import type { PbiStatus, StoryStatus, VerifyRequired } from '@prisma/client'
 import { Client } from 'pg'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
@@ -682,6 +683,53 @@ export async function tryClaimJob(
   return rows.length > 0 ? rows[0].id : null
 }
 
+/**
+ * Sprint-scope shapes voor de SPRINT_IMPLEMENTATION claim-response. Spiegelen
+ * de include/select van de sprintRun-query in getFullJobContext. Expliciet
+ * gedefinieerd zodat tsc de mapping naar het response-contract blijft bewaken
+ * wanneer de gegenereerde Prisma-client ontbreekt of achterloopt — een stille
+ * generate-failure in de Docker deps-stage maakte deze resultaten `any` en de
+ * build-fout onleesbaar (TS7006-ruis; root cause gefixt in PR #49).
+ */
+interface SprintScopePbi {
+  id: string
+  code: string
+  title: string
+  priority: number
+  sort_order: number
+  status: PbiStatus
+}
+
+interface SprintScopeTask {
+  id: string
+  code: string
+  title: string
+  story_id: string
+  implementation_plan: string | null
+  verify_required: VerifyRequired
+  verify_only: boolean
+}
+
+interface SprintScopeStory {
+  id: string
+  code: string
+  title: string
+  pbi_id: string
+  priority: number
+  sort_order: number
+  status: StoryStatus
+  tasks: SprintScopeTask[]
+  pbi: SprintScopePbi
+}
+
+/** Select-shape van de execution-id lookup na de scope-snapshot insert. */
+interface SprintExecutionRow {
+  id: string
+  task_id: string
+  order: number
+  base_sha: string | null
+}
+
 export async function getFullJobContext(jobId: string) {
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
@@ -1236,8 +1284,11 @@ export async function getFullJobContext(jobId: string) {
       return null
     }
 
-    // Verzamel ordered tasks in flat list, behoud volgorde
-    const orderedTasks = sprintRun.sprint.stories.flatMap((s) =>
+    // Verzamel ordered tasks in flat list, behoud volgorde. scopeStories is
+    // expliciet getypeerd zodat de mappings hieronder ook zonder gegenereerde
+    // client gecheckt blijven (zie de SprintScope*-interfaces).
+    const scopeStories: SprintScopeStory[] = sprintRun.sprint.stories
+    const orderedTasks = scopeStories.flatMap((s) =>
       s.tasks.map((t) => ({ ...t, story_pbi_id: s.pbi.id })),
     )
 
@@ -1266,7 +1317,7 @@ export async function getFullJobContext(jobId: string) {
     ])
 
     // Lookup execution_ids in volgorde voor de response
-    const executions = await prisma.sprintTaskExecution.findMany({
+    const executions: SprintExecutionRow[] = await prisma.sprintTaskExecution.findMany({
       where: { sprint_job_id: job.id },
       orderBy: { order: 'asc' },
       select: { id: true, task_id: true, order: true, base_sha: true },
@@ -1274,8 +1325,8 @@ export async function getFullJobContext(jobId: string) {
     const execIdByTaskId = new Map(executions.map((e) => [e.task_id, e.id]))
 
     // Dedupe PBIs uit de stories (één PBI kan meerdere stories hebben)
-    const pbiMap = new Map<string, typeof sprintRun.sprint.stories[number]['pbi']>()
-    for (const s of sprintRun.sprint.stories) pbiMap.set(s.pbi.id, s.pbi)
+    const pbiMap = new Map<string, SprintScopePbi>()
+    for (const s of scopeStories) pbiMap.set(s.pbi.id, s.pbi)
 
     return {
       job_id: job.id,
@@ -1309,7 +1360,7 @@ export async function getFullJobContext(jobId: string) {
         sort_order: p.sort_order,
         status: p.status,
       })),
-      stories: sprintRun.sprint.stories.map((s) => ({
+      stories: scopeStories.map((s) => ({
         id: s.id,
         code: s.code,
         title: s.title,
