@@ -270,8 +270,8 @@ Verwacht: migratie applied, status clean.
 
 In `components/jobs/job-card.tsx` en `components/jobs/jobs-column.tsx`, in het `KIND_LABELS: Record<ClaudeJobKind, string>`-object, ná de `PR_REVIEW`-regel:
 ```ts
-  SPEC_REVIEW: 'Spec-review',
-  TASK_REVIEW: 'Task-review',
+  SPEC_REVIEW: 'SPEC-RVW',
+  TASK_REVIEW: 'TASK-RVW',
 ```
 (Het `Record<ClaudeJobKind, …>`-type FORCEERT deze toevoeging zodra de client de nieuwe kinds kent — typecheck faalt anders. Dat is de RED.)
 
@@ -1317,8 +1317,8 @@ Task-existence-guard uitbreiden (de bestaande `if (draft.kind === 'TASK_IMPLEMEN
 
 - [ ] **Stap 12.3: KIND_LABELS** — in `components/jobs/job-card.tsx` (regel ~33) en `components/jobs/jobs-column.tsx` (regel ~15), ná `PR_REVIEW`:
 ```ts
-  SPEC_REVIEW: 'Spec-review',
-  TASK_REVIEW: 'Task-review',
+  SPEC_REVIEW: 'SPEC-RVW',
+  TASK_REVIEW: 'TASK-RVW',
 ```
 (`Record<ClaudeJobKind, string>` dwingt dit af — typecheck is de RED.)
 
