@@ -48,6 +48,7 @@ import { registerUpdateIdeaGrillMdTool } from './tools/update-idea-grill-md.js'
 import { registerUpdateIdeaPlanMdTool } from './tools/update-idea-plan-md.js'
 import { registerUpdateIdeaPlanReviewedTool } from './tools/update-idea-plan-reviewed.js'
 import { registerPostPrReviewTool } from './tools/post-pr-review.js'
+import { registerSubmitReviewTool } from './tools/submit-review.js'
 import { registerLogIdeaDecisionTool } from './tools/log-idea-decision.js'
 import { registerGetWorkerSettingsTool } from './tools/get-worker-settings.js'
 import { registerWorkerHeartbeatTool } from './tools/worker-heartbeat.js'
@@ -103,6 +104,7 @@ export function registerSharedTools(server: McpServer): void {
   registerUpdateIdeaPlanMdTool(server)
   registerUpdateIdeaPlanReviewedTool(server)
   registerPostPrReviewTool(server)
+  registerSubmitReviewTool(server)
   registerLogIdeaDecisionTool(server)
   // M13: worker quota-gate tools
   registerGetWorkerSettingsTool(server)
