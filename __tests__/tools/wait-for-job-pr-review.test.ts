@@ -167,4 +167,20 @@ describe('getFullJobContext PR_REVIEW', () => {
     // rollbackClaim heeft $executeRaw aangeroepen (de DB-UPDATE naar QUEUED)
     expect(mockPrisma.$executeRaw).toHaveBeenCalled()
   })
+
+  it('PR_REVIEW met onparseerbare pr_url → rollbackClaim + null', async () => {
+    // findUnique wordt tweemaal aangeroepen: één keer door getFullJobContext,
+    // één keer door rollbackClaim (om kind/product_id/task.repo_url op te halen).
+    mockPrisma.claudeJob.findUnique
+      .mockResolvedValueOnce({ ...BASE_JOB, pr_url: 'https://github.com/x/y/pulls/1' })
+      // rollbackClaim's interne findUnique
+      .mockResolvedValueOnce({ kind: 'PR_REVIEW', product_id: 'prod-1', task: null })
+
+    const ctx = await getFullJobContext('job1')
+
+    expect(ctx).toBeNull()
+
+    // rollbackClaim heeft $executeRaw aangeroepen (de DB-UPDATE naar QUEUED)
+    expect(mockPrisma.$executeRaw).toHaveBeenCalled()
+  })
 })
