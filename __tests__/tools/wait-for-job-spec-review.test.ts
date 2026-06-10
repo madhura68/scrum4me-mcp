@@ -1,5 +1,3 @@
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Must be called before imports that touch the mocked modules.
@@ -95,35 +93,9 @@ const BASE_DOC = {
   },
 }
 
-describe('CLAIMABLE_STANDALONE_KINDS bevat SPEC_REVIEW en TASK_REVIEW', () => {
-  it('CLAIMABLE_STANDALONE_KINDS in wait-for-job.ts includeert SPEC_REVIEW', () => {
-    const src = readFileSync(
-      join(__dirname, '../../src/tools/wait-for-job.ts'),
-      'utf8',
-    )
-    expect(src).toContain("'SPEC_REVIEW'")
-  })
-
-  it('CLAIMABLE_STANDALONE_KINDS in wait-for-job.ts includeert TASK_REVIEW', () => {
-    const src = readFileSync(
-      join(__dirname, '../../src/tools/wait-for-job.ts'),
-      'utf8',
-    )
-    expect(src).toContain("'TASK_REVIEW'")
-  })
-
-  it('SPEC_REVIEW en TASK_REVIEW staan in dezelfde CLAIMABLE_STANDALONE_KINDS constante', () => {
-    const src = readFileSync(
-      join(__dirname, '../../src/tools/wait-for-job.ts'),
-      'utf8',
-    )
-    const match = src.match(/const CLAIMABLE_STANDALONE_KINDS\s*=\s*"([^"]+)"/)
-    expect(match).not.toBeNull()
-    const kindsSql = match![1]
-    expect(kindsSql).toContain('SPEC_REVIEW')
-    expect(kindsSql).toContain('TASK_REVIEW')
-  })
-})
+// NB: de claim-lijst zelf (CLAIMABLE_STANDALONE_KINDS incl. beide nieuwe kinds)
+// wordt geasserteerd in wait-for-job-runtime-claim.test.ts op het SQL-fragment
+// dat daadwerkelijk de DB raakt — geen brontekst-scan hier (kwaliteitsreview).
 
 describe('getFullJobContext SPEC_REVIEW', () => {
   beforeEach(() => {
