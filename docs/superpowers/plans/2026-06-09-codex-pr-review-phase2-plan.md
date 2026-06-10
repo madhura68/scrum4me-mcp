@@ -40,9 +40,11 @@
 - Modify: `bin/run-one-job.ts` — PR_REVIEW slaat worktree-attach over (read-only).
 
 **scrum4me-workers** (eigen worktree)
+- Modify: `lib/manual-job-draft.ts` — `MANUAL_JOB_KINDS` += `PR_REVIEW`; `ManualJobDraftInput.prUrl`; `ManualJobLaunchPreview.context.prUrl`; `buildManualJobLaunchPreview` + validatie.
 - Modify: `lib/manual-jobs/templates.ts` — `pr-review`-template + kind-union.
-- Modify: `actions/manual-jobs.ts` — `pr_url` → `ClaudeJob.pr_url` op create (snapshot-override hergebruikt).
-- Test: `__tests__/actions/manual-jobs.test.ts`.
+- Modify: `components/jobs/manual-job-draft-editor.tsx` — `prUrl` uit `inputValues.pr_url` in de draft-useMemo.
+- Modify: `actions/manual-jobs.ts` — `readPrUrlFromLaunchPreview` + verplicht voor PR_REVIEW + `pr_url` → `ClaudeJob` op create (snapshot-override hergebruikt).
+- Test: `__tests__/actions/manual-jobs.test.ts` + de lib-test voor `buildManualJobLaunchPreview`.
 
 ---
 
@@ -419,7 +421,7 @@ import { handlePostPrReview } from '../../src/tools/post-pr-review.js'
 const PR = 'https://git.jp-visser.nl/o/r/pulls/9'
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(prisma.claudeJob.findUnique).mockResolvedValue({ id: 'job1', user_id: 'u1', pr_url: PR } as any)
+  vi.mocked(prisma.claudeJob.findUnique).mockResolvedValue({ id: 'job1', user_id: 'u1', pr_url: PR, kind: 'PR_REVIEW' } as any)
 })
 
 describe('post_pr_review', () => {
@@ -439,6 +441,17 @@ describe('post_pr_review', () => {
     const res = await handlePostPrReview({ job_id: 'job1', pr_url: PR, event: 'COMMENT', body: 'x' })
     expect(res.isError).toBe(true)
     expect(prisma.claudeJob.update).not.toHaveBeenCalled()
+  })
+  it('niet-PR_REVIEW job → error (sink is geen vrije post-API)', async () => {
+    vi.mocked(prisma.claudeJob.findUnique).mockResolvedValue({ id: 'job1', user_id: 'u1', pr_url: PR, kind: 'IDEA_REVIEW_PLAN' } as any)
+    const res = await handlePostPrReview({ job_id: 'job1', pr_url: PR, event: 'COMMENT', body: 'x' })
+    expect(res.isError).toBe(true)
+    expect(postPullRequestReview).not.toHaveBeenCalled()
+  })
+  it('pr_url ≠ job.pr_url → error (geen cross-PR posting)', async () => {
+    const res = await handlePostPrReview({ job_id: 'job1', pr_url: 'https://git.jp-visser.nl/o/r/pulls/999', event: 'COMMENT', body: 'x' })
+    expect(res.isError).toBe(true)
+    expect(postPullRequestReview).not.toHaveBeenCalled()
   })
 })
 ```
@@ -478,13 +491,24 @@ export async function handlePostPrReview(
     const auth = await requireWriteAccess()
     const job = await prisma.claudeJob.findUnique({
       where: { id: job_id },
-      select: { id: true, user_id: true, pr_url: true },
+      select: { id: true, user_id: true, pr_url: true, kind: true },
     })
     if (!job || job.user_id !== auth.userId) {
       return toolError('Job not found')
     }
+    // De job is de autoriteit (codex plan-review P2): alleen een PR_REVIEW-job
+    // met een opgeslagen pr_url mag posten, en alléén naar díe PR.
+    if (job.kind !== 'PR_REVIEW') {
+      return toolError('Job is not a PR_REVIEW job')
+    }
+    if (!job.pr_url) {
+      return toolError('Job has no pr_url')
+    }
+    if (pr_url !== job.pr_url) {
+      return toolError(`pr_url mismatch: job is bound to ${job.pr_url}`)
+    }
 
-    const posted = await postPullRequestReview({ prUrl: pr_url, event, body, commitId: commit_id })
+    const posted = await postPullRequestReview({ prUrl: job.pr_url, event, body, commitId: commit_id })
     if ('error' in posted) {
       // Faalt bewust: geen stille review-verlies, prompt faalt de job.
       return toolError(`post_pr_review failed: ${posted.error}`)
@@ -582,10 +606,18 @@ describe('resolvePrLinkedPlan', () => {
     const out = await resolvePrLinkedPlan(JOB as any)
     expect(out).toMatchObject({ source: 'job', plan_snapshot: 'PLAN', acceptance_criteria: 'AC' })
   })
-  it('pbi-fallback wanneer geen implementatie-job', async () => {
-    findFirstPbi.mockResolvedValue({ id: 'pbi1', title: 'T', plan_md: 'PM' })
+  it('pbi-fallback via PbiDoc(role=PLAN) → doc_revision.content_md', async () => {
+    findFirstPbi.mockResolvedValue({
+      id: 'pbi1',
+      docs: [{ doc_revision: { content_md: 'PM' } }],
+    })
     const out = await resolvePrLinkedPlan(JOB as any)
-    expect(out?.source).toBe('pbi')
+    expect(out).toMatchObject({ source: 'pbi', plan_md: 'PM' })
+  })
+  it('pbi zonder PLAN-doc → null (geen bruikbaar plan)', async () => {
+    findFirstPbi.mockResolvedValue({ id: 'pbi1', docs: [] })
+    const out = await resolvePrLinkedPlan(JOB as any)
+    expect(out).toBeNull()
   })
   it('no-link wanneer niets matcht → null', async () => {
     const out = await resolvePrLinkedPlan(JOB as any)
@@ -657,18 +689,29 @@ export async function resolvePrLinkedPlan(
     }
   }
 
+  // Pbi heeft geen plan_md-kolom (codex plan-review P2); plan-content hangt
+  // via PbiDoc(role=PLAN) aan een ProductDocRevision.
   const pbi = await prisma.pbi.findFirst({
     where: { pr_url: job.pr_url },
-    select: { id: true, title: true, plan_md: true },
+    select: {
+      id: true,
+      docs: {
+        where: { role: 'PLAN' },
+        orderBy: { created_at: 'desc' },
+        take: 1,
+        select: { doc_revision: { select: { content_md: true } } },
+      },
+    },
   })
-  if (pbi) {
-    return { source: 'pbi', plan_md: pbi.plan_md ?? null }
+  const pbiPlanMd = pbi?.docs[0]?.doc_revision?.content_md ?? null
+  if (pbi && pbiPlanMd) {
+    return { source: 'pbi', plan_md: pbiPlanMd }
   }
 
   return null
 }
 ```
-> NB: verifieer de Prisma-veldnamen tegen het gebumpte schema — `Task.implementation_plan`, `Story.acceptance_criteria`, `Pbi.pr_url`/`Pbi.plan_md`. Heet een veld anders, pas de `select` aan (de tests pinnen het gedrag, niet de exacte kolom).
+> NB: geverifieerd tegen het schema — `Pbi` heeft GEEN `plan_md`; plan-content loopt via `Pbi.docs` → `PbiDoc` (`role PbiDocRole` = `PLAN|GRILL`) → `doc_revision.content_md`. Verifieer wel `Task.implementation_plan` + `Story.acceptance_criteria` tegen het gebumpte schema; heet een veld anders, pas de `select` aan (de tests pinnen het gedrag, niet de exacte kolom).
 
 - [ ] **Step 4: Run de test — moet slagen**
 
@@ -720,7 +763,7 @@ it('MANUAL PR_REVIEW → pr/pr_diff/linked_plan (niet de generieke manual-payloa
   })
   const ctx: any = await getFullJobContext('job1')
   expect(ctx.kind).toBe('PR_REVIEW')
-  expect(ctx.pr).toMatchObject({ url: PR, index: '42' })
+  expect(ctx.pr).toMatchObject({ url: PR, index: 42 }) // parseForgejoPrUrl → index: number
   expect(ctx.pr_diff).toContain('diff --git')
   expect(ctx.linked_plan).toMatchObject({ source: 'job' })
   expect(ctx.instruction).toBe('review grondig')
@@ -878,12 +921,16 @@ Open de docker-PR via de Forgejo-API; pin `MCP_GIT_REF` op de mcp-`main` (nu gem
 
 ---
 
-### Task 9: scrum4me-workers — `pr-review`-template + enqueue `pr_url`
+### Task 9: scrum4me-workers — `pr_url`-plumbing + `pr-review`-template + enqueue
 
 **Files:**
+- Modify: `scrum4me-workers/lib/manual-job-draft.ts` (`MANUAL_JOB_KINDS`, `ManualJobDraftInput`, `ManualJobLaunchPreview.context`, `buildManualJobLaunchPreview`, validatie)
 - Modify: `scrum4me-workers/lib/manual-jobs/templates.ts`
-- Modify: `scrum4me-workers/actions/manual-jobs.ts`
-- Test: `scrum4me-workers/__tests__/actions/manual-jobs.test.ts`
+- Modify: `scrum4me-workers/components/jobs/manual-job-draft-editor.tsx` (draft-useMemo, ~`:176-188`)
+- Modify: `scrum4me-workers/actions/manual-jobs.ts` (enqueue)
+- Test: `scrum4me-workers/__tests__/actions/manual-jobs.test.ts` (+ de lib-test waar `manual-job-draft` getest wordt)
+
+**Context (codex plan-review P1 — geverifieerd):** de huidige draft-keten persisteert géén `pr_url`. `MANUAL_JOB_KINDS` mist `PR_REVIEW`; `ManualJobDraftInput` kent alleen `taskId`/`ideaId`/`prompt`; `ManualJobLaunchPreview.context` alleen `taskId`/`ideaId`/`instruction`; de editor mapt template-velden alleen naar de prompt; de enqueue leest context via `readTaskIdFromLaunchPreview`/`readIdeaIdFromLaunchPreview`. Zonder volledige plumbing queue't een PR_REVIEW-job met `pr_url = null` en rolt de Task 6-tak elke claim terug. **Spiegel daarom het bestaande taskId/ideaId-patroon end-to-end.**
 
 - [ ] **Step 1: Maak een worktree + bump de submodule**
 
@@ -897,25 +944,51 @@ cd vendor/scrum4me-shared && git checkout origin/main && cd ../..
 npm install   # postinstall heelt submodule + prisma generate → PR_REVIEW beschikbaar
 ```
 
-- [ ] **Step 2: Schrijf de falende test**
+- [ ] **Step 2: Schrijf de falende tests (lib + enqueue)**
 
-In `__tests__/actions/manual-jobs.test.ts`, voeg toe (mirror de Phase-1 CODEX-test; een PR_REVIEW-draft met `pr_url` in `launch_preview_json`):
+**(a) lib-test** — in de test-file waar `buildManualJobLaunchPreview` al getest wordt (zoek met `grep -rln "buildManualJobLaunchPreview" __tests__/`), voeg toe:
+```ts
+it('buildManualJobLaunchPreview: PR_REVIEW draagt context.prUrl', () => {
+  const preview = buildManualJobLaunchPreview({
+    title: 'Review PR',
+    productId: 'p1',
+    kind: 'PR_REVIEW',
+    runtime: 'codex',
+    adapter: /* zelfde adapter-waarde als de bestaande fixtures in deze file */,
+    templateId: 'pr-review',
+    templateVersion: 1,
+    prUrl: 'https://git.jp-visser.nl/o/r/pulls/5',
+    prompt: 'Beoordeel grondig.',
+  } as ManualJobDraftInput)
+  expect(preview.context?.prUrl).toBe('https://git.jp-visser.nl/o/r/pulls/5')
+})
+```
+
+**(b) enqueue-tests** — in `__tests__/actions/manual-jobs.test.ts` (mirror de Phase-1 CODEX-test-fixture; de draft-mock krijgt `launch_preview_json` precies zoals `buildManualJobLaunchPreview` het produceert — `context.prUrl`, camelCase):
 ```ts
 it('CODEX PR_REVIEW queue't met pr_url op de job + codex-default snapshot', async () => {
-  // arrange: een DRAFT PR_REVIEW met runtime CODEX en pr_url in launch_preview_json
-  // (mirror de bestaande draft-fixture in dit bestand)
-  const created = await enqueueManualJobAction(/* draftId van de PR_REVIEW-draft */)
+  // arrange: DRAFT-mock met kind PR_REVIEW, runtime CODEX en
+  // launch_preview_json: { context: { prUrl: 'https://git.jp-visser.nl/o/r/pulls/5' } }
+  // (zelfde fixture-helper als de bestaande CODEX IDEA_REVIEW_PLAN-test)
+  await enqueueManualJobAction({ draftId: 'd1', allowQueueWithoutWorker: false })
   const jobArg = vi.mocked(prisma.claudeJob.create).mock.calls.at(-1)?.[0].data
   expect(jobArg.kind).toBe('PR_REVIEW')
   expect(jobArg.pr_url).toBe('https://git.jp-visser.nl/o/r/pulls/5')
   expect(jobArg.requested_model).toBe('codex-default')
 })
+
+it('PR_REVIEW zonder prUrl in launch_preview → enqueue weigert', async () => {
+  // arrange: zelfde draft-mock maar launch_preview_json: { context: {} }
+  const res = await enqueueManualJobAction({ draftId: 'd1', allowQueueWithoutWorker: false })
+  expect(res.ok).toBe(false)
+  expect(vi.mocked(prisma.claudeJob.create)).not.toHaveBeenCalled()
+})
 ```
 
-- [ ] **Step 3: Run de test — moet falen**
+- [ ] **Step 3: Run de tests — moeten falen**
 
 Run: `npm test -- __tests__/actions/manual-jobs.test.ts`
-Expected: FAIL (geen pr-review-template; `pr_url` niet op de job).
+Expected: FAIL (PR_REVIEW geen geldig `ManualJobKind`; geen template; `pr_url` niet op de job; geen prUrl-guard).
 
 - [ ] **Step 4: Voeg de `pr-review`-template toe (`lib/manual-jobs/templates.ts`)**
 
@@ -943,27 +1016,92 @@ Voeg `'PR_REVIEW'` toe aan het template-kind-union-type, en een template:
 ```
 > NB: spiegel exact de veld-/type-structuur van de bestaande `idea-review-plan`-template in dit bestand (zelfde `ManualJobTemplate`-type, `defaultAdapter`/`allowedAdapters`).
 
-- [ ] **Step 5: Persisteer `pr_url` op de job (`actions/manual-jobs.ts`)**
+- [ ] **Step 5: Draft-plumbing in `lib/manual-job-draft.ts`**
 
-Bij job-create: lees het `pr_url`-veld uit de draft (`launch_preview_json`/velden) en zet het op `ClaudeJob.pr_url`. De codex-snapshot-override (`requested_model='codex-default'`) bestaat al (Phase 1). Zorg dat de idea-binding-check PR_REVIEW overslaat (PR_REVIEW is niet idea-gebonden):
+Vier wijzigingen, allemaal naar het bestaande taskId/ideaId-patroon:
+
+1. **`MANUAL_JOB_KINDS`** — voeg `'PR_REVIEW'` toe aan de bestaande const-array (achteraan, vóór de `] as const satisfies …`-regel).
+2. **`ManualJobDraftInput`** — voeg het veld toe naast `taskId`/`ideaId`:
 ```ts
-const prUrl = draft.kind === 'PR_REVIEW'
-  ? (draft.launch_preview_json?.context?.pr_url ?? null)
-  : null
-// …in prisma.claudeJob.create({ data: { …, pr_url: prUrl } })
+export type ManualJobDraftInput = {
+  // …bestaande velden ongewijzigd…
+  taskId?: string
+  ideaId?: string
+  prUrl?: string   // PR_REVIEW: de te reviewen Forgejo-PR
+  prompt: string
+}
 ```
-> NB: verifieer waar het `pr_url`-veld landt (launch_preview_json vs een los veld) tegen de manual-draft-structuur; pas het pad aan. Zorg dat de bestaande idea-binding-guard (die `launch_preview_json.context.ideaId` eist voor idea-kinds) PR_REVIEW niet blokkeert.
+3. **`ManualJobLaunchPreview.context`** — voeg `prUrl` toe:
+```ts
+  context?: {
+    taskId?: string
+    ideaId?: string
+    prUrl?: string
+    instruction?: string
+  }
+```
+4. **`buildManualJobLaunchPreview`** — neem `prUrl` op in de context-bouw:
+```ts
+  const context = {
+    ...(input.taskId ? { taskId: input.taskId } : {}),
+    ...(input.ideaId ? { ideaId: input.ideaId } : {}),
+    ...(input.kind === 'PR_REVIEW' && input.prUrl ? { prUrl: input.prUrl } : {}),
+    ...(isManualIdeaJobKind(input.kind) && input.prompt
+      ? { instruction: input.prompt }
+      : {}),
+  }
+```
+> NB: dit bestand heeft ook een zod-parse/validatielaag (`trimmedString`-preprocess + `validateManualJobInput`). Voeg `prUrl` daar toe op exact dezelfde manier als `taskId`/`ideaId` (optioneel string-veld), en voeg in de validatie een PR_REVIEW-regel toe: `prUrl` verplicht + moet matchen op `/^https?:\/\/.+\/pulls\/\d+\/?$/`. De falende tests pinnen het gedrag.
 
-- [ ] **Step 6: Run de test + verify — moeten slagen**
+- [ ] **Step 6: Editor-mapping in `components/jobs/manual-job-draft-editor.tsx`**
+
+Het `pr_url`-templateveld rendert al generiek via `template.fields` → `inputValues.pr_url`; alleen de draft-mapping ontbreekt. In de `draft`-useMemo (~`:176-188`), voeg toe naast `taskId`/`ideaId`:
+```ts
+  const draft = useMemo<ManualJobDraftInput>(() => ({
+    // …bestaande velden ongewijzigd…
+    taskId: selectedTaskRef,
+    ideaId: templateHasIdeaRef ? selectedIdeaId : undefined,
+    prUrl: template.kind === 'PR_REVIEW'
+      ? (stringFromValue(inputValues.pr_url) || undefined)
+      : undefined,
+    prompt: renderedPrompt.promptMd,
+  }), [/* …bestaande deps…, */ inputValues, template.kind])
+```
+> NB: verifieer welke builder de gepersisteerde `launch_preview_json` voedt bij save-draft (de editor gebruikt zowel `buildManualJobLaunchPreview(draft)` als `buildManualJobLaunchPreviewBundle({ inputValues, … })`). Zorg dat `prUrl` in het gepersisteerde pad terechtkomt; de enqueue-test (Step 2b) bewijst het end-to-end.
+
+- [ ] **Step 7: Enqueue in `actions/manual-jobs.ts`**
+
+Mirror de bestaande `readTaskIdFromLaunchPreview`/`readIdeaIdFromLaunchPreview`-helpers (zelfde file, zelfde parse-stijl):
+```ts
+function readPrUrlFromLaunchPreview(json: Prisma.JsonValue | null): string | null {
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return null
+  const context = (json as { context?: unknown }).context
+  if (!context || typeof context !== 'object' || Array.isArray(context)) return null
+  const prUrl = (context as { prUrl?: unknown }).prUrl
+  return typeof prUrl === 'string' && prUrl.length > 0 ? prUrl : null
+}
+```
+In de enqueue-transactie (naast de bestaande `taskId`/`ideaId`-reads):
+```ts
+    const prUrl = draft.kind === 'PR_REVIEW'
+      ? readPrUrlFromLaunchPreview(draft.launch_preview_json)
+      : null
+    if (draft.kind === 'PR_REVIEW' && !prUrl) {
+      return { type: 'error', error: 'PR URL is verplicht voor een PR-review.' }
+    }
+```
+En bij de job-create: `pr_url: prUrl` in de `data`. De codex-snapshot-override (`requested_model='codex-default'`) bestaat al (Phase 1). De idea-binding-guard blokkeert niet: `isManualIdeaJobKind` dekt alleen `IDEA_*`-kinds, dus PR_REVIEW valt er vanzelf buiten (de enqueue-test bevestigt dit).
+
+- [ ] **Step 8: Run de tests + verify — moeten slagen**
 
 Run: `npm test -- __tests__/actions/manual-jobs.test.ts && npm run verify`
-Expected: PASS + verify groen.
+Expected: PASS + verify groen (lint + typecheck + alle tests).
 
-- [ ] **Step 7: Commit + PR + codex-review + GATE-merge**
+- [ ] **Step 9: Commit + PR + codex-review + GATE-merge**
 
 ```bash
-git add lib/manual-jobs/templates.ts actions/manual-jobs.ts __tests__/actions/manual-jobs.test.ts vendor/scrum4me-shared
-git commit -m "feat(workers): pr-review template + enqueue pr_url" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+git add lib/manual-job-draft.ts lib/manual-jobs/templates.ts components/jobs/manual-job-draft-editor.tsx actions/manual-jobs.ts __tests__/ vendor/scrum4me-shared
+git commit -m "feat(workers): pr_url-plumbing + pr-review template + enqueue" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 git push -u origin feat/codex-pr-review-phase2
 ```
 Open de workers-PR via de Forgejo-API; codex-review via s4m-queue. **Stop voor user-geautoriseerde merge.**
@@ -1005,7 +1143,7 @@ Werk de auto-memory + de DB-doc `architecture/codex-review-worker` bij naar "Pha
 
 ## Self-Review (uitgevoerd)
 
-**Spec-coverage:** §2-scope IN gedekt — enum (T1), prompt+selectie (T2), Forgejo-helpers (T3), sink (T4), plan-koppeling (T5), getFullJobContext-tak + CLAIMABLE (T6), docker skip-worktree (T8), workers template+enqueue (T9), canary (T10). §5-prompt → T2. §6-sink → T4. §7-koppeling (self-match-excl.) → T5. §9-error-handling → in T4 (fail-on-Forgejo-error), T6 (rollback bij missing/unparseable pr_url), prompt (lege diff). §8-canary → T10 (dual-rebuild). Cross-repo-volgorde §12 → T1→T7→T8→T9→T10.
+**Spec-coverage:** §2-scope IN gedekt — enum (T1), prompt+selectie (T2), Forgejo-helpers (T3), sink (T4), plan-koppeling (T5), getFullJobContext-tak + CLAIMABLE (T6), docker skip-worktree (T8), workers pr_url-plumbing+template+enqueue (T9), canary (T10). §5-prompt → T2. §6-sink → T4. §7-koppeling (self-match-excl.) → T5. §9-error-handling → in T4 (fail-on-Forgejo-error), T6 (rollback bij missing/unparseable pr_url), prompt (lege diff). §8-canary → T10 (dual-rebuild). Cross-repo-volgorde §12 → T1→T7→T8→T9→T10.
 
 **Placeholder-scan:** de `> NB:`-noten markeren expliciet waar de implementer een exacte signatuur/veldnaam tegen de bron verifieert (geen verzonnen interface vastgelegd); alle test- en nieuwe-functiecode is volledig. Geen "TODO/later".
 

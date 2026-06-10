@@ -101,7 +101,7 @@ enqueue (workers-UI /jobs/new: pr_url + instructie)
 
 ### scrum4me-workers — *inspanning M · risico laag*
 - **Nieuw `pr-review`-template** (`lib/manual-jobs/templates.ts`): `kind: 'PR_REVIEW'`, velden `pr_url` (string, required, placeholder `https://git.jp-visser.nl/owner/repo/pulls/123`) + `instructie` (text, optioneel, default "Beoordeel codekwaliteit, architectuur-conformiteit, tests en docs"); `defaultRuntime: 'codex'`, `allowedRuntimes: ['claude','codex']`, `defaultCapability: 'review'`. Voeg `'PR_REVIEW'` toe aan het template-kind-union-type.
-- **Enqueue** (`actions/manual-jobs.ts`): schrijf de ingevoerde `pr_url` naar `ClaudeJob.pr_url` op create; hergebruik de Phase-1-snapshot-override (codex → `requested_model='codex-default'`) en de capability-gate (`capabilities has 'review'`). PR_REVIEW is **niet** idea-gebonden → de idea-binding-check (die voor idea-kinds geldt) moet PR_REVIEW overslaan (verifieer `lib/manual-job-draft.ts`/de kind-classificatie bij plan-tijd).
+- **Draft-plumbing + enqueue** (`lib/manual-job-draft.ts`, `components/jobs/manual-job-draft-editor.tsx`, `actions/manual-jobs.ts`): de draft-keten persisteert vandaag géén `pr_url` (codex plan-review P1) — voeg het veld toe over de hele keten, naar het bestaande taskId/ideaId-patroon: `MANUAL_JOB_KINDS += PR_REVIEW`, `ManualJobDraftInput.prUrl` (+ zod/validatie: verplicht voor PR_REVIEW), `ManualJobLaunchPreview.context.prUrl`, editor-mapping uit `inputValues.pr_url`, en in de enqueue een `readPrUrlFromLaunchPreview` (mirror van `readIdeaIdFromLaunchPreview`) die `ClaudeJob.pr_url` vult — verplicht voor PR_REVIEW, anders weigert de enqueue. Hergebruik de Phase-1-snapshot-override (codex → `requested_model='codex-default'`) en de capability-gate (`capabilities has 'review'`). PR_REVIEW is **niet** idea-gebonden: `isManualIdeaJobKind` dekt alleen `IDEA_*`, dus de idea-binding-guard blokkeert vanzelf niet.
 - Job-board/worker-insights tonen runtime + `pr_url` al; geen nieuwe UI.
 
 ## 5. De codex-PR-review-prompt (`pr/review.codex.md`)
@@ -123,8 +123,8 @@ Nieuw `src/tools/post-pr-review.ts`, geregistreerd als MCP-tool `post_pr_review`
 
 - **inputSchema:** `{ job_id: string, pr_url: string, event: 'APPROVED'|'REQUEST_CHANGES'|'COMMENT', body: string, commit_id?: string, review_log?: object (passthrough) }`.
 - **Gedrag:**
-  1. `requireWriteAccess()` + ownership-check (de job moet van de aanroepende worker/user zijn; spiegel het `userOwnsIdea`-patroon met een job-ownership-check).
-  2. `postPullRequestReview({ prUrl: pr_url, event, body, commitId: commit_id })` → Forgejo.
+  1. `requireWriteAccess()` + ownership-check (de job moet van de aanroepende worker/user zijn) **+ job-binding (codex plan-review P2):** de job moet `kind = PR_REVIEW` zijn én een opgeslagen `pr_url` hebben; een input-`pr_url` die afwijkt van `job.pr_url` wordt verworpen. De post gaat altijd naar `job.pr_url` — de sink is geen vrije post-API en kan niet cross-PR posten.
+  2. `postPullRequestReview({ prUrl: job.pr_url, event, body, commitId: commit_id })` → Forgejo.
   3. **Forgejo-post mislukt → de tool FAALT** (geen stille review-verlies); de prompt laat dan de job falen (geen valse "done"). Analoog aan Phase 1's "plan-write-fout blokkeert approved".
   4. Schrijf een verdict-trace naar `ClaudeJob.summary` (`event` + 1-regel-samenvatting) en een log-entry voor auditbaarheid. **Geen** nieuwe kolom/idea-status.
 - **Safe-default bewaakt in de prompt** (de tool post wat codex geeft); de prompt mag nooit `APPROVED` kiezen bij twijfel (§5).
@@ -218,3 +218,9 @@ Elke PR: codex-gereviewd plan/diff via de s4m-queue (`push --to mac:codex --type
   - **P2:** de linked-job-lookup `findFirst({ where: { pr_url }, orderBy: created_at desc })` self-matcht de zojuist aangemaakte PR_REVIEW-job → verliest het plan. Fix: `id != job.id` + filter op implementatie-dragers (TASK_IMPLEMENTATION+task_id / SPRINT_IMPLEMENTATION+sprint_run_id) + alleen accepteren bij bruikbare plan-context, anders PBI-fallback (§7/§11).
   - Niet-blokkerend bevestigd: Forgejo `CreatePullReview`/`event`-shape, MANUAL-done-gate `:738`, CLAIMABLE_STANDALONE-vereiste `:320`, `fetchPrDiff` via `forgejoFetch` (raw `.diff`, niet `callForgejo`) — verwerkt in §4. Round-2-confirm aangevraagd.
 - **mac:codex — round-2: GO ✅** (msg bcff3cc5). Beide round-1-fixes correct bevestigd (P1 branch-placement vóór de MANUAL-branch met regressie-dekking; P2 self-match-uitsluiting + implementatie-drager-filter + PBI/no-link-fallback met tests); geen resterende P1/P2. P3 (niet-blokkerend, verwerkt in §4): de PR_REVIEW-instructie uit `manual_draft.prompt_md` / een PR-specifiek input-veld halen, **niet** via `loadManualIdeaContext` (idea-only).
+- **mac:codex — implementatieplan round-1: NO-GO → fixes verwerkt** (msg c94eb059). 4 findings, alle tegen de bron geverifieerd en gegrond:
+  - **P1 (Task 9):** workers persisteert géén `pr_url` — `MANUAL_JOB_KINDS` mist PR_REVIEW, `ManualJobDraftInput`/`ManualJobLaunchPreview.context`/editor/enqueue kennen het veld niet → `ClaudeJob.pr_url` zou null zijn en de PR_REVIEW-payload-tak rolt elke claim terug. Fix: volledige plumbing naar het taskId/ideaId-patroon (draft-input + validatie + launch-preview + editor + `readPrUrlFromLaunchPreview` in de enqueue, met save→enqueue-tests). Verwerkt in §4 + plan Task 9.
+  - **P2 (Task 5):** `Pbi.plan_md` bestaat niet — plan-content loopt via `PbiDoc(role=PLAN)` → `doc_revision.content_md`. Fallback-query + tests gefixt.
+  - **P2 (Task 4):** `post_pr_review` postte naar caller-supplied `pr_url`. Nu: vereist `kind=PR_REVIEW` + opgeslagen `job.pr_url`, verwerpt mismatch, post naar `job.pr_url` (geen cross-PR posting); negatieve tests toegevoegd. Verwerkt in §6.
+  - **P3 (Task 6):** `parseForgejoPrUrl().index` is een `number`; test verwachtte string `'42'` → numeriek contract aangehouden.
+  Round-2-confirm aangevraagd.
