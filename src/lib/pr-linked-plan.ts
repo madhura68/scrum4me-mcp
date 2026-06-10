@@ -5,6 +5,12 @@ export type LinkedPlan = {
   plan_md?: string | null
   acceptance_criteria?: string | null
   plan_snapshot?: string | null
+  /** SPRINT_IMPLEMENTATION: per-task frozen snapshots uit SprintTaskExecution. */
+  sprint_tasks?: Array<{
+    task_title: string | null
+    plan_snapshot: string | null
+    acceptance_criteria: string | null
+  }>
 }
 
 /**
@@ -30,6 +36,7 @@ export async function resolvePrLinkedPlan(
     orderBy: { created_at: 'desc' },
     select: {
       id: true,
+      kind: true,
       plan_snapshot: true,
       task: {
         select: {
@@ -41,6 +48,33 @@ export async function resolvePrLinkedPlan(
   })
 
   if (impl) {
+    if (impl.kind === 'SPRINT_IMPLEMENTATION') {
+      const executions = await prisma.sprintTaskExecution.findMany({
+        where: { sprint_job_id: impl.id },
+        orderBy: { order: 'asc' },
+        select: {
+          plan_snapshot: true,
+          task: {
+            select: {
+              title: true,
+              story: { select: { acceptance_criteria: true } },
+            },
+          },
+        },
+      })
+      if (executions.length > 0) {
+        return {
+          source: 'job',
+          sprint_tasks: executions.map((e) => ({
+            task_title: e.task?.title ?? null,
+            plan_snapshot: e.plan_snapshot ?? null,
+            acceptance_criteria: e.task?.story?.acceptance_criteria ?? null,
+          })),
+        }
+      }
+      // geen executions → val door naar de bestaande task-velden-check / PBI-fallback
+    }
+
     const acceptance = impl.task?.story?.acceptance_criteria ?? null
     const planMd = impl.task?.implementation_plan ?? null
     if (impl.plan_snapshot || planMd || acceptance) {

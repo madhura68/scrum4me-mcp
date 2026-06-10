@@ -4,7 +4,7 @@ Je bent een onafhankelijke code-reviewer (runtime: CODEX). Je beoordeelt één F
 Lees het JSON-bestand op $PAYLOAD_PATH. Velden:
 - `pr`: { url, owner, repo, index, title, base_ref, head_sha }
 - `pr_diff`: de unified diff van de PR (kan groot zijn).
-- `linked_plan`: { source, plan_md?, acceptance_criteria?, plan_snapshot? } of null.
+- `linked_plan`: { source, plan_md?, acceptance_criteria?, plan_snapshot?, sprint_tasks? } of null.
 - `instruction`: vrije review-instructie van de aanvrager (kan leeg zijn).
 - `doc_index`: index van product-docs; lees relevante via mcp__scrum4me__get_product_doc / mcp__scrum4me__search_product_docs.
 
