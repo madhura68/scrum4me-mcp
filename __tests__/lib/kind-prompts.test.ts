@@ -43,3 +43,25 @@ describe('getKindPromptText — PR_REVIEW', () => {
     expect(getKindPromptText('PR_REVIEW')).toEqual(getKindPromptText('PR_REVIEW', 'CLAUDE'))
   })
 })
+
+describe('getKindPromptText — SPEC_REVIEW', () => {
+  it('SPEC_REVIEW: CODEX-override en Claude-fallback bestaan en verschillen', () => {
+    const codex = getKindPromptText('SPEC_REVIEW', 'CODEX')
+    const claude = getKindPromptText('SPEC_REVIEW', 'CLAUDE')
+    expect(codex).toContain('submit_review')
+    expect(codex).toContain('judge-only')
+    expect(claude).toContain('submit_review')
+    expect(codex).not.toBe(claude)
+  })
+})
+
+describe('getKindPromptText — TASK_REVIEW', () => {
+  it('TASK_REVIEW: CODEX-override en Claude-fallback bestaan en verschillen', () => {
+    const codex = getKindPromptText('TASK_REVIEW', 'CODEX')
+    const claude = getKindPromptText('TASK_REVIEW', 'CLAUDE')
+    expect(codex).toContain('submit_review')
+    expect(codex).toContain('task_diff')
+    expect(claude).toContain('submit_review')
+    expect(codex).not.toBe(claude)
+  })
+})
