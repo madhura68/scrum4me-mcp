@@ -40,11 +40,12 @@
 - Modify: `bin/run-one-job.ts` — PR_REVIEW slaat worktree-attach over (read-only).
 
 **scrum4me-workers** (eigen worktree)
-- Modify: `lib/manual-job-draft.ts` — `MANUAL_JOB_KINDS` += `PR_REVIEW`; `ManualJobDraftInput.prUrl`; `ManualJobLaunchPreview.context.prUrl`; `buildManualJobLaunchPreview` + validatie.
+- Modify: `lib/manual-job-draft.ts` — `MANUAL_JOB_KINDS` += `PR_REVIEW`; `ManualJobDraftInput.prUrl`; `ManualJobLaunchPreview.context.prUrl`; `buildManualJobLaunchPreview` + zod-parseveld.
+- Modify: `lib/manual-jobs/validation.ts` — **eigen** `MANUAL_JOB_KINDS` += `PR_REVIEW`; `ManualJobValidationInput.prUrl`; PR_REVIEW-veldregels (de echte validator achter save-draft).
 - Modify: `lib/manual-jobs/templates.ts` — `pr-review`-template + kind-union.
 - Modify: `components/jobs/manual-job-draft-editor.tsx` — `prUrl` uit `inputValues.pr_url` in de draft-useMemo.
 - Modify: `actions/manual-jobs.ts` — `readPrUrlFromLaunchPreview` + verplicht voor PR_REVIEW + `pr_url` → `ClaudeJob` op create (snapshot-override hergebruikt).
-- Test: `__tests__/actions/manual-jobs.test.ts` + de lib-test voor `buildManualJobLaunchPreview`.
+- Test: `__tests__/actions/manual-jobs.test.ts`, `__tests__/actions/manual-job-drafts.test.ts` (save-draft persisteert `context.prUrl`), lib-tests voor `buildManualJobLaunchPreview` + `validateManualJobInput`.
 
 ---
 
@@ -924,13 +925,14 @@ Open de docker-PR via de Forgejo-API; pin `MCP_GIT_REF` op de mcp-`main` (nu gem
 ### Task 9: scrum4me-workers — `pr_url`-plumbing + `pr-review`-template + enqueue
 
 **Files:**
-- Modify: `scrum4me-workers/lib/manual-job-draft.ts` (`MANUAL_JOB_KINDS`, `ManualJobDraftInput`, `ManualJobLaunchPreview.context`, `buildManualJobLaunchPreview`, validatie)
+- Modify: `scrum4me-workers/lib/manual-job-draft.ts` (`MANUAL_JOB_KINDS`, `ManualJobDraftInput`, `ManualJobLaunchPreview.context`, `buildManualJobLaunchPreview`, zod-parseveld)
+- Modify: `scrum4me-workers/lib/manual-jobs/validation.ts` (**eigen** `MANUAL_JOB_KINDS` += PR_REVIEW; `ManualJobValidationInput.prUrl`; PR_REVIEW-veldregels — de echte validator achter het save-draft-pad)
 - Modify: `scrum4me-workers/lib/manual-jobs/templates.ts`
 - Modify: `scrum4me-workers/components/jobs/manual-job-draft-editor.tsx` (draft-useMemo, ~`:176-188`)
 - Modify: `scrum4me-workers/actions/manual-jobs.ts` (enqueue)
-- Test: `scrum4me-workers/__tests__/actions/manual-jobs.test.ts` (+ de lib-test waar `manual-job-draft` getest wordt)
+- Test: `scrum4me-workers/__tests__/actions/manual-jobs.test.ts`, `__tests__/actions/manual-job-drafts.test.ts` (save-draft persisteert `context.prUrl`), de lib-tests voor `buildManualJobLaunchPreview` en `validateManualJobInput`
 
-**Context (codex plan-review P1 — geverifieerd):** de huidige draft-keten persisteert géén `pr_url`. `MANUAL_JOB_KINDS` mist `PR_REVIEW`; `ManualJobDraftInput` kent alleen `taskId`/`ideaId`/`prompt`; `ManualJobLaunchPreview.context` alleen `taskId`/`ideaId`/`instruction`; de editor mapt template-velden alleen naar de prompt; de enqueue leest context via `readTaskIdFromLaunchPreview`/`readIdeaIdFromLaunchPreview`. Zonder volledige plumbing queue't een PR_REVIEW-job met `pr_url = null` en rolt de Task 6-tak elke claim terug. **Spiegel daarom het bestaande taskId/ideaId-patroon end-to-end.**
+**Context (codex plan-review P1 — geverifieerd, round-2 aangescherpt):** de huidige draft-keten persisteert géén `pr_url`. `MANUAL_JOB_KINDS` mist `PR_REVIEW`; `ManualJobDraftInput` kent alleen `taskId`/`ideaId`/`prompt`; `ManualJobLaunchPreview.context` alleen `taskId`/`ideaId`/`instruction`; de editor mapt template-velden alleen naar de prompt; de enqueue leest context via `readTaskIdFromLaunchPreview`/`readIdeaIdFromLaunchPreview`. **Bovendien (round-2):** de échte validator zit in `lib/manual-jobs/validation.ts` — `parseManualJobDraftInput` (manual-job-draft.ts) delegeert naar `validateManualJobInput`, en dát bestand heeft zijn **eigen** `MANUAL_JOB_KINDS` (`:41`) + `ManualJobValidationInput` (`:36-37`, geen `prUrl`) + kind-specifieke veldregels (`:94-98`). Zonder die module te updaten verwerpt `saveManualJobDraftAction` (`actions/manual-job-drafts.ts:32`) elke PR_REVIEW-draft als onbekend jobtype, nog vóór de enqueue. Zonder volledige plumbing queue't een PR_REVIEW-job dus nooit, of met `pr_url = null` waarna de Task 6-tak elke claim terugrolt. **Spiegel daarom het bestaande taskId/ideaId-patroon end-to-end, in béide modules.**
 
 - [ ] **Step 1: Maak een worktree + bump de submodule**
 
@@ -984,6 +986,34 @@ it('PR_REVIEW zonder prUrl in launch_preview → enqueue weigert', async () => {
   expect(vi.mocked(prisma.claudeJob.create)).not.toHaveBeenCalled()
 })
 ```
+
+**(c) validatie-tests** — in de test-file waar `validateManualJobInput` getest wordt (zoek met `grep -rln "validateManualJobInput" __tests__/`):
+```ts
+it('PR_REVIEW met geldige prUrl → geen fieldErrors', () => {
+  const res = validateManualJobInput({ ...validBase, kind: 'PR_REVIEW', prUrl: 'https://git.jp-visser.nl/o/r/pulls/5' })
+  expect(res.fieldErrors?.prUrl ?? res.fieldErrors?.kind).toBeUndefined()
+})
+it('PR_REVIEW zonder prUrl → fieldError op prUrl', () => {
+  const res = validateManualJobInput({ ...validBase, kind: 'PR_REVIEW' })
+  expect(res.fieldErrors?.prUrl).toBeTruthy()
+})
+it('PR_REVIEW met malformed prUrl → fieldError op prUrl', () => {
+  const res = validateManualJobInput({ ...validBase, kind: 'PR_REVIEW', prUrl: 'niet-een-url' })
+  expect(res.fieldErrors?.prUrl).toBeTruthy()
+})
+```
+> NB: `validBase` = de bestaande geldige-input-fixture in die test-file; mirror de bestaande assert-stijl op het `ManualJobValidationResult`-shape (fieldErrors-naam kan licht afwijken — de bestaande taskId/ideaId-tests tonen het).
+
+**(d) save-draft-test** — in `__tests__/actions/manual-job-drafts.test.ts` (maak aan als die nog niet bestaat; mirror de mock-setup van `manual-jobs.test.ts`):
+```ts
+it('saveManualJobDraftAction persisteert launch_preview_json.context.prUrl voor PR_REVIEW', async () => {
+  // arrange: geldige PR_REVIEW-input (kind, runtime codex, prUrl, prompt, templateId 'pr-review')
+  await saveManualJobDraftAction({ /* …mirror de bestaande save-fixture…, kind: 'PR_REVIEW', prUrl: 'https://git.jp-visser.nl/o/r/pulls/5' */ })
+  const persisted = vi.mocked(/* de prisma.manualJobDraft create/upsert/update die de action gebruikt */).mock.calls.at(-1)?.[0].data
+  expect((persisted.launch_preview_json as any).context.prUrl).toBe('https://git.jp-visser.nl/o/r/pulls/5')
+})
+```
+> NB: dit bewijst het échte save-pad (`saveManualJobDraftAction` → `parseManualJobDraftInput` → `validateManualJobInput` → persist) — zonder de validation.ts-wijziging (Step 5) faalt deze test op "Onbekend handmatig jobtype", precies het round-2-P1-gat. Welke prisma-call de action doet (create/upsert/update) lees je in `actions/manual-job-drafts.ts:32-51`.
 
 - [ ] **Step 3: Run de tests — moeten falen**
 
@@ -1051,7 +1081,26 @@ export type ManualJobDraftInput = {
       : {}),
   }
 ```
-> NB: dit bestand heeft ook een zod-parse/validatielaag (`trimmedString`-preprocess + `validateManualJobInput`). Voeg `prUrl` daar toe op exact dezelfde manier als `taskId`/`ideaId` (optioneel string-veld), en voeg in de validatie een PR_REVIEW-regel toe: `prUrl` verplicht + moet matchen op `/^https?:\/\/.+\/pulls\/\d+\/?$/`. De falende tests pinnen het gedrag.
+5. **Zod-parseveld** — voeg `prUrl` toe aan het zod-parse-schema in dit bestand op exact dezelfde manier als `taskId`/`ideaId` (optioneel `trimmedString`-veld), zodat `parseManualJobDraftInput` het veld doorlaat.
+
+Én — **round-2 P1: de echte validator** — in **`lib/manual-jobs/validation.ts`** (NIET alleen manual-job-draft.ts; `validateManualJobDraft` delegeert hierheen):
+
+6. **`ManualJobValidationInput`** (`:36-37`) — voeg `prUrl?: unknown` toe naast `taskId`/`ideaId`.
+7. **`MANUAL_JOB_KINDS`** in validation.ts (`:41`) — voeg `'PR_REVIEW'` toe aan déze const-array (anders: "Onbekend handmatig jobtype" bij save).
+8. **PR_REVIEW-veldregels** — naast de bestaande taskId/ideaId-regels (`:94-98`):
+```ts
+  if (input.kind === 'PR_REVIEW') {
+    if (isBlank(input.prUrl)) {
+      addFieldError(result, 'prUrl', 'PR URL is verplicht voor een PR-review.')
+    } else if (
+      typeof input.prUrl !== 'string' ||
+      !/^https?:\/\/.+\/pulls\/\d+\/?$/.test(input.prUrl.trim())
+    ) {
+      addFieldError(result, 'prUrl', 'PR URL moet een Forgejo pull-request-URL zijn (…/pulls/<nr>).')
+    }
+  }
+```
+> NB: mirror de exacte `addFieldError`/`isBlank`-helpers die de taskId/ideaId-regels in dit bestand al gebruiken. Check ook `isLegacyManualJobKind` (`:145`) — die leest dezelfde array, dus PR_REVIEW telt daarna automatisch mee.
 
 - [ ] **Step 6: Editor-mapping in `components/jobs/manual-job-draft-editor.tsx`**
 
@@ -1100,7 +1149,7 @@ Expected: PASS + verify groen (lint + typecheck + alle tests).
 - [ ] **Step 9: Commit + PR + codex-review + GATE-merge**
 
 ```bash
-git add lib/manual-job-draft.ts lib/manual-jobs/templates.ts components/jobs/manual-job-draft-editor.tsx actions/manual-jobs.ts __tests__/ vendor/scrum4me-shared
+git add lib/manual-job-draft.ts lib/manual-jobs/validation.ts lib/manual-jobs/templates.ts components/jobs/manual-job-draft-editor.tsx actions/manual-jobs.ts __tests__/ vendor/scrum4me-shared
 git commit -m "feat(workers): pr_url-plumbing + pr-review template + enqueue" -m "Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 git push -u origin feat/codex-pr-review-phase2
 ```
