@@ -2,13 +2,27 @@ import { describe, it, expect } from 'vitest'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { join } from 'node:path'
+import { createServer } from 'node:net'
+
+// Vraag een vrije poort aan zodat de spawn-test niet flaky wordt op een bezette vaste poort.
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer()
+    srv.once('error', reject)
+    srv.listen(0, '127.0.0.1', () => {
+      const addr = srv.address()
+      const port = typeof addr === 'object' && addr ? addr.port : 0
+      srv.close(() => resolve(port))
+    })
+  })
+}
 
 // Start de echte HTTP-entrypoint als kindproces (zoals `npm run dev:http`), wacht tot
 // /health antwoordt, stuur SIGTERM en assert dat het proces NETJES (exit 0, niet door het
 // signaal gedood) stopt. /health raakt geen DB, dus een dummy DATABASE_URL volstaat.
 describe('http graceful shutdown', () => {
   it('stopt schoon op SIGTERM nadat /health up is', async () => {
-    const port = 8123
+    const port = await freePort()
     const tsx = join(process.cwd(), 'node_modules', '.bin', 'tsx')
     const child = spawn(tsx, ['src/http.ts'], {
       cwd: process.cwd(),
