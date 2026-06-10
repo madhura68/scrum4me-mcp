@@ -748,7 +748,7 @@ git commit -m "feat(mcp): submit_review-sink — generieke ReviewLog-upsert (Pha
 ```ts
 const CLAIMABLE_STANDALONE_KINDS = "('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'PLAN_CHAT', 'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW')"
 ```
-(b) outer select van de job in `getFullJobContext`: voeg `doc_id: true,` toe naast `pr_url`.
+(b) géén query-wijziging nodig voor `doc_id`: de outer job-query in `getFullJobContext` (regel ~685) gebruikt `include`, dus alle scalars (incl. het nieuwe `doc_id` na schema-regeneratie) komen automatisch mee. Alleen relevant als iemand de query ooit naar expliciete `select` omzet.
 (c) nieuwe tak, ná het `if (job.kind === 'PR_REVIEW') { … }`-blok:
 
 ```ts
