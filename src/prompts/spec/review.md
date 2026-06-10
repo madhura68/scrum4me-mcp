@@ -4,4 +4,4 @@ Lees $PAYLOAD_PATH ({ spec_doc, instruction, doc_index }). Beoordeel `spec_doc.c
 
 Bepaal `verdict` (APPROVED / CHANGES_REQUESTED / REJECTED); kies bij twijfel nooit APPROVED. Findings: { severity, ref: sectie, message }.
 
-Roep dan `submit_review({ job_id, verdict, findings, summary })`; faalt die, roep `update_job_status({ job_id, status: 'failed', error: 'submit_review_failed' })` en stop. Bij succes `update_job_status({ job_id, status: 'done', summary })`.
+Roep dan `submit_review({ job_id, verdict, findings, summary })`; faalt die, roep `update_job_status({ job_id, status: 'failed', error: 'submit_review_failed' })` en stop. Bij succes `update_job_status({ job_id, status: 'done' })` — zonder summary: `submit_review` zette de verdict-trace al op de job.
