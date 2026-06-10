@@ -793,7 +793,7 @@ export async function getFullJobContext(jobId: string) {
     const prInfo = await getPullRequestState({ prUrl: job.pr_url })
     // Best-effort (spec §7): een falende plan-lookup degradeert naar
     // no-link; de review draait dan op diff + product-docs.
-    let linkedPlan: Awaited<ReturnType<typeof resolvePrLinkedPlan>> = null
+    let linkedPlan: LinkedPlan | null = null
     try {
       linkedPlan = await resolvePrLinkedPlan({ id: job.id, pr_url: job.pr_url })
     } catch (err) {
