@@ -4,8 +4,8 @@ import type { IdeaStatus, ClaudeJobKind } from '@prisma/client'
 import { prisma } from '../../prisma.js'
 import { getJobConfigSnapshot } from './snapshot.js'
 import { notifyJobEnqueued } from './notify.js'
-
-export class DispatchError extends Error {}
+import { DispatchError } from './errors.js'
+export { DispatchError } from './errors.js'
 
 const ACTIVE_JOB_STATUSES = ['QUEUED', 'CLAIMED', 'RUNNING'] as const
 const WORKER_FRESH_MS = 15_000

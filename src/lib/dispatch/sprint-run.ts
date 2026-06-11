@@ -3,7 +3,7 @@
 import type { Prisma } from '@prisma/client'
 import { prisma } from '../../prisma.js'
 import { getJobConfigSnapshot } from './snapshot.js'
-import { DispatchError } from './idea-jobs.js'
+import { DispatchError } from './errors.js'
 
 type PreFlightBlocker = { type: string; id: string; label: string }
 
