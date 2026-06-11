@@ -1,7 +1,10 @@
 // __tests__/dispatch-job.test.ts
 import { it, expect, vi, beforeEach } from 'vitest'
 
-vi.mock('../src/auth.js', () => ({ requireWriteAccess: vi.fn() }))
+vi.mock('../src/auth.js', () => ({
+  requireWriteAccess: vi.fn(),
+  PermissionDeniedError: class PermissionDeniedError extends Error {},
+}))
 vi.mock('../src/access.js', () => ({ userCanAccessProduct: vi.fn() }))
 vi.mock('../src/lib/dispatch/idea-jobs.js', async (importOriginal) => ({
   ...(await importOriginal<object>()),

@@ -69,8 +69,9 @@ function validateRefs(input: Input): string | null {
 }
 
 export async function handleDispatchJob(rawInput: Input) {
-  // Zod-validatie vóór withToolErrors: zo raakt de instanceof-check op
-  // PermissionDeniedError in withToolErrors nooit een gemockte undefined.
+  // Input-validatie expliciet vóór de auth-/dispatch-fase: een ongeldig
+  // verzoek is geen runtime-fout en geeft altijd een VALIDATION_ERROR-shape,
+  // nog vóór er ook maar één DB- of auth-call gebeurt.
   const parseResult = inputSchema.safeParse(rawInput)
   if (!parseResult.success) {
     return toolError(`VALIDATION_ERROR: ${formatZodError(parseResult.error)}`)
