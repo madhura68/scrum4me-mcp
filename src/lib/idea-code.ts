@@ -10,6 +10,8 @@ export function formatIdeaCode(n: number): string {
   return `IDEA-${String(n).padStart(PAD, '0')}`
 }
 
+// P2002 niet verwacht: de user-row-lock van de counter-increment serialiseert
+// concurrent calls per user — daarom geen retry-loop zoals create_pbi die heeft.
 export async function nextIdeaCode(
   userId: string,
   client: Prisma.TransactionClient | typeof prisma = prisma,
@@ -20,7 +22,7 @@ export async function nextIdeaCode(
     select: { idea_code_counter: true },
   })
 
-  const rows = await (client as Prisma.TransactionClient).$queryRaw<
+  const rows = await client.$queryRaw<
     [{ max_n: number | bigint | null }]
   >`
     SELECT MAX(CAST(SUBSTRING(code FROM '^IDEA-([0-9]+)$') AS INTEGER)) AS max_n

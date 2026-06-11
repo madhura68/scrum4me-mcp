@@ -18,6 +18,12 @@ it('gebruikt de counter als die voorloopt', async () => {
   await expect(nextIdeaCode('u1', tx as never)).resolves.toBe('IDEA-012')
 })
 
+it('null max (geen bestaande codes): counter wint', async () => {
+  const tx = txMock(5, null)
+  await expect(nextIdeaCode('u1', tx as never)).resolves.toBe('IDEA-005')
+  expect(tx.user.update).toHaveBeenCalledTimes(1)
+})
+
 it('herstelt drift: max bestaande code + 1 wint en counter wordt bijgewerkt', async () => {
   const tx = txMock(3, 41)
   await expect(nextIdeaCode('u1', tx as never)).resolves.toBe('IDEA-042')

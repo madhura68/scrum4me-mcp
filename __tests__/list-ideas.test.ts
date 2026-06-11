@@ -30,6 +30,15 @@ it('filtert op user + product, default zonder archived', async () => {
   )
 })
 
+it('status-filter en include_archived werken door in de where', async () => {
+  await handleListIdeas({ product_id: 'prod-1', status: 'GRILLED', include_archived: true })
+  expect(mockFindMany).toHaveBeenCalledWith(
+    expect.objectContaining({
+      where: { user_id: 'user-1', product_id: 'prod-1', status: 'GRILLED' },
+    }),
+  )
+})
+
 it('weigert buiten scope (404-stijl)', async () => {
   ;(userCanAccessProduct as ReturnType<typeof vi.fn>).mockResolvedValue(false)
   const res = await handleListIdeas({ product_id: 'prod-x' })
