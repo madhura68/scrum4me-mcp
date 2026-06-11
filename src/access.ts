@@ -1,6 +1,12 @@
 import { prisma } from './prisma.js'
+import { getTokenScopedProducts } from './auth.js'
 
 export async function userCanAccessProduct(productId: string, userId: string): Promise<boolean> {
+  // IDEA-118 K3: token-scope eerst — geldt automatisch voor elke tool die
+  // deze helper gebruikt. [] = ongescopet (runners/bestaande tokens).
+  const scoped = await getTokenScopedProducts()
+  if (scoped.length > 0 && !scoped.includes(productId)) return false
+
   const hit = await prisma.product.findFirst({
     where: {
       id: productId,
