@@ -65,6 +65,9 @@ it('SPEC_REVIEW accepteert doc_slug óf doc_id, niet beide', async () => {
   expect(both.isError).toBe(true)
   const ok = await handleDispatchJob({ kind: 'SPEC_REVIEW', product_id: 'p1', doc_slug: 's' })
   expect(ok.isError).toBeFalsy()
+  const neither = await handleDispatchJob({ kind: 'SPEC_REVIEW', product_id: 'p1' })
+  expect(neither.isError).toBe(true)
+  expect(neither.content[0].text).toMatch(/precies één/)
 })
 
 it('happy paths leveren job-ids', async () => {
