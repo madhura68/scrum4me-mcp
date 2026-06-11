@@ -24,6 +24,7 @@ enum ApiTokenKind {
   IMPLEMENTATION
   PLANNING
   WORKERS_UI
+  COPILOT
 }
 
 enum AgentRuntime {
@@ -41,6 +42,7 @@ enum JobSource {
   SYSTEM
   MANUAL
   ORCHESTRATOR
+  COPILOT
 }
 
 enum ManualJobDraftStatus {
@@ -267,6 +269,10 @@ model ApiToken {
   revoked_at    DateTime?
   kind          ApiTokenKind  @default(IMPLEMENTATION)
   scoped_repos  String[]      @default([])
+  // IDEA-118 K3/K11: niet-leeg = token mag alléén deze product_id's bereiken.
+  // Leeg = ongescopet (bestaand gedrag; runners ongemoeid). Kind COPILOT
+  // vereist niet-leeg — afgedwongen in workers-UI (creatie) én mcp-auth.
+  scoped_products String[]    @default([])
   expires_at    DateTime?
   claimed_jobs   ClaudeJob[]
   claude_workers ClaudeWorker[]
@@ -284,8 +290,15 @@ model Product {
   code                      String?            @db.VarChar(30)
   description               String?
   repo_url                  String?
+  // IDEA-118 K6: deploy-paspoort van de gedeployde app (v2 deploy-by-worker
+  // gebruikt deze velden; v1 alleen registratie).
+  app_domain                String?
+  app_database_url          String?
   definition_of_done        String
   auto_pr                   Boolean            @default(false)
+  // Phase 4: per-product opt-in voor automatische codex-reviews (advisory).
+  auto_pr_review            Boolean            @default(false)
+  auto_task_review          Boolean            @default(false)
   pr_strategy               PrStrategy         @default(SPRINT_BATCH)
   preferred_model           String?
   thinking_budget_default   Int?
@@ -310,6 +323,7 @@ model Product {
   doc_sections              ProductDocSection[]
   doc_links                 ProductDocLink[]
   doc_index_config          ProductDocIndexConfig?
+  copilot_chat_sessions     CopilotChatSession[]
   review_logs               ReviewLog[]         @relation("ProductReviewLogs")
 
   @@unique([user_id, name])
@@ -1030,4 +1044,34 @@ model IdeaNotification {
 
   @@index([user_id, read_at])
   @@map("idea_notifications")
+}
+
+// IDEA-118 K7: copilot-chat-historie, centraal per product. Bewust géén
+// user-FK (single-user-ecosysteem); audit via app_key_label (spec §6.4).
+model CopilotChatSession {
+  id            String               @id @default(cuid())
+  product       Product              @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id    String
+  title         String?
+  app_key_label String
+  archived      Boolean              @default(false)
+  created_at    DateTime             @default(now())
+  updated_at    DateTime             @updatedAt
+  messages      CopilotChatMessage[]
+
+  @@index([product_id, updated_at])
+  @@map("copilot_chat_sessions")
+}
+
+model CopilotChatMessage {
+  id         String             @id @default(cuid())
+  session    CopilotChatSession @relation(fields: [session_id], references: [id], onDelete: Cascade)
+  session_id String
+  role       String
+  content    Json
+  aborted    Boolean            @default(false)
+  created_at DateTime           @default(now())
+
+  @@index([session_id, created_at])
+  @@map("copilot_chat_messages")
 }

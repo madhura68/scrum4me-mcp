@@ -54,6 +54,10 @@ import { registerGetWorkerSettingsTool } from './tools/get-worker-settings.js'
 import { registerWorkerHeartbeatTool } from './tools/worker-heartbeat.js'
 import { registerUpdateTaskExecutionTool } from './tools/update-task-execution.js'
 import { registerJobHeartbeatTool } from './tools/job-heartbeat.js'
+import { registerCreateIdeaTool } from './tools/create-idea.js'
+import { registerListIdeasTool } from './tools/list-ideas.js'
+import { registerDispatchJobTool } from './tools/dispatch-job.js'
+import { registerGetJobStatusTool } from './tools/get-job-status.js'
 
 // Worktree/local-filesystem-bound tools (stdio-only)
 import { registerWaitForJobTool } from './tools/wait-for-job.js'
@@ -112,6 +116,11 @@ export function registerSharedTools(server: McpServer): void {
   // PBI-50: sprint execution bookkeeping (DB-only)
   registerUpdateTaskExecutionTool(server)
   registerJobHeartbeatTool(server)
+  // IDEA-118 fase 2: copilot-tools
+  registerCreateIdeaTool(server)
+  registerListIdeasTool(server)
+  registerDispatchJobTool(server)
+  registerGetJobStatusTool(server)
 }
 
 /**
