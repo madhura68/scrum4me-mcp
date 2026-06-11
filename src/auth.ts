@@ -1,4 +1,5 @@
 import { createHash } from 'crypto'
+import type { ApiTokenKind } from '@prisma/client'
 import { prisma } from './prisma.js'
 import { getRequestToken } from './request-context.js'
 
@@ -7,6 +8,8 @@ export type AuthContext = {
   tokenId: string
   username: string
   isDemo: boolean
+  kind: ApiTokenKind
+  scopedProducts: string[]
 }
 
 export async function getAuth(): Promise<AuthContext> {
@@ -32,11 +35,19 @@ export async function getAuth(): Promise<AuthContext> {
     throw new Error('SCRUM4ME_TOKEN is invalid or revoked')
   }
 
+  // IDEA-118 K11: een COPILOT-token zonder scope is per definitie
+  // misconfiguratie — hard weigeren zodat hij nooit ongescopet draait.
+  if (apiToken.kind === 'COPILOT' && apiToken.scoped_products.length === 0) {
+    throw new Error('COPILOT token has empty scoped_products — token is misconfigured')
+  }
+
   return {
     userId: apiToken.user_id,
     tokenId: apiToken.id,
     username: apiToken.user.username,
     isDemo: apiToken.user.is_demo,
+    kind: apiToken.kind,
+    scopedProducts: apiToken.scoped_products,
   }
 }
 
@@ -53,4 +64,22 @@ export async function requireWriteAccess(): Promise<AuthContext> {
     throw new PermissionDeniedError()
   }
   return auth
+}
+
+/**
+ * Scope van het huidige request-token (IDEA-118 K3). [] = ongescopet.
+ * Eigen goedkope findUnique i.p.v. cache: zie de cache-waarschuwing bij getAuth.
+ * Faalpaden (geen/onbekend/ingetrokken token) geven [] terug — de tool faalt
+ * dan toch al op getAuth(); deze helper hoeft alleen de scope-vraag te beantwoorden.
+ */
+export async function getTokenScopedProducts(): Promise<string[]> {
+  const token = getRequestToken()
+  if (!token) return []
+  const tokenHash = createHash('sha256').update(token).digest('hex')
+  const row = await prisma.apiToken.findUnique({
+    where: { token_hash: tokenHash },
+    select: { scoped_products: true, revoked_at: true },
+  })
+  if (!row || row.revoked_at) return []
+  return row.scoped_products
 }
