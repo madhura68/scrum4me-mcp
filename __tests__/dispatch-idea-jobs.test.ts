@@ -21,6 +21,7 @@ vi.mock('../src/lib/dispatch/notify.js', () => ({
 }))
 
 import { prisma } from '../src/prisma.js'
+import { notifyJobEnqueued } from '../src/lib/dispatch/notify.js'
 import { dispatchIdeaJob, DispatchError } from '../src/lib/dispatch/idea-jobs.js'
 
 const mockIdea = prisma.idea.findFirst as ReturnType<typeof vi.fn>
@@ -53,6 +54,14 @@ describe('dispatchIdeaJob', () => {
     )
     expect(tx.idea.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: { status: 'GRILLING' } }),
+    )
+    expect(tx.ideaLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ type: 'JOB_EVENT', idea_id: 'idea-1' }),
+      }),
+    )
+    expect(notifyJobEnqueued).toHaveBeenCalledWith(
+      expect.objectContaining({ job_id: 'job-1', kind: 'IDEA_GRILL' }),
     )
   })
 
