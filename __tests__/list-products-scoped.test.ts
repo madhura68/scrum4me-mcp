@@ -10,21 +10,19 @@ vi.mock('../src/auth.js', () => ({
 }))
 
 import { prisma } from '../src/prisma.js'
-import { getAuth, getTokenScopedProducts } from '../src/auth.js'
+import { getAuth } from '../src/auth.js'
 import { handleListProducts } from '../src/tools/list-products.js'
 
 const mockFindMany = prisma.product.findMany as ReturnType<typeof vi.fn>
 const mockGetAuth = getAuth as ReturnType<typeof vi.fn>
-const mockScope = getTokenScopedProducts as ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockGetAuth.mockResolvedValue({ userId: 'user-1' })
   mockFindMany.mockResolvedValue([])
 })
 
 it('scoped token → where bevat id-in-scope-filter', async () => {
-  mockScope.mockResolvedValue(['prod-1', 'prod-2'])
+  mockGetAuth.mockResolvedValue({ userId: 'user-1', scopedProducts: ['prod-1', 'prod-2'] })
   await handleListProducts()
   expect(mockFindMany).toHaveBeenCalledWith(
     expect.objectContaining({
@@ -34,7 +32,7 @@ it('scoped token → where bevat id-in-scope-filter', async () => {
 })
 
 it('ongescopet token → geen id-filter', async () => {
-  mockScope.mockResolvedValue([])
+  mockGetAuth.mockResolvedValue({ userId: 'user-1', scopedProducts: [] })
   await handleListProducts()
   const arg = mockFindMany.mock.calls[0][0]
   expect(arg.where.id).toBeUndefined()

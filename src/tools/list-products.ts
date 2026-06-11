@@ -1,13 +1,14 @@
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
-import { getAuth, getTokenScopedProducts } from '../auth.js'
+import { getAuth } from '../auth.js'
 import { toolJson, withToolErrors } from '../errors.js'
 
 export async function handleListProducts() {
   return withToolErrors(async () => {
     const auth = await getAuth()
-    const scoped = await getTokenScopedProducts()
+    // auth.scopedProducts zit al op de AuthContext — geen tweede token-lookup.
+    const scoped = auth.scopedProducts
     const products = await prisma.product.findMany({
       where: {
         archived: false,
