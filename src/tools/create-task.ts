@@ -54,6 +54,89 @@ const inputSchema = z.object({
   repo_url: z.string().url().optional(),
 })
 
+type CreateTaskInput = z.infer<typeof inputSchema>
+
+export async function handleCreateTask({
+  story_id,
+  title,
+  description,
+  implementation_plan,
+  priority,
+  sort_order,
+  repo_url,
+}: CreateTaskInput) {
+  return withToolErrors(async () => {
+    const auth = await requireWriteAccess()
+
+    const story = await prisma.story.findUnique({
+      where: { id: story_id },
+      select: { product_id: true, sprint_id: true, assignee_id: true },
+    })
+    if (!story) return toolError(`Story ${story_id} not found`)
+    if (!(await userCanAccessProduct(story.product_id, auth.userId))) {
+      return toolError(`Story ${story_id} not accessible`)
+    }
+
+    let resolvedSortOrder = sort_order
+    if (resolvedSortOrder === undefined) {
+      const last = await prisma.task.findFirst({
+        where: { story_id, priority },
+        orderBy: { sort_order: 'desc' },
+        select: { sort_order: true },
+      })
+      resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
+    }
+
+    let lastError: unknown
+    for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
+      const code = await generateNextTaskCode(story.product_id)
+      try {
+        const task = await prisma.$transaction(async (tx) => {
+          if (story.sprint_id && story.assignee_id === null) {
+            await tx.story.updateMany({
+              where: { id: story_id, assignee_id: null },
+              data: { assignee_id: auth.userId },
+            })
+          }
+
+          return tx.task.create({
+            data: {
+              story_id,
+              product_id: story.product_id, // denormalized — erf van story
+              sprint_id: story.sprint_id,   // denormalized — erf van story
+              code,
+              title,
+              description: description ?? null,
+              implementation_plan: implementation_plan ?? null,
+              priority,
+              sort_order: resolvedSortOrder,
+              status: 'TO_DO',
+              repo_url: repo_url ?? null,
+            },
+            select: {
+              id: true,
+              code: true,
+              title: true,
+              description: true,
+              implementation_plan: true,
+              priority: true,
+              sort_order: true,
+              status: true,
+              repo_url: true,
+              created_at: true,
+            },
+          })
+        })
+        return toolJson(task)
+      } catch (e) {
+        if (isCodeUniqueConflict(e)) { lastError = e; continue }
+        throw e
+      }
+    }
+    throw lastError ?? new Error('Kon geen unieke Task-code genereren')
+  })
+}
+
 export function registerCreateTaskTool(server: McpServer) {
   server.registerTool(
     'create_task',
@@ -63,67 +146,6 @@ export function registerCreateTaskTool(server: McpServer) {
         'Add a task under an existing story. Inherits sprint_id from the story (denormalized). Status defaults to TO_DO. Sort_order auto-set to last+1 within the story/priority group if not provided. Optional repo_url overrides the product.repo_url for cross-repo work (e.g. tasks targeting scrum4me-mcp under a Scrum4Me PBI). Forbidden for demo accounts.',
       inputSchema,
     },
-    async ({ story_id, title, description, implementation_plan, priority, sort_order, repo_url }) =>
-      withToolErrors(async () => {
-        const auth = await requireWriteAccess()
-
-        const story = await prisma.story.findUnique({
-          where: { id: story_id },
-          select: { product_id: true, sprint_id: true },
-        })
-        if (!story) return toolError(`Story ${story_id} not found`)
-        if (!(await userCanAccessProduct(story.product_id, auth.userId))) {
-          return toolError(`Story ${story_id} not accessible`)
-        }
-
-        let resolvedSortOrder = sort_order
-        if (resolvedSortOrder === undefined) {
-          const last = await prisma.task.findFirst({
-            where: { story_id, priority },
-            orderBy: { sort_order: 'desc' },
-            select: { sort_order: true },
-          })
-          resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
-        }
-
-        let lastError: unknown
-        for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
-          const code = await generateNextTaskCode(story.product_id)
-          try {
-            const task = await prisma.task.create({
-              data: {
-                story_id,
-                product_id: story.product_id, // denormalized — erf van story
-                sprint_id: story.sprint_id,   // denormalized — erf van story
-                code,
-                title,
-                description: description ?? null,
-                implementation_plan: implementation_plan ?? null,
-                priority,
-                sort_order: resolvedSortOrder,
-                status: 'TO_DO',
-                repo_url: repo_url ?? null,
-              },
-              select: {
-                id: true,
-                code: true,
-                title: true,
-                description: true,
-                implementation_plan: true,
-                priority: true,
-                sort_order: true,
-                status: true,
-                repo_url: true,
-                created_at: true,
-              },
-            })
-            return toolJson(task)
-          } catch (e) {
-            if (isCodeUniqueConflict(e)) { lastError = e; continue }
-            throw e
-          }
-        }
-        throw lastError ?? new Error('Kon geen unieke Task-code genereren')
-      }),
+    handleCreateTask,
   )
 }
