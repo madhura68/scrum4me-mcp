@@ -7,6 +7,7 @@ import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
 import { nextIdeaCode } from '../lib/idea-code.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
+import { parseContentPolicy, checkContentPolicy, ContentPolicyError } from '@shared/content-policy.js'
 
 const inputSchema = z.object({
   product_id: z.string().min(1),
@@ -21,6 +22,27 @@ export async function handleCreateIdea(input: z.infer<typeof inputSchema>) {
     if (!(await userCanAccessProduct(parsed.product_id, auth.userId))) {
       return toolError(`Product ${parsed.product_id} not found or not accessible`)
     }
+
+    // AVG content-policy gate (sub-project C): weiger verboden veld-/feature-
+    // verzoeken vóór er een idee ontstaat. Fail-closed bij een malformed policy.
+    const product = await prisma.product.findUnique({
+      where: { id: parsed.product_id },
+      select: { content_policy: true },
+    })
+    let policy
+    try {
+      policy = parseContentPolicy(product?.content_policy)
+    } catch (err) {
+      if (err instanceof ContentPolicyError) {
+        return toolError(`Product content_policy is ongeldig geconfigureerd: ${err.message}`)
+      }
+      throw err
+    }
+    const verdict = checkContentPolicy(policy, `${parsed.title}\n${parsed.description ?? ''}`)
+    if (!verdict.allowed) {
+      return toolError(verdict.reason)
+    }
+
     const idea = await prisma.$transaction(async (tx) => {
       const code = await nextIdeaCode(auth.userId, tx)
       return tx.idea.create({
