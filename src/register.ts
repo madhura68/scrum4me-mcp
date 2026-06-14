@@ -56,6 +56,7 @@ import { registerUpdateTaskExecutionTool } from './tools/update-task-execution.j
 import { registerJobHeartbeatTool } from './tools/job-heartbeat.js'
 import { registerCreateIdeaTool } from './tools/create-idea.js'
 import { registerListIdeasTool } from './tools/list-ideas.js'
+import { registerUpdateIdeaTool } from './tools/update-idea.js'
 import { registerDispatchJobTool } from './tools/dispatch-job.js'
 import { registerGetJobStatusTool } from './tools/get-job-status.js'
 
@@ -119,6 +120,7 @@ export function registerSharedTools(server: McpServer): void {
   // IDEA-118 fase 2: copilot-tools
   registerCreateIdeaTool(server)
   registerListIdeasTool(server)
+  registerUpdateIdeaTool(server)
   registerDispatchJobTool(server)
   registerGetJobStatusTool(server)
 }
