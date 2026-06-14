@@ -161,7 +161,7 @@ Indien converged (of na ronde 2 als max bereikt):
   "rounds": [
     {
       "round": 0,
-      "model": "claude-opus-4-7",
+      "model": "claude-opus-4-8",
       "role": "Structure Review",
       "focus": "YAML parsing, format, syntax",
       "plan_before": "<origineel plan_md>",
