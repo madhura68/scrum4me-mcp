@@ -5,6 +5,7 @@ import { prisma } from '../../prisma.js'
 import { getJobConfigSnapshot } from './snapshot.js'
 import { notifyJobEnqueued } from './notify.js'
 import { DispatchError } from './errors.js'
+import { parseContentPolicy, checkContentPolicy, ContentPolicyError } from '@shared/content-policy.js'
 export { DispatchError } from './errors.js'
 
 const ACTIVE_JOB_STATUSES = ['QUEUED', 'CLAIMED', 'RUNNING'] as const
@@ -41,7 +42,9 @@ export async function dispatchIdeaJob(opts: {
       id: true,
       status: true,
       product_id: true,
-      product: { select: { id: true, repo_url: true } },
+      title: true,
+      description: true,
+      product: { select: { id: true, repo_url: true, content_policy: true } },
     },
   })
   // 404-semantiek: bestaat niet, niet van deze user, of niet van dít product.
@@ -55,6 +58,23 @@ export async function dispatchIdeaJob(opts: {
   }
   if (!idea.product?.repo_url) {
     throw new DispatchError('Product heeft geen repo_url — koppel eerst een repo.')
+  }
+
+  // Dispatch-defense (defense-in-depth): her-check de idee-inhoud tegen de product-
+  // policy, voor het geval het idee langs een ongedekt pad ontstond/wijzigde.
+  // Fail-closed bij een malformed policy.
+  let policy
+  try {
+    policy = parseContentPolicy(idea.product?.content_policy)
+  } catch (err) {
+    if (err instanceof ContentPolicyError) {
+      throw new DispatchError(`Product content_policy is ongeldig geconfigureerd: ${err.message}`)
+    }
+    throw err
+  }
+  const verdict = checkContentPolicy(policy, `${idea.title}\n${idea.description ?? ''}`)
+  if (!verdict.allowed) {
+    throw new DispatchError(verdict.reason)
   }
 
   const existing = await prisma.claudeJob.findFirst({
