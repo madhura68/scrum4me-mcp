@@ -3,10 +3,11 @@ import { getKindDefault, resolveJobConfig, mapBudgetToEffort } from '../src/lib/
 
 const KIND_EXPECTED = {
   IDEA_GRILL: { model: 'claude-sonnet-4-6', thinking_budget: 12000, permission_mode: 'acceptEdits', max_turns: 15 },
-  IDEA_MAKE_PLAN: { model: 'claude-opus-4-7', thinking_budget: 24000, permission_mode: 'acceptEdits', max_turns: 20 },
+  IDEA_MAKE_PLAN: { model: 'claude-opus-4-8', thinking_budget: 24000, permission_mode: 'acceptEdits', max_turns: 20 },
+  IDEA_REVIEW_PLAN: { model: 'claude-opus-4-8', thinking_budget: 6000, permission_mode: 'acceptEdits', max_turns: 1 },
   PLAN_CHAT: { model: 'claude-sonnet-4-6', thinking_budget: 6000, permission_mode: 'acceptEdits', max_turns: 5 },
-  TASK_IMPLEMENTATION: { model: 'claude-sonnet-4-6', thinking_budget: 6000, permission_mode: 'bypassPermissions', max_turns: 50 },
-  SPRINT_IMPLEMENTATION: { model: 'claude-sonnet-4-6', thinking_budget: 6000, permission_mode: 'bypassPermissions', max_turns: null },
+  TASK_IMPLEMENTATION: { model: 'claude-opus-4-8', thinking_budget: 6000, permission_mode: 'bypassPermissions', max_turns: 50 },
+  SPRINT_IMPLEMENTATION: { model: 'claude-opus-4-8', thinking_budget: 6000, permission_mode: 'bypassPermissions', max_turns: null },
 } as const
 
 describe('getKindDefault', () => {
@@ -44,10 +45,10 @@ describe('resolveJobConfig — cascade', () => {
 
   it('job.requested_model overrult product.preferred_model', () => {
     const cfg = resolveJobConfig(
-      { kind: 'TASK_IMPLEMENTATION', requested_model: 'claude-opus-4-7' },
+      { kind: 'TASK_IMPLEMENTATION', requested_model: 'claude-opus-4-8' },
       { preferred_model: 'claude-haiku-4-5-20251001' },
     )
-    expect(cfg.model).toBe('claude-opus-4-7')
+    expect(cfg.model).toBe('claude-opus-4-8')
   })
 
   it('task.requires_opus overrult product.preferred_model', () => {
@@ -56,7 +57,7 @@ describe('resolveJobConfig — cascade', () => {
       { preferred_model: 'claude-sonnet-4-6' },
       { requires_opus: true },
     )
-    expect(cfg.model).toBe('claude-opus-4-7')
+    expect(cfg.model).toBe('claude-opus-4-8')
   })
 
   it('task.requires_opus overrult ook job.requested_model = haiku', () => {
@@ -65,7 +66,7 @@ describe('resolveJobConfig — cascade', () => {
       {},
       { requires_opus: true },
     )
-    expect(cfg.model).toBe('claude-opus-4-7')
+    expect(cfg.model).toBe('claude-opus-4-8')
   })
 
   it('job.requested_thinking_budget overrult kind-default', () => {

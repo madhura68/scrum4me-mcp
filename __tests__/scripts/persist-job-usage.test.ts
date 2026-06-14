@@ -54,7 +54,7 @@ function assistantLine(opts: {
 
 describe('normalizeModelId', () => {
   it('strips bracket suffix', () => {
-    expect(normalizeModelId('claude-opus-4-7[1m]')).toBe('claude-opus-4-7-1m')
+    expect(normalizeModelId('claude-opus-4-8[1m]')).toBe('claude-opus-4-8-1m')
   })
 
   it('passes through plain ids', () => {
@@ -154,11 +154,11 @@ describe('computeUsageFromTranscript', () => {
     const lines = parseTranscript(
       [
         assistantLine({ model: 'claude-sonnet-4-6', usage: { input_tokens: 1, output_tokens: 1 } }),
-        assistantLine({ model: 'claude-opus-4-7[1m]', usage: { input_tokens: 1, output_tokens: 1 } }),
+        assistantLine({ model: 'claude-opus-4-8[1m]', usage: { input_tokens: 1, output_tokens: 1 } }),
       ].join('\n'),
     )
     const usage = computeUsageFromTranscript(lines)
-    expect(usage.model_id).toBe('claude-opus-4-7-1m')
+    expect(usage.model_id).toBe('claude-opus-4-8-1m')
   })
 
   it('returns null model_id when transcript is empty', () => {

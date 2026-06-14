@@ -20,7 +20,7 @@
 //   - allowed_tools → --allowedTools (komma-gescheiden lijst)
 
 export type ClaudeModel =
-  | 'claude-opus-4-7'
+  | 'claude-opus-4-8'
   | 'claude-sonnet-4-6'
   | 'claude-haiku-4-5-20251001'
 
@@ -104,7 +104,7 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
     ],
   },
   IDEA_MAKE_PLAN: {
-    model: 'claude-opus-4-7',
+    model: 'claude-opus-4-8',
     thinking_budget: 24000,
     permission_mode: 'acceptEdits',
     max_turns: 20,
@@ -121,7 +121,7 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
     ],
   },
   IDEA_REVIEW_PLAN: {
-    model: 'claude-opus-4-7',
+    model: 'claude-opus-4-8',
     thinking_budget: 6000,
     permission_mode: 'acceptEdits',
     max_turns: 1,
@@ -158,14 +158,14 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
     ],
   },
   TASK_IMPLEMENTATION: {
-    model: 'claude-sonnet-4-6',
+    model: 'claude-opus-4-8',
     thinking_budget: 6000,
     permission_mode: 'bypassPermissions',
     max_turns: 50,
     allowed_tools: TASK_TOOLS,
   },
   SPRINT_IMPLEMENTATION: {
-    model: 'claude-sonnet-4-6',
+    model: 'claude-opus-4-8',
     thinking_budget: 6000,
     permission_mode: 'bypassPermissions',
     max_turns: null,
@@ -203,7 +203,7 @@ export function resolveJobConfig(
 
   const model = (
     task?.requires_opus
-      ? 'claude-opus-4-7'
+      ? 'claude-opus-4-8'
       : job.requested_model ?? product.preferred_model ?? base.model
   ) as ClaudeModel
 
