@@ -30,7 +30,8 @@ const mockWorkers = prisma.claudeWorker.count as ReturnType<typeof vi.fn>
 
 const baseIdea = {
   id: 'idea-1', status: 'DRAFT', product_id: 'prod-1',
-  product: { id: 'prod-1', repo_url: 'https://git.jp-visser.nl/janpeter/x' },
+  title: 'Een net idee', description: 'beschrijving',
+  product: { id: 'prod-1', repo_url: 'https://git.jp-visser.nl/janpeter/x', content_policy: null },
 }
 
 beforeEach(() => {
@@ -91,5 +92,43 @@ describe('dispatchIdeaJob', () => {
     await expect(
       dispatchIdeaJob({ kind: 'IDEA_GRILL', ideaId: 'idea-1', productId: 'prod-1', userId: 'user-1' }),
     ).rejects.toThrow(/worker/i)
+  })
+
+  it('dispatch-defense: weigert een bestaand idee dat de product-policy schendt', async () => {
+    mockIdea.mockResolvedValue({
+      ...baseIdea,
+      title: 'Voeg bsn toe',
+      product: {
+        ...baseIdea.product,
+        content_policy: { forbiddenFields: ['bsn'], forbiddenFeatureTerms: [], allowedFieldTerms: [] },
+      },
+    })
+    await expect(
+      dispatchIdeaJob({ kind: 'IDEA_GRILL', ideaId: 'idea-1', productId: 'prod-1', userId: 'user-1' }),
+    ).rejects.toThrow(/AVG.*bsn/)
+  })
+
+  it('dispatch-defense: staat schone inhoud toe ondanks een policy', async () => {
+    mockIdea.mockResolvedValue({
+      ...baseIdea,
+      title: 'Nette titel',
+      description: 'ok',
+      product: {
+        ...baseIdea.product,
+        content_policy: { forbiddenFields: ['bsn'], forbiddenFeatureTerms: [], allowedFieldTerms: [] },
+      },
+    })
+    const res = await dispatchIdeaJob({ kind: 'IDEA_GRILL', ideaId: 'idea-1', productId: 'prod-1', userId: 'user-1' })
+    expect(res).toEqual({ job_id: 'job-1' })
+  })
+
+  it('dispatch-defense: faalt closed bij een malformed policy', async () => {
+    mockIdea.mockResolvedValue({
+      ...baseIdea,
+      product: { ...baseIdea.product, content_policy: { forbiddenFields: 'bsn' } },
+    })
+    await expect(
+      dispatchIdeaJob({ kind: 'IDEA_GRILL', ideaId: 'idea-1', productId: 'prod-1', userId: 'user-1' }),
+    ).rejects.toThrow(/content_policy|configuratie/i)
   })
 })

@@ -20,6 +20,16 @@ enum Role {
   ADMIN
 }
 
+enum AccessLevel {
+  READ_WRITE
+  READ_ONLY
+}
+
+enum CopilotAppUserStatus {
+  PENDING
+  LINKED
+}
+
 enum ApiTokenKind {
   IMPLEMENTATION
   PLANNING
@@ -244,6 +254,7 @@ model User {
   started_sprint_runs SprintRun[]        @relation("SprintRunStartedBy")
   push_subscriptions  PushSubscription[]
   idea_notifications  IdeaNotification[]
+  copilot_app_users         CopilotAppUser[]
 
   @@index([active_product_id])
   @@map("users")
@@ -305,6 +316,9 @@ model Product {
   preferred_permission_mode String?
   archived                  Boolean            @default(false)
   enabled_doc_folders       ProductDocFolder[] @default([ADR, ARCHITECTURE, GRILLS, PATTERNS, PLANS, RUNBOOKS, SPECS, MANUAL, API])
+  // sub-project C: per-product AVG content policy
+  // { forbiddenFields: string[], forbiddenFeatureTerms: string[], allowedFieldTerms: string[] } | null = no restriction
+  content_policy            Json?
   created_at                DateTime           @default(now())
   updated_at                DateTime           @updatedAt
   pbis                      Pbi[]
@@ -324,6 +338,7 @@ model Product {
   doc_links                 ProductDocLink[]
   doc_index_config          ProductDocIndexConfig?
   copilot_chat_sessions     CopilotChatSession[]
+  copilot_app_users         CopilotAppUser[]
   review_logs               ReviewLog[]         @relation("ProductReviewLogs")
 
   @@unique([user_id, name])
@@ -700,6 +715,9 @@ model ProductMember {
   user       User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
   user_id    String
   created_at DateTime @default(now())
+  role       Role        @default(DEVELOPER)
+  access     AccessLevel @default(READ_ONLY)
+  updated_at DateTime    @updatedAt
 
   @@unique([product_id, user_id])
   @@index([user_id])
@@ -1054,6 +1072,8 @@ model CopilotChatSession {
   product_id    String
   title         String?
   app_key_label String
+  app_user_ref String?
+  user_id      String?
   archived      Boolean              @default(false)
   created_at    DateTime             @default(now())
   updated_at    DateTime             @updatedAt
@@ -1074,4 +1094,25 @@ model CopilotChatMessage {
 
   @@index([session_id, created_at])
   @@map("copilot_chat_messages")
+}
+
+// IDEA-118 vervolg: koppelt een host-app-user (app_user_ref, door de host
+// doorgegeven en via de app-key vertrouwd) aan een scrum4me User. Admin-managed.
+// De service berekent de EFFECTIEVE toegang per product uit owner-of-member
+// (zie resolveMember) — de mapping legt enkel "deze app-user = deze User" vast.
+model CopilotAppUser {
+  id            String               @id @default(cuid())
+  product       Product              @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id    String
+  app_key_label String
+  app_user_ref  String
+  user          User?                @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  user_id       String?
+  status        CopilotAppUserStatus @default(PENDING)
+  first_seen_at DateTime             @default(now())
+  linked_at     DateTime?
+  linked_by     String?
+  @@unique([product_id, app_key_label, app_user_ref])
+  @@index([product_id, status])
+  @@map("copilot_app_users")
 }
