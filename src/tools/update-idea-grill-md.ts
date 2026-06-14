@@ -19,6 +19,10 @@ import { ensureProductDocFrontmatter } from '../lib/ensure-product-doc-frontmatt
 const inputSchema = z.object({
   idea_id: z.string().min(1),
   markdown: z.string().min(1).max(64_000),
+  // IDEA-menu slice 1: optioneel-maar-afgedwongen. De copilot-service geeft
+  // 'm altijd mee zodat een grill_md-write product-bound is; de bestaande
+  // worker-caller (zonder param) blijft backward-compatible.
+  product_id: z.string().min(1).optional(),
 })
 
 export function registerUpdateIdeaGrillMdTool(server: McpServer) {
@@ -30,7 +34,7 @@ export function registerUpdateIdeaGrillMdTool(server: McpServer) {
         'Save the grill-result markdown for an idea: writes a ProductDoc (folder=GRILLS) + immutable revision, sets Idea.grill_doc_id, and dual-writes Idea.grill_md for backward-compat (wait-for-job still reads it). Transitions status to GRILLED. Requires Idea.product_id. Forbidden for demo accounts.',
       inputSchema,
     },
-    async ({ idea_id, markdown }) =>
+    async ({ idea_id, markdown, product_id }) =>
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
         if (!(await userOwnsIdea(idea_id, auth.userId))) {
@@ -43,6 +47,13 @@ export function registerUpdateIdeaGrillMdTool(server: McpServer) {
         })
         if (!idea?.product_id) {
           return toolError('Idea has no product_id — assign product before GRILL')
+        }
+        // Product-bound wanneer de caller een product_id meegeeft (copilot-service):
+        // mismatch ⇒ 404-stijl, zodat een idee uit een ander product van dezelfde
+        // binding-user niet via deze route te muteren is. Worker-caller (geen
+        // product_id) ongewijzigd.
+        if (product_id !== undefined && idea.product_id !== product_id) {
+          return toolError('Idea not found')
         }
 
         const content = ensureProductDocFrontmatter(markdown, idea.title)

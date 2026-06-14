@@ -1,0 +1,62 @@
+import { it, expect, vi, beforeEach } from 'vitest'
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
+
+vi.mock('../src/prisma.js', () => ({
+  prisma: { idea: { findUnique: vi.fn() }, $transaction: vi.fn() },
+}))
+vi.mock('../src/auth.js', () => ({
+  requireWriteAccess: vi.fn(),
+  PermissionDeniedError: class PermissionDeniedError extends Error {
+    constructor(message = 'Demo accounts cannot perform write operations') {
+      super(message)
+      this.name = 'PermissionDeniedError'
+    }
+  },
+}))
+vi.mock('../src/access.js', () => ({
+  userOwnsIdea: vi.fn(),
+}))
+
+import { prisma } from '../src/prisma.js'
+import { requireWriteAccess } from '../src/auth.js'
+import { userOwnsIdea } from '../src/access.js'
+import { registerUpdateIdeaGrillMdTool } from '../src/tools/update-idea-grill-md.js'
+
+const mockAuth = requireWriteAccess as ReturnType<typeof vi.fn>
+const mockOwns = userOwnsIdea as ReturnType<typeof vi.fn>
+const mockFindUnique = (prisma as unknown as { idea: { findUnique: ReturnType<typeof vi.fn> } })
+  .idea.findUnique
+
+// Capture the tool handler the way register() installs it.
+type Handler = (input: { idea_id: string; markdown: string; product_id?: string }) => Promise<CallToolResult>
+function captureHandler(): Handler {
+  let handler: Handler | undefined
+  const server = {
+    registerTool: (_name: string, _meta: unknown, fn: Handler) => {
+      handler = fn
+    },
+  }
+  registerUpdateIdeaGrillMdTool(server as never)
+  if (!handler) throw new Error('handler not registered')
+  return handler
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  mockAuth.mockResolvedValue({ userId: 'user-1', isDemo: false })
+  mockOwns.mockResolvedValue(true)
+  mockFindUnique.mockResolvedValue({
+    id: 'idea-1',
+    code: 'IDEA-042',
+    user_id: 'user-1',
+    product_id: 'prod-1',
+    title: 'T',
+  })
+})
+
+it('weigert wanneer het meegegeven product_id niet bij het idee hoort (cross-product)', async () => {
+  const handler = captureHandler()
+  const res = await handler({ idea_id: 'idea-1', markdown: '# grill', product_id: 'prod-OTHER' })
+  expect(res.isError).toBe(true)
+  expect(res.content[0].text).toMatch(/not found/i)
+})
