@@ -11,11 +11,12 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
-import { userOwnsIdea } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
+import { upsertReviewLog, type ReviewFinding } from '../lib/upsert-review-log.js'
 
 export const inputSchema = z.object({
   idea_id: z.string().min(1),
+  job_id: z.string().min(1),
   review_log: z.object({}).passthrough(), // Full ReviewLog from orchestrator (JSON object)
   approval_status: z
     .enum(['pending', 'approved', 'rejected'] as const)
@@ -23,12 +24,19 @@ export const inputSchema = z.object({
 })
 
 export async function handleUpdateIdeaPlanReviewed(
-  { idea_id, review_log, approval_status }: z.infer<typeof inputSchema>,
+  { idea_id, job_id, review_log, approval_status }: z.infer<typeof inputSchema>,
 ) {
   return withToolErrors(async () => {
     const auth = await requireWriteAccess()
-    if (!(await userOwnsIdea(idea_id, auth.userId))) {
-      return toolError('Idea not found')
+    const job = await prisma.claudeJob.findUnique({
+      where: { id: job_id },
+      select: { id: true, user_id: true, kind: true, idea_id: true, product_id: true },
+    })
+    if (!job || job.user_id !== auth.userId || job.idea_id !== idea_id) {
+      return toolError('Job not found')
+    }
+    if (job.kind !== 'IDEA_REVIEW_PLAN') {
+      return toolError('Job is not an IDEA_REVIEW_PLAN job')
     }
 
     // Alleen een expliciete 'approved' brengt het idee naar PLAN_REVIEWED.
@@ -67,6 +75,22 @@ export async function handleUpdateIdeaPlanReviewed(
       }),
     ])
 
+    const verdict =
+      approval_status === 'approved' ? 'APPROVED'
+      : approval_status === 'rejected' ? 'REJECTED'
+      : 'CHANGES_REQUESTED'
+    const raw = (review_log as { findings?: unknown }).findings
+    const findings: ReviewFinding[] = Array.isArray(raw) ? (raw as ReviewFinding[]) : []
+    await upsertReviewLog({
+      review_job_id: job_id,
+      kind: 'IDEA_REVIEW_PLAN',
+      product_id: job.product_id,
+      verdict,
+      findings,
+      summary: logSummary.summary,
+      pins: { idea_id },
+    })
+
     return toolJson({
       ok: true,
       idea: result[0],
@@ -82,6 +106,8 @@ export function registerUpdateIdeaPlanReviewedTool(server: McpServer) {
       title: 'Mark plan as reviewed',
       description:
         'Save review-log after a plan review cycle and transition idea.status. ' +
+        'Requires job_id (must be an IDEA_REVIEW_PLAN job owned by the caller ' +
+        'and bound to the given idea_id). Writes a ReviewLog row. ' +
         'Only approval_status="approved" → PLAN_REVIEWED; "rejected", "pending", ' +
         'or an omitted approval_status → PLAN_REVIEW_FAILED (needs manual ' +
         'approval — never silently approved). Forbidden for demo accounts.',

@@ -68,7 +68,7 @@ export function prUrlMatchesRepo(repoUrl: string, prUrl: string): boolean {
 // Gedeelde velden voor review-jobs; ná de snapshot spreaden zodat
 // requested_model 'codex-default' de snapshot-default overschrijft
 // (zelfde gedrag als de workers-manual-create bij runtime CODEX).
-const REVIEW_JOB_FIELDS: {
+export const REVIEW_JOB_FIELDS: {
   status: 'QUEUED'
   source: JobSource
   runtime: AgentRuntime

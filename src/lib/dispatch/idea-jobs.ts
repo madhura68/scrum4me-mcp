@@ -5,6 +5,7 @@ import { prisma } from '../../prisma.js'
 import { getJobConfigSnapshot } from './snapshot.js'
 import { notifyJobEnqueued } from './notify.js'
 import { DispatchError } from './errors.js'
+import { REVIEW_JOB_FIELDS } from './review-jobs.js'
 import { parseContentPolicy, checkContentPolicy, ContentPolicyError } from '@shared/content-policy.js'
 export { DispatchError } from './errors.js'
 
@@ -85,14 +86,20 @@ export async function dispatchIdeaJob(opts: {
     throw new DispatchError(`Er loopt al een actieve job voor dit idee (${existing.id}).`)
   }
 
+  const isReviewKind = opts.kind === 'IDEA_REVIEW_PLAN'
   const workers = await prisma.claudeWorker.count({
     where: {
       user_id: opts.userId,
       last_seen_at: { gt: new Date(Date.now() - WORKER_FRESH_MS) },
+      ...(isReviewKind ? { runtime: 'CODEX', capabilities: { has: 'review' } } : {}),
     },
   })
   if (workers === 0) {
-    throw new DispatchError('Geen actieve worker — de job zou blijven hangen in QUEUED.')
+    throw new DispatchError(
+      isReviewKind
+        ? 'Geen actieve codex-review-worker — de plan-review zou blijven hangen in QUEUED.'
+        : 'Geen actieve worker — de job zou blijven hangen in QUEUED.',
+    )
   }
 
   const snapshot = await getJobConfigSnapshot({ kind: opts.kind, productId: opts.productId })
@@ -107,6 +114,7 @@ export async function dispatchIdeaJob(opts: {
         status: 'QUEUED',
         source: 'COPILOT',
         ...snapshot,
+        ...(opts.kind === 'IDEA_REVIEW_PLAN' ? REVIEW_JOB_FIELDS : {}),
       },
       select: { id: true },
     })

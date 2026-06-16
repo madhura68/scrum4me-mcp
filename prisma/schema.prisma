@@ -658,6 +658,9 @@ model ReviewLog {
   task_id                  String?
   sprint_task_execution    SprintTaskExecution? @relation("ExecutionReviewLogs", fields: [sprint_task_execution_id], references: [id], onDelete: SetNull)
   sprint_task_execution_id String?
+  idea                     Idea?               @relation("IdeaReviewLogs", fields: [idea_id], references: [id], onDelete: SetNull)
+  idea_id                  String?
+  pr_commit_id             String?
   verdict                  ReviewVerdict
   findings                 Json
   summary                  String              @db.Text
@@ -667,6 +670,7 @@ model ReviewLog {
   @@index([doc_id, created_at])
   @@index([task_id, created_at])
   @@index([sprint_task_execution_id, created_at])
+  @@index([idea_id, created_at])
   @@map("review_logs")
 }
 
@@ -932,6 +936,7 @@ model Idea {
   user_questions     UserQuestion[]
   secondary_products IdeaProduct[]
   notifications      IdeaNotification[]
+  review_logs        ReviewLog[]         @relation("IdeaReviewLogs")
 
   @@unique([user_id, code])
   @@index([user_id, archived, status])

@@ -7,11 +7,11 @@
 
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import type { Prisma } from '@prisma/client'
 
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
+import { upsertReviewLog } from '../lib/upsert-review-log.js'
 
 export const inputSchema = z.object({
   job_id: z.string().min(1),
@@ -65,21 +65,19 @@ export async function handleSubmitReview(
       executionId = execution?.id ?? null
     }
 
-    const row = {
+    await upsertReviewLog({
+      review_job_id: job.id,
       kind: job.kind,
       product_id: job.product_id,
-      doc_id: job.kind === 'SPEC_REVIEW' ? job.doc_id : null,
-      doc_revision_id: docRevisionId,
-      task_id: job.kind === 'TASK_REVIEW' ? job.task_id : null,
-      sprint_task_execution_id: executionId,
       verdict,
-      findings: findings as unknown as Prisma.InputJsonValue,
+      findings,
       summary,
-    }
-    await prisma.reviewLog.upsert({
-      where: { review_job_id: job.id },
-      create: { review_job_id: job.id, ...row },
-      update: row,
+      pins: {
+        doc_id: job.kind === 'SPEC_REVIEW' ? job.doc_id : null,
+        doc_revision_id: docRevisionId,
+        task_id: job.kind === 'TASK_REVIEW' ? job.task_id : null,
+        sprint_task_execution_id: executionId,
+      },
     })
 
     await prisma.claudeJob.update({
