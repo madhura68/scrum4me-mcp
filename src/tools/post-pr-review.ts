@@ -11,6 +11,7 @@ import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { postPullRequestReview } from '../git/pr.js'
+import { upsertReviewLog, type ReviewFinding } from '../lib/upsert-review-log.js'
 
 export const inputSchema = z.object({
   job_id: z.string().min(1),
@@ -28,7 +29,7 @@ export async function handlePostPrReview(
     const auth = await requireWriteAccess()
     const job = await prisma.claudeJob.findUnique({
       where: { id: job_id },
-      select: { id: true, user_id: true, pr_url: true, kind: true },
+      select: { id: true, user_id: true, pr_url: true, kind: true, product_id: true },
     })
     if (!job || job.user_id !== auth.userId) {
       return toolError('Job not found')
@@ -61,6 +62,22 @@ export async function handlePostPrReview(
       where: { id: job_id },
       data: { summary: `PR review ${event}${findingsSuffix}: ${body.slice(0, 280)}` },
     })
+
+    // Unified ReviewLog: alleen een echt verdict (APPROVED/REQUEST_CHANGES) persisteert;
+    // COMMENT is geen verdict. De Forgejo-post is de primaire actie en is al geslaagd.
+    if (event !== 'COMMENT') {
+      const raw = (review_log as { findings?: unknown } | undefined)?.findings
+      const findings: ReviewFinding[] = Array.isArray(raw) ? (raw as ReviewFinding[]) : []
+      await upsertReviewLog({
+        review_job_id: job_id,
+        kind: 'PR_REVIEW',
+        product_id: job.product_id,
+        verdict: event === 'APPROVED' ? 'APPROVED' : 'CHANGES_REQUESTED',
+        findings,
+        summary: body,
+        pins: { pr_commit_id: commit_id ?? null },
+      })
+    }
 
     return toolJson({ ok: true, event, review_id: posted.reviewId ?? null })
   })

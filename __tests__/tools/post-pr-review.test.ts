@@ -8,7 +8,10 @@ vi.mock('../../src/git/pr.js', () => ({
   postPullRequestReview: vi.fn(),
 }))
 vi.mock('../../src/prisma.js', () => ({
-  prisma: { claudeJob: { findUnique: vi.fn(), update: vi.fn(async () => ({})) } },
+  prisma: {
+    claudeJob: { findUnique: vi.fn(), update: vi.fn(async () => ({})) },
+    reviewLog: { upsert: vi.fn(async () => ({})) },
+  },
 }))
 
 import { postPullRequestReview } from '../../src/git/pr.js'
