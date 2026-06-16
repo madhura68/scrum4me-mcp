@@ -753,13 +753,18 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           } else if (
             job.kind === 'IDEA_GRILL' ||
             job.kind === 'IDEA_MAKE_PLAN' ||
-            (job.kind === 'IDEA_REVIEW_PLAN' && job.source === 'SYSTEM')
+            (job.source !== 'ORCHESTRATOR' &&
+              (job.kind === 'IDEA_REVIEW_PLAN' ||
+                job.kind === 'PR_REVIEW' ||
+                job.kind === 'SPEC_REVIEW' ||
+                job.kind === 'TASK_REVIEW'))
           ) {
-            // M12: idea-jobs hebben geen task/plan_snapshot/branch — skip de
-            // verify-gate én de prepareDoneUpdate (die doet git push). Voor
-            // idea-jobs is `done` direct geldig: de bijhorende update_idea_*_md
-            // heeft de idea-status al naar GRILLED/PLAN_READY gezet.
-            // IDEA_REVIEW_PLAN (source=SYSTEM) completeert via update_idea_plan_reviewed (→ PLAN_REVIEWED).
+            // idea-jobs AND review-jobs have no task/worktree/verify_result/branch — they complete
+            // via their own sink (idea: update_idea_*; reviews: submit_review/post_pr_review/
+            // update_idea_plan_reviewed). So skip the verify-gate + git-push (prepareDoneUpdate)
+            // for them, regardless of source. MANUAL-source jobs are already handled by the
+            // earlier branch. ORCHESTRATOR-source review jobs fall through to the generic
+            // verify-gate (the else branch below) — they may carry a real verify pipeline.
             actualStatus = 'done'
             // pushedAt blijft undefined, branch/error overrides ook
             skipWorktreeCleanup = true
