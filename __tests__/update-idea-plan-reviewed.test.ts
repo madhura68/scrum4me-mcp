@@ -2,12 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('../src/prisma.js', () => ({
   prisma: {
+    claudeJob: { findUnique: vi.fn() },
     idea: { update: vi.fn() },
     ideaLog: { create: vi.fn() },
+    reviewLog: { upsert: vi.fn() },
     $transaction: vi.fn(),
   },
 }))
-
 vi.mock('../src/auth.js', () => ({
   requireWriteAccess: vi.fn(),
   PermissionDeniedError: class PermissionDeniedError extends Error {
@@ -18,123 +19,72 @@ vi.mock('../src/auth.js', () => ({
   },
 }))
 
-vi.mock('../src/access.js', () => ({
-  userOwnsIdea: vi.fn(),
-}))
-
 import { prisma } from '../src/prisma.js'
 import { requireWriteAccess } from '../src/auth.js'
-import { userOwnsIdea } from '../src/access.js'
 import { handleUpdateIdeaPlanReviewed } from '../src/tools/update-idea-plan-reviewed.js'
 
-const mockPrisma = prisma as unknown as {
+const p = prisma as unknown as {
+  claudeJob: { findUnique: ReturnType<typeof vi.fn> }
   idea: { update: ReturnType<typeof vi.fn> }
   ideaLog: { create: ReturnType<typeof vi.fn> }
+  reviewLog: { upsert: ReturnType<typeof vi.fn> }
   $transaction: ReturnType<typeof vi.fn>
 }
-const mockRequireWriteAccess = requireWriteAccess as ReturnType<typeof vi.fn>
-const mockUserOwnsIdea = userOwnsIdea as ReturnType<typeof vi.fn>
+const mockAuth = requireWriteAccess as ReturnType<typeof vi.fn>
 
 const IDEA_ID = 'idea-1'
+const JOB_ID = 'job-1'
 const USER_ID = 'user-1'
-const REVIEW_LOG = {
-  rounds: [{ score: 88 }],
-  convergence: { stable_at_round: 2 },
-  approval: { status: 'approved' },
-}
+const REVIEW_LOG = { rounds: [{ score: 88 }], convergence: { stable_at_round: 2 }, approval: { status: 'approved' }, findings: [{ severity: 'major', message: 'x' }] }
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockRequireWriteAccess.mockResolvedValue({
-    userId: USER_ID,
-    tokenId: 'tok-1',
-    username: 'alice',
-    isDemo: false,
+  mockAuth.mockResolvedValue({ userId: USER_ID, tokenId: 't', username: 'a', isDemo: false })
+  p.claudeJob.findUnique.mockResolvedValue({
+    id: JOB_ID, user_id: USER_ID, kind: 'IDEA_REVIEW_PLAN', idea_id: IDEA_ID, product_id: 'prod-1',
   })
-  mockUserOwnsIdea.mockResolvedValue(true)
-  // $transaction returns the array of its two operations' results; the handler
-  // only reads result[0] (the idea.update result).
-  mockPrisma.$transaction.mockImplementation(async () => [
-    { id: IDEA_ID, status: 'PLACEHOLDER', code: 'IDEA-1' },
-    {},
-  ])
+  p.$transaction.mockResolvedValue([{ id: IDEA_ID, status: 'PLAN_REVIEWED', code: 'IDEA-1' }, {}])
 })
 
-function parseResult(result: Awaited<ReturnType<typeof handleUpdateIdeaPlanReviewed>>) {
-  const text = result.content?.[0]?.type === 'text' ? result.content[0].text : ''
-  try {
-    return JSON.parse(text)
-  } catch {
-    return text
-  }
-}
-
-// The handler builds `data.status` inside the idea.update call passed to
-// $transaction. We capture it by inspecting the prisma.idea.update mock args.
-function statusPassedToUpdate(): string | undefined {
-  const call = mockPrisma.idea.update.mock.calls[0]
-  return call?.[0]?.data?.status
-}
-
-describe('handleUpdateIdeaPlanReviewed — status transition', () => {
-  it('approval_status="approved" → PLAN_REVIEWED', async () => {
-    await handleUpdateIdeaPlanReviewed({
-      idea_id: IDEA_ID,
-      review_log: REVIEW_LOG,
-      approval_status: 'approved',
-    })
-    expect(statusPassedToUpdate()).toBe('PLAN_REVIEWED')
+describe('update_idea_plan_reviewed job-binding + ReviewLog', () => {
+  it('weigert als de job niet van de user is (404-shape)', async () => {
+    p.claudeJob.findUnique.mockResolvedValue({ id: JOB_ID, user_id: 'other', kind: 'IDEA_REVIEW_PLAN', idea_id: IDEA_ID, product_id: 'prod-1' })
+    const res = await handleUpdateIdeaPlanReviewed({ idea_id: IDEA_ID, job_id: JOB_ID, review_log: REVIEW_LOG, approval_status: 'approved' })
+    expect(JSON.stringify(res)).toContain('Job not found')
+    expect(p.reviewLog.upsert).not.toHaveBeenCalled()
   })
 
-  it('approval_status="rejected" → PLAN_REVIEW_FAILED', async () => {
-    await handleUpdateIdeaPlanReviewed({
-      idea_id: IDEA_ID,
-      review_log: REVIEW_LOG,
-      approval_status: 'rejected',
-    })
-    expect(statusPassedToUpdate()).toBe('PLAN_REVIEW_FAILED')
+  it('weigert bij verkeerde kind', async () => {
+    p.claudeJob.findUnique.mockResolvedValue({ id: JOB_ID, user_id: USER_ID, kind: 'PR_REVIEW', idea_id: IDEA_ID, product_id: 'prod-1' })
+    const res = await handleUpdateIdeaPlanReviewed({ idea_id: IDEA_ID, job_id: JOB_ID, review_log: REVIEW_LOG })
+    expect(JSON.stringify(res)).toContain('not an IDEA_REVIEW_PLAN')
   })
 
-  it('approval_status="pending" → PLAN_REVIEW_FAILED (needs manual approval, never silently approved)', async () => {
-    await handleUpdateIdeaPlanReviewed({
-      idea_id: IDEA_ID,
-      review_log: REVIEW_LOG,
-      approval_status: 'pending',
-    })
-    expect(statusPassedToUpdate()).toBe('PLAN_REVIEW_FAILED')
+  it('weigert bij idea_id-mismatch', async () => {
+    const res = await handleUpdateIdeaPlanReviewed({ idea_id: 'other-idea', job_id: JOB_ID, review_log: REVIEW_LOG })
+    expect(JSON.stringify(res)).toContain('Job not found')
   })
 
-  it('omitted approval_status → PLAN_REVIEW_FAILED (safe default, not PLAN_REVIEWED)', async () => {
-    await handleUpdateIdeaPlanReviewed({
-      idea_id: IDEA_ID,
-      review_log: REVIEW_LOG,
-    })
-    expect(statusPassedToUpdate()).toBe('PLAN_REVIEW_FAILED')
+  it('approved → ReviewLog verdict APPROVED + idea_id + findings', async () => {
+    await handleUpdateIdeaPlanReviewed({ idea_id: IDEA_ID, job_id: JOB_ID, review_log: REVIEW_LOG, approval_status: 'approved' })
+    expect(p.reviewLog.upsert).toHaveBeenCalledTimes(1)
+    const arg = p.reviewLog.upsert.mock.calls[0][0]
+    expect(arg.where).toEqual({ review_job_id: JOB_ID })
+    expect(arg.create.verdict).toBe('APPROVED')
+    expect(arg.create.kind).toBe('IDEA_REVIEW_PLAN')
+    expect(arg.create.idea_id).toBe(IDEA_ID)
+    expect(arg.create.product_id).toBe('prod-1')
+    expect(arg.create.findings).toEqual([{ severity: 'major', message: 'x' }])
   })
 
-  it('returns "Idea not found" when the user does not own the idea', async () => {
-    mockUserOwnsIdea.mockResolvedValue(false)
-    const result = await handleUpdateIdeaPlanReviewed({
-      idea_id: IDEA_ID,
-      review_log: REVIEW_LOG,
-      approval_status: 'approved',
-    })
-    expect(parseResult(result)).toContain('Idea not found')
-    expect(mockPrisma.idea.update).not.toHaveBeenCalled()
-  })
-
-  it('persists review_log + reviewed_at and logs a PLAN_REVIEW_RESULT entry', async () => {
-    await handleUpdateIdeaPlanReviewed({
-      idea_id: IDEA_ID,
-      review_log: REVIEW_LOG,
-      approval_status: 'approved',
-    })
-    const updateArg = mockPrisma.idea.update.mock.calls[0]?.[0]
-    expect(updateArg?.data?.plan_review_log).toEqual(REVIEW_LOG)
-    expect(updateArg?.data?.reviewed_at).toBeInstanceOf(Date)
-
-    const logArg = mockPrisma.ideaLog.create.mock.calls[0]?.[0]
-    expect(logArg?.data?.type).toBe('PLAN_REVIEW_RESULT')
-    expect(logArg?.data?.idea_id).toBe(IDEA_ID)
+  it('rejected → REJECTED, omitted → CHANGES_REQUESTED', async () => {
+    await handleUpdateIdeaPlanReviewed({ idea_id: IDEA_ID, job_id: JOB_ID, review_log: REVIEW_LOG, approval_status: 'rejected' })
+    expect(p.reviewLog.upsert.mock.calls[0][0].create.verdict).toBe('REJECTED')
+    vi.clearAllMocks()
+    mockAuth.mockResolvedValue({ userId: USER_ID, tokenId: 't', username: 'a', isDemo: false })
+    p.claudeJob.findUnique.mockResolvedValue({ id: JOB_ID, user_id: USER_ID, kind: 'IDEA_REVIEW_PLAN', idea_id: IDEA_ID, product_id: 'prod-1' })
+    p.$transaction.mockResolvedValue([{ id: IDEA_ID, status: 'PLAN_REVIEW_FAILED', code: 'IDEA-1' }, {}])
+    await handleUpdateIdeaPlanReviewed({ idea_id: IDEA_ID, job_id: JOB_ID, review_log: REVIEW_LOG })
+    expect(p.reviewLog.upsert.mock.calls[0][0].create.verdict).toBe('CHANGES_REQUESTED')
   })
 })
