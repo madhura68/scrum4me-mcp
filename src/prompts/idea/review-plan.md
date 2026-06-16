@@ -149,7 +149,7 @@ Indien converged (of na ronde 2 als max bereikt):
    - "Opnieuw": max 2 extra rondes (rondes 3–4), dan dwingend approval vragen.
 
 4. **Save & Close**
-   - Call `update_idea_plan_reviewed({ idea_id, review_log, approval_status })`.
+   - Call `update_idea_plan_reviewed({ idea_id, job_id, review_log, approval_status })`.
    - Call `update_job_status({ job_id, status: 'done', summary: review_log.summary })`.
 
 ## Output-format review_log (strikt JSON)

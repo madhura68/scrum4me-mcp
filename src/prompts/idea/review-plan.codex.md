@@ -80,7 +80,7 @@ Bepaal `approval_status`:
 auditlog "Status: pending" terwijl de idee al getransitioneerd is.
 
 Sluit af:
-1. `mcp__scrum4me__update_idea_plan_reviewed({ idea_id: <idea.id>, review_log, approval_status })`
+1. `mcp__scrum4me__update_idea_plan_reviewed({ idea_id: <idea.id>, job_id: <job.id>, review_log, approval_status })`
 2. `mcp__scrum4me__update_job_status({ job_id: <job.id>, status: 'done', summary: review_log.summary })`
 
 (De sink transitioneert de idee: `approved` → `PLAN_REVIEWED`, anders → `PLAN_REVIEW_FAILED`.)
@@ -108,7 +108,7 @@ Sluit af:
 - **Plan parse-fout**: `mcp__scrum4me__update_job_status({ job_id, status: 'failed', error: 'plan_parse_failed' })` — stop.
 - **`update_idea_plan_md` mislukt**: log als `error`-severity issue + `plan_write_failed = true`
   (blokkeert `approved`). Bij herhaalde/laatste-ronde schrijffout: roep
-  `update_idea_plan_reviewed(..., approval_status: 'rejected')` met de faal-reden, of faal de job.
+  `update_idea_plan_reviewed({ idea_id: <idea.id>, job_id: <job.id>, review_log, approval_status: 'rejected' })` met de faal-reden, of faal de job.
 
 ## Aannames & Limieten
 
