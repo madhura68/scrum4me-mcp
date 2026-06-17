@@ -45,7 +45,7 @@ describe('getFullJobContext orchestrator jobs', () => {
   })
 
   it('returns product-scoped follow-up context with prompt_text from the job summary', async () => {
-    const context = await getFullJobContext('job-orch-12345678')
+    const context = await getFullJobContext('job-orch-12345678', 'CLAUDE')
 
     expect(context).toMatchObject({
       job_id: 'job-orch-12345678',

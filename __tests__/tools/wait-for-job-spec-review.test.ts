@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('../../src/prisma.js', () => ({
   prisma: {
     claudeJob: { findUnique: vi.fn() },
+    jobKindConfig: { findUnique: vi.fn().mockResolvedValue(null) },
     productDoc: { findUnique: vi.fn() },
     $executeRaw: vi.fn(),
   },
@@ -26,15 +27,6 @@ vi.mock('../../src/git/forgejo-rest.js', async (importActual) => {
 // doc-index: best-effort, return null so it doesn't interfere.
 vi.mock('../../src/lib/doc-index.js', () => ({
   buildDocIndex: vi.fn().mockResolvedValue(null),
-}))
-
-// job-config: return a stable minimal config object.
-vi.mock('../../src/lib/job-config.js', () => ({
-  resolveJobConfig: vi.fn().mockReturnValue({
-    model: 'claude-sonnet-4-5-20251001',
-    thinking_budget: null,
-    permission_mode: 'default',
-  }),
 }))
 
 import { prisma } from '../../src/prisma.js'
@@ -114,7 +106,7 @@ describe('getFullJobContext SPEC_REVIEW', () => {
       // rollbackClaim's interne findUnique
       .mockResolvedValueOnce({ kind: 'SPEC_REVIEW', product_id: 'prod-1', task: null })
 
-    const ctx = await getFullJobContext('job-spec-1')
+    const ctx = await getFullJobContext('job-spec-1', 'CLAUDE')
 
     expect(ctx).toBeNull()
     expect(mockPrisma.$executeRaw).toHaveBeenCalled()
@@ -127,7 +119,7 @@ describe('getFullJobContext SPEC_REVIEW', () => {
       .mockResolvedValueOnce({ kind: 'SPEC_REVIEW', product_id: 'prod-1', task: null })
     mockPrisma.productDoc.findUnique.mockResolvedValue(null)
 
-    const ctx = await getFullJobContext('job-spec-1')
+    const ctx = await getFullJobContext('job-spec-1', 'CLAUDE')
 
     expect(ctx).toBeNull()
     expect(mockPrisma.$executeRaw).toHaveBeenCalled()
@@ -140,7 +132,7 @@ describe('getFullJobContext SPEC_REVIEW', () => {
       .mockResolvedValueOnce({ kind: 'SPEC_REVIEW', product_id: 'prod-1', task: null })
     mockPrisma.productDoc.findUnique.mockResolvedValue({ ...BASE_DOC, folder: 'PLANS' })
 
-    const ctx = await getFullJobContext('job-spec-1')
+    const ctx = await getFullJobContext('job-spec-1', 'CLAUDE')
 
     expect(ctx).toBeNull()
     expect(mockPrisma.$executeRaw).toHaveBeenCalled()
@@ -153,7 +145,7 @@ describe('getFullJobContext SPEC_REVIEW', () => {
       .mockResolvedValueOnce({ kind: 'SPEC_REVIEW', product_id: 'prod-1', task: null })
     mockPrisma.productDoc.findUnique.mockResolvedValue({ ...BASE_DOC, current_revision: null })
 
-    const ctx = await getFullJobContext('job-spec-1')
+    const ctx = await getFullJobContext('job-spec-1', 'CLAUDE')
 
     expect(ctx).toBeNull()
     expect(mockPrisma.$executeRaw).toHaveBeenCalled()
@@ -169,14 +161,14 @@ describe('getFullJobContext SPEC_REVIEW', () => {
       current_revision: { id: 'rev-1', revision: 1, content_md: '' },
     })
 
-    const ctx = await getFullJobContext('job-spec-1')
+    const ctx = await getFullJobContext('job-spec-1', 'CLAUDE')
 
     expect(ctx).toBeNull()
     expect(mockPrisma.$executeRaw).toHaveBeenCalled()
   })
 
   it('SPEC_REVIEW happy path → correcte payload met kind SPEC_REVIEW', async () => {
-    const ctx: any = await getFullJobContext('job-spec-1')
+    const ctx: any = await getFullJobContext('job-spec-1', 'CLAUDE')
 
     expect(ctx).not.toBeNull()
     expect(ctx.kind).toBe('SPEC_REVIEW')

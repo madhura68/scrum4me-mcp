@@ -5,6 +5,7 @@ vi.mock('../../src/prisma.js', () => ({
   prisma: {
     claudeJob: { findUnique: vi.fn() },
     task: { findUnique: vi.fn() },
+    jobKindConfig: { findUnique: vi.fn().mockResolvedValue(null) },
     $executeRaw: vi.fn(),
   },
 }))
@@ -31,15 +32,6 @@ vi.mock('../../src/git/forgejo-rest.js', async (importActual) => {
 // doc-index: best-effort, return null so it doesn't interfere.
 vi.mock('../../src/lib/doc-index.js', () => ({
   buildDocIndex: vi.fn().mockResolvedValue(null),
-}))
-
-// job-config: return a stable minimal config object.
-vi.mock('../../src/lib/job-config.js', () => ({
-  resolveJobConfig: vi.fn().mockReturnValue({
-    model: 'claude-sonnet-4-5-20251001',
-    thinking_budget: null,
-    permission_mode: 'default',
-  }),
 }))
 
 import { prisma } from '../../src/prisma.js'
@@ -133,7 +125,7 @@ describe('getFullJobContext TASK_REVIEW', () => {
       .mockResolvedValueOnce({ ...BASE_JOB, task_id: null })
       .mockResolvedValueOnce({ kind: 'TASK_REVIEW', product_id: 'prod-1', task: null })
 
-    const ctx = await getFullJobContext('job-task-review-1')
+    const ctx = await getFullJobContext('job-task-review-1', 'CLAUDE')
 
     expect(ctx).toBeNull()
     expect(mockPrisma.$executeRaw).toHaveBeenCalled()
@@ -145,7 +137,7 @@ describe('getFullJobContext TASK_REVIEW', () => {
       .mockResolvedValueOnce(BASE_JOB)
       .mockResolvedValueOnce({ kind: 'TASK_REVIEW', product_id: 'prod-1', task: null })
 
-    const ctx = await getFullJobContext('job-task-review-1')
+    const ctx = await getFullJobContext('job-task-review-1', 'CLAUDE')
 
     expect(ctx).toBeNull()
     expect(mockPrisma.$executeRaw).toHaveBeenCalled()
@@ -156,7 +148,7 @@ describe('getFullJobContext TASK_REVIEW', () => {
     mockPrisma.task.findUnique.mockResolvedValue({ ...BASE_TASK, repo_url: null })
     mockFetchCompareDiff.mockResolvedValue('diff --git a b\n')
 
-    const ctx: any = await getFullJobContext('job-task-review-1')
+    const ctx: any = await getFullJobContext('job-task-review-1', 'CLAUDE')
 
     expect(ctx).not.toBeNull()
     expect(ctx.impl.diff_source).toBe('compare')
@@ -174,7 +166,7 @@ describe('getFullJobContext TASK_REVIEW', () => {
     mockPrisma.task.findUnique.mockResolvedValue({ ...BASE_TASK, repo_url: TASK_REPO_URL })
     mockFetchCompareDiff.mockResolvedValue('diff --git a b\n')
 
-    const ctx: any = await getFullJobContext('job-task-review-1')
+    const ctx: any = await getFullJobContext('job-task-review-1', 'CLAUDE')
 
     expect(ctx).not.toBeNull()
     expect(ctx.impl.diff_source).toBe('compare')
@@ -195,7 +187,7 @@ describe('getFullJobContext TASK_REVIEW', () => {
     })
     mockFetchPrDiff.mockResolvedValue('diff --git pr\n')
 
-    const ctx: any = await getFullJobContext('job-task-review-1')
+    const ctx: any = await getFullJobContext('job-task-review-1', 'CLAUDE')
 
     expect(ctx).not.toBeNull()
     expect(mockFetchCompareDiff).not.toHaveBeenCalled()
@@ -207,7 +199,7 @@ describe('getFullJobContext TASK_REVIEW', () => {
     mockFetchCompareDiff.mockResolvedValue({ error: 'compare failed' })
     mockFetchPrDiff.mockResolvedValue('diff --git fallback\n')
 
-    const ctx: any = await getFullJobContext('job-task-review-1')
+    const ctx: any = await getFullJobContext('job-task-review-1', 'CLAUDE')
 
     expect(ctx).not.toBeNull()
     expect(ctx.impl.diff_source).toBe('pr')
@@ -226,7 +218,7 @@ describe('getFullJobContext TASK_REVIEW', () => {
       .mockResolvedValueOnce(BASE_JOB)
       .mockResolvedValueOnce({ kind: 'TASK_REVIEW', product_id: 'prod-1', task: null })
 
-    const ctx = await getFullJobContext('job-task-review-1')
+    const ctx = await getFullJobContext('job-task-review-1', 'CLAUDE')
 
     expect(ctx).toBeNull()
     expect(mockPrisma.$executeRaw).toHaveBeenCalled()
@@ -239,7 +231,7 @@ describe('getFullJobContext TASK_REVIEW', () => {
       .mockResolvedValueOnce(BASE_JOB)
       .mockResolvedValueOnce({ kind: 'TASK_REVIEW', product_id: 'prod-1', task: null })
 
-    const ctx = await getFullJobContext('job-task-review-1')
+    const ctx = await getFullJobContext('job-task-review-1', 'CLAUDE')
 
     expect(ctx).toBeNull()
     expect(mockPrisma.$executeRaw).toHaveBeenCalled()
@@ -249,7 +241,7 @@ describe('getFullJobContext TASK_REVIEW', () => {
     mockPrisma.task.findUnique.mockResolvedValue({ ...BASE_TASK, repo_url: null })
     mockFetchCompareDiff.mockResolvedValue('diff --git a b\n--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new')
 
-    const ctx: any = await getFullJobContext('job-task-review-1')
+    const ctx: any = await getFullJobContext('job-task-review-1', 'CLAUDE')
 
     expect(ctx).not.toBeNull()
     expect(ctx.kind).toBe('TASK_REVIEW')

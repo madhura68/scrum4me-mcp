@@ -50,7 +50,7 @@ describe('getFullJobContext manual jobs', () => {
   })
 
   it('returns manual context with prompt_text from the linked draft', async () => {
-    const context = await getFullJobContext('job-manual-12345678')
+    const context = await getFullJobContext('job-manual-12345678', 'CLAUDE')
 
     expect(context).toMatchObject({
       job_id: 'job-manual-12345678',
