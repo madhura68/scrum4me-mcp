@@ -62,7 +62,7 @@ describe('getFullJobContext system PLAN_CHAT jobs', () => {
   })
 
   it('returns idea chat context with the latest pending user question', async () => {
-    const context = await getFullJobContext('job-chat-12345678')
+    const context = await getFullJobContext('job-chat-12345678', 'CLAUDE')
 
     expect(mockPrisma.claudeJob.findUnique).toHaveBeenCalledWith(expect.objectContaining({
       include: expect.objectContaining({

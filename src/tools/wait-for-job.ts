@@ -22,7 +22,7 @@ import { setupProductWorktrees, releaseLocksOnTerminal } from '../git/job-locks.
 import { pushBranchForJob } from '../git/push.js'
 import { fetchPrDiff, fetchCompareDiff, getPullRequestState } from '../git/pr.js'
 import { parseForgejoPrUrl } from '../git/forgejo-rest.js'
-import { resolveJobConfig } from '../lib/job-config.js'
+import { resolveRuntimeJobConfig } from '@shared/job-config.js'
 import { buildDocIndex } from '../lib/doc-index.js'
 import { loadManualIdeaContext } from '../lib/manual-idea-context.js'
 import { resolvePrLinkedPlan, type LinkedPlan } from '../lib/pr-linked-plan.js'
@@ -730,7 +730,7 @@ interface SprintExecutionRow {
   base_sha: string | null
 }
 
-export async function getFullJobContext(jobId: string) {
+export async function getFullJobContext(jobId: string, runtime: WorkerRuntime) {
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     include: {
@@ -799,9 +799,24 @@ export async function getFullJobContext(jobId: string) {
   })
   if (!job) return null
 
-  // PBI-67: model + mode-selectie. Resolved op claim-moment; override-cascade
-  // task.requires_opus → job.requested_* → product.preferred_* → kind-default.
-  const config = resolveJobConfig(
+  // JobKindConfig (fase 3): live / DB-leading per-kind config, vers op
+  // claim-time geresolved. Best-effort lookup (zoals buildDocIndex hieronder):
+  // een DB-fout of ontbrekende rij mag het claimen NOOIT blokkeren — dan valt
+  // resolveRuntimeJobConfig terug op KIND_DEFAULTS. requested_* = override-only
+  // (per-job); de kind-defaults staan NIET meer in requested_* (fase 5/6).
+  // Promise.resolve().then(...) zodat ook een synchroon ontbrekend prisma-model
+  // (test-mock zonder jobKindConfig) door de .catch naar null degradeert.
+  const kindConfig = await Promise.resolve()
+    .then(() => prisma.jobKindConfig.findUnique({ where: { kind: job.kind } }))
+    .catch((err: unknown) => {
+      console.warn(`[wait-for-job] jobKindConfig lookup failed for ${job.kind}:`, err)
+      return null
+    })
+
+  // Runtime-aware resolutie (fase 1 @shared/job-config). Voor CODEX worden
+  // product.preferred_model/requires_opus + product/requested permissie bewust
+  // overgeslagen (Claude-semantiek lekt niet naar codex --model/--sandbox).
+  const config = resolveRuntimeJobConfig(
     {
       kind: job.kind,
       requested_model: job.requested_model,
@@ -814,6 +829,8 @@ export async function getFullJobContext(jobId: string) {
       preferred_permission_mode: job.product.preferred_permission_mode,
     },
     job.task ? { requires_opus: job.task.requires_opus } : undefined,
+    kindConfig ?? undefined,
+    runtime,
   )
 
   // Push a compact doc-index into every payload so the worker sees which
@@ -1466,7 +1483,7 @@ export function registerWaitForJobTool(server: McpServer) {
         // 2. Try immediate claim
         let jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities, capability ?? null)
         if (jobId) {
-          const ctx = await getFullJobContext(jobId)
+          const ctx = await getFullJobContext(jobId, runtime)
           if (!ctx) return toolError('Job claimed but context fetch failed')
           // M12: idee-jobs hebben geen worktree nodig — de agent werkt in de
           // bestaande user-repo (geen branch/commit-flow). Alleen task-jobs
@@ -1518,7 +1535,7 @@ export function registerWaitForJobTool(server: McpServer) {
             await resetStaleClaimedJobs(userId)
             jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities, capability ?? null)
             if (jobId) {
-              const ctx = await getFullJobContext(jobId)
+              const ctx = await getFullJobContext(jobId, runtime)
               if (!ctx) return toolError('Job claimed but context fetch failed')
               if (ctx.kind === 'TASK_IMPLEMENTATION' && !('source' in ctx && ctx.source === 'MANUAL')) {
                 if (!ctx.story || !ctx.task) {

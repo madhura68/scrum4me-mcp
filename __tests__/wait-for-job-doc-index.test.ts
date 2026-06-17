@@ -50,14 +50,14 @@ describe('getFullJobContext doc_index injection', () => {
   it('includes the built doc_index in the returned context', async () => {
     const index = { product_id: 'prod-1', folders: [], hint: 'h' }
     mockBuild.mockResolvedValueOnce(index)
-    const ctx = await getFullJobContext('job-manual-12345678') as Record<string, unknown>
+    const ctx = await getFullJobContext('job-manual-12345678', 'CLAUDE') as Record<string, unknown>
     expect(mockBuild).toHaveBeenCalledWith('prod-1')
     expect(ctx.doc_index).toEqual(index)
   })
 
   it('sets doc_index to null when buildDocIndex throws (best-effort)', async () => {
     mockBuild.mockRejectedValueOnce(new Error('db down'))
-    const ctx = await getFullJobContext('job-manual-12345678') as Record<string, unknown>
+    const ctx = await getFullJobContext('job-manual-12345678', 'CLAUDE') as Record<string, unknown>
     expect(ctx.doc_index).toBeNull()
   })
 })

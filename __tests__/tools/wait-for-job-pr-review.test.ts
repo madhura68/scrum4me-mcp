@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('../../src/prisma.js', () => ({
   prisma: {
     claudeJob: { findUnique: vi.fn() },
+    jobKindConfig: { findUnique: vi.fn().mockResolvedValue(null) },
     $executeRaw: vi.fn(),
   },
 }))
@@ -27,15 +28,6 @@ vi.mock('../../src/git/forgejo-rest.js', async (importActual) => {
 // doc-index: best-effort, return null so it doesn't interfere.
 vi.mock('../../src/lib/doc-index.js', () => ({
   buildDocIndex: vi.fn().mockResolvedValue(null),
-}))
-
-// job-config: return a stable minimal config object.
-vi.mock('../../src/lib/job-config.js', () => ({
-  resolveJobConfig: vi.fn().mockReturnValue({
-    model: 'claude-sonnet-4-5-20251001',
-    thinking_budget: null,
-    permission_mode: 'default',
-  }),
 }))
 
 import { prisma } from '../../src/prisma.js'
@@ -108,7 +100,7 @@ describe('getFullJobContext PR_REVIEW', () => {
   })
 
   it('MANUAL PR_REVIEW → pr/pr_diff/linked_plan-payload (niet de generieke manual-payload)', async () => {
-    const ctx: any = await getFullJobContext('job1')
+    const ctx: any = await getFullJobContext('job1', 'CLAUDE')
 
     expect(ctx).not.toBeNull()
     expect(ctx.kind).toBe('PR_REVIEW')
@@ -160,7 +152,7 @@ describe('getFullJobContext PR_REVIEW', () => {
       // rollbackClaim's interne findUnique
       .mockResolvedValueOnce({ kind: 'PR_REVIEW', product_id: 'prod-1', task: null })
 
-    const ctx = await getFullJobContext('job1')
+    const ctx = await getFullJobContext('job1', 'CLAUDE')
 
     expect(ctx).toBeNull()
 
@@ -176,7 +168,7 @@ describe('getFullJobContext PR_REVIEW', () => {
       // rollbackClaim's interne findUnique
       .mockResolvedValueOnce({ kind: 'PR_REVIEW', product_id: 'prod-1', task: null })
 
-    const ctx = await getFullJobContext('job1')
+    const ctx = await getFullJobContext('job1', 'CLAUDE')
 
     expect(ctx).toBeNull()
 

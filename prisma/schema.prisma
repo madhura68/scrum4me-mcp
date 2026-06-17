@@ -1121,3 +1121,22 @@ model CopilotAppUser {
   @@index([product_id, status])
   @@map("copilot_app_users")
 }
+
+/// Per-kind runtime-config, live (DB-leading) geresolved op claim-time
+/// (scrum4me-mcp getFullJobContext), niet via een enqueue-snapshot.
+/// Migratie draait in scrum4me-web (designated migrator), niet hier.
+model JobKindConfig {
+  kind                   ClaudeJobKind @id
+  claude_model           String?
+  codex_model            String?
+  thinking_budget        Int?
+  claude_permission_mode String?
+  codex_sandbox_mode     String?
+  allow_all_tools        Boolean       @default(false)
+  allowed_tools          String[]
+  skills                 String[]
+  max_turns              Int?
+  updated_at             DateTime      @updatedAt
+
+  @@map("job_kind_config")
+}
