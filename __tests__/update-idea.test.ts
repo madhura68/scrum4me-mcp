@@ -4,6 +4,7 @@ vi.mock('../src/prisma.js', () => ({
   prisma: {
     product: { findUnique: vi.fn() },
     idea: { findFirst: vi.fn(), update: vi.fn() },
+    ideaChatMessage: { create: vi.fn() },
   },
 }))
 vi.mock('../src/auth.js', () => ({
@@ -27,6 +28,9 @@ const mockFind = (prisma as unknown as { idea: { findFirst: ReturnType<typeof vi
   .idea.findFirst
 const mockUpdate = (prisma as unknown as { idea: { update: ReturnType<typeof vi.fn> } })
   .idea.update
+const mockChatMessage = (prisma as unknown as {
+  ideaChatMessage: { create: ReturnType<typeof vi.fn> }
+}).ideaChatMessage.create
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -34,6 +38,7 @@ beforeEach(() => {
   mockProduct.mockResolvedValue({ content_policy: null })
   mockFind.mockResolvedValue({ id: 'idea-1', status: 'DRAFT' })
   mockUpdate.mockResolvedValue({ id: 'idea-1', code: 'IDEA-042', status: 'DRAFT' })
+  mockChatMessage.mockResolvedValue({ id: 'msg-1' })
 })
 
 it('werkt titel/beschrijving bij (happy path)', async () => {
@@ -50,6 +55,27 @@ it('werkt titel/beschrijving bij (happy path)', async () => {
     data: { title: 'Nieuwe titel', description: 'Nieuwe omschrijving' },
     select: { id: true, code: true, status: true },
   })
+  // M17 idea-chat: doc-update zichtbaar als SYSTEM/DOC_UPDATE-kanaalbericht.
+  expect(mockChatMessage).toHaveBeenCalledWith({
+    data: {
+      idea_id: 'idea-1',
+      role: 'SYSTEM',
+      kind: 'DOC_UPDATE',
+      content: 'Beschrijving bijgewerkt door de agent',
+      metadata: { fields: ['title', 'description'] },
+    },
+  })
+})
+
+it('een falende kanaalbericht-write laat de idea-update slagen (best-effort)', async () => {
+  mockChatMessage.mockRejectedValue(new Error('db weg'))
+  const res = await handleUpdateIdea({
+    idea_id: 'idea-1',
+    product_id: 'prod-1',
+    title: 'Nieuwe titel',
+  })
+  expect(res.isError).toBeFalsy()
+  expect(mockUpdate).toHaveBeenCalled()
 })
 
 it('eist minstens één van title/description', async () => {

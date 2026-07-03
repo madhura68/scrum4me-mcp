@@ -322,7 +322,7 @@ export type ClaimSqlFilterInput =
   | (ClaimFilterInput & { userId: string; hasProductScope: false; productId?: undefined })
   | (ClaimFilterInput & { userId: string; hasProductScope: true; productId: string })
 
-const CLAIMABLE_STANDALONE_KINDS = "('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'PLAN_CHAT', 'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW')"
+const CLAIMABLE_STANDALONE_KINDS = "('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'IDEA_CHAT', 'PLAN_CHAT', 'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW')"
 
 const CLAIMABLE_JOB_KIND_FILTER = `AND (
               (cj.kind IN ${CLAIMABLE_STANDALONE_KINDS} AND cj.source <> 'ORCHESTRATOR')
@@ -623,9 +623,9 @@ export async function tryClaimJob(
       : Prisma.empty
     const found = productId
       ? await tx.$queryRaw<
-          Array<{ id: string; implementation_plan: string | null; sprint_run_id: string | null }>
+          Array<{ id: string; implementation_plan: string | null; sprint_run_id: string | null; kind: string; idea_id: string | null }>
         >`
-          SELECT cj.id, t.implementation_plan, cj.sprint_run_id
+          SELECT cj.id, t.implementation_plan, cj.sprint_run_id, cj.kind, cj.idea_id
           FROM claude_jobs cj
           LEFT JOIN tasks t ON t.id = cj.task_id
           LEFT JOIN sprint_runs sr ON sr.id = cj.sprint_run_id
@@ -636,9 +636,9 @@ export async function tryClaimJob(
           FOR UPDATE OF cj SKIP LOCKED
         `
       : await tx.$queryRaw<
-          Array<{ id: string; implementation_plan: string | null; sprint_run_id: string | null }>
+          Array<{ id: string; implementation_plan: string | null; sprint_run_id: string | null; kind: string; idea_id: string | null }>
         >`
-          SELECT cj.id, t.implementation_plan, cj.sprint_run_id
+          SELECT cj.id, t.implementation_plan, cj.sprint_run_id, cj.kind, cj.idea_id
           FROM claude_jobs cj
           LEFT JOIN tasks t ON t.id = cj.task_id
           LEFT JOIN sprint_runs sr ON sr.id = cj.sprint_run_id
@@ -664,6 +664,25 @@ export async function tryClaimJob(
           lease_until = NOW() + INTERVAL '5 minutes'
       WHERE id = ${jobId}
     `
+
+    // M17 idea-chat (spec §4.2): context-cutoff persist in dezelfde tx als de
+    // claim — het laatste kanaal-bericht (created_at, id) van het idee. Geen
+    // berichten → kolommen blijven NULL (update_job_status valt dan terug op
+    // job.created_at). De cutoff komt nooit van de worker; MCP is autoritatief.
+    if (found[0].kind === 'IDEA_CHAT' && found[0].idea_id) {
+      await tx.$executeRaw`
+        UPDATE claude_jobs
+        SET chat_cutoff_message_id = m.id,
+            chat_cutoff_at = m.created_at
+        FROM (
+          SELECT id, created_at FROM idea_chat_messages
+          WHERE idea_id = ${found[0].idea_id}
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1
+        ) m
+        WHERE claude_jobs.id = ${jobId}
+      `
+    }
 
     // SprintRun QUEUED → RUNNING bij eerste claim, in dezelfde tx zodat
     // concurrent claims dezelfde overgang niet dubbel doen (UPDATE skipt
@@ -1149,6 +1168,79 @@ export async function getFullJobContext(jobId: string, runtime: WorkerRuntime) {
       user_question: questionPayload,
       prompt_text: getIdeaPromptText('PLAN_CHAT'),
       branch_suggestion: `feat/idea-${idea.code.toLowerCase()}-chat`,
+    }
+  }
+
+  // M17 idea-chat: chat-beurt op een idee. Historie hard begrensd op de
+  // gepersisteerde cutoff (claim-tx, spec §4.2) — een bericht dat ná de claim
+  // binnenkomt hoort NIET in deze payload; de coalescing-check in
+  // update_job_status enqueuet daar een vervolg-job voor. Geen worktree,
+  // geen branch_suggestion: chat raakt geen repo.
+  if (job.kind === 'IDEA_CHAT' && job.source === 'SYSTEM') {
+    if (!job.idea) return null
+    const { idea } = job
+    const { getIdeaPromptText } = await import('../lib/kind-prompts.js')
+    const cutoffAt = job.chat_cutoff_at ?? job.created_at
+    const cutoffId = job.chat_cutoff_message_id ?? ''
+    // Defensief zoals de jobKindConfig-lookup: test-mocks zonder
+    // ideaChatMessage-model degraderen naar lege historie i.p.v. crash.
+    const history = await Promise.resolve()
+      .then(() =>
+        prisma.ideaChatMessage.findMany({
+          where: {
+            idea_id: idea.id,
+            OR: [
+              { created_at: { lt: cutoffAt } },
+              { created_at: cutoffAt, id: { lte: cutoffId } },
+            ],
+          },
+          orderBy: [{ created_at: 'desc' as const }, { id: 'desc' as const }],
+          take: 50,
+          select: { id: true, role: true, kind: true, content: true, created_at: true },
+        })
+      )
+      .catch(() => [])
+
+    return {
+      job_id: job.id,
+      kind: 'IDEA_CHAT',
+      source: 'SYSTEM',
+      status: 'claimed',
+      config,
+      doc_index: docIndex,
+      idea: {
+        id: idea.id,
+        code: idea.code,
+        title: idea.title,
+        description: idea.description,
+        grill_md: idea.grill_doc?.current_revision?.content_md ?? idea.grill_md,
+        plan_md: idea.plan_doc?.current_revision?.content_md ?? idea.plan_md,
+        status: idea.status,
+        product_id: idea.product_id,
+      },
+      product: {
+        id: job.product.id,
+        name: job.product.name,
+        repo_url: job.product.repo_url,
+        definition_of_done: job.product.definition_of_done,
+      },
+      chat: {
+        // Chronologisch (oudste eerst) zodat de agent het gesprek leest zoals
+        // het gevoerd is; de query haalt de nieuwste 50 t/m de cutoff op.
+        messages: history
+          .slice()
+          .reverse()
+          .map((m) => ({
+            id: m.id,
+            role: m.role,
+            kind: m.kind,
+            content: m.content,
+            created_at: m.created_at.toISOString(),
+          })),
+        cutoff_message_id: job.chat_cutoff_message_id ?? null,
+        cutoff_at: job.chat_cutoff_at?.toISOString() ?? null,
+      },
+      prompt_text: getIdeaPromptText('IDEA_CHAT'),
     }
   }
 

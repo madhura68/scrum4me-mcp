@@ -1,5 +1,8 @@
 // MCP-tool: schrijft het grill_md-resultaat na een IDEA_GRILL-job en zet
-// de idea-status op GRILLED. Logt een IdeaLog{GRILL_RESULT}-entry.
+// de idea-status op GRILLED. Schrijft het volledige resultaat als
+// ASSISTANT/GRILL_RESULT-bericht in het idea-chat-kanaal (M17; voorheen
+// een IdeaLog{GRILL_RESULT}-entry — pre-M17-rijen blijven zichtbaar via de
+// kanaal-merge).
 //
 // Wordt aangeroepen door de worker als laatste stap van een grill-sessie.
 
@@ -77,11 +80,17 @@ export function registerUpdateIdeaGrillMdTool(server: McpServer) {
               },
               select: { id: true, status: true, code: true },
             })
-            await tx.ideaLog.create({
+            // M17 idea-chat (spec §3/besluit 3): het grill-resultaat landt
+            // integraal als ASSISTANT-bericht in het kanaal — het kanaal is
+            // het versie-archief. Géén IdeaLog GRILL_RESULT meer (dubbel-
+            // render-preventie); pre-M17 IdeaLog-rijen blijven zichtbaar via
+            // de kanaal-merge.
+            await tx.ideaChatMessage.create({
               data: {
                 idea_id,
-                type: 'GRILL_RESULT',
-                content: `Grill result (${markdown.length} chars, rev ${wr.revision})`,
+                role: 'ASSISTANT',
+                kind: 'GRILL_RESULT',
+                content: markdown,
                 metadata: {
                   length: markdown.length,
                   doc_id: wr.doc_id,

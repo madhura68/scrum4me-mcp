@@ -76,6 +76,10 @@ export async function handleUpdateIdea(input: z.infer<typeof inputSchema>) {
       )
     }
 
+    const changedFields = [
+      ...(parsed.title !== undefined ? ['title'] : []),
+      ...(parsed.description !== undefined ? ['description'] : []),
+    ]
     const updated = await prisma.idea.update({
       where: { id: parsed.idea_id },
       data: {
@@ -84,6 +88,25 @@ export async function handleUpdateIdea(input: z.infer<typeof inputSchema>) {
       },
       select: { id: true, code: true, status: true },
     })
+    // M17 idea-chat (spec §4.3): doc-updates uit een chat-beurt worden als
+    // SYSTEM-bericht zichtbaar in het kanaal. Best-effort (ook tegen sync
+    // fouten): een falende message-write mag de idea-update zelf niet
+    // terugdraaien of laten falen.
+    await Promise.resolve()
+      .then(() =>
+        prisma.ideaChatMessage.create({
+          data: {
+            idea_id: parsed.idea_id,
+            role: 'SYSTEM',
+            kind: 'DOC_UPDATE',
+            content: 'Beschrijving bijgewerkt door de agent',
+            metadata: { fields: changedFields },
+          },
+        }),
+      )
+      .catch((err: unknown) => {
+        console.warn('update_idea: DOC_UPDATE-kanaalbericht mislukt (idea-update is gecommit):', err)
+      })
     return toolJson({ id: updated.id, code: updated.code, status: updated.status })
   })
 }

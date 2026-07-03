@@ -70,6 +70,12 @@ describe('runtime-aware claim filter', () => {
     expect(sql).toContain('IDEA_REVIEW_PLAN')
   })
 
+  it('includes IDEA_CHAT in standalone idea jobs (M17 idea-chat)', () => {
+    const sql = buildClaimableJobWhereClause({ runtime: 'CLAUDE', hasProductScope: false })
+
+    expect(sql).toContain("'IDEA_CHAT'")
+  })
+
   it('allows only PLAN_CHAT orchestrator follow-up jobs for the matching runtime and capability', () => {
     const sql = buildClaimableJobWhereClause({
       runtime: 'CLAUDE',
@@ -122,7 +128,7 @@ describe('runtime-aware claim filter', () => {
 
     for (const expected of [
       'cj.product_id = ',
-      "cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'PLAN_CHAT', 'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW')",
+      "cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'IDEA_CHAT', 'PLAN_CHAT', 'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW')",
       "cj.kind = 'PLAN_CHAT'",
       "cj.source = 'ORCHESTRATOR'",
       "OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'MANUAL')",
