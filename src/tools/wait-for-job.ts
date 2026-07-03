@@ -1171,6 +1171,79 @@ export async function getFullJobContext(jobId: string, runtime: WorkerRuntime) {
     }
   }
 
+  // M17 idea-chat: chat-beurt op een idee. Historie hard begrensd op de
+  // gepersisteerde cutoff (claim-tx, spec §4.2) — een bericht dat ná de claim
+  // binnenkomt hoort NIET in deze payload; de coalescing-check in
+  // update_job_status enqueuet daar een vervolg-job voor. Geen worktree,
+  // geen branch_suggestion: chat raakt geen repo.
+  if (job.kind === 'IDEA_CHAT' && job.source === 'SYSTEM') {
+    if (!job.idea) return null
+    const { idea } = job
+    const { getIdeaPromptText } = await import('../lib/kind-prompts.js')
+    const cutoffAt = job.chat_cutoff_at ?? job.created_at
+    const cutoffId = job.chat_cutoff_message_id ?? ''
+    // Defensief zoals de jobKindConfig-lookup: test-mocks zonder
+    // ideaChatMessage-model degraderen naar lege historie i.p.v. crash.
+    const history = await Promise.resolve()
+      .then(() =>
+        prisma.ideaChatMessage.findMany({
+          where: {
+            idea_id: idea.id,
+            OR: [
+              { created_at: { lt: cutoffAt } },
+              { created_at: cutoffAt, id: { lte: cutoffId } },
+            ],
+          },
+          orderBy: [{ created_at: 'desc' as const }, { id: 'desc' as const }],
+          take: 50,
+          select: { id: true, role: true, kind: true, content: true, created_at: true },
+        })
+      )
+      .catch(() => [])
+
+    return {
+      job_id: job.id,
+      kind: 'IDEA_CHAT',
+      source: 'SYSTEM',
+      status: 'claimed',
+      config,
+      doc_index: docIndex,
+      idea: {
+        id: idea.id,
+        code: idea.code,
+        title: idea.title,
+        description: idea.description,
+        grill_md: idea.grill_doc?.current_revision?.content_md ?? idea.grill_md,
+        plan_md: idea.plan_doc?.current_revision?.content_md ?? idea.plan_md,
+        status: idea.status,
+        product_id: idea.product_id,
+      },
+      product: {
+        id: job.product.id,
+        name: job.product.name,
+        repo_url: job.product.repo_url,
+        definition_of_done: job.product.definition_of_done,
+      },
+      chat: {
+        // Chronologisch (oudste eerst) zodat de agent het gesprek leest zoals
+        // het gevoerd is; de query haalt de nieuwste 50 t/m de cutoff op.
+        messages: history
+          .slice()
+          .reverse()
+          .map((m) => ({
+            id: m.id,
+            role: m.role,
+            kind: m.kind,
+            content: m.content,
+            created_at: m.created_at.toISOString(),
+          })),
+        cutoff_message_id: job.chat_cutoff_message_id ?? null,
+        cutoff_at: job.chat_cutoff_at?.toISOString() ?? null,
+      },
+      prompt_text: getIdeaPromptText('IDEA_CHAT'),
+    }
+  }
+
   // M12: branch on kind. Idea-jobs hebben geen task/story/pbi/sprint; ze
   // hebben in plaats daarvan idea + embedded prompt_text.
   if (job.kind === 'IDEA_GRILL' || job.kind === 'IDEA_MAKE_PLAN' || job.kind === 'IDEA_REVIEW_PLAN') {
