@@ -26,6 +26,7 @@ import {
 import { releaseLocksOnTerminal } from '../git/job-locks.js'
 import { resolveRepoRoot } from './wait-for-job.js'
 import { pushBranchForJob } from '../git/push.js'
+import { notifyJobEnqueued } from '../lib/dispatch/notify.js'
 import { createPullRequest, listPullRequestFiles, markPullRequestReady } from '../git/pr.js'
 import { cancelPbiOnFailure } from '../cancel/pbi-cascade.js'
 import { propagateStatusUpwards } from '../lib/tasks-status-update.js'
@@ -677,6 +678,9 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             runtime: true,
             source: true,
             verify_result: true,
+            created_at: true,
+            chat_cutoff_message_id: true,
+            chat_cutoff_at: true,
             task: { select: { verify_only: true, verify_required: true } },
           },
         })
@@ -726,6 +730,19 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           )
         }
 
+        // M17 idea-chat: chat-beurten sluiten af met de summary als
+        // ASSISTANT-bericht in het kanaal (spec §4.4).
+        const isSystemIdeaChat =
+          job.kind === 'IDEA_CHAT' &&
+          job.source === 'SYSTEM' &&
+          !!job.idea_id
+        const ideaChatAnswer = summary?.trim()
+        if (status === 'done' && isSystemIdeaChat && !ideaChatAnswer) {
+          return toolError(
+            'IDEA_CHAT done vereist een non-empty summary; die wordt letterlijk het chatbericht in het idee-kanaal.',
+          )
+        }
+
         // For DONE: push first, adjust DB status based on result
         let actualStatus = status
         let pushedAt: Date | undefined
@@ -748,6 +765,11 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             actualStatus = 'done'
             skipWorktreeCleanup = true
           } else if (isSystemPlanChat) {
+            actualStatus = 'done'
+            skipWorktreeCleanup = true
+          } else if (isSystemIdeaChat) {
+            // M17 idea-chat: geen worktree/verify/push — de beurt sluit via de
+            // dedicated transactie hieronder (message-write + coalescing).
             actualStatus = 'done'
             skipWorktreeCleanup = true
           } else if (
@@ -845,42 +867,143 @@ export function registerUpdateJobStatusTool(server: McpServer) {
 
         const dbStatus = DB_STATUS_MAP[actualStatus as keyof typeof DB_STATUS_MAP]
         const now = new Date()
-        const updated = await prisma.claudeJob.update({
-          where: { id: job_id },
-          data: {
-            status: dbStatus,
-            ...resolveJobTimestamps(
-              actualStatus,
-              { claimed_at: job.claimed_at, started_at: job.started_at },
-              now,
-            ),
-            ...(branchToWrite !== undefined ? { branch: branchToWrite } : {}),
-            ...(pushedAt !== undefined ? { pushed_at: pushedAt } : {}),
-            ...(summary !== undefined ? { summary } : {}),
-            ...(errorToWrite !== undefined ? { error: errorToWrite } : {}),
-            ...(prUrl !== null ? { pr_url: prUrl } : {}),
-            ...(headShaToWrite !== undefined ? { head_sha: headShaToWrite } : {}),
-            ...(model_id !== undefined ? { model_id } : {}),
-            ...(input_tokens !== undefined ? { input_tokens } : {}),
-            ...(output_tokens !== undefined ? { output_tokens } : {}),
-            ...(cache_read_tokens !== undefined ? { cache_read_tokens } : {}),
-            ...(cache_write_tokens !== undefined ? { cache_write_tokens } : {}),
-            ...(actual_thinking_tokens !== undefined ? { actual_thinking_tokens } : {}),
-          },
-          select: {
-            id: true,
-            status: true,
-            branch: true,
-            pushed_at: true,
-            pr_url: true,
-            verify_result: true,
-            summary: true,
-            error: true,
-            started_at: true,
-            finished_at: true,
-            head_sha: true,
-          },
-        })
+        const jobUpdateData = {
+          status: dbStatus,
+          ...resolveJobTimestamps(
+            actualStatus,
+            { claimed_at: job.claimed_at, started_at: job.started_at },
+            now,
+          ),
+          ...(branchToWrite !== undefined ? { branch: branchToWrite } : {}),
+          ...(pushedAt !== undefined ? { pushed_at: pushedAt } : {}),
+          ...(summary !== undefined ? { summary } : {}),
+          ...(errorToWrite !== undefined ? { error: errorToWrite } : {}),
+          ...(prUrl !== null ? { pr_url: prUrl } : {}),
+          ...(headShaToWrite !== undefined ? { head_sha: headShaToWrite } : {}),
+          ...(model_id !== undefined ? { model_id } : {}),
+          ...(input_tokens !== undefined ? { input_tokens } : {}),
+          ...(output_tokens !== undefined ? { output_tokens } : {}),
+          ...(cache_read_tokens !== undefined ? { cache_read_tokens } : {}),
+          ...(cache_write_tokens !== undefined ? { cache_write_tokens } : {}),
+          ...(actual_thinking_tokens !== undefined ? { actual_thinking_tokens } : {}),
+        }
+        const jobUpdateSelect = {
+          id: true,
+          status: true,
+          branch: true,
+          pushed_at: true,
+          pr_url: true,
+          verify_result: true,
+          summary: true,
+          error: true,
+          started_at: true,
+          finished_at: true,
+          head_sha: true,
+        } as const
+
+        let updated: {
+          id: string
+          status: string
+          branch: string | null
+          pushed_at: Date | null
+          pr_url: string | null
+          verify_result: string | null
+          summary: string | null
+          error: string | null
+          started_at: Date | null
+          finished_at: Date | null
+          head_sha: string | null
+        }
+        let ideaChatFollowUpId: string | null = null
+
+        if (isSystemIdeaChat && (actualStatus === 'done' || actualStatus === 'failed')) {
+          // M17 idea-chat (spec §4.5): status-flip + assistant-write +
+          // coalescing-check atomair onder dezelfde per-idea lock als
+          // sendIdeaChatMessage (web). Zo kan geen bericht tussen wal en schip
+          // vallen (lost wakeup) en ontstaat nooit een dubbele actieve job.
+          const txResult = await prisma.$transaction(async (tx) => {
+            await tx.$queryRaw`SELECT id FROM ideas WHERE id = ${job.idea_id} FOR UPDATE`
+
+            const u = await tx.claudeJob.update({
+              where: { id: job_id },
+              data: jobUpdateData,
+              select: jobUpdateSelect,
+            })
+
+            if (actualStatus === 'done' && ideaChatAnswer) {
+              await tx.ideaChatMessage.create({
+                data: {
+                  idea_id: job.idea_id!,
+                  role: 'ASSISTANT',
+                  kind: 'TEXT',
+                  content: ideaChatAnswer,
+                  job_id,
+                },
+              })
+            }
+            if (actualStatus === 'failed') {
+              // Spec §4.7: FAILED → IdeaLog JOB_EVENT (audit, projectie in het
+              // kanaal); géén Idea.status-mutatie — IDEA_CHAT is status-neutraal.
+              await tx.ideaLog.create({
+                data: {
+                  idea_id: job.idea_id!,
+                  type: 'JOB_EVENT',
+                  content: 'IDEA_CHAT failed',
+                  metadata: { job_id, error: errorToWrite ?? null },
+                },
+              })
+            }
+
+            // Coalescing: USER-berichten ná de gepersisteerde cutoff → precies
+            // één vervolg-job. Elke (ook mislukte) job schuift de cutoff bij
+            // zíjn claim op, dus een failure-loop is uitgesloten.
+            const cutoffAt = job.chat_cutoff_at ?? job.created_at
+            const cutoffId = job.chat_cutoff_message_id ?? ''
+            const newer = await tx.ideaChatMessage.findFirst({
+              where: {
+                idea_id: job.idea_id!,
+                role: 'USER',
+                OR: [
+                  { created_at: { gt: cutoffAt } },
+                  { created_at: cutoffAt, id: { gt: cutoffId } },
+                ],
+              },
+              select: { id: true },
+            })
+            if (!newer) return { updated: u, followUpId: null as string | null }
+            const followUp = await tx.claudeJob.create({
+              data: {
+                user_id: job.user_id,
+                product_id: job.product_id,
+                idea_id: job.idea_id!,
+                kind: 'IDEA_CHAT',
+                status: 'QUEUED',
+              },
+              select: { id: true },
+            })
+            return { updated: u, followUpId: followUp.id }
+          })
+          updated = txResult.updated
+          ideaChatFollowUpId = txResult.followUpId
+        } else {
+          updated = await prisma.claudeJob.update({
+            where: { id: job_id },
+            data: jobUpdateData,
+            select: jobUpdateSelect,
+          })
+        }
+
+        if (ideaChatFollowUpId) {
+          // Buiten de tx (pas ná commit melden); wekt wachtende
+          // wait_for_job-LISTENers — anders duurt het tot de volgende poll.
+          await notifyJobEnqueued({
+            job_id: ideaChatFollowUpId,
+            user_id: job.user_id,
+            product_id: job.product_id,
+            kind: 'IDEA_CHAT',
+            idea_id: job.idea_id!,
+          })
+        }
 
         if (actualStatus === 'done' && isSystemPlanChat && planChatAnswer) {
           const pendingQuestion = await prisma.userQuestion.findFirst({
