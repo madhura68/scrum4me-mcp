@@ -159,6 +159,7 @@ enum ClaudeJobKind {
   IDEA_GRILL
   IDEA_MAKE_PLAN
   IDEA_REVIEW_PLAN
+  IDEA_CHAT
   PLAN_CHAT
   SPRINT_IMPLEMENTATION
   PR_REVIEW
@@ -193,6 +194,21 @@ enum IdeaLogType {
 enum UserQuestionStatus {
   pending
   answered
+}
+
+// M17 idea-chat: rollen en kinds voor het chat-channel per idee.
+// Job-events zijn bewust géén message-kind — IdeaLog blijft canoniek voor audit
+// (spec 2026-07-03 idea-chat-channel §3).
+enum IdeaChatRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum IdeaChatMessageKind {
+  TEXT
+  GRILL_RESULT
+  DOC_UPDATE
 }
 
 enum ProductDocFolder {
@@ -554,10 +570,16 @@ model ClaudeJob {
   error                     String?
   retry_count               Int                   @default(0)
   lease_until               DateTime?
+  // M17 idea-chat: context-cutoff van een IDEA_CHAT-beurt, gezet in de
+  // claim-transactie (spec §4.2). update_job_status leest dit server-side
+  // voor de coalescing-check; nooit door de worker aangeleverd.
+  chat_cutoff_message_id    String?
+  chat_cutoff_at            DateTime?
   task_executions           SprintTaskExecution[] @relation("SprintJobExecutions")
   manual_drafts             ManualJobDraft[]
   idea_notification         IdeaNotification?
   review_log                ReviewLog?            @relation("JobReviewLog")
+  chat_messages             IdeaChatMessage[]
   created_at                DateTime              @default(now())
   updated_at                DateTime              @updatedAt
 
@@ -933,6 +955,7 @@ model Idea {
   questions          ClaudeQuestion[]
   jobs               ClaudeJob[]
   logs               IdeaLog[]
+  chat_messages      IdeaChatMessage[]
   user_questions     UserQuestion[]
   secondary_products IdeaProduct[]
   notifications      IdeaNotification[]
@@ -969,6 +992,25 @@ model IdeaLog {
 
   @@index([idea_id, created_at])
   @@map("idea_logs")
+}
+
+// M17 idea-chat: chat-channel per idee. Conversationele inhoud; audit blijft
+// IdeaLog (projectie in de kanaal-view), open vragen blijven ClaudeQuestion
+// (spec 2026-07-03 idea-chat-channel §3).
+model IdeaChatMessage {
+  id         String              @id @default(cuid())
+  idea       Idea                @relation(fields: [idea_id], references: [id], onDelete: Cascade)
+  idea_id    String
+  role       IdeaChatRole
+  kind       IdeaChatMessageKind @default(TEXT)
+  content    String              @db.Text
+  metadata   Json?
+  job        ClaudeJob?          @relation(fields: [job_id], references: [id], onDelete: SetNull)
+  job_id     String?
+  created_at DateTime            @default(now())
+
+  @@index([idea_id, created_at])
+  @@map("idea_chat_messages")
 }
 
 model UserQuestion {
