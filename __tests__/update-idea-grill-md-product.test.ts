@@ -1,8 +1,26 @@
 import { it, expect, vi, beforeEach } from 'vitest'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 
+const txMocks = vi.hoisted(() => ({
+  idea: { update: vi.fn() },
+  ideaChatMessage: { create: vi.fn() },
+  ideaLog: { create: vi.fn() },
+}))
+
 vi.mock('../src/prisma.js', () => ({
-  prisma: { idea: { findUnique: vi.fn() }, $transaction: vi.fn() },
+  prisma: {
+    idea: { findUnique: vi.fn() },
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(txMocks)),
+  },
+}))
+vi.mock('../src/lib/product-doc-write.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  writeProductDoc: vi.fn().mockResolvedValue({
+    doc_id: 'doc-1',
+    revision_id: 'rev-1',
+    revision: 1,
+    noop: false,
+  }),
 }))
 vi.mock('../src/auth.js', () => ({
   requireWriteAccess: vi.fn(),
@@ -59,4 +77,25 @@ it('weigert wanneer het meegegeven product_id niet bij het idee hoort (cross-pro
   const res = await handler({ idea_id: 'idea-1', markdown: '# grill', product_id: 'prod-OTHER' })
   expect(res.isError).toBe(true)
   expect(res.content[0].text).toMatch(/not found/i)
+})
+
+it('schrijft het grill-resultaat als ASSISTANT/GRILL_RESULT-kanaalbericht, niet meer als IdeaLog (M17)', async () => {
+  txMocks.idea.update.mockResolvedValue({ id: 'idea-1', status: 'GRILLED', code: 'IDEA-042' })
+  txMocks.ideaChatMessage.create.mockResolvedValue({ id: 'msg-1' })
+  const handler = captureHandler()
+
+  const res = await handler({ idea_id: 'idea-1', markdown: '# grill\n\nVolledige inhoud.' })
+
+  expect(res.isError).toBeFalsy()
+  expect(txMocks.ideaChatMessage.create).toHaveBeenCalledWith({
+    data: expect.objectContaining({
+      idea_id: 'idea-1',
+      role: 'ASSISTANT',
+      kind: 'GRILL_RESULT',
+      content: '# grill\n\nVolledige inhoud.',
+      metadata: expect.objectContaining({ doc_id: 'doc-1', revision: 1 }),
+    }),
+  })
+  // Dubbel-render-preventie (spec §3): géén IdeaLog GRILL_RESULT meer.
+  expect(txMocks.ideaLog.create).not.toHaveBeenCalled()
 })
