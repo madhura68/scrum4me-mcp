@@ -623,9 +623,9 @@ export async function tryClaimJob(
       : Prisma.empty
     const found = productId
       ? await tx.$queryRaw<
-          Array<{ id: string; implementation_plan: string | null; sprint_run_id: string | null }>
+          Array<{ id: string; implementation_plan: string | null; sprint_run_id: string | null; kind: string; idea_id: string | null }>
         >`
-          SELECT cj.id, t.implementation_plan, cj.sprint_run_id
+          SELECT cj.id, t.implementation_plan, cj.sprint_run_id, cj.kind, cj.idea_id
           FROM claude_jobs cj
           LEFT JOIN tasks t ON t.id = cj.task_id
           LEFT JOIN sprint_runs sr ON sr.id = cj.sprint_run_id
@@ -636,9 +636,9 @@ export async function tryClaimJob(
           FOR UPDATE OF cj SKIP LOCKED
         `
       : await tx.$queryRaw<
-          Array<{ id: string; implementation_plan: string | null; sprint_run_id: string | null }>
+          Array<{ id: string; implementation_plan: string | null; sprint_run_id: string | null; kind: string; idea_id: string | null }>
         >`
-          SELECT cj.id, t.implementation_plan, cj.sprint_run_id
+          SELECT cj.id, t.implementation_plan, cj.sprint_run_id, cj.kind, cj.idea_id
           FROM claude_jobs cj
           LEFT JOIN tasks t ON t.id = cj.task_id
           LEFT JOIN sprint_runs sr ON sr.id = cj.sprint_run_id
@@ -664,6 +664,25 @@ export async function tryClaimJob(
           lease_until = NOW() + INTERVAL '5 minutes'
       WHERE id = ${jobId}
     `
+
+    // M17 idea-chat (spec §4.2): context-cutoff persist in dezelfde tx als de
+    // claim — het laatste kanaal-bericht (created_at, id) van het idee. Geen
+    // berichten → kolommen blijven NULL (update_job_status valt dan terug op
+    // job.created_at). De cutoff komt nooit van de worker; MCP is autoritatief.
+    if (found[0].kind === 'IDEA_CHAT' && found[0].idea_id) {
+      await tx.$executeRaw`
+        UPDATE claude_jobs
+        SET chat_cutoff_message_id = m.id,
+            chat_cutoff_at = m.created_at
+        FROM (
+          SELECT id, created_at FROM idea_chat_messages
+          WHERE idea_id = ${found[0].idea_id}
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1
+        ) m
+        WHERE claude_jobs.id = ${jobId}
+      `
+    }
 
     // SprintRun QUEUED → RUNNING bij eerste claim, in dezelfde tx zodat
     // concurrent claims dezelfde overgang niet dubbel doen (UPDATE skipt
