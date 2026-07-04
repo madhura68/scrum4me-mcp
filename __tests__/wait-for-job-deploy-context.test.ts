@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 vi.mock('../src/prisma.js', () => ({
   prisma: {
     claudeJob: { findUnique: vi.fn() },
+    // rollbackClaim's QUEUED-reset (mis-config-gate-test hieronder).
+    $executeRaw: vi.fn(async () => 1),
   },
 }))
 
@@ -11,6 +13,7 @@ import { getFullJobContext } from '../src/tools/wait-for-job.js'
 
 const mockPrisma = prisma as unknown as {
   claudeJob: { findUnique: ReturnType<typeof vi.fn> }
+  $executeRaw: ReturnType<typeof vi.fn>
 }
 
 const BASE_PRODUCT = {
@@ -120,5 +123,46 @@ describe('getFullJobContext DEPLOY jobs', () => {
     })
     expect(context).not.toHaveProperty('manual_job')
     expect(context).not.toHaveProperty('manual_draft')
+  })
+
+  it('mis-config (deploy_flow null): null + rollbackClaim reset naar QUEUED', async () => {
+    // Gate-dekking (spec-review): zonder de !job.product.deploy_flow-gate
+    // zou dit een payload met deploy_flow: null opleveren i.p.v. null.
+    // Eerste findUnique = main-lookup van getFullJobContext; tweede =
+    // rollbackClaim's cleanup-lookup (kind/product_id/task-select).
+    // product_id: null slaat de worktree-cleanup-tak bewust over — de
+    // QUEUED-reset ($executeRaw) is de te bewijzen kern.
+    mockPrisma.claudeJob.findUnique
+      .mockResolvedValueOnce({
+        ...BASE_JOB,
+        source: 'SYSTEM',
+        product: { ...BASE_PRODUCT, auto_deploy: false, deploy_flow: null },
+      })
+      .mockResolvedValueOnce({ kind: 'DEPLOY', product_id: null, task: null })
+
+    const context = await getFullJobContext('job-deploy-1234', 'CLAUDE')
+
+    expect(context).toBeNull()
+    expect(mockPrisma.claudeJob.findUnique).toHaveBeenCalledTimes(2)
+    // rollbackClaim's cleanup-lookup gebruikt de compacte select.
+    expect(mockPrisma.claudeJob.findUnique).toHaveBeenNthCalledWith(2, {
+      where: { id: 'job-deploy-1234' },
+      select: {
+        kind: true,
+        product_id: true,
+        task: { select: { repo_url: true } },
+      },
+    })
+    // De QUEUED-reset: tagged-template call → [strings, ...values].
+    expect(mockPrisma.$executeRaw).toHaveBeenCalledTimes(1)
+    const [strings, ...values] = mockPrisma.$executeRaw.mock.calls[0] as [
+      readonly string[],
+      ...unknown[],
+    ]
+    const sql = strings.join('?')
+    expect(sql).toContain("SET status = 'QUEUED'")
+    expect(sql).toContain('claimed_by_token_id = NULL')
+    expect(sql).toContain('lease_until = NULL')
+    expect(values).toEqual(['job-deploy-1234'])
   })
 })
