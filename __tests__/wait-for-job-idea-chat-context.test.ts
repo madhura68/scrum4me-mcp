@@ -4,6 +4,7 @@ vi.mock('../src/prisma.js', () => ({
   prisma: {
     claudeJob: { findUnique: vi.fn() },
     ideaChatMessage: { findMany: vi.fn() },
+    claudeQuestion: { findMany: vi.fn() },
   },
 }))
 
@@ -13,6 +14,7 @@ import { getFullJobContext } from '../src/tools/wait-for-job.js'
 const mockPrisma = prisma as unknown as {
   claudeJob: { findUnique: ReturnType<typeof vi.fn> }
   ideaChatMessage: { findMany: ReturnType<typeof vi.fn> }
+  claudeQuestion: { findMany: ReturnType<typeof vi.fn> }
 }
 
 // M17 idea-chat: payload voor een IDEA_CHAT-beurt — kanaal-historie hard
@@ -59,6 +61,16 @@ describe('getFullJobContext system IDEA_CHAT jobs', () => {
         preferred_permission_mode: null,
       },
     })
+    mockPrisma.claudeQuestion.findMany.mockResolvedValue([
+      {
+        id: 'cq1',
+        question: 'In het plan opnemen?',
+        options: ['ja', 'nee'],
+        status: 'answered',
+        answer: 'ja',
+        created_at: new Date('2026-07-03T09:30:00.000Z'),
+      },
+    ])
     mockPrisma.ideaChatMessage.findMany.mockResolvedValue([
       {
         id: 'msg2',
@@ -112,8 +124,21 @@ describe('getFullJobContext system IDEA_CHAT jobs', () => {
         cutoff_at: '2026-07-03T09:59:00.000Z',
       },
     })
-    const chat = (context as { chat: { messages: Array<{ id: string }> } }).chat
+    const chat = (context as {
+      chat: { messages: Array<{ id: string }>; questions: Array<Record<string, unknown>> }
+    }).chat
     expect(chat.messages.map((m) => m.id)).toEqual(['msg1', 'msg2'])
+    // M17b: kaart-Q&A-geheugen — vervolg-beurten kennen eerdere kaartvragen.
+    expect(chat.questions).toEqual([
+      expect.objectContaining({
+        id: 'cq1',
+        question: 'In het plan opnemen?',
+        options: ['ja', 'nee'],
+        status: 'answered',
+        answer: 'ja',
+        created_at: '2026-07-03T09:30:00.000Z',
+      }),
+    ])
     expect(String((context as { prompt_text?: string }).prompt_text)).toContain('IDEA_CHAT')
     expect(context).not.toHaveProperty('worktree_path')
     expect(context).not.toHaveProperty('branch_suggestion')

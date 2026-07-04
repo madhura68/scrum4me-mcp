@@ -165,6 +165,7 @@ enum ClaudeJobKind {
   PR_REVIEW
   SPEC_REVIEW
   TASK_REVIEW
+  DEPLOY
 }
 
 enum ReviewVerdict {
@@ -326,6 +327,10 @@ model Product {
   // Phase 4: per-product opt-in voor automatische codex-reviews (advisory).
   auto_pr_review            Boolean            @default(false)
   auto_task_review          Boolean            @default(false)
+  // M17: per-product opt-in voor auto-deploy na PR-merge + ops-agent-flownaam.
+  // Invariant (app-level, Zod): auto_deploy=true vereist deploy_flow.
+  auto_deploy               Boolean            @default(false)
+  deploy_flow               String?
   pr_strategy               PrStrategy         @default(SPRINT_BATCH)
   preferred_model           String?
   thinking_budget_default   Int?
@@ -575,6 +580,8 @@ model ClaudeJob {
   // voor de coalescing-check; nooit door de worker aangeleverd.
   chat_cutoff_message_id    String?
   chat_cutoff_at            DateTime?
+  // M17: afgehandeld-stempel voor FAILED DEPLOY-jobs (blokkade-predicaat, spec §6).
+  resolved_at               DateTime?
   task_executions           SprintTaskExecution[] @relation("SprintJobExecutions")
   manual_drafts             ManualJobDraft[]
   idea_notification         IdeaNotification?
