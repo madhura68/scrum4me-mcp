@@ -422,8 +422,14 @@ export type HigherTierIdleInput = {
 
 /**
  * Returns a SQL fragment that the caller appends inside the WHERE-clause of a
- * claim query. Excludes claims when any other alive idle worker with strictly
- * higher capability exists for the same user + runtime.
+ * claim query. Excludes claims when another alive idle worker with strictly
+ * higher capability exists for the same user + runtime — but only if that
+ * worker could itself claim the candidate job (see claimability-guard below).
+ *
+ * Known residual: the guard cannot mirror per-call product-scoping — a peer
+ * that only polls product P1 still counts as blocker for a P2 job, because
+ * claude_workers persists no product_id at registration. Accepted for now;
+ * dedicated workers should poll unscoped.
  *
  * Priority mapping (NOT the enum ordinal — see below):
  *   HIGH_P   = 3
@@ -444,6 +450,17 @@ export type HigherTierIdleInput = {
  * entirely when selfCapability === null (see wait-for-job.ts ~L586), so
  * active legacy NULL workers can still first-come claim until rollout
  * populates capability everywhere.
+ *
+ * Claimability-guard (M17 E2E-vondst 2026-07-04, tier-deadlock): een
+ * hogere-tier idle peer telt alleen als die de kandidaat-job (cj, uit de
+ * omvattende claim-query) zélf zou kunnen claimen. Zonder deze guard defereert
+ * een dedicated deploy-worker met tier LOW_P eeuwig naar idle HIGH_P-workers
+ * zonder 'deploy'-capability — de DEPLOY-job blijft dan QUEUED terwijl
+ * iedereen "netjes wacht". De twee takken spiegelen de twee claim-paden in
+ * buildClaimableJobWhereFragment: exact-['deploy'] peers claimen uitsluitend
+ * DEPLOY (deployOnly-pad), overige peers claimen NULL-capability-jobs of jobs
+ * waarvan required_capability in hun capabilities zit (generiek pad; lege
+ * capabilities ⇒ ANY(leeg)=false ⇒ alleen NULL-jobs).
  */
 export function buildHigherTierIdleFragment(input: HigherTierIdleInput): Prisma.Sql {
   return Prisma.sql`
@@ -462,6 +479,14 @@ export function buildHigherTierIdleFragment(input: HigherTierIdleInput): Prisma.
               WHEN 'HIGH_P' THEN 3
               WHEN 'MEDIUM_P' THEN 2
               WHEN 'LOW_P' THEN 1
+            END
+        AND CASE
+              WHEN w.capabilities = ARRAY['deploy']::text[]
+                THEN cj.kind = 'DEPLOY'
+                 AND cj.required_capability = 'deploy'
+                 AND cj.source IN ('SYSTEM', 'MANUAL')
+              ELSE cj.required_capability IS NULL
+                OR cj.required_capability = ANY(w.capabilities)
             END
         AND w.last_seen_at > NOW() - INTERVAL '30 seconds'
         AND (w.last_quota_pct IS NULL OR w.last_quota_pct >= COALESCE(u.min_quota_pct, 0))
