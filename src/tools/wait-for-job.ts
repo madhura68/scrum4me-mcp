@@ -344,6 +344,9 @@ export function buildClaimableJobWhereClause(input: ClaimFilterInput): string {
   // M17 (opus plan-review): een worker met exact ['deploy'] is een dedicated
   // deploy-worker — hard beperken tot DEPLOY. Sluit de NULL-capability-tak
   // uit zodat hij nooit idea/plan-chat-jobs (capability NULL) kan claimen.
+  // Workers met éxtra capabilities naast 'deploy' (bv. ['deploy','review'])
+  // vallen bewust terug op het generieke pad — volledige deploy-only-isolatie
+  // geldt alleen voor exact ['deploy'] (dedicated worker).
   const deployOnly =
     (input.capabilities ?? []).length === 1 && input.capabilities?.[0] === 'deploy'
   if (deployOnly) {
@@ -380,6 +383,9 @@ export function buildClaimableJobWhereFragment(input: ClaimSqlFilterInput): Pris
   // M17 (opus plan-review): een worker met exact ['deploy'] is een dedicated
   // deploy-worker — hard beperken tot DEPLOY. Sluit de NULL-capability-tak
   // uit zodat hij nooit idea/plan-chat-jobs (capability NULL) kan claimen.
+  // Workers met éxtra capabilities naast 'deploy' (bv. ['deploy','review'])
+  // vallen bewust terug op het generieke pad — volledige deploy-only-isolatie
+  // geldt alleen voor exact ['deploy'] (dedicated worker).
   const deployOnly = capabilities.length === 1 && capabilities[0] === 'deploy'
   if (deployOnly) {
     return Prisma.sql`
