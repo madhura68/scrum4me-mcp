@@ -1,6 +1,7 @@
 // src/tools/dispatch-job.ts
 // IDEA-118 K12: canonieke kind/ref-matrix — geen legacy manual-validatie.
-// PLAN_CHAT ontbreekt bewust (de copilot-chat ís het interactieve kanaal).
+// PLAN_CHAT en IDEA_CHAT ontbreken bewust (de copilot-/idea-chat ís het
+// interactieve kanaal, niet dispatchbaar via dit tool).
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { requireWriteAccess } from '../auth.js'
@@ -15,11 +16,12 @@ import {
   dispatchTaskReview,
 } from '../lib/dispatch/review-jobs.js'
 import { dispatchTaskImplementation } from '../lib/dispatch/task-implementation.js'
+import { dispatchDeploy } from '../lib/dispatch/deploy-dispatch.js'
 
 const KIND_VALUES = [
   'IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN',
   'TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION',
-  'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW',
+  'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW', 'DEPLOY',
 ] as const
 
 type DispatchKind = (typeof KIND_VALUES)[number]
@@ -28,6 +30,8 @@ const REF_KEYS = ['idea_id', 'task_id', 'sprint_id', 'doc_slug', 'doc_id', 'pr_u
 type RefKey = (typeof REF_KEYS)[number]
 
 // Per kind: welke refs verplicht zijn. SPEC_REVIEW: precies één van beide.
+// DEPLOY (M17 v1): "deploy huidige main", géén refs — extra refs zoals
+// pr_url worden door validateRefs geweigerd (niet in required/oneOf).
 const REF_MATRIX: Record<DispatchKind, { required: RefKey[]; oneOf?: RefKey[] }> = {
   IDEA_GRILL: { required: ['idea_id'] },
   IDEA_MAKE_PLAN: { required: ['idea_id'] },
@@ -37,6 +41,7 @@ const REF_MATRIX: Record<DispatchKind, { required: RefKey[]; oneOf?: RefKey[] }>
   PR_REVIEW: { required: ['pr_url'] },
   SPEC_REVIEW: { required: [], oneOf: ['doc_slug', 'doc_id'] },
   TASK_REVIEW: { required: ['task_id'] },
+  DEPLOY: { required: [] },
 }
 
 const inputSchema = z.object({
@@ -114,6 +119,8 @@ export async function handleDispatchJob(rawInput: Input) {
           return toolJson(await dispatchTaskReview({
             productId: input.product_id, taskId: input.task_id!, userId: auth.userId,
           }))
+        case 'DEPLOY':
+          return toolJson(await dispatchDeploy({ productId: input.product_id, userId: auth.userId }))
         default: {
           const _exhaustive: never = input.kind
           return toolError(`Onbekend kind: ${_exhaustive}`)
@@ -135,8 +142,9 @@ export function registerDispatchJobTool(server: McpServer) {
         'Queue a job for the existing runners (source COPILOT). Refs per kind: ' +
         'IDEA_* → idea_id; TASK_IMPLEMENTATION/TASK_REVIEW → task_id; ' +
         'SPRINT_IMPLEMENTATION → sprint_id; PR_REVIEW → pr_url (must belong to the product repo); ' +
-        'SPEC_REVIEW → doc_slug or doc_id (SPECS folder of this product). ' +
-        'PLAN_CHAT is not dispatchable. Forbidden for demo accounts.',
+        'SPEC_REVIEW → doc_slug or doc_id (SPECS folder of this product); ' +
+        'DEPLOY → no refs (deploys current main; requires product.deploy_flow). ' +
+        'PLAN_CHAT and IDEA_CHAT are not dispatchable. Forbidden for demo accounts.',
       inputSchema,
     },
     async (input) => handleDispatchJob(input),

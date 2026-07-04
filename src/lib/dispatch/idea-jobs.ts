@@ -9,7 +9,10 @@ import { REVIEW_JOB_FIELDS } from './review-jobs.js'
 import { parseContentPolicy, checkContentPolicy, ContentPolicyError } from '@shared/content-policy.js'
 export { DispatchError } from './errors.js'
 
-const ACTIVE_JOB_STATUSES = ['QUEUED', 'CLAIMED', 'RUNNING'] as const
+// Gedeeld met deploy-dispatch.ts (M17 Task 3.6, DRY-afspraak uit
+// kwaliteitsreview): één bron van waarheid voor "actief" over alle
+// active-job-guards heen.
+export const ACTIVE_JOB_STATUSES = ['QUEUED', 'CLAIMED', 'RUNNING'] as const
 const WORKER_FRESH_MS = 15_000
 
 type IdeaJobKind = Extract<ClaudeJobKind, 'IDEA_GRILL' | 'IDEA_MAKE_PLAN' | 'IDEA_REVIEW_PLAN'>
