@@ -326,6 +326,7 @@ const CLAIMABLE_STANDALONE_KINDS = "('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIE
 
 const CLAIMABLE_JOB_KIND_FILTER = `AND (
               (cj.kind IN ${CLAIMABLE_STANDALONE_KINDS} AND cj.source <> 'ORCHESTRATOR')
+              OR (cj.kind = 'DEPLOY' AND cj.source IN ('SYSTEM', 'MANUAL'))
               OR (cj.kind = 'PLAN_CHAT'
                   AND cj.source = 'ORCHESTRATOR'
                   AND cj.task_id IS NULL
@@ -339,6 +340,24 @@ const CLAIMABLE_JOB_KIND_FILTER = `AND (
 
 export function buildClaimableJobWhereClause(input: ClaimFilterInput): string {
   const productScope = input.hasProductScope ? 'AND cj.product_id = ${productId}' : ''
+
+  // M17 (opus plan-review): een worker met exact ['deploy'] is een dedicated
+  // deploy-worker — hard beperken tot DEPLOY. Sluit de NULL-capability-tak
+  // uit zodat hij nooit idea/plan-chat-jobs (capability NULL) kan claimen.
+  const deployOnly =
+    (input.capabilities ?? []).length === 1 && input.capabilities?.[0] === 'deploy'
+  if (deployOnly) {
+    return `
+          WHERE cj.user_id = \${userId}
+            ${productScope}
+            AND cj.runtime = '${input.runtime}'
+            AND cj.status = 'QUEUED'
+            AND cj.required_capability = 'deploy'
+            AND cj.kind = 'DEPLOY'
+            AND cj.source IN ('SYSTEM', 'MANUAL')
+  `
+  }
+
   const capabilityFilter = input.capabilities && input.capabilities.length > 0
     ? 'AND (cj.required_capability IS NULL OR cj.required_capability = ANY(${capabilities}::text[]))'
     : 'AND cj.required_capability IS NULL'
@@ -357,6 +376,23 @@ export function buildClaimableJobWhereFragment(input: ClaimSqlFilterInput): Pris
     ? Prisma.sql`AND cj.product_id = ${input.productId}`
     : Prisma.empty
   const capabilities = input.capabilities ?? []
+
+  // M17 (opus plan-review): een worker met exact ['deploy'] is een dedicated
+  // deploy-worker — hard beperken tot DEPLOY. Sluit de NULL-capability-tak
+  // uit zodat hij nooit idea/plan-chat-jobs (capability NULL) kan claimen.
+  const deployOnly = capabilities.length === 1 && capabilities[0] === 'deploy'
+  if (deployOnly) {
+    return Prisma.sql`
+          WHERE cj.user_id = ${input.userId}
+            ${productScope}
+            AND cj.runtime = ${input.runtime}::"AgentRuntime"
+            AND cj.status = 'QUEUED'
+            AND cj.required_capability = 'deploy'
+            AND cj.kind = 'DEPLOY'
+            AND cj.source IN ('SYSTEM', 'MANUAL')
+  `
+  }
+
   const capabilityFilter = capabilities.length > 0
     ? Prisma.sql`AND (cj.required_capability IS NULL OR cj.required_capability = ANY(${capabilities}::text[]))`
     : Prisma.sql`AND cj.required_capability IS NULL`
