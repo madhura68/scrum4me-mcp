@@ -18,7 +18,9 @@ import {
 import { dispatchTaskImplementation } from '../lib/dispatch/task-implementation.js'
 import { dispatchDeploy } from '../lib/dispatch/deploy-dispatch.js'
 
-const KIND_VALUES = [
+// Geëxporteerd t.b.v. de invariant-test (copilot idea-chat spec §3.7): IDEA_CHAT
+// mag hier NOOIT bij — chat-beurten ontstaan uitsluitend via send_idea_chat_message.
+export const KIND_VALUES = [
   'IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN',
   'TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION',
   'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW', 'DEPLOY',
