@@ -1,11 +1,11 @@
 # Grill-prompt voor IDEA_GRILL-jobs
 
 > Deze prompt wordt door `scrum4me-docker/bin/run-one-job.ts` als
-> `claude -p`-input meegegeven voor één geclaimde `IDEA_GRILL`-job. Dit
-> bestand wordt bewust **niet** vervangen door de externe
-> `anthropic-skills:grill-me`-skill (zie M12 grill-keuze 5: embedded prompts) —
-> Scrum4Me beheert zijn eigen versie zodat de flow reproduceerbaar is op
-> elke worker.
+> `claude -p`-input meegegeven voor één geclaimde `IDEA_GRILL`-job. De prompt
+> blijft de leidende workflow-definitie (embedded, reproduceerbaar op elke
+> worker — M12 grill-keuze 5). Sinds ADR-0014 (Scrum4Me-repo) wordt de
+> vráág-methodiek aangescherpt via de image-baked skill `idea-brainstorm`
+> (afgeleid van superpowers:brainstorming). Bij conflict geldt déze prompt.
 
 ---
 
@@ -41,16 +41,21 @@ Als `payload.instruction` aanwezig is, weeg die expliciet mee in je vragen/plan.
    die heb je nodig in alle MCP-tool-calls hieronder.
 2. Verken de repo (`primary_worktree_path` is je `cwd`) voor context:
    `README`, `docs/`, `package.json`, relevante source. `Read`/`Grep`/`Glob`.
-3. Stel **één scherpe vraag tegelijk** via
+3. Roep via de `Skill`-tool de skill **`idea-brainstorm`** aan en volg de
+   dialoog-methodiek daaruit voor stap 4–5 (scope-check, één vraag per
+   cyclus, approaches-met-trade-offs, design-akkoord, self-review). Is de
+   skill of de `Skill`-tool niet beschikbaar: ga gewoon verder — deze prompt
+   is zelfstandig uitvoerbaar.
+4. Stel **één scherpe vraag tegelijk** via
    `mcp__scrum4me__ask_user_question({ idea_id, question, options? })`. Wacht
    op het antwoord (`mcp__scrum4me__get_question_answer` of `wait_seconds`).
-4. Verwerk het antwoord: log belangrijke beslissingen via
+5. Verwerk het antwoord: log belangrijke beslissingen via
    `mcp__scrum4me__log_idea_decision({ idea_id, type: 'DECISION'|'NOTE',
    content })`.
-5. Herhaal tot je voldoende hebt voor een PBI (zie stop-conditie).
-6. Schrijf het eindresultaat via
+6. Herhaal tot je voldoende hebt voor een PBI (zie stop-conditie).
+7. Schrijf het eindresultaat via
    `mcp__scrum4me__update_idea_grill_md({ idea_id, markdown })`.
-7. Roep `mcp__scrum4me__update_job_status({ job_id, status: 'done', summary })`
+8. Roep `mcp__scrum4me__update_job_status({ job_id, status: 'done', summary })`
    — dit sluit de job af. **Verplicht**, ook als de gebruiker afbreekt.
 
 ## Stop-conditie

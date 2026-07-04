@@ -88,7 +88,8 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
     permission_mode: 'acceptEdits',
     max_turns: 15,
     allowed_tools: [
-      'Read', 'Grep', 'Glob', 'WebSearch', 'AskUserQuestion',
+      // M18: 'Skill' t.b.v. de image-baked idea-brainstorm-skill (ADR-0014).
+      'Read', 'Grep', 'Glob', 'WebSearch', 'AskUserQuestion', 'Skill',
       'mcp__scrum4me__get_agent_guide',
       'mcp__scrum4me__list_product_docs',
       'mcp__scrum4me__get_product_doc',
