@@ -34,6 +34,7 @@ import { triggerPush } from '../lib/push-trigger.js'
 import { transition as prFlowTransition } from '../flow/pr-flow.js'
 import { transition as sprintRunTransition } from '../flow/sprint-run.js'
 import { executeEffects } from '../flow/effects.js'
+import { maybeEnqueueDeployJob } from '../lib/dispatch/deploy-job.js'
 
 async function fetchConflictFiles(prUrl: string): Promise<string[]> {
   const result = await listPullRequestFiles({ prUrl })
@@ -621,6 +622,7 @@ export function checkDeploySkipReason(
   error: string | undefined,
 ): { allowed: true } | { allowed: false; error: string } {
   const reason = (error ?? '').trim()
+  // PREFIX-match (geen `$`-anchor): staarten zoals ': 77199ba al live' zijn toegestaan.
   if (/^(doc_only_merge|merge_sha_already_deployed)\b/.test(reason)) return { allowed: true }
   return {
     allowed: false,
@@ -1194,6 +1196,26 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             // Other reasons (CHECKS_FAILED, GH_AUTH_ERROR, AUTO_MERGE_NOT_ALLOWED, UNKNOWN)
             // remain warnings; CHECKS_FAILED is already covered by the task-FAIL cascade.
             for (const o of outcomes) {
+              // M17 (spec §3): geslaagd auto-merge-enable ⇒ DEPLOY-job enqueuen.
+              if (o.effect === 'ENABLE_AUTO_MERGE' && o.ok && updated.pr_url && headShaToWrite) {
+                await maybeEnqueueDeployJob({
+                  parentJobId: job_id,
+                  userId: job.user_id,
+                  productId: job.product_id,
+                  prUrl: updated.pr_url,
+                  headSha: headShaToWrite,
+                }).catch((err) => {
+                  // Persistent signaal (codex plan-r1 #8): een merge zonder
+                  // deploy mag niet onzichtbaar zijn — push naast de log.
+                  console.error('[deploy-enqueue]', err)
+                  void triggerPush(job.user_id, {
+                    title: 'Deploy-enqueue mislukt',
+                    body: String(err).slice(0, 120),
+                    url: '/jobs',
+                    tag: `deploy-enqueue-${job_id}`,
+                  })
+                })
+              }
               if (o.effect === 'ENABLE_AUTO_MERGE' && !o.ok) {
                 console.warn(
                   `[update_job_status] auto-merge fail for ${updated.pr_url}: ${o.reason} ${o.stderr.slice(0, 200)}`,
