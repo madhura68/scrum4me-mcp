@@ -14,6 +14,9 @@ export function buildDeployOrchestrationKey(prUrl: string, headSha: string): str
 
 export type DeployEnqueueOutcome = 'enqueued' | 'dedup' | 'blocked' | 'not_configured'
 
+// Handmatige spiegel: dispatchDeploy (./deploy-dispatch.ts) — die gooit
+// DispatchError (RPC-conventie) en heeft bewust geen orchestration_key.
+// De verschillen zijn ontworpen, niet historisch — zie de comment daar.
 export async function maybeEnqueueDeployJob(opts: {
   parentJobId: string
   userId: string

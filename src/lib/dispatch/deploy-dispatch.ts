@@ -10,6 +10,11 @@ import { DispatchError } from './errors.js'
 import { notifyJobEnqueued } from './notify.js'
 import { ACTIVE_JOB_STATUSES } from './idea-jobs.js'
 
+// Bewuste divergentie t.o.v. maybeEnqueueDeployJob (./deploy-job.ts, het
+// auto-enqueue-pad): dit is een directe RPC-stijl dispatch → DispatchError
+// i.p.v. outcome-union, en GEEN orchestration_key/dedup — er is geen
+// pr_url/head_sha om op te dedupen; de active-job-guard + sha-guard dekken
+// handmatige dubbelen. Niet gelijktrekken.
 export async function dispatchDeploy(opts: { productId: string; userId: string }): Promise<{ job_id: string }> {
   const job = await prisma.$transaction(async (tx) => {
     // Lock éérst, dan pas de config-beslissing lezen (codex plan-r1 #5):
