@@ -37,27 +37,30 @@ const mockPrisma = prisma as unknown as {
 }
 
 describe('applyDeployTerminalUpdate (spec §3/§6: lock + terminale update + bulk-cancel/lift in 1 tx)', () => {
-  let executeRawCalls: unknown[]
-  let updateCalls: unknown[]
+  // Gedeeld callOrder-array (zelfde patroon als de web-test
+  // __tests__/actions/deploy.test.ts): élke tx-operatie pusht zijn naam zodat
+  // de asserts de vólgorde afdwingen — niet alleen dát calls plaatsvonden.
+  // (Review-mutatie bewees dat losse per-mock-arrays met lengte-asserts de
+  // lock-vóór-update-volgorde niet vingen.)
+  let callOrder: string[]
   let updateManyCalls: unknown[]
   let findManyResult: Array<{ id: string }>
 
   beforeEach(() => {
     vi.clearAllMocks()
-    executeRawCalls = []
-    updateCalls = []
+    callOrder = []
     updateManyCalls = []
     findManyResult = []
 
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
-        $executeRaw: vi.fn((...args: unknown[]) => {
-          executeRawCalls.push(args)
+        $executeRaw: vi.fn(() => {
+          callOrder.push('lock')
           return Promise.resolve(0)
         }),
         claudeJob: {
-          update: vi.fn((args: unknown) => {
-            updateCalls.push(args)
+          update: vi.fn(() => {
+            callOrder.push('update')
             return Promise.resolve({
               id: 'job-1',
               status: 'DONE',
@@ -66,8 +69,12 @@ describe('applyDeployTerminalUpdate (spec §3/§6: lock + terminale update + bul
               pr_url: null,
             })
           }),
-          findMany: vi.fn(() => Promise.resolve(findManyResult)),
+          findMany: vi.fn(() => {
+            callOrder.push('findMany')
+            return Promise.resolve(findManyResult)
+          }),
           updateMany: vi.fn((args: unknown) => {
+            callOrder.push('updateMany')
             updateManyCalls.push(args)
             return Promise.resolve({ count: findManyResult.length })
           }),
@@ -76,15 +83,14 @@ describe('applyDeployTerminalUpdate (spec §3/§6: lock + terminale update + bul
     )
   })
 
-  it('neemt de product-lock vóór de terminale update', async () => {
+  it('neemt de product-lock vóór de terminale update (done: lock → update → lift)', async () => {
     await applyDeployTerminalUpdate({
       jobId: 'job-1',
       productId: 'prod-1',
       status: 'done',
     })
 
-    expect(executeRawCalls.length).toBeGreaterThanOrEqual(1)
-    expect(updateCalls.length).toBe(1)
+    expect(callOrder).toEqual(['lock', 'update', 'updateMany'])
   })
 
   it('failed: bulk-cancelt overige QUEUED DEPLOY-jobs voor hetzelfde product in dezelfde tx', async () => {
@@ -97,6 +103,8 @@ describe('applyDeployTerminalUpdate (spec §3/§6: lock + terminale update + bul
       error: 'ops-agent flow failed',
     })
 
+    // Volgorde: lock → terminale update → siblings zoeken → bulk-cancel.
+    expect(callOrder).toEqual(['lock', 'update', 'findMany', 'updateMany'])
     expect(updateManyCalls).toHaveLength(1)
     const args = updateManyCalls[0] as { where: { id: { in: string[] } }; data: { status: string } }
     expect(args.where.id.in).toEqual(['queued-1', 'queued-2'])
@@ -114,6 +122,7 @@ describe('applyDeployTerminalUpdate (spec §3/§6: lock + terminale update + bul
       error: 'boom',
     })
 
+    expect(callOrder).toEqual(['lock', 'update', 'findMany'])
     expect(updateManyCalls).toHaveLength(0)
     expect(result.cancelledIds).toEqual([])
   })
@@ -125,6 +134,7 @@ describe('applyDeployTerminalUpdate (spec §3/§6: lock + terminale update + bul
       status: 'done',
     })
 
+    expect(callOrder).toEqual(['lock', 'update', 'updateMany'])
     expect(updateManyCalls).toHaveLength(1)
     const args = updateManyCalls[0] as {
       where: { product_id: string; kind: string; status: string; resolved_at: null; id: { not: string } }
