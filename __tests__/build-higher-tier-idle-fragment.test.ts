@@ -49,6 +49,69 @@ describe('buildHigherTierIdleFragment', () => {
   })
 })
 
+describe('claimability-guard (regression voor de M17 tier-deadlock, 2026-07-04)', () => {
+  // Deadlock-scenario: dedicated deploy-worker (LOW_P) defereerde eeuwig naar
+  // idle HIGH_P-workers zonder 'deploy'-capability; de DEPLOY-job bleef QUEUED.
+  // De guard laat een hogere-tier peer alleen meetellen als die de kandidaat-
+  // job (cj) zelf zou kunnen claimen.
+  const frag = () =>
+    buildHigherTierIdleFragment({
+      selfUserId: 'u1',
+      selfInstanceId: 'i1',
+      selfRuntime: 'CLAUDE',
+      selfCapability: 'LOW_P',
+    })
+
+  it('correleert de peer-claimbaarheid met de kandidaat-job (generiek pad)', () => {
+    const text = sqlText(frag())
+    // Zonder dit predicaat blokkeert een capability-loze HIGH_P-peer een
+    // deploy-job die hij nooit kan claimen — de exacte deadlock.
+    expect(text).toMatch(
+      /cj\.required_capability IS NULL\s+OR cj\.required_capability = ANY\(w\.capabilities\)/i
+    )
+  })
+
+  it('spiegelt het deployOnly-claimpad voor exact-[deploy]-peers (spiegel-deadlock)', () => {
+    const text = sqlText(frag())
+    // Omgekeerde richting: een dedicated deploy-peer met hogere tier mag
+    // NULL-capability-jobs niet "reserveren" die hij zelf nooit claimt.
+    expect(text).toMatch(/WHEN w\.capabilities = ARRAY\['deploy'\]::text\[\]/i)
+    expect(text).toMatch(
+      /THEN cj\.kind = 'DEPLOY'\s+AND cj\.required_capability = 'deploy'\s+AND cj\.source IN \('SYSTEM', 'MANUAL'\)/i
+    )
+  })
+
+  it('de guard staat bínnen het NOT EXISTS-blok (vóór de idle-check), niet erbuiten', () => {
+    const text = sqlText(frag())
+    const notExistsStart = text.search(/AND NOT EXISTS/i)
+    const guardPos = text.search(/cj\.required_capability = ANY\(w\.capabilities\)/i)
+    const idleCheckPos = text.search(/k\.worker_instance_id/i)
+    expect(notExistsStart).toBeGreaterThan(-1)
+    expect(guardPos).toBeGreaterThan(notExistsStart)
+    expect(guardPos).toBeLessThan(idleCheckPos)
+  })
+
+  it('introduceert géén nieuwe bound values (alles literals; volgorde ongewijzigd)', () => {
+    expect(frag().values).toEqual(['u1', 'CLAUDE', 'i1', 'LOW_P'])
+  })
+
+  it('de guard hangt met AND (niet OR / AND NOT) aan de peer-selectie', () => {
+    const text = sqlText(frag())
+    // Mutatie-overlevers uit de adversariële review: OR CASE zou de NOT EXISTS
+    // vrijwel altijd waar maken (claim-freeze), AND NOT CASE inverteert de
+    // guard. Beide vormen mogen niet voorkomen; de AND-vorm moet exact zo.
+    expect(text).toMatch(/AND CASE\s+WHEN w\.capabilities/i)
+    expect(text).not.toMatch(/OR CASE\s+WHEN w\.capabilities/i)
+    expect(text).not.toMatch(/AND NOT CASE\s+WHEN w\.capabilities/i)
+  })
+
+  it('tier-vergelijking blijft strikt groter-dan (>= zou same-tier wederzijds laten deadlocken)', () => {
+    const text = sqlText(frag())
+    expect(text).toMatch(/END\s*>\s*CASE/i)
+    expect(text).not.toMatch(/END\s*>=\s*CASE/i)
+  })
+})
+
 describe('priority mapping (regression for 2026-06-08 enum-ordinal bug)', () => {
   it('encodes HIGH_P=3, MEDIUM_P=2, LOW_P=1 in the SQL (not enum ordinal)', () => {
     const frag = buildHigherTierIdleFragment({
