@@ -49,6 +49,14 @@ describe('getKindPromptText', () => {
       expect(text).not.toMatch(/\{idea_code\}|\{idea_title\}/)
     },
   )
+
+  it('DEPLOY-prompt bestaat en verwijst naar $PAYLOAD_PATH', () => {
+    const text = getKindPromptText('DEPLOY')
+    expect(text.length).toBeGreaterThan(200)
+    expect(text).toContain('$PAYLOAD_PATH')
+    expect(text).toMatch(/doc_only_merge/)
+    expect(text).toMatch(/merge_sha_already_deployed/)
+  })
 })
 
 describe('agent-guide rule in implementation prompts', () => {

@@ -34,6 +34,7 @@ import { triggerPush } from '../lib/push-trigger.js'
 import { transition as prFlowTransition } from '../flow/pr-flow.js'
 import { transition as sprintRunTransition } from '../flow/sprint-run.js'
 import { executeEffects } from '../flow/effects.js'
+import { maybeEnqueueDeployJob } from '../lib/dispatch/deploy-job.js'
 
 async function fetchConflictFiles(prUrl: string): Promise<string[]> {
   const result = await listPullRequestFiles({ prUrl })
@@ -616,6 +617,80 @@ export async function maybeCreateSprintBatchPr(opts: {
   return null
 }
 
+// M17 (spec §3): DEPLOY-skips zijn machine-leesbaar — alleen deze twee redenen.
+export function checkDeploySkipReason(
+  error: string | undefined,
+): { allowed: true } | { allowed: false; error: string } {
+  const reason = (error ?? '').trim()
+  // PREFIX-match (geen `$`-anchor): staarten zoals ': 77199ba al live' zijn toegestaan.
+  if (/^(doc_only_merge|merge_sha_already_deployed)\b/.test(reason)) return { allowed: true }
+  return {
+    allowed: false,
+    error: "DEPLOY 'skipped' vereist reden 'doc_only_merge' of 'merge_sha_already_deployed' in error",
+  }
+}
+
+export type DeployTerminalInput = {
+  jobId: string
+  productId: string
+  status: 'done' | 'failed' | 'skipped'
+  summary?: string | null
+  error?: string | null
+}
+
+// M17 (spec §3/§6): het terminale statuspunt van een DEPLOY en de bijbehorende
+// queue-mutaties zijn één product-locked kritieke sectie:
+// lock → terminale claudeJob.update → (failed: bulk-cancel QUEUED) /
+// (done: resolved_at-lift). SSE/web-push doet de aanroeper ná commit.
+export async function applyDeployTerminalUpdate(input: DeployTerminalInput): Promise<{
+  updated: { id: string; status: string; summary: string | null; error: string | null; pr_url: string | null }
+  cancelledIds: string[]
+}> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('deploy'), hashtext(${input.productId}))`
+    const updated = await tx.claudeJob.update({
+      where: { id: input.jobId },
+      data: {
+        status: input.status === 'done' ? 'DONE' : input.status === 'failed' ? 'FAILED' : 'SKIPPED',
+        summary: input.summary ?? undefined,
+        error: input.error ?? undefined,
+        finished_at: new Date(),
+      },
+      select: { id: true, status: true, summary: true, error: true, pr_url: true },
+    })
+    if (input.status === 'failed') {
+      const queued = await tx.claudeJob.findMany({
+        where: { product_id: input.productId, kind: 'DEPLOY', status: 'QUEUED' },
+        select: { id: true },
+      })
+      if (queued.length > 0) {
+        await tx.claudeJob.updateMany({
+          where: { id: { in: queued.map((q) => q.id) } },
+          data: {
+            status: 'CANCELLED',
+            error: `superseded: deploy voor product faalde (job ${input.jobId})`,
+            finished_at: new Date(),
+          },
+        })
+      }
+      return { updated, cancelledIds: queued.map((q) => q.id) }
+    }
+    if (input.status === 'done') {
+      await tx.claudeJob.updateMany({
+        where: {
+          product_id: input.productId,
+          kind: 'DEPLOY',
+          status: 'FAILED',
+          resolved_at: null,
+          id: { not: input.jobId },
+        },
+        data: { resolved_at: new Date() },
+      })
+    }
+    return { updated, cancelledIds: [] }
+  })
+}
+
 export function registerUpdateJobStatusTool(server: McpServer) {
   server.registerTool(
     'update_job_status',
@@ -706,13 +781,17 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         // patroon) en vereist een non-empty error met ≥10 chars uitleg, zoals
         // 'no_op_changes_already_in_main'. Geen verify-gate, geen PR, geen
         // PBI fail-cascade, geen propagation naar task/story/PBI.
+        // M17: DEPLOY heeft een eigen, strakkere skipped-reden-validatie
+        // (spec §3: alleen doc_only_merge | merge_sha_already_deployed).
         if (status === 'skipped') {
-          if (job.kind !== 'TASK_IMPLEMENTATION') {
+          if (job.kind === 'DEPLOY') {
+            const check = checkDeploySkipReason(error)
+            if (!check.allowed) return toolError(check.error)
+          } else if (job.kind !== 'TASK_IMPLEMENTATION') {
             return toolError(
-              `'skipped' is alleen toegestaan voor TASK_IMPLEMENTATION (kind=${job.kind})`,
+              `'skipped' is alleen toegestaan voor TASK_IMPLEMENTATION of DEPLOY (kind=${job.kind})`,
             )
-          }
-          if (!error || error.trim().length < 10) {
+          } else if (!error || error.trim().length < 10) {
             return toolError(
               "'skipped' vereist non-empty error met reden (≥10 chars), bv. 'no_op_changes_already_in_main'",
             )
@@ -750,6 +829,11 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         let errorToWrite = error
         let skipWorktreeCleanup = false
         let headShaToWrite: string | undefined
+
+        // M17: DEPLOY heeft nooit een worktree — geldt voor done, failed én
+        // skipped (anders maakt de markWorktreeCleanupPending-call verderop
+        // nodeloos een cleanup-marker aan).
+        if (job.kind === 'DEPLOY') skipWorktreeCleanup = true
 
         if (status === 'done') {
           if (job.source === 'MANUAL') {
@@ -790,6 +874,11 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             actualStatus = 'done'
             // pushedAt blijft undefined, branch/error overrides ook
             skipWorktreeCleanup = true
+          } else if (job.kind === 'DEPLOY') {
+            // M17 (spec §3): DEPLOY rapporteert een server-side effect — DB-only
+            // terminale update. Geen verify-gate (verify_result blijft null),
+            // geen prepareDoneUpdate/push, geen auto-PR, geen propagatie.
+            actualStatus = 'done'
           } else if (job.kind === 'SPRINT_IMPLEMENTATION') {
             // PBI-50 F4-T2: aggregate verify-gate via SprintTaskExecution-rows.
             // Geen single-task verify_result op de SPRINT-job zelf.
@@ -915,8 +1004,35 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           head_sha: string | null
         }
         let ideaChatFollowUpId: string | null = null
+        let deployCancelledIds: string[] = []
 
-        if (isSystemIdeaChat && (actualStatus === 'done' || actualStatus === 'failed')) {
+        if (
+          job.kind === 'DEPLOY' &&
+          (actualStatus === 'done' || actualStatus === 'failed' || actualStatus === 'skipped')
+        ) {
+          // M17 (spec §3/§6): DB-only terminale transitie — lock + terminale
+          // update + bulk-cancel (failed) / resolved_at-lift (done) in één
+          // product-locked tx. Geen prepareDoneUpdate/push/auto-PR/propagatie.
+          // ('running' valt door naar de generieke update hieronder — DEPLOY
+          // heeft daar geen eigen lifecycle-logica voor nodig.)
+          const deployResult = await applyDeployTerminalUpdate({
+            jobId: job_id,
+            productId: job.product_id,
+            status: actualStatus,
+            summary,
+            error: errorToWrite,
+          })
+          updated = {
+            ...deployResult.updated,
+            branch: null,
+            pushed_at: null,
+            verify_result: null,
+            started_at: job.started_at,
+            finished_at: now,
+            head_sha: null,
+          }
+          deployCancelledIds = deployResult.cancelledIds
+        } else if (isSystemIdeaChat && (actualStatus === 'done' || actualStatus === 'failed')) {
           // M17 idea-chat (spec §4.5): status-flip + assistant-write +
           // coalescing-check atomair onder dezelfde per-idea lock als
           // sendIdeaChatMessage (web). Zo kan geen bericht tussen wal en schip
@@ -1080,6 +1196,26 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             // Other reasons (CHECKS_FAILED, GH_AUTH_ERROR, AUTO_MERGE_NOT_ALLOWED, UNKNOWN)
             // remain warnings; CHECKS_FAILED is already covered by the task-FAIL cascade.
             for (const o of outcomes) {
+              // M17 (spec §3): geslaagd auto-merge-enable ⇒ DEPLOY-job enqueuen.
+              if (o.effect === 'ENABLE_AUTO_MERGE' && o.ok && updated.pr_url && headShaToWrite) {
+                await maybeEnqueueDeployJob({
+                  parentJobId: job_id,
+                  userId: job.user_id,
+                  productId: job.product_id,
+                  prUrl: updated.pr_url,
+                  headSha: headShaToWrite,
+                }).catch((err) => {
+                  // Persistent signaal (codex plan-r1 #8): een merge zonder
+                  // deploy mag niet onzichtbaar zijn — push naast de log.
+                  console.error('[deploy-enqueue]', err)
+                  void triggerPush(job.user_id, {
+                    title: 'Deploy-enqueue mislukt',
+                    body: (err instanceof Error ? err.message : String(err)).slice(0, 120),
+                    url: '/jobs',
+                    tag: `deploy-enqueue-${job_id}`,
+                  })
+                })
+              }
               if (o.effect === 'ENABLE_AUTO_MERGE' && !o.ok) {
                 console.warn(
                   `[update_job_status] auto-merge fail for ${updated.pr_url}: ${o.reason} ${o.stderr.slice(0, 200)}`,
@@ -1206,6 +1342,23 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             notifyPayload.idea_id = job.idea_id
           }
           await pg.query(`SELECT pg_notify('scrum4me_changes', $1)`, [JSON.stringify(notifyPayload)])
+
+          // M17 (spec §6): per gecancelde QUEUED DEPLOY-sibling (failed-branch
+          // bulk-cancel) een eigen SSE-notify — web-push blijft alleen op de
+          // job zelf (triggerPush hieronder), niet per cancelledId.
+          for (const cancelledId of deployCancelledIds) {
+            await pg.query(`SELECT pg_notify('scrum4me_changes', $1)`, [
+              JSON.stringify({
+                type: 'claude_job_status_changed',
+                job_id: cancelledId,
+                user_id: job.user_id,
+                product_id: job.product_id,
+                kind: 'DEPLOY',
+                status: 'cancelled',
+              }),
+            ])
+          }
+
           await pg.end()
         } catch {
           // non-fatal — status is already persisted

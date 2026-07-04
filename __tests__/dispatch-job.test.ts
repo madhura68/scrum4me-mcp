@@ -21,6 +21,9 @@ vi.mock('../src/lib/dispatch/review-jobs.js', () => ({
 vi.mock('../src/lib/dispatch/task-implementation.js', () => ({
   dispatchTaskImplementation: vi.fn().mockResolvedValue({ job_id: 'job-5' }),
 }))
+vi.mock('../src/lib/dispatch/deploy-dispatch.js', () => ({
+  dispatchDeploy: vi.fn().mockResolvedValue({ job_id: 'job-6' }),
+}))
 
 import { requireWriteAccess } from '../src/auth.js'
 import { userCanAccessProduct } from '../src/access.js'
@@ -49,6 +52,23 @@ it('weigert overtollige refs (matrix is exact)', async () => {
 it('PLAN_CHAT is geen geldig kind', async () => {
   const res = await handleDispatchJob({ kind: 'PLAN_CHAT' as never, product_id: 'p1' })
   expect(res.isError).toBe(true)
+})
+
+it('IDEA_CHAT is geen geldig kind (interactief kanaal, niet dispatchbaar)', async () => {
+  const res = await handleDispatchJob({ kind: 'IDEA_CHAT' as never, product_id: 'p1' })
+  expect(res.isError).toBe(true)
+})
+
+it('DEPLOY vereist geen refs (matrix: required = [])', async () => {
+  const res = await handleDispatchJob({ kind: 'DEPLOY', product_id: 'p1' })
+  expect(res.isError).toBeFalsy()
+  expect(JSON.parse(res.content[0].text as string)).toMatchObject({ job_id: 'job-6' })
+})
+
+it('DEPLOY weigert refs zoals pr_url (matrix is exact, géén refs toegestaan)', async () => {
+  const res = await handleDispatchJob({ kind: 'DEPLOY', product_id: 'p1', pr_url: 'https://x/y/pulls/1' })
+  expect(res.isError).toBe(true)
+  expect(res.content[0].text).toMatch(/pr_url/)
 })
 
 it('product buiten scope → 404-stijl, dispatcher niet aangeroepen', async () => {
