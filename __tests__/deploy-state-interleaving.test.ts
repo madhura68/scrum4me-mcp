@@ -6,11 +6,17 @@
 // (blokkade-race) of kan een failed-branch een job missen die vlak ná de
 // blokkade-check is aangemaakt (wees-job, nooit gecancelled).
 //
-// Fake-lock-harnas: prisma.$transaction wordt gemockt zodat de
-// pg_advisory_xact_lock-call (de eerste tx.$executeRaw) een in-memory mutex
-// per product-key claimt. De mutex geeft de lock pas vrij als de
-// tx-callback resolvet — precies zoals Postgres een xact-lock vasthoudt tot
-// commit. Een in-memory claude_jobs-array is de store waarop
+// Fake-lock-harnas — de mutex hangt aan de LOCK-CALL, niet aan de wrapper
+// (kwaliteitsreview T-1316): de in-memory mutex per product-key wordt
+// UITSLUITEND geclaimd wanneer de code-under-test zélf
+// tx.$executeRaw`…pg_advisory_xact_lock(…)` aanroept — de $executeRaw-mock
+// inspecteert de tagged-template-SQL en acquiret alleen dán, met de
+// product-key uit de call. De $transaction-wrapper houdt zelf géén lock; hij
+// geeft alleen een via de lock-call verworven mutex weer vrij zodra de
+// tx-callback resolvet (zoals een Postgres-commit een xact-lock vrijgeeft).
+// Gevolg: sloopt iemand de lock-regel uit maybeEnqueueDeployJob of
+// applyDeployTerminalUpdate, dan FALEN deze tests (mutatie-bewijs gedraaid
+// bij de review-fix). Een in-memory claude_jobs-array is de store waarop
 // findFirst/findMany/create/update/updateMany opereren.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -62,18 +68,48 @@ let products: Map<string, { auto_deploy: boolean; deploy_flow: string | null }>
 // asserts de daadwerkelijke interleaving bewijzen, niet alleen het eindresultaat.
 let callOrder: string[]
 
-function makeTxHandle(productId: string) {
+// Per-transactie lock-administratie: de $executeRaw-mock zet `release` zodra
+// de code-under-test de advisory-lock claimt; de wrapper geeft hem vrij bij
+// tx-einde. Blijft `release` null (lock-call weggemuteerd), dan wordt er
+// nooit geserialiseerd en falen de volgorde/uitkomst-asserts.
+type LockState = { release: (() => void) | null }
+
+function makeTxHandle(label: string, lockState: LockState, gate?: Promise<void>) {
+  // holdBeforeQueries-gate: laat de tx "in-flight" hangen ná de lock-acquire
+  // maar vóór zijn data-queries (simuleert een trage transactie die de lock
+  // vasthoudt terwijl haar schrijfwerk nog moet gebeuren).
+  const gateQueries = async () => {
+    if (gate) await gate
+  }
   return {
-    $executeRaw: vi.fn((..._args: unknown[]) => Promise.resolve(0)),
+    $executeRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const sql = strings.join('')
+      if (sql.includes('pg_advisory_xact_lock')) {
+        // De enige interpolatie in de lock-call is de productId — dat is de
+        // mutex-key (in de echte code hashtext(productId); voor de test-mutex
+        // volstaat de rauwe waarde, er komt maar één product per test voor).
+        const productKey = String(values[0])
+        callOrder.push(`${label}:wait-lock`)
+        lockState.release = await mutex.acquire(productKey)
+        callOrder.push(`${label}:acquired-lock`)
+      }
+      return 0
+    }),
     product: {
-      findUnique: vi.fn(({ where }: { where: { id: string } }) => {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+        await gateQueries()
         const p = products.get(where.id)
-        return Promise.resolve(p ? { auto_deploy: p.auto_deploy, deploy_flow: p.deploy_flow } : null)
+        return p ? { auto_deploy: p.auto_deploy, deploy_flow: p.deploy_flow } : null
       }),
     },
     claudeJob: {
       findFirst: vi.fn(
-        ({ where }: { where: { product_id: string; kind: string; status: string; resolved_at: null } }) => {
+        async ({
+          where,
+        }: {
+          where: { product_id: string; kind: string; status: string; resolved_at: null }
+        }) => {
+          await gateQueries()
           const match = jobs.find(
             (j) =>
               j.product_id === where.product_id &&
@@ -81,17 +117,21 @@ function makeTxHandle(productId: string) {
               j.status === where.status &&
               j.resolved_at === null,
           )
-          return Promise.resolve(match ? { id: match.id } : null)
+          return match ? { id: match.id } : null
         },
       ),
-      findMany: vi.fn(({ where }: { where: { product_id: string; kind: string; status: string } }) => {
-        const matches = jobs.filter(
-          (j) => j.product_id === where.product_id && j.kind === where.kind && j.status === where.status,
-        )
-        return Promise.resolve(matches.map((j) => ({ id: j.id })))
-      }),
+      findMany: vi.fn(
+        async ({ where }: { where: { product_id: string; kind: string; status: string } }) => {
+          await gateQueries()
+          const matches = jobs.filter(
+            (j) =>
+              j.product_id === where.product_id && j.kind === where.kind && j.status === where.status,
+          )
+          return matches.map((j) => ({ id: j.id }))
+        },
+      ),
       create: vi.fn(
-        ({
+        async ({
           data,
         }: {
           data: {
@@ -102,6 +142,7 @@ function makeTxHandle(productId: string) {
             head_sha?: string | null
           }
         }) => {
+          await gateQueries()
           const id = `deploy-${jobs.length + 1}`
           const job: FakeJob = {
             id,
@@ -115,34 +156,35 @@ function makeTxHandle(productId: string) {
             finished_at: null,
           }
           jobs.push(job)
-          return Promise.resolve({ id })
+          return { id }
         },
       ),
       update: vi.fn(
-        ({
+        async ({
           where,
           data,
         }: {
           where: { id: string }
           data: { status: string; summary?: string | null; error?: string | null }
         }) => {
+          await gateQueries()
           const job = jobs.find((j) => j.id === where.id)
           if (!job) throw new Error(`fake-store: job ${where.id} not found`)
           job.status = data.status
           if (data.summary !== undefined) job.summary = data.summary ?? null
           if (data.error !== undefined) job.error = data.error ?? null
           job.finished_at = new Date()
-          return Promise.resolve({
+          return {
             id: job.id,
             status: job.status,
             summary: job.summary,
             error: job.error,
             pr_url: job.pr_url,
-          })
+          }
         },
       ),
       updateMany: vi.fn(
-        ({
+        async ({
           where,
           data,
         }: {
@@ -155,6 +197,7 @@ function makeTxHandle(productId: string) {
           }
           data: { status?: string; error?: string; resolved_at?: Date }
         }) => {
+          await gateQueries()
           let targets: FakeJob[]
           if (where.id?.in) {
             const ids = where.id.in
@@ -174,44 +217,41 @@ function makeTxHandle(productId: string) {
             if (data.error !== undefined) t.error = data.error
             if (data.resolved_at !== undefined) t.resolved_at = data.resolved_at
           }
-          return Promise.resolve({ count: targets.length })
+          return { count: targets.length }
         },
       ),
     },
   }
 }
 
-// productId wordt gebruikt als mutex-key (in de echte code is dat
-// hashtext(productId) — voor de test-mutex volstaat de rauwe productId als
-// key, want de test claimt zelf nooit twee verschillende producten).
+// De wrapper claimt zélf geen lock — dat doet uitsluitend de
+// $executeRaw-mock wanneer de code-under-test de advisory-lock-call doet.
+// De wrapper geeft een dán verworven lock vrij zodra de tx-callback resolvet
+// (commit-semantiek).
 function mockTransaction(
   label: string,
-  productId: string,
-  opts: { holdUntil?: Promise<void> } = {},
+  opts: { holdBeforeQueries?: Promise<void>; holdBeforeCommit?: Promise<void> } = {},
 ) {
   return vi.fn(async (fn: (tx: ReturnType<typeof makeTxHandle>) => Promise<unknown>) => {
-    callOrder.push(`${label}:wait-lock`)
-    const release = await mutex.acquire(productId)
-    callOrder.push(`${label}:acquired-lock`)
+    const lockState: LockState = { release: null }
+    const tx = makeTxHandle(label, lockState, opts.holdBeforeQueries)
     try {
-      const tx = makeTxHandle(productId)
-      // De queries in de tx-callback draaien meteen (net als in een echte
-      // Postgres-transactie: de statements voeren al uit vóór commit). Pas
-      // ná de callback hangt de "commit" op een deferred als de test er een
-      // meegeeft — de lock blijft ondertussen vast, exact zoals een
-      // Postgres-transactie die nog niet gecommit heeft haar xact-lock
-      // vasthoudt terwijl de rijen al gemuteerd zijn (maar nog niet
-      // zichtbaar zijn voor andere transacties totdat commit vrijgeeft).
       const result = await fn(tx)
-      if (opts.holdUntil) {
-        callOrder.push(`${label}:tx-done-holding-before-commit`)
-        await opts.holdUntil
+      // holdBeforeCommit: queries zijn al uitgevoerd (rijen gemuteerd in de
+      // store), maar de "commit" — en dus de lock-release — hangt nog op de
+      // deferred. Zo houdt een transactie de lock vast terwijl haar werk al
+      // gedaan is, precies zoals Postgres vóór commit.
+      if (opts.holdBeforeCommit) {
+        callOrder.push(`${label}:holding-before-commit`)
+        await opts.holdBeforeCommit
       }
       callOrder.push(`${label}:tx-resolved`)
       return result
     } finally {
-      release()
-      callOrder.push(`${label}:released-lock`)
+      if (lockState.release) {
+        lockState.release()
+        callOrder.push(`${label}:released-lock`)
+      }
     }
   })
 }
@@ -252,7 +292,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve }
 }
 
-// Flush de microtask-queue een aantal keer — nodig omdat
+// Flush de microtask/macrotask-queue een aantal keer — nodig omdat
 // maybeEnqueueDeployJob/applyDeployTerminalUpdate meerdere geneste awaits
 // hebben vóór ze de mock-transactie daadwerkelijk aanroepen; een vast aantal
 // losse `await Promise.resolve()`-ticks is fragiel bij refactors.
@@ -280,15 +320,18 @@ describe('DEPLOY state-interleaving (spec §8): product-lock serialiseert failed
 
     const holdGate = deferred()
 
-    // Eerste caller: applyDeployTerminalUpdate('failed') pakt de lock eerst en
-    // blijft hem vasthouden tot holdGate.resolve() (simuleert een tx die nog
-    // niet gecommit heeft terwijl de tweede caller al op de mutex wacht).
+    // Eerste caller: applyDeployTerminalUpdate('failed') claimt (via zijn
+    // eigen lock-call) de mutex en hangt daarna vóór zijn update op de
+    // holdGate — de FAILED-write is dus nog NIET gedaan terwijl hij de lock
+    // vasthoudt. Alleen de lock dwingt de enqueue om te wachten; zonder
+    // lock-call leest de enqueue een store zonder FAILED en retourneert hij
+    // 'enqueued' (⇒ deze test faalt — dát is de mutatie-gevoeligheid).
     mockPrisma.$transaction.mockImplementationOnce(
-      mockTransaction('failed-branch', productId, { holdUntil: holdGate.promise }),
+      mockTransaction('failed-branch', { holdBeforeQueries: holdGate.promise }),
     )
-    // Tweede caller: maybeEnqueueDeployJob voor hetzelfde product — moet
-    // wachten tot de eerste de lock vrijgeeft.
-    mockPrisma.$transaction.mockImplementationOnce(mockTransaction('enqueue', productId))
+    // Tweede caller: maybeEnqueueDeployJob voor hetzelfde product — zijn
+    // lock-call moet wachten tot de eerste de lock vrijgeeft.
+    mockPrisma.$transaction.mockImplementationOnce(mockTransaction('enqueue'))
 
     const failedPromise = applyDeployTerminalUpdate({
       jobId: 'job-running',
@@ -297,9 +340,10 @@ describe('DEPLOY state-interleaving (spec §8): product-lock serialiseert failed
       error: 'ops-agent flow failed',
     })
 
-    // Geef de event-loop een tick zodat de eerste transactie daadwerkelijk de
+    // Geef de event-loop ticks zodat de eerste transactie daadwerkelijk de
     // lock heeft verworven en op holdGate hangt vóórdat de tweede start.
     await flushMicrotasks()
+    expect(callOrder).toContain('failed-branch:acquired-lock')
 
     const enqueuePromise = maybeEnqueueDeployJob({
       parentJobId: 'parent-job',
@@ -314,14 +358,14 @@ describe('DEPLOY state-interleaving (spec §8): product-lock serialiseert failed
     expect(callOrder).toContain('enqueue:wait-lock')
     expect(callOrder).not.toContain('enqueue:acquired-lock')
 
-    // Laat de failed-branch zijn transactie afronden (commit) → lock vrij.
+    // Laat de failed-branch zijn queries + commit afronden → lock vrij.
     holdGate.resolve()
 
     const [failedResult, enqueueResult] = await Promise.all([failedPromise, enqueuePromise])
 
     // De lock is écht serialiserend geweest: failed-branch verwierf hem
     // eerst en gaf hem pas vrij nádat zijn tx-callback resolvete; pas daarna
-    // kon de enqueue-tx starten.
+    // kon de enqueue-tx verder.
     const failedAcquiredIdx = callOrder.indexOf('failed-branch:acquired-lock')
     const failedReleasedIdx = callOrder.indexOf('failed-branch:released-lock')
     const enqueueAcquiredIdx = callOrder.indexOf('enqueue:acquired-lock')
@@ -358,14 +402,15 @@ describe('DEPLOY state-interleaving (spec §8): product-lock serialiseert failed
 
     const holdGate = deferred()
 
-    // Eerste caller: maybeEnqueueDeployJob pakt de lock eerst, maakt de
-    // QUEUED-rij aan, en blijft de lock vasthouden tot holdGate.resolve().
+    // Eerste caller: maybeEnqueueDeployJob claimt (via zijn eigen lock-call)
+    // de mutex, maakt de QUEUED-rij aan, en houdt de lock vast tot de
+    // "commit" (holdBeforeCommit) doorlaat.
     mockPrisma.$transaction.mockImplementationOnce(
-      mockTransaction('enqueue', productId, { holdUntil: holdGate.promise }),
+      mockTransaction('enqueue', { holdBeforeCommit: holdGate.promise }),
     )
     // Tweede caller: applyDeployTerminalUpdate('failed') voor hetzelfde
-    // product — moet wachten tot de enqueue de lock vrijgeeft.
-    mockPrisma.$transaction.mockImplementationOnce(mockTransaction('failed-branch', productId))
+    // product — zijn lock-call moet wachten tot de enqueue de lock vrijgeeft.
+    mockPrisma.$transaction.mockImplementationOnce(mockTransaction('failed-branch'))
 
     const enqueuePromise = maybeEnqueueDeployJob({
       parentJobId: 'job-running',
@@ -376,6 +421,7 @@ describe('DEPLOY state-interleaving (spec §8): product-lock serialiseert failed
     })
 
     await flushMicrotasks()
+    expect(callOrder).toContain('enqueue:acquired-lock')
 
     const failedPromise = applyDeployTerminalUpdate({
       jobId: 'job-running',
@@ -385,11 +431,13 @@ describe('DEPLOY state-interleaving (spec §8): product-lock serialiseert failed
     })
 
     await flushMicrotasks()
+    // De failed-branch heeft zijn lock-call gedaan en wacht op de mutex —
+    // beide events bewijzen dat de code-under-test de lock zélf claimt.
     expect(callOrder).toContain('failed-branch:wait-lock')
     expect(callOrder).not.toContain('failed-branch:acquired-lock')
 
     // De QUEUED-rij bestaat al (binnen de enqueue-tx aangemaakt), maar de
-    // enqueue-tx heeft nog niet gecommit — failed-branch mag hem nog niet zien.
+    // enqueue-tx heeft nog niet gecommit — failed-branch hangt op de lock.
     const freshJobBeforeCommit = jobs.find((j) => j.status === 'QUEUED')
     expect(freshJobBeforeCommit).toBeDefined()
     const freshJobId = freshJobBeforeCommit!.id

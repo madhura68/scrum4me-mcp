@@ -1210,7 +1210,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
                   console.error('[deploy-enqueue]', err)
                   void triggerPush(job.user_id, {
                     title: 'Deploy-enqueue mislukt',
-                    body: String(err).slice(0, 120),
+                    body: (err instanceof Error ? err.message : String(err)).slice(0, 120),
                     url: '/jobs',
                     tag: `deploy-enqueue-${job_id}`,
                   })
