@@ -1289,6 +1289,28 @@ export async function getFullJobContext(jobId: string, runtime: WorkerRuntime) {
       )
       .catch(() => [])
 
+    // M17b opvolgvragen (spec 2026-07-04 §3): kaart-Q&A-geheugen — de agent
+    // ziet eerdere ClaudeQuestions (open + beantwoord) van dit idee, anders
+    // "vergeet" een vervolg-beurt wat er via kaarten is gevraagd. Kaart-Q&A
+    // zit bewust níét in idea_chat_messages. Zelfde mock-proof stijl.
+    const cardQuestions = await Promise.resolve()
+      .then(() =>
+        prisma.claudeQuestion.findMany({
+          where: { idea_id: idea.id },
+          orderBy: { created_at: 'desc' as const },
+          take: 20,
+          select: {
+            id: true,
+            question: true,
+            options: true,
+            status: true,
+            answer: true,
+            created_at: true,
+          },
+        })
+      )
+      .catch(() => [])
+
     return {
       job_id: job.id,
       kind: 'IDEA_CHAT',
@@ -1327,6 +1349,14 @@ export async function getFullJobContext(jobId: string, runtime: WorkerRuntime) {
           })),
         cutoff_message_id: job.chat_cutoff_message_id ?? null,
         cutoff_at: job.chat_cutoff_at?.toISOString() ?? null,
+        questions: cardQuestions.map((q) => ({
+          id: q.id,
+          question: q.question,
+          options: Array.isArray(q.options) ? (q.options as string[]) : null,
+          status: q.status,
+          answer: q.answer,
+          created_at: q.created_at.toISOString(),
+        })),
       },
       prompt_text: getIdeaPromptText('IDEA_CHAT'),
     }
