@@ -62,6 +62,8 @@ import { registerGetJobStatusTool } from './tools/get-job-status.js'
 import { registerGetReviewTool } from './tools/get-review.js'
 import { registerListIdeaQuestionsTool } from './tools/list-idea-questions.js'
 import { registerAnswerQuestionTool } from './tools/answer-question.js'
+import { registerGetIdeaChatChannelTool } from './tools/get-idea-chat-channel.js'
+import { registerSendIdeaChatMessageTool } from './tools/send-idea-chat-message.js'
 
 // Worktree/local-filesystem-bound tools (stdio-only)
 import { registerWaitForJobTool } from './tools/wait-for-job.js'
@@ -130,6 +132,8 @@ export function registerSharedTools(server: McpServer): void {
   // Question-channel: copilot can list + answer open idea questions
   registerListIdeaQuestionsTool(server)
   registerAnswerQuestionTool(server)
+  registerGetIdeaChatChannelTool(server)
+  registerSendIdeaChatMessageTool(server)
 }
 
 /**
