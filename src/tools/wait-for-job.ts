@@ -844,6 +844,11 @@ export async function getFullJobContext(jobId: string, runtime: WorkerRuntime) {
           preferred_model: true,
           thinking_budget_default: true,
           preferred_permission_mode: true,
+          // M17 (DEPLOY-payload): auto_deploy is niet nodig voor de payload
+          // zelf (de agent hoeft dat niet te weten), maar deploy_flow wel —
+          // en beide horen bij elkaar in de select-uitbreiding (plan Task 3.5).
+          auto_deploy: true,
+          deploy_flow: true,
         },
       },
       manual_drafts: {
@@ -1091,6 +1096,47 @@ export async function getFullJobContext(jobId: string, runtime: WorkerRuntime) {
         definition_of_done: job.product.definition_of_done,
       },
       repo_url: diffRepoUrl,
+      prompt_text: '',
+    }
+  }
+
+  // M17 (spec §5): DEPLOY-payload. Moet VÓÓR de source === 'MANUAL'-branch
+  // staan — een handmatige DEPLOY (source=MANUAL via "Deploy nu") heeft geen
+  // manual_draft en zou anders door die branch worden teruggerold.
+  if (job.kind === 'DEPLOY') {
+    // deploy_flow verplicht (invariant, spec §4) — mis-config maakt de job
+    // zichtbaar QUEUED (rollback) i.p.v. de agent stil te laten falen.
+    if (!job.product.deploy_flow) {
+      await rollbackClaim(job.id)
+      return null
+    }
+    return {
+      job_id: job.id,
+      kind: 'DEPLOY' as const,
+      source: job.source,
+      status: 'claimed' as const,
+      config,
+      doc_index: docIndex,
+      deploy: {
+        // Geen pr_url ⇒ "deploy huidige main" (handmatig, spec §5): de agent
+        // slaat de merge-wacht over en start meteen bij de sha-guard.
+        mode: job.pr_url ? ('auto' as const) : ('manual' as const),
+        pr_url: job.pr_url,
+        head_sha: job.head_sha,
+        base_sha: job.base_sha,
+        orchestration_key: job.orchestration_key,
+        deploy_flow: job.product.deploy_flow,
+      },
+      product: {
+        id: job.product.id,
+        name: job.product.name,
+        repo_url: job.product.repo_url,
+        definition_of_done: job.product.definition_of_done,
+      },
+      repo_url: job.product.repo_url,
+      // Prompt-ownership (bestaand PR_REVIEW-patroon): de runner is
+      // gezaghebbend via getKindPromptText('DEPLOY', runtime) — deze payload
+      // draagt zelf geen prompt.
       prompt_text: '',
     }
   }
