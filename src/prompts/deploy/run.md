@@ -10,12 +10,12 @@ Lees $PAYLOAD_PATH ({ deploy, product, config }). `deploy.mode` is `auto` (met `
    - `update_scrum4me_web`: `docs/**`, `*.md` (elke dir), `.vscode/**`
    - `update_scrum4me_workers`, `update_mcp_worker`, `update_ops_dashboard`: `docs/**`, `*.md`
    Álle paden doc-only → `update_job_status({ job_id, status: 'skipped', error: 'doc_only_merge' })` en stop.
-4. **Sha-guard (idempotentie):** vraag de ancestor-check op via de ops-agent:
-   `curl -s -H "Authorization: Bearer $OPS_AGENT_SECRET" -X POST "$OPS_AGENT_URL/agent/v1/exec" -H 'content-type: application/json' -d '{"command_key":"repo_contains_sha","args":["<repo-naam>","<doel-sha>"]}'`
-   (repo-naam = laatste pad-segment van `product.repo_url`, zonder `.git`). De respons meldt `contains=true|false` (server-side `git merge-base --is-ancestor <doel-sha> HEAD`). `contains=true` → `update_job_status({ job_id, status: 'skipped', error: 'merge_sha_already_deployed' })` en stop. Een HEAD-gelijkheidscheck alléén is onvoldoende: een oudere DEPLOY-job die ná een nieuwere deploy draait moet ook skippen.
-5. **Deploy:** trigger de flow en wacht op de uitkomst:
-   `curl -s -H "Authorization: Bearer $OPS_AGENT_SECRET" -X POST "$OPS_AGENT_URL/agent/v1/flow" -H 'content-type: application/json' -d '{"flow":"<deploy.deploy_flow>"}'`
-   Volg de (SSE-)output tot de flow eindigt. Een gefaalde flow-step ⇒ failed met flow-run-id + fout in error.
-6. **Health + afronden:** herhaal stap 4 — de checkout-sha moet nu de doel-sha bevatten — en controleer de flow-uitkomst. Groen → `update_job_status({ job_id, status: 'done', summary: 'deployed <sha> via <flow> (flow-run <id>, <duur>)' })`. Anders failed.
+4. **Sha-guard (idempotentie):** vraag de ancestor-check op via de ops-agent — de doel-sha gaat via `stdin` (de args-whitelist is exact-match en kent geen sha-patronen):
+   `curl -sN -H "Authorization: Bearer $OPS_AGENT_SECRET" -X POST "$OPS_AGENT_URL/agent/v1/exec" -H 'content-type: application/json' -d '{"command_key":"repo_contains_sha","args":["<repo-naam>"],"stdin":"<doel-sha>"}'`
+   (repo-naam = laatste pad-segment van `product.repo_url`, zonder `.git`). De respons is een SSE-stream: `stdout`-events met JSON `{head_sha, contains}` en een afsluitend `exit`-event `{code}` (0 = geldig antwoord, 2 = ongeldige sha/repo ⇒ failed). `contains=true` (server-side `git merge-base --is-ancestor <doel-sha> HEAD`) → `update_job_status({ job_id, status: 'skipped', error: 'merge_sha_already_deployed' })` en stop. Een HEAD-gelijkheidscheck alléén is onvoldoende: een oudere DEPLOY-job die ná een nieuwere deploy draait moet ook skippen.
+5. **Deploy:** trigger de flow en volg de uitkomst in dezelfde respons:
+   `curl -sN -H "Authorization: Bearer $OPS_AGENT_SECRET" -X POST "$OPS_AGENT_URL/agent/v1/flow" -H 'content-type: application/json' -d '{"flow_key":"<deploy.deploy_flow>","dry_run":false}'`
+   De respons is een SSE-stream (géén enkel JSON-object): `step_start` `{step_index,total_steps,command_key}`, `stdout`/`stderr` `{data}`, `step_done` `{step_index,exit_code}` en terminaal `done` `{exit_code}` of `error` `{message}`. Er wordt géén FlowRun-record geschreven bij deze directe call — de SSE-stream ís de statusbron, poll dus niet de DB. `done` met `exit_code` ≠ 0, een `error`-event of een afgebroken stream ⇒ failed met de gefaalde `step_index`/`command_key` + staart van de stderr in error.
+6. **Health + afronden:** herhaal stap 4 — de checkout-sha moet nu de doel-sha bevatten — en controleer de flow-uitkomst. Groen → `update_job_status({ job_id, status: 'done', summary: 'deployed <sha> via <flow_key> (exit 0, <duur>)' })`. Anders failed.
 
 Je hebt GEEN wait_for_job, job_heartbeat of check_queue_empty nodig — de runner beheert claim en lease.
