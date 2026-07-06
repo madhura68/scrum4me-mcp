@@ -11,10 +11,11 @@ vi.mock('../src/prisma.js', () => ({
 vi.mock('../src/git/pr.js', () => ({
   createPullRequest: vi.fn(),
   markPullRequestReady: vi.fn(),
+  getPullRequestState: vi.fn(),
 }))
 
 import { prisma } from '../src/prisma.js'
-import { createPullRequest } from '../src/git/pr.js'
+import { createPullRequest, getPullRequestState } from '../src/git/pr.js'
 import { maybeCreateAutoPr } from '../src/tools/update-job-status.js'
 
 const mockPrisma = prisma as unknown as {
@@ -27,6 +28,7 @@ const mockPrisma = prisma as unknown as {
   }
 }
 const mockCreatePr = createPullRequest as ReturnType<typeof vi.fn>
+const mockPrState = getPullRequestState as ReturnType<typeof vi.fn>
 
 const BASE_OPTS = {
   jobId: 'job-abc',
@@ -49,6 +51,15 @@ beforeEach(() => {
   // Default: legacy job zonder sprint_run (STORY-mode pad).
   mockPrisma.claudeJob.findUnique.mockResolvedValue({ sprint_run_id: null, sprint_run: null })
   mockCreatePr.mockResolvedValue({ url: 'https://github.com/org/repo/pull/99' })
+  // Default: sibling-PR's staan nog OPEN — hergebruik-tests behouden zo hun
+  // oorspronkelijke semantiek; de merged/closed-paden overriden dit expliciet.
+  mockPrState.mockResolvedValue({
+    state: 'OPEN',
+    mergeCommit: null,
+    baseRefName: 'main',
+    title: 'Sibling PR',
+    headSha: 'abc123',
+  })
 })
 
 describe('maybeCreateAutoPr', () => {
@@ -168,6 +179,81 @@ describe('maybeCreateAutoPr', () => {
     mockCreatePr.mockResolvedValue({ error: 'gh CLI not found' })
     const url = await maybeCreateAutoPr(BASE_OPTS)
     expect(url).toBeNull()
+  })
+
+  // M17 E2E-bevinding #5: hergebruik van een GEMERGDE/dichte sibling-PR
+  // strandde de commit van een latere taak (T-1382 op gemergde #105) en
+  // brak de auto-review→auto-merge→deploy-keten.
+  describe('sibling-PR-hergebruik alleen bij OPEN (bevinding #5)', () => {
+    it('STORY-mode: gemergde sibling-PR wordt NIET hergebruikt → nieuwe PR', async () => {
+      mockPrisma.claudeJob.findMany.mockResolvedValue([
+        { pr_url: 'https://github.com/org/repo/pull/77', task: { repo_url: null } },
+      ])
+      mockPrState.mockResolvedValue({
+        state: 'MERGED',
+        mergeCommit: 'deadbeef',
+        baseRefName: 'main',
+        title: 'Oude story-PR',
+        headSha: 'abc123',
+      })
+      const url = await maybeCreateAutoPr(BASE_OPTS)
+      expect(mockPrState).toHaveBeenCalledWith({ prUrl: 'https://github.com/org/repo/pull/77' })
+      expect(url).toBe('https://github.com/org/repo/pull/99')
+      expect(mockCreatePr).toHaveBeenCalledOnce()
+    })
+
+    it('STORY-mode: eerste OPEN kandidaat wint bij meerdere siblings (geen PR-stapeling)', async () => {
+      mockPrisma.claudeJob.findMany.mockResolvedValue([
+        { pr_url: 'https://github.com/org/repo/pull/77', task: { repo_url: null } },
+        { pr_url: 'https://github.com/org/repo/pull/78', task: { repo_url: null } },
+      ])
+      mockPrState
+        .mockResolvedValueOnce({ state: 'MERGED', mergeCommit: 'x', baseRefName: 'main', title: 't', headSha: 'a' })
+        .mockResolvedValueOnce({ state: 'OPEN', mergeCommit: null, baseRefName: 'main', title: 't', headSha: 'b' })
+      const url = await maybeCreateAutoPr(BASE_OPTS)
+      expect(url).toBe('https://github.com/org/repo/pull/78')
+      expect(mockCreatePr).not.toHaveBeenCalled()
+    })
+
+    it('STORY-mode: dubbele sibling-URLs worden maar één keer gecheckt', async () => {
+      mockPrisma.claudeJob.findMany.mockResolvedValue([
+        { pr_url: 'https://github.com/org/repo/pull/77', task: { repo_url: null } },
+        { pr_url: 'https://github.com/org/repo/pull/77', task: { repo_url: null } },
+      ])
+      mockPrState.mockResolvedValue({ state: 'MERGED', mergeCommit: 'x', baseRefName: 'main', title: 't', headSha: 'a' })
+      await maybeCreateAutoPr(BASE_OPTS)
+      expect(mockPrState).toHaveBeenCalledTimes(1)
+    })
+
+    it('lookup-fout ⇒ hergebruik op oud gedrag (geen PR-spam bij haperende Forgejo)', async () => {
+      mockPrisma.claudeJob.findMany.mockResolvedValue([
+        { pr_url: 'https://github.com/org/repo/pull/77', task: { repo_url: null } },
+      ])
+      mockPrState.mockResolvedValue({ error: 'Forgejo pr-get failed: 503' })
+      const url = await maybeCreateAutoPr(BASE_OPTS)
+      expect(url).toBe('https://github.com/org/repo/pull/77')
+      expect(mockCreatePr).not.toHaveBeenCalled()
+    })
+
+    it('SPRINT-mode: gemergde sibling-PR wordt NIET hergebruikt → nieuwe draft-PR', async () => {
+      mockPrisma.claudeJob.findUnique.mockResolvedValue({
+        sprint_run_id: 'run-1',
+        sprint_run: { id: 'run-1', pr_strategy: 'SPRINT', sprint: { sprint_goal: 'Goal' } },
+      })
+      mockPrisma.claudeJob.findMany.mockResolvedValue([
+        { pr_url: 'https://github.com/org/repo/pull/55', task: { repo_url: null } },
+      ])
+      mockPrState.mockResolvedValue({
+        state: 'MERGED',
+        mergeCommit: 'x',
+        baseRefName: 'main',
+        title: 't',
+        headSha: 'a',
+      })
+      const url = await maybeCreateAutoPr(BASE_OPTS)
+      expect(url).toBe('https://github.com/org/repo/pull/99')
+      expect(mockCreatePr).toHaveBeenCalledWith(expect.objectContaining({ draft: true }))
+    })
   })
 
   it('returns null when product not found', async () => {

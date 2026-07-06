@@ -27,7 +27,7 @@ import { releaseLocksOnTerminal } from '../git/job-locks.js'
 import { resolveRepoRoot } from './wait-for-job.js'
 import { pushBranchForJob } from '../git/push.js'
 import { notifyJobEnqueued } from '../lib/dispatch/notify.js'
-import { createPullRequest, listPullRequestFiles, markPullRequestReady } from '../git/pr.js'
+import { createPullRequest, getPullRequestState, listPullRequestFiles, markPullRequestReady } from '../git/pr.js'
 import { cancelPbiOnFailure } from '../cancel/pbi-cascade.js'
 import { propagateStatusUpwards } from '../lib/tasks-status-update.js'
 import { triggerPush } from '../lib/push-trigger.js'
@@ -447,6 +447,34 @@ export function resolveJobTimestamps(
   return update
 }
 
+// M17 E2E-bevinding #5 (2026-07-06): sibling-PR's alleen hergebruiken zolang
+// ze OPEN staan. Story-/sprint-siblings delen bewust één branch+PR, maar na
+// een merge/close van die PR moet een latere taak een níeuwe PR openen —
+// anders landt de commit onzichtbaar op een dichte PR en stopt de
+// auto-review→auto-merge→deploy-keten (T-1382: commit gestrand op gemergde
+// #105). Neemt de EERSTE open kandidaat zodat opvolgende taken blijven
+// stapelen op de lopende PR i.p.v. per taak een nieuwe te openen. Bij een
+// lookup-fout hergebruiken we op het oude gedrag (liever een mogelijk-dichte
+// PR dan PR-spam bij een haperende Forgejo).
+export async function firstOpenPrUrl(
+  urls: Array<string | null | undefined>,
+): Promise<string | null> {
+  const seen = new Set<string>()
+  for (const url of urls) {
+    if (!url || seen.has(url)) continue
+    seen.add(url)
+    const info = await getPullRequestState({ prUrl: url })
+    if ('error' in info) {
+      console.warn(
+        `[update_job_status] PR-state-lookup faalde voor ${url}; hergebruik op oud gedrag: ${info.error}`,
+      )
+      return url
+    }
+    if (info.state === 'OPEN') return url
+  }
+  return null
+}
+
 export async function maybeCreateAutoPr(opts: {
   jobId: string
   productId: string
@@ -502,10 +530,12 @@ export async function maybeCreateAutoPr(opts: {
       select: { pr_url: true, task: { select: { repo_url: true } } },
       orderBy: { created_at: 'asc' },
     })
-    const sameRepoSibling = sprintSiblings.find(
-      (s) => (s.task?.repo_url ?? null) === thisRepoKey,
+    const sprintReuse = await firstOpenPrUrl(
+      sprintSiblings
+        .filter((s) => (s.task?.repo_url ?? null) === thisRepoKey)
+        .map((s) => s.pr_url),
     )
-    if (sameRepoSibling?.pr_url) return sameRepoSibling.pr_url
+    if (sprintReuse) return sprintReuse
 
     // Eerste DONE in deze SprintRun → maak draft-PR aan, geen auto-merge.
     const goal = job.sprint_run.sprint.sprint_goal
@@ -538,10 +568,12 @@ export async function maybeCreateAutoPr(opts: {
     select: { pr_url: true, task: { select: { repo_url: true } } },
     orderBy: { created_at: 'asc' },
   })
-  const sameRepoStorySibling = storySiblings.find(
-    (s) => (s.task?.repo_url ?? null) === thisRepoKey,
+  const storyReuse = await firstOpenPrUrl(
+    storySiblings
+      .filter((s) => (s.task?.repo_url ?? null) === thisRepoKey)
+      .map((s) => s.pr_url),
   )
-  if (sameRepoStorySibling?.pr_url) return sameRepoStorySibling.pr_url
+  if (storyReuse) return storyReuse
 
   const storyTitle = task.story.code ? `${task.story.code}: ${task.story.title}` : task.story.title
   const body = summary
@@ -595,7 +627,8 @@ export async function maybeCreateSprintBatchPr(opts: {
       where: { sprint_run_id: previousRun.previous_run_id, pr_url: { not: null } },
       select: { pr_url: true },
     })
-    if (prevPr?.pr_url) return prevPr.pr_url
+    const prevReuse = await firstOpenPrUrl([prevPr?.pr_url])
+    if (prevReuse) return prevReuse
   }
 
   const goal = job.sprint_run.sprint.sprint_goal
