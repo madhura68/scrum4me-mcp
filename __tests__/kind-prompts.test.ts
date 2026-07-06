@@ -57,6 +57,16 @@ describe('getKindPromptText', () => {
     expect(text).toMatch(/doc_only_merge/)
     expect(text).toMatch(/merge_sha_already_deployed/)
   })
+
+  it('DEPLOY-prompt pint config-letterlijkheid (E2E-bevinding #8: geen flow-varianten proberen)', () => {
+    // De agent probeerde bij "flow niet gevonden" zelf een variant van de
+    // flow-naam (prefix eraf) en voerde zo een niet-geconfigureerde deploy
+    // uit. De prompt moet dat expliciet verbieden en als terminale fout pinnen.
+    const text = getKindPromptText('DEPLOY')
+    expect(text).toMatch(/Config is heilig/)
+    expect(text).toMatch(/NOOIT varianten/)
+    expect(text).toMatch(/ongeautoriseerde deploy/)
+  })
 })
 
 describe('agent-guide rule in implementation prompts', () => {
