@@ -816,7 +816,7 @@ interface SprintExecutionRow {
   base_sha: string | null
 }
 
-export async function getFullJobContext(jobId: string, runtime: WorkerRuntime) {
+export async function getFullJobContext(jobId: string, runtime?: WorkerRuntime) {
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     include: {
@@ -907,6 +907,13 @@ export async function getFullJobContext(jobId: string, runtime: WorkerRuntime) {
   // Runtime-aware resolutie (fase 1 @shared/job-config). Voor CODEX worden
   // product.preferred_model/requires_opus + product/requested permissie bewust
   // overgeslagen (Claude-semantiek lekt niet naar codex --model/--sandbox).
+  //
+  // Runtime-bron: expliciete caller-param wint, maar val terug op job.runtime.
+  // Zonder deze fallback resolveerde een caller die runtime NIET meegaf (bv.
+  // run-one-job's getFullJobContext(jobId)) undefined → de CODEX-tak werd
+  // overgeslagen → codex-jobs kregen een Claude-model als --model → codex 400
+  // ("model not supported when using Codex with a ChatGPT account").
+  const effectiveRuntime: WorkerRuntime = runtime ?? job.runtime
   const config = resolveRuntimeJobConfig(
     {
       kind: job.kind,
@@ -921,7 +928,7 @@ export async function getFullJobContext(jobId: string, runtime: WorkerRuntime) {
     },
     job.task ? { requires_opus: job.task.requires_opus } : undefined,
     kindConfig ?? undefined,
-    runtime,
+    effectiveRuntime,
   )
 
   // Push a compact doc-index into every payload so the worker sees which
