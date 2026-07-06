@@ -447,6 +447,31 @@ export function resolveJobTimestamps(
   return update
 }
 
+// M17 E2E-bevinding #7 (2026-07-06): de auto-merge-gate is LEVEL-triggered.
+// Bewust géén "story werd zojuist DONE"-input: de agent zet binnen de job
+// vaak zelf de taak op done (update_task_status), waardoor de story-DONE-edge
+// al verbruikt is vóórdat update_job_status draait. De story-status zelf
+// (DONE?) checkt de handler apart via de storyCtx-query; dubbel vuren bij
+// out-of-order siblings is veilig (DB-harde deploy-dedup; tweede
+// auto-merge-enable is een no-op).
+export function isStoryAutoMergeCandidate(input: {
+  actualStatus: string
+  prUrl: string | null | undefined
+  headSha: string | null | undefined
+  kind: string
+  source: string
+  taskId: string | null
+}): boolean {
+  return (
+    input.actualStatus === 'done' &&
+    !!input.prUrl &&
+    !!input.headSha &&
+    input.kind === 'TASK_IMPLEMENTATION' &&
+    input.source !== 'MANUAL' &&
+    !!input.taskId
+  )
+}
+
 // M17 E2E-bevinding #5 (2026-07-06): sibling-PR's alleen hergebruiken zolang
 // ze OPEN staan. Story-/sprint-siblings delen bewust één branch+PR, maar na
 // een merge/close van die PR moet een latere taak een níeuwe PR openen —
@@ -1173,7 +1198,6 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         // sibling-cancel binnen dezelfde SprintRun af bij FAILED.
         // Idea-jobs hebben geen task_id en worden hier overgeslagen.
         let sprintRunBecameDone = false
-        let storyBecameDone = false
         if (
           (actualStatus === 'done' || actualStatus === 'failed') &&
           job.kind === 'TASK_IMPLEMENTATION' &&
@@ -1186,7 +1210,6 @@ export function registerUpdateJobStatusTool(server: McpServer) {
               actualStatus === 'done' ? 'DONE' : 'FAILED',
             )
             sprintRunBecameDone = actualStatus === 'done' && propagation.sprintRunChanged
-            storyBecameDone = actualStatus === 'done' && propagation.storyChanged
           } catch (err) {
             console.warn(
               `[update_job_status] propagateStatusUpwards error for task ${job.task_id}:`,
@@ -1196,14 +1219,35 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         }
 
         // PBI-47 (P0): STORY-mode auto-merge timing fix.
-        // Only enable auto-merge when this DONE was the *last* task of a STORY
-        // (story.status flipped to DONE) and pr_strategy === STORY. The
-        // pr-flow transition emits ENABLE_AUTO_MERGE with the head_sha guard.
+        // Only enable auto-merge for the *last* task of a STORY (story DONE)
+        // and pr_strategy === STORY. The pr-flow transition emits
+        // ENABLE_AUTO_MERGE with the head_sha guard.
+        //
+        // M17 E2E-bevinding #7 (2026-07-06): LEVEL-triggered, niet
+        // edge-triggered. De agent zet binnen de job vaak zelf de taak op done
+        // (update_task_status), waardoor de story al DONE is vóórdat déze
+        // update_job_status-call draait — propagateStatusUpwards ziet dan geen
+        // transitie meer (storyChanged=false) en de edge is "verbruikt"
+        // (T-1387: story DONE om 17:29:33, job-DONE om 17:29:40 → blok
+        // geskipt, geen auto-merge, geen DEPLOY-enqueue). De beslissende check
+        // is de storyCtx-query hieronder (story.status === 'DONE'); dubbel
+        // vuren bij out-of-order siblings is veilig: de DEPLOY-enqueue is
+        // DB-hard gededupt op orchestration_key en een tweede
+        // auto-merge-enable op een al-geschedulede/gemergde PR is een no-op
+        // die hooguit een warn logt.
         if (
-          storyBecameDone &&
+          // Truthiness eerst (TS-narrowing voor updated.pr_url/headShaToWrite
+          // verderop in het blok); de helper is de semantische gate.
           updated.pr_url &&
           headShaToWrite &&
-          job.kind === 'TASK_IMPLEMENTATION'
+          isStoryAutoMergeCandidate({
+            actualStatus,
+            prUrl: updated.pr_url,
+            headSha: headShaToWrite,
+            kind: job.kind,
+            source: job.source,
+            taskId: job.task_id,
+          })
         ) {
           const storyCtx = await prisma.claudeJob.findUnique({
             where: { id: job_id },
