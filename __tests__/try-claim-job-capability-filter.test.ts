@@ -44,3 +44,19 @@ describe('tryClaimJob with caller capability', () => {
     expect(text).not.toMatch(/CASE w\.capability\s+WHEN 'HIGH_P'/i)
   })
 })
+
+describe('tryClaimJob claimable-kind filter', () => {
+  // Regressie 2026-07-06: een enkelvoudige COPILOT-task-dispatch
+  // (dispatchTaskImplementation, IDEA-118 §6.3) maakt een TASK_IMPLEMENTATION
+  // met source='COPILOT' + task_id (door de DB-constraint expliciet toegestaan),
+  // maar de claim-filter liet alleen source='MANUAL' of een sprint_run toe →
+  // job bleef eeuwig QUEUED. De filter moet COPILOT-task-jobs claimbaar maken.
+  it('allows standalone COPILOT TASK_IMPLEMENTATION jobs to be claimed', async () => {
+    await tryClaimJob('u1', 't1', 'i1', undefined, 'CLAUDE', [], null)
+    const fragments = queryRawMock.mock.calls[0]
+      .flat()
+      .filter((v): v is { strings: string[] } => v && typeof v === 'object' && 'strings' in v)
+    const text = fragments.flatMap((f) => f.strings).join(' ')
+    expect(text).toMatch(/cj\.kind = 'TASK_IMPLEMENTATION' AND cj\.source IN \('MANUAL', 'COPILOT'\)/i)
+  })
+})

@@ -57,10 +57,13 @@ describe('runtime-aware claim filter', () => {
     expect(sqlValues(productionFragment)).not.toContain('CLAUDE')
   })
 
-  it('allows manual standalone task jobs only through source MANUAL', () => {
+  it('allows standalone task jobs through source MANUAL or COPILOT', () => {
     const sql = buildClaimableJobWhereClause({ runtime: 'CLAUDE', hasProductScope: false })
 
-    expect(sql).toContain("cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'MANUAL'")
+    // 2026-07-06: COPILOT single-task dispatch (dispatchTaskImplementation,
+    // IDEA-118 §6.3) is door de DB-constraint toegestaan maar bleef eeuwig
+    // QUEUED zolang de claim-filter alleen MANUAL toeliet.
+    expect(sql).toContain("cj.kind = 'TASK_IMPLEMENTATION' AND cj.source IN ('MANUAL', 'COPILOT')")
     expect(sql).toContain('cj.sprint_run_id IS NOT NULL')
   })
 
@@ -131,7 +134,7 @@ describe('runtime-aware claim filter', () => {
       "cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'IDEA_CHAT', 'PLAN_CHAT', 'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW')",
       "cj.kind = 'PLAN_CHAT'",
       "cj.source = 'ORCHESTRATOR'",
-      "OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'MANUAL')",
+      "OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source IN ('MANUAL', 'COPILOT'))",
       'cj.sprint_run_id IS NOT NULL',
       "sr.status IN ('QUEUED', 'RUNNING')",
       'cj.required_capability IS NULL',
