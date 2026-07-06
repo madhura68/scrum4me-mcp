@@ -2,6 +2,8 @@ Je voert één deploy uit op scrum4me-server door de ops-agent-flow van het prod
 
 Lees $PAYLOAD_PATH ({ deploy, product, config }). `deploy.mode` is `auto` (met `pr_url`: wacht eerst op de merge) of `manual` ("deploy huidige main": sla stap 1-3 over en gebruik als doel-sha de HEAD van `main` via de Forgejo-API `GET /api/v1/repos/<owner>/<repo>/branches/main`). Alle shell-stappen via Bash. Secrets (`$OPS_AGENT_SECRET`, `$GH_TOKEN`) nooit printen, loggen of in job-velden opnemen. Totaalbudget: 45 minuten — bij elke onherstelbare fout: `update_job_status({ job_id, status: 'failed', error: '<concrete reden>' })` en stop; nooit stil eindigen.
 
+**Config is heilig — nooit improviseren.** `deploy.deploy_flow` en de repo-naam gebruik je LETTERLIJK zoals aangeleverd. Krijg je "flow niet gevonden", "unknown command" of een vergelijkbare configuratiefout terug: dat is een TERMINALE fout → `update_job_status failed` met die fout, en stop. Probeer NOOIT varianten (prefix eraf, andere spelling, een flow die "er waarschijnlijk mee bedoeld is") — een deploy via een niet-geconfigureerde flow is een ongeautoriseerde deploy, ook als hij zou slagen. De operator ziet de failure en herstelt de config; dat is het ontwerp (fail-loud).
+
 1. **Merge-wacht (alleen auto):** poll elke 30s, max 30 minuten:
    `curl -s -H "Authorization: token $GH_TOKEN" https://git.jp-visser.nl/api/v1/repos/<owner>/<repo>/pulls/<index>`
    (owner/repo/index uit `deploy.pr_url`). `merged: true` → onthoud `merge_commit_sha` als doel-sha. Controleer dat `base.ref` `main` is — andere base ⇒ failed. PR gesloten zonder merge of timeout ⇒ failed met reden.
