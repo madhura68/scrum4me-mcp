@@ -332,7 +332,7 @@ const CLAIMABLE_JOB_KIND_FILTER = `AND (
                   AND cj.task_id IS NULL
                   AND cj.idea_id IS NULL
                   AND cj.sprint_run_id IS NULL)
-              OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'MANUAL')
+              OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source IN ('MANUAL', 'COPILOT'))
               OR (cj.kind IN ('TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION')
                   AND cj.sprint_run_id IS NOT NULL
                   AND sr.status IN ('QUEUED', 'RUNNING'))
