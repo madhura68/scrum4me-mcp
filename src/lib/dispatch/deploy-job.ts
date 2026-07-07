@@ -2,6 +2,7 @@
 // De job zelf doet de merge-wacht. Dedup is DB-hard (partial unique index op
 // orchestration_key WHERE kind='DEPLOY'); de blokkade-check en de create
 // draaien onder de product-lock (spec §6, acceptatiecriterium).
+import type { Prisma } from '@prisma/client'
 import { prisma } from '../../prisma.js'
 import { notifyJobEnqueued } from './notify.js'
 
@@ -13,6 +14,39 @@ export function buildDeployOrchestrationKey(prUrl: string, headSha: string): str
 }
 
 export type DeployEnqueueOutcome = 'enqueued' | 'dedup' | 'blocked' | 'not_configured'
+
+export type DeployEligibility = 'eligible' | 'blocked' | 'not_configured'
+
+// Interne read: leest config + blokkade binnen een MEEGEGEVEN tx (géén eigen
+// transactie). De aanroeper houdt de product-lock vast. Zo delen de preflight
+// (checkDeployEligibility) en de enqueue (maybeEnqueueDeployJob) exact dezelfde
+// eligibility-logica zonder semantiek-drift.
+async function readDeployEligibility(
+  tx: Prisma.TransactionClient,
+  productId: string,
+): Promise<DeployEligibility> {
+  const product = await tx.product.findUnique({
+    where: { id: productId },
+    select: { auto_deploy: true, deploy_flow: true },
+  })
+  if (!product?.auto_deploy || !product.deploy_flow) return 'not_configured'
+  // Blokkade na falen (spec §6): geen auto-enqueue bij onopgeloste FAILED.
+  const blocked = await tx.claudeJob.findFirst({
+    where: { product_id: productId, kind: 'DEPLOY', status: 'FAILED', resolved_at: null },
+    select: { id: true },
+  })
+  if (blocked) return 'blocked'
+  return 'eligible'
+}
+
+// Publieke preflight: opent zelf de product-lock-tx. Gebruikt door de
+// sprint-batch-helper vóór ENABLE_AUTO_MERGE.
+export async function checkDeployEligibility(productId: string): Promise<DeployEligibility> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('deploy'), hashtext(${productId}))`
+    return readDeployEligibility(tx, productId)
+  })
+}
 
 // Handmatige spiegel: dispatchDeploy (./deploy-dispatch.ts) — die gooit
 // DispatchError (RPC-conventie) en heeft bewust geen orchestration_key.
@@ -34,17 +68,8 @@ export async function maybeEnqueueDeployJob(opts: {
     .$transaction(async (tx) => {
       // Lock éérst, dan pas de config-beslissing lezen (codex plan-r1 #5).
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('deploy'), hashtext(${opts.productId}))`
-      const product = await tx.product.findUnique({
-        where: { id: opts.productId },
-        select: { auto_deploy: true, deploy_flow: true },
-      })
-      if (!product?.auto_deploy || !product.deploy_flow) return 'not_configured' as const
-      // Blokkade na falen (spec §6): geen auto-enqueue bij onopgeloste FAILED.
-      const blocked = await tx.claudeJob.findFirst({
-        where: { product_id: opts.productId, kind: 'DEPLOY', status: 'FAILED', resolved_at: null },
-        select: { id: true },
-      })
-      if (blocked) return 'blocked' as const
+      const eligibility = await readDeployEligibility(tx, opts.productId)
+      if (eligibility !== 'eligible') return eligibility // 'not_configured' | 'blocked'
       const job = await tx.claudeJob.create({
         data: {
           user_id: opts.userId,
