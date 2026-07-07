@@ -38,6 +38,7 @@ beforeEach(() => {
   mockProductFindUnique.mockResolvedValue({ repo_url: 'https://git/janpeter/Scrum4Me' })
   mockSprintRunFindUnique.mockResolvedValue({ status: 'DONE' })
   mockJobFindMany.mockResolvedValue([{ pr_url: PR, task: { repo_url: null }, head_sha: 'sha-head' }])
+  mockGetPrState.mockResolvedValue({ state: 'OPEN', headSha: 'sha-head', mergeCommit: null, baseRefName: 'main', title: 't' })
   mockCheckEligibility.mockResolvedValue('eligible')
   mockExecuteEffects.mockResolvedValue([{ effect: 'ENABLE_AUTO_MERGE', ok: true }])
   mockEnqueue.mockResolvedValue('enqueued')
@@ -101,17 +102,31 @@ describe('maybeAutoDeploySprintBatchPr', () => {
     expect(mockExecuteEffects).not.toHaveBeenCalled()
   })
 
-  it('head-sha fail-safe: PR-job head_sha null → getPullRequestState; onbereikbaar → skip', async () => {
-    mockJobFindMany.mockResolvedValue([{ pr_url: PR, task: { repo_url: null }, head_sha: null }])
+  it('head-sha: live PR-head onbereikbaar (getPullRequestState error) → skip', async () => {
     mockGetPrState.mockResolvedValue({ error: 'pr-get failed' })
     await maybeAutoDeploySprintBatchPr(BASE)
     expect(mockExecuteEffects).not.toHaveBeenCalled()
   })
 
-  it('head-sha fail-safe: PR-job head_sha null → getPullRequestState levert head → gebruikt die', async () => {
-    mockJobFindMany.mockResolvedValue([{ pr_url: PR, task: { repo_url: null }, head_sha: null }])
+  it('head-sha: live PR-head van Forgejo wordt gebruikt', async () => {
     mockGetPrState.mockResolvedValue({ state: 'OPEN', headSha: 'sha-from-forgejo', mergeCommit: null, baseRefName: 'main', title: 't' })
     await maybeAutoDeploySprintBatchPr(BASE)
     expect(mockExecuteEffects).toHaveBeenCalledWith([{ type: 'ENABLE_AUTO_MERGE', prUrl: PR, expectedHeadSha: 'sha-from-forgejo' }])
+  })
+
+  // Regressie tegen de adversariële-review-blocker: bij een multi-job SPRINT-batch
+  // delen meerdere product-repo-taken één PR maar hebben ze elk een eigen (per-push)
+  // head_sha. De helper mag NOOIT de DB head_sha van de oudste sibling gebruiken
+  // (die is stale) — altijd de LIVE PR-head. Vóór de fix koos de helper 'sha-A-stale'
+  // (oudste sibling) → ENABLE_AUTO_MERGE zou met een verkeerde expectedHeadSha vuren.
+  it('stale sibling head_sha wordt genegeerd → live PR-head (regressie blocker M21)', async () => {
+    mockJobFindMany.mockResolvedValue([
+      { pr_url: PR, task: { repo_url: null }, head_sha: 'sha-A-stale' },
+      { pr_url: PR, task: { repo_url: null }, head_sha: 'sha-B' },
+    ])
+    mockGetPrState.mockResolvedValue({ state: 'OPEN', headSha: 'sha-C-live', mergeCommit: null, baseRefName: 'main', title: 't' })
+    await maybeAutoDeploySprintBatchPr(BASE)
+    expect(mockExecuteEffects).toHaveBeenCalledWith([{ type: 'ENABLE_AUTO_MERGE', prUrl: PR, expectedHeadSha: 'sha-C-live' }])
+    expect(mockEnqueue).toHaveBeenCalledWith(expect.objectContaining({ headSha: 'sha-C-live' }))
   })
 })

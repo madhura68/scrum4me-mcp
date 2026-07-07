@@ -49,7 +49,7 @@ export async function maybeAutoDeploySprintBatchPr(opts: {
   const prJobs = await prisma.claudeJob.findMany({
     where: { sprint_run_id: opts.sprintRunId, pr_url: { not: null } },
     orderBy: { created_at: 'asc' },
-    select: { pr_url: true, head_sha: true, task: { select: { repo_url: true } } },
+    select: { pr_url: true, task: { select: { repo_url: true } } },
   })
   const productPrJob = prJobs.find(
     (j) => repoBucketKey(j.task?.repo_url, product?.repo_url) === null,
@@ -60,14 +60,16 @@ export async function maybeAutoDeploySprintBatchPr(opts: {
     return
   }
 
-  // 3. Head-sha zelf resolven: de head_sha van de GEKOZEN product-PR-job; als
-  //    die null is → de echte PR-head via Forgejo. NOOIT een sha van een andere
-  //    (cross-repo) job.
-  let headSha = productPrJob?.head_sha ?? null
-  if (!headSha) {
-    const info = await getPullRequestState({ prUrl })
-    headSha = 'headSha' in info ? info.headSha : null
-  }
+  // 3. Head-sha = de LIVE PR-head (Forgejo), NIET de DB head_sha van een sibling.
+  //    Bij een gedeelde sprint-batch-branch (feat/sprint-<id>) heeft elke
+  //    pushende taak zijn eigen head_sha; de OUDSTE sibling-rij is stale t.o.v.
+  //    de PR-head, waardoor ENABLE_AUTO_MERGE's head-guard zou weigeren (geen
+  //    deploy — dé happy-path van M21). De live PR-head is autoritatief, is
+  //    exact wat die guard vergelijkt, en is altijd de head van de GEKOZEN
+  //    product-PR (nooit een cross-repo sha). Adversariële review M21 —
+  //    blocker-fix (stale-sibling-head).
+  const info = await getPullRequestState({ prUrl })
+  const headSha = 'headSha' in info ? info.headSha : null
   if (!headSha) {
     console.warn(`[sprint-batch-deploy] geen betrouwbare head-sha voor ${prUrl}`)
     return

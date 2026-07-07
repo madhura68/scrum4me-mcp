@@ -158,15 +158,34 @@ describe('maybeAutoDeploySprintBatchPr call-sites in update_job_status', () => {
     expect(mockDeploy).toHaveBeenCalledWith({ jobId: 'job-1', userId: 'user-1', productId: 'prod-1', sprintRunId: 'run-1' })
   })
 
-  it('(c) STORY-run: geen sprint-batch-deploy', async () => {
+  it('(c) STORY-run (sprintRunChanged=false): geen sprint-batch-deploy', async () => {
+    const handler = registerHandler()
+    // 3 findUnique-reads: initieel → maybeCreateAutoPr → isStoryAutoMergeCandidate storyCtx.
+    // sprintRunChanged=false ⇒ de sprintRunBecameDone-tak (met de deploy-call-site) wordt
+    // niet betreden, dus géén 4e read.
+    mockPrisma.claudeJob.findUnique
+      .mockResolvedValueOnce({ ...JOB_BASE, task_id: 'task-1', kind: 'TASK_IMPLEMENTATION', verify_result: 'ALIGNED', task: { verify_only: false, verify_required: 'ALIGNED_OR_PARTIAL' } })
+      .mockResolvedValueOnce({ sprint_run_id: 'run-1', sprint_run: { id: 'run-1', pr_strategy: 'STORY', sprint: { sprint_goal: 'Story' } } })
+      .mockResolvedValueOnce({ task: { story: { status: 'DONE' } }, sprint_run: { pr_strategy: 'STORY' } })
+    mockPropagate.mockResolvedValue({ task: { id: 'task-1', title: 't', status: 'DONE', story_id: 'story-1', implementation_plan: null }, storyId: 'story-1', storyChanged: true, pbiChanged: false, sprintChanged: false, sprintRunChanged: false })
+    mockPrisma.claudeJob.findFirst.mockResolvedValue(null)
+    const result = await handler({ job_id: 'job-1', status: 'done', summary: SUM, branch: 'feat/run-1' })
+    expect(result).not.toMatchObject({ isError: true })
+    expect(mockDeploy).not.toHaveBeenCalled()
+  })
+
+  it('(d) STORY-run mét SprintRun DONE (sprintRunChanged=true): pr_strategy-gate weigert → geen sprint-batch-deploy', async () => {
+    // Dekt de load-bearing gate `pr_strategy === 'SPRINT'` in de sprintRunBecameDone-tak.
+    // Zonder deze case blijft de gate ongetest: case (c) short-circuit op sprintRunChanged=false,
+    // vóórdat de gate ooit wordt geëvalueerd (adversariële review — major test-gat).
     const handler = registerHandler()
     mockPrisma.claudeJob.findUnique
       .mockResolvedValueOnce({ ...JOB_BASE, task_id: 'task-1', kind: 'TASK_IMPLEMENTATION', verify_result: 'ALIGNED', task: { verify_only: false, verify_required: 'ALIGNED_OR_PARTIAL' } })
       .mockResolvedValueOnce({ sprint_run_id: 'run-1', sprint_run: { id: 'run-1', pr_strategy: 'STORY', sprint: { sprint_goal: 'Story' } } })
-      .mockResolvedValueOnce({ sprint_run_id: 'run-1', sprint_run: { pr_strategy: 'STORY', status: 'DONE' } })
       .mockResolvedValueOnce({ task: { story: { status: 'DONE' } }, sprint_run: { pr_strategy: 'STORY' } })
-    mockPropagate.mockResolvedValue({ task: { id: 'task-1', title: 't', status: 'DONE', story_id: 'story-1', implementation_plan: null }, storyId: 'story-1', storyChanged: true, pbiChanged: false, sprintChanged: false, sprintRunChanged: false })
-    mockPrisma.claudeJob.findFirst.mockResolvedValue(null)
+      .mockResolvedValueOnce({ sprint_run_id: 'run-1', sprint_run: { pr_strategy: 'STORY', status: 'DONE' } })
+    mockPropagate.mockResolvedValue({ task: { id: 'task-1', title: 't', status: 'DONE', story_id: 'story-1', implementation_plan: null }, storyId: 'story-1', storyChanged: true, pbiChanged: false, sprintChanged: true, sprintRunChanged: true })
+    mockPrisma.claudeJob.findFirst.mockResolvedValue({ pr_url: 'https://git.example/org/repo/pulls/9' })
     const result = await handler({ job_id: 'job-1', status: 'done', summary: SUM, branch: 'feat/run-1' })
     expect(result).not.toMatchObject({ isError: true })
     expect(mockDeploy).not.toHaveBeenCalled()
