@@ -58,6 +58,18 @@ describe('getKindPromptText', () => {
     expect(text).toMatch(/merge_sha_already_deployed/)
   })
 
+  it('DOCS_AUDIT-prompt: handoff-contract, alleen-markdown, geen status-call (M19)', () => {
+    const text = getKindPromptText('DOCS_AUDIT')
+    expect(text.length).toBeGreaterThan(200)
+    expect(text).toContain('$PAYLOAD_PATH')
+    expect(text).toContain('$REPO_PATH')
+    expect(text).toContain('$RESULT_PATH')
+    expect(text).toContain('UITSLUITEND markdown')
+    expect(text).toMatch(/no_merges_since_cursor/)
+    // De agent terminaliseert NIET zelf — de runner doet update_job_status.
+    expect(text).not.toContain('update_job_status')
+  })
+
   it('DEPLOY-prompt pint config-letterlijkheid (E2E-bevinding #8: geen flow-varianten proberen)', () => {
     // De agent probeerde bij "flow niet gevonden" zelf een variant van de
     // flow-naam (prefix eraf) en voerde zo een niet-geconfigureerde deploy
