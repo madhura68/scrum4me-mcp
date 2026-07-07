@@ -35,7 +35,7 @@ import { transition as prFlowTransition } from '../flow/pr-flow.js'
 import { transition as sprintRunTransition } from '../flow/sprint-run.js'
 import { executeEffects } from '../flow/effects.js'
 import { maybeEnqueueDeployJob } from '../lib/dispatch/deploy-job.js'
-import { repoBucketKey } from '../lib/dispatch/sprint-batch-deploy.js'
+import { repoBucketKey, maybeAutoDeploySprintBatchPr } from '../lib/dispatch/sprint-batch-deploy.js'
 
 async function fetchConflictFiles(prUrl: string): Promise<string[]> {
   const result = await listPullRequestFiles({ prUrl })
@@ -1365,6 +1365,15 @@ export function registerUpdateJobStatusTool(server: McpServer) {
                 console.warn(`[update_job_status] markPullRequestReady error:`, err)
               }
             }
+            // M21: opt-in auto-deploy voor de sprint-batch (ná ready-maken).
+            await maybeAutoDeploySprintBatchPr({
+              jobId: job_id,
+              userId: job.user_id,
+              productId: job.product_id,
+              sprintRunId: ctx.sprint_run_id,
+            }).catch((err) => {
+              console.warn('[update_job_status] sprint-batch auto-deploy error:', err)
+            })
           }
         }
 
@@ -1506,6 +1515,15 @@ export function registerUpdateJobStatusTool(server: McpServer) {
               } catch (err) {
                 console.warn(`[update_job_status] sprint-batch markPullRequestReady error:`, err)
               }
+              // M21: opt-in auto-deploy voor de single-session sprint-batch.
+              await maybeAutoDeploySprintBatchPr({
+                jobId: job_id,
+                userId: job.user_id,
+                productId: job.product_id,
+                sprintRunId: job.sprint_run_id,
+              }).catch((err) => {
+                console.warn('[update_job_status] sprint-batch auto-deploy error:', err)
+              })
             }
           } catch (err) {
             console.warn(`[update_job_status] finalizeSprintRunOnDone error:`, err)
