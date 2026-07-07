@@ -37,9 +37,9 @@ A story with 3 sub-tasks lands as **1 branch** with 3 commits and **1 PR** (assu
 
 When a `TASK_IMPLEMENTATION` job ends in `FAILED`, `cancelPbiOnFailure` (`src/cancel/pbi-cascade.ts`) cancels every queued/claimed/running sibling under the **same PBI** (across all stories) and undoes already-pushed commits:
 
-- **Open PR** → `gh pr close --delete-branch` with a cascade-comment.
-- **Merged PR** → revert-PR opened against the base branch via `git revert -m 1 <mergeSha>`. **No** auto-merge on the revert PR — review by hand.
-- **Branch without PR** → best-effort `git push origin --delete <branch>`.
+- **Open PR** → Forgejo REST close (cascade-comment + state:closed) + best-effort `git push origin --delete <branch>` with `expectedHeadSha`-guard so a late worker-push isn't overwritten.
+- **Merged PR** → revert-PR opened against the base branch via `git revert` (parent-count-aware: `-m 1` for merge-commits, plain revert for squash-merges with 1 parent). **No** auto-merge on the revert PR — review by hand.
+- **Branch without PR** → best-effort `git push origin --delete <branch>` with `expectedHeadSha`-guard.
 
 A trace (cancelled job count, closed/reverted PRs, deleted branches) is written to the original failed job's `error` column. Race-protection: if a parallel worker tries to `update_job_status` on a job that the cascade already set to `CANCELLED`, the call is rejected with a `JOB_CANCELLED` error so the agent discards local work and calls `wait_for_job` again. The cascade is idempotent and never throws — failures become warnings on the failed-job's trace.
 

@@ -35,6 +35,8 @@ activity and create todos via native tool calls instead of curl.
 | `verify_sprint_task` | SPRINT_IMPLEMENTATION-flow: compare a `SprintTaskExecution`'s frozen `plan_snapshot` against `git diff <base_sha>...HEAD`. Returns `verify_result` + `allowed_for_done`. For `task[1..N]` zonder base_sha vult de tool die in op basis van de head_sha van de vorige DONE-execution | yes (read-only) |
 | `update_task_execution` | SPRINT_IMPLEMENTATION-flow: mutate `SprintTaskExecution.status` (PENDING/RUNNING/DONE/FAILED/SKIPPED). Token must own the parent SPRINT-job. Idempotent | no |
 | `job_heartbeat` | Extend `claude_jobs.lease_until` by 5 min. For SPRINT-jobs: response includes `sprint_run_status` + `sprint_run_pause_reason` so the worker can break its task-loop on UI-side cancel/pause | no |
+| `get_idea_chat_channel` | Fetch channel items (messages/logs/questions) for an idea, with composite cursor, `active_job`, and `question_states` (copilot idea-chat) | n/a |
+| `send_idea_chat_message` | Post a user message to an idea's chat channel and enqueue (or coalesce) an IDEA_CHAT job | no |
 
 Demo accounts may read but writes return `PERMISSION_DENIED`.
 
@@ -80,20 +82,20 @@ Compares the immutable snapshot captured at claim time against the current state
 
 ### set_pbi_pr
 
-Links a GitHub Pull Request to a PBI and clears any previous merge timestamp. Safe to call multiple times — idempotent.
+Links a Forgejo Pull Request to a PBI and clears any previous merge timestamp. Safe to call multiple times — idempotent.
 
 **Input**
 
 ```json
-{ "pbi_id": "cmoprewcf000q...", "pr_url": "https://github.com/owner/repo/pull/42" }
+{ "pbi_id": "cmoprewcf000q...", "pr_url": "https://git.jp-visser.nl/owner/repo/pulls/42" }
 ```
 
-`pr_url` must match `^https://github\.com/[^/]+/[^/]+/pull/\d+$`. Any other format is rejected with a schema error.
+`pr_url` must be a valid Forgejo `/pulls/N` URL on a host in `FORGEJO_HOSTS`. GitHub URLs are rejected with `LEGACY_GITHUB_URL`.
 
 **Output**
 
 ```json
-{ "ok": true, "pbi_id": "cmoprewcf000q...", "pr_url": "https://github.com/owner/repo/pull/42" }
+{ "ok": true, "pbi_id": "cmoprewcf000q...", "pr_url": "https://git.jp-visser.nl/owner/repo/pulls/42" }
 ```
 
 **Errors**
@@ -102,7 +104,8 @@ Links a GitHub Pull Request to a PBI and clears any previous merge timestamp. Sa
 |---|---|
 | PBI not found or inaccessible | `PBI <id> not found or not accessible` |
 | Demo account | `PERMISSION_DENIED: Demo accounts cannot perform write operations` |
-| Invalid URL format | `VALIDATION_ERROR: pr_url: Invalid` |
+| GitHub URL | `LEGACY_GITHUB_URL: …` |
+| Invalid URL format | `Invalid Forgejo PR URL: …` |
 
 ### mark_pbi_pr_merged
 
@@ -120,7 +123,7 @@ Records that the linked PR has been merged by setting `pr_merged_at = now()`. Re
 {
   "ok": true,
   "pbi_id": "cmoprewcf000q...",
-  "pr_url": "https://github.com/owner/repo/pull/42",
+  "pr_url": "https://git.jp-visser.nl/owner/repo/pulls/42",
   "pr_merged_at": "2026-05-03T12:00:00.000Z"
 }
 ```

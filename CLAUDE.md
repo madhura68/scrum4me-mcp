@@ -63,11 +63,11 @@ Forgejo 15.0.2 heeft géén `draft`-veld in `POST /pulls` en géén ready-transi
 - `createPullRequest({ draft: true })` → title krijgt prefix `WIP: `.
 - `markPullRequestReady({ prUrl })` → GET de PR, strip `WIP: ` / `[WIP] ` prefix, PATCH de title terug. Idempotent (geen-op bij ontbrekende prefix).
 
-### Auto-merge (PBI-47)
+### Auto-merge (PBI-47 + PBI-130)
 
-`enableAutoMergeOnPr` doet eerst een discovery-call (`/version` + `/swagger.v1.json`, gecached per host) om te verifiëren dat `merge_when_checks_succeed` in `MergePullRequestOption` zit. Bij ontbreken: typed `AUTO_MERGE_NOT_ALLOWED` zonder een merge-call te doen — direct mergen is bewust géén fallback.
+`enableAutoMergeOnPr` doet eerst een discovery-call (`/version` + `/swagger.v1.json`, gecached per host) om te verifiëren dat `merge_when_checks_succeed` in `MergePullRequestOption` zit. Bij ontbreken: typed `AUTO_MERGE_NOT_ALLOWED` zonder een merge-call te doen.
 
-Bij wél-support: `POST /pulls/{idx}/merge` met `{Do:'squash', merge_when_checks_succeed:true, head_commit_id:<expectedHeadSha>}`. Forgejo's `head_commit_id`-check is mogelijk losser dan GitHub's `--match-head-commit` — bij twijfel verifieer in de smoke-stap dat een mismatch echt 409 oplevert.
+Bij wél-support (schedule-first, PBI-130): **stap 1** — `POST /pulls/{idx}/merge` met `{Do:'squash', merge_when_checks_succeed:true, head_commit_id:<expectedHeadSha>}`. Faalt stap 1 → surface de fout; stap 2 draait niet. **Stap 2** — opportunistische directe squash-merge (zónder `merge_when_checks_succeed`), max 3 pogingen met backoff. Lukt → `{ok:true, mode:'merged'}`; faalt → `{ok:true, mode:'scheduled'}` (schedule uit stap 1 blijft actief). De directe merge is bedoeld voor repos zónder CI-checks waar de schedule anders nooit getriggerd wordt.
 
 ### URL-validatie
 
