@@ -162,9 +162,14 @@ export async function createPullRequest(opts: {
  * zónder een merge-call te doen.
  *
  * PBI-130: de opportunistische directe squash-merge (stap 2) draait alléén ná
- * een geslaagde, gate-respecterende schedule (stap 1). De schedule blijft de
- * "Allow auto-merge"-gate afdwingen; de directe merge maakt de flow betrouwbaar
- * op repos zónder CI-checks, waar de schedule anders nooit getriggerd wordt.
+ * een geslaagde schedule (stap 1). De echte veiligheidslaag is branch-protection
+ * (required checks), die Forgejo server-side afdwingt — óók voor de directe
+ * merge; Forgejo/Gitea kent GÉÉN repo-niveau "Allow auto-merge"-schakelaar
+ * (anders dan GitHub). Schedule-first blijft de voorkeur: huidig gedrag, de
+ * directe-merge-fout hoeft niet geclassificeerd te worden, en op CI-repos faalt
+ * stap 2 onschadelijk (Forgejo weigert vóór required checks) → de schedule blijft
+ * staan → geen STORY-regressie. De directe merge maakt de flow betrouwbaar op
+ * repos zónder CI-checks, waar de schedule anders nooit getriggerd wordt.
  */
 export async function enableAutoMergeOnPr(opts: {
   prUrl: string
@@ -192,9 +197,10 @@ export async function enableAutoMergeOnPr(opts: {
     return forgejoErrorToAutoMergeResult(err)
   }
 
-  // Stap 1: scheduled auto-merge (ongewijzigd gedrag). Dit RESPECTEERT de
-  // "Allow auto-merge"-gate: staat die uit, dan weigert Forgejo hier en surfacen
-  // we het. De opportunistische directe merge (stap 2) draait alléén ná succes.
+  // Stap 1: scheduled auto-merge (ongewijzigd gedrag). NB: Forgejo kent geen
+  // repo-niveau "Allow auto-merge"-schakelaar; de veiligheid zit in
+  // branch-protection (required checks, server-side) — niet in een gate hier.
+  // Faalt deze POST → surface. De directe merge (stap 2) draait alléén ná succes.
   const mergePath = `${repoPath(prRef.owner, prRef.repo)}/pulls/${prRef.index}/merge`
   const scheduleBody: Record<string, unknown> = { Do: 'squash', merge_when_checks_succeed: true }
   if (opts.expectedHeadSha) scheduleBody.head_commit_id = opts.expectedHeadSha
