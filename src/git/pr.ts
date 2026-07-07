@@ -30,7 +30,7 @@ export type { AutoMergeFailReason } from './forgejo-rest.js'
 import type { AutoMergeFailReason } from './forgejo-rest.js'
 
 export type EnableAutoMergeResult =
-  | { ok: true }
+  | { ok: true; mode: 'merged' | 'scheduled' }
   | { ok: false; reason: AutoMergeFailReason; stderr: string }
 
 export type PrState = 'OPEN' | 'MERGED' | 'CLOSED'
@@ -159,12 +159,18 @@ export async function createPullRequest(opts: {
  *
  * Wanneer de Forgejo-instance `merge_when_checks_succeed` niet ondersteunt
  * (discovery faalt op dat veld) retourneren we `AUTO_MERGE_NOT_ALLOWED`
- * zónder een merge-call te doen — direct mergen is bewust géén fallback.
+ * zónder een merge-call te doen.
+ *
+ * PBI-130: de opportunistische directe squash-merge (stap 2) draait alléén ná
+ * een geslaagde, gate-respecterende schedule (stap 1). De schedule blijft de
+ * "Allow auto-merge"-gate afdwingen; de directe merge maakt de flow betrouwbaar
+ * op repos zónder CI-checks, waar de schedule anders nooit getriggerd wordt.
  */
 export async function enableAutoMergeOnPr(opts: {
   prUrl: string
   expectedHeadSha?: string
   cwd?: string
+  directMergeBackoffMs?: number
 }): Promise<EnableAutoMergeResult> {
   let prRef
   try {
@@ -186,26 +192,46 @@ export async function enableAutoMergeOnPr(opts: {
     return forgejoErrorToAutoMergeResult(err)
   }
 
-  const body: Record<string, unknown> = {
-    Do: 'squash',
-    merge_when_checks_succeed: true,
-  }
-  if (opts.expectedHeadSha) body.head_commit_id = opts.expectedHeadSha
+  // Stap 1: scheduled auto-merge (ongewijzigd gedrag). Dit RESPECTEERT de
+  // "Allow auto-merge"-gate: staat die uit, dan weigert Forgejo hier en surfacen
+  // we het. De opportunistische directe merge (stap 2) draait alléén ná succes.
+  const mergePath = `${repoPath(prRef.owner, prRef.repo)}/pulls/${prRef.index}/merge`
+  const scheduleBody: Record<string, unknown> = { Do: 'squash', merge_when_checks_succeed: true }
+  if (opts.expectedHeadSha) scheduleBody.head_commit_id = opts.expectedHeadSha
 
   try {
-    await callForgejo(
-      `${repoPath(prRef.owner, prRef.repo)}/pulls/${prRef.index}/merge`,
-      {
-        method: 'POST',
-        write: true,
-        host: prRef.host,
-        json: body,
-      },
-    )
-    return { ok: true }
+    await callForgejo(mergePath, { method: 'POST', write: true, host: prRef.host, json: scheduleBody })
   } catch (err) {
     return forgejoErrorToAutoMergeResult(err)
   }
+
+  // Stap 2: opportunistische directe squash-merge (zónder merge_when_checks_succeed),
+  // met bounded retry voor transiënte mergeability. Slaagt 'ie → nú gemerged.
+  // Faalt 'ie (checks pending, conflict, head-move, aanhoudend transient) → we
+  // branchen NIET op de fout; de schedule uit stap 1 blijft staan.
+  const directBody: Record<string, unknown> = { Do: 'squash' }
+  if (opts.expectedHeadSha) directBody.head_commit_id = opts.expectedHeadSha
+
+  const DIRECT_MERGE_MAX_ATTEMPTS = 3
+  const backoffMs = opts.directMergeBackoffMs ?? 400
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= DIRECT_MERGE_MAX_ATTEMPTS; attempt++) {
+    try {
+      await callForgejo(mergePath, { method: 'POST', write: true, host: prRef.host, json: directBody })
+      return { ok: true, mode: 'merged' }
+    } catch (err) {
+      lastErr = err
+      if (attempt < DIRECT_MERGE_MAX_ATTEMPTS && backoffMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, backoffMs))
+      }
+    }
+  }
+  console.warn(
+    `[enableAutoMergeOnPr] directe merge niet mogelijk voor ${opts.prUrl} na ${DIRECT_MERGE_MAX_ATTEMPTS} pogingen; scheduled auto-merge blijft actief: ${
+      (lastErr as Error)?.message?.slice(0, 200) ?? String(lastErr)
+    }`,
+  )
+  return { ok: true, mode: 'scheduled' }
 }
 
 // =========================================================================
