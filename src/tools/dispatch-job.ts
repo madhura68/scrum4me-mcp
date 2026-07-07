@@ -17,13 +17,14 @@ import {
 } from '../lib/dispatch/review-jobs.js'
 import { dispatchTaskImplementation } from '../lib/dispatch/task-implementation.js'
 import { dispatchDeploy } from '../lib/dispatch/deploy-dispatch.js'
+import { dispatchDocsAudit } from '../lib/dispatch/docs-audit-dispatch.js'
 
 // Geëxporteerd t.b.v. de invariant-test (copilot idea-chat spec §3.7): IDEA_CHAT
 // mag hier NOOIT bij — chat-beurten ontstaan uitsluitend via send_idea_chat_message.
 export const KIND_VALUES = [
   'IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN',
   'TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION',
-  'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW', 'DEPLOY',
+  'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW', 'DEPLOY', 'DOCS_AUDIT',
 ] as const
 
 type DispatchKind = (typeof KIND_VALUES)[number]
@@ -44,6 +45,8 @@ const REF_MATRIX: Record<DispatchKind, { required: RefKey[]; oneOf?: RefKey[] }>
   SPEC_REVIEW: { required: [], oneOf: ['doc_slug', 'doc_id'] },
   TASK_REVIEW: { required: ['task_id'] },
   DEPLOY: { required: [] },
+  // M19 DOCS_AUDIT: "audit de docs nu", géén refs (spiegel DEPLOY).
+  DOCS_AUDIT: { required: [] },
 }
 
 const inputSchema = z.object({
@@ -123,6 +126,8 @@ export async function handleDispatchJob(rawInput: Input) {
           }))
         case 'DEPLOY':
           return toolJson(await dispatchDeploy({ productId: input.product_id, userId: auth.userId }))
+        case 'DOCS_AUDIT':
+          return toolJson(await dispatchDocsAudit({ productId: input.product_id, userId: auth.userId }))
         default: {
           const _exhaustive: never = input.kind
           return toolError(`Onbekend kind: ${_exhaustive}`)
@@ -145,7 +150,8 @@ export function registerDispatchJobTool(server: McpServer) {
         'IDEA_* → idea_id; TASK_IMPLEMENTATION/TASK_REVIEW → task_id; ' +
         'SPRINT_IMPLEMENTATION → sprint_id; PR_REVIEW → pr_url (must belong to the product repo); ' +
         'SPEC_REVIEW → doc_slug or doc_id (SPECS folder of this product); ' +
-        'DEPLOY → no refs (deploys current main; requires product.deploy_flow). ' +
+        'DEPLOY → no refs (deploys current main; requires product.deploy_flow); ' +
+        'DOCS_AUDIT → no refs (audits docs vs merged PRs since the last run). ' +
         'PLAN_CHAT and IDEA_CHAT are not dispatchable. Forbidden for demo accounts.',
       inputSchema,
     },

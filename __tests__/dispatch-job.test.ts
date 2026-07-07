@@ -24,6 +24,9 @@ vi.mock('../src/lib/dispatch/task-implementation.js', () => ({
 vi.mock('../src/lib/dispatch/deploy-dispatch.js', () => ({
   dispatchDeploy: vi.fn().mockResolvedValue({ job_id: 'job-6' }),
 }))
+vi.mock('../src/lib/dispatch/docs-audit-dispatch.js', () => ({
+  dispatchDocsAudit: vi.fn().mockResolvedValue({ job_id: 'job-7' }),
+}))
 
 import { requireWriteAccess } from '../src/auth.js'
 import { userCanAccessProduct } from '../src/access.js'
@@ -69,6 +72,18 @@ it('DEPLOY weigert refs zoals pr_url (matrix is exact, géén refs toegestaan)',
   const res = await handleDispatchJob({ kind: 'DEPLOY', product_id: 'p1', pr_url: 'https://x/y/pulls/1' })
   expect(res.isError).toBe(true)
   expect(res.content[0].text).toMatch(/pr_url/)
+})
+
+it('DOCS_AUDIT vereist geen refs (matrix: required = [])', async () => {
+  const res = await handleDispatchJob({ kind: 'DOCS_AUDIT', product_id: 'p1' })
+  expect(res.isError).toBeFalsy()
+  expect(JSON.parse(res.content[0].text as string)).toMatchObject({ job_id: 'job-7' })
+})
+
+it('DOCS_AUDIT weigert een task_id (matrix is exact, géén refs toegestaan)', async () => {
+  const res = await handleDispatchJob({ kind: 'DOCS_AUDIT', product_id: 'p1', task_id: 't1' })
+  expect(res.isError).toBe(true)
+  expect(res.content[0].text).toMatch(/task_id/)
 })
 
 it('product buiten scope → 404-stijl, dispatcher niet aangeroepen', async () => {
