@@ -35,6 +35,7 @@ import { transition as prFlowTransition } from '../flow/pr-flow.js'
 import { transition as sprintRunTransition } from '../flow/sprint-run.js'
 import { executeEffects } from '../flow/effects.js'
 import { maybeEnqueueDeployJob } from '../lib/dispatch/deploy-job.js'
+import { repoBucketKey, maybeAutoDeploySprintBatchPr } from '../lib/dispatch/sprint-batch-deploy.js'
 
 async function fetchConflictFiles(prUrl: string): Promise<string[]> {
   const result = await listPullRequestFiles({ prUrl })
@@ -512,7 +513,7 @@ export async function maybeCreateAutoPr(opts: {
 
   const product = await prisma.product.findUnique({
     where: { id: productId },
-    select: { auto_pr: true },
+    select: { auto_pr: true, repo_url: true },
   })
   if (!product?.auto_pr) return null
 
@@ -540,8 +541,9 @@ export async function maybeCreateAutoPr(opts: {
   // ander repo targeten. PRs en branches zijn per-repo, dus een sibling-PR mag
   // alleen hergebruikt worden als die sibling hetzelfde repo targette. null/leeg
   // repo_url = het product-repo; twee taken zitten in dezelfde repo-bucket als
-  // hun (repo_url ?? null) gelijk is.
-  const thisRepoKey = task.repo_url ?? null
+  // hun repoBucketKey (M21: één gedeelde normalisatie die null/leeg én de
+  // expliciete product-url ± .git op dezelfde product-bucket=null mapt) gelijk is.
+  const thisRepoKey = repoBucketKey(task.repo_url, product.repo_url)
 
   // PBI-46 SPRINT-mode: hergebruik 1 draft-PR voor de hele SprintRun (per repo).
   // Mens zet 'm ready-for-review zodra de SprintRun DONE is.
@@ -557,7 +559,7 @@ export async function maybeCreateAutoPr(opts: {
     })
     const sprintReuse = await firstOpenPrUrl(
       sprintSiblings
-        .filter((s) => (s.task?.repo_url ?? null) === thisRepoKey)
+        .filter((s) => repoBucketKey(s.task?.repo_url, product.repo_url) === thisRepoKey)
         .map((s) => s.pr_url),
     )
     if (sprintReuse) return sprintReuse
@@ -595,7 +597,7 @@ export async function maybeCreateAutoPr(opts: {
   })
   const storyReuse = await firstOpenPrUrl(
     storySiblings
-      .filter((s) => (s.task?.repo_url ?? null) === thisRepoKey)
+      .filter((s) => repoBucketKey(s.task?.repo_url, product.repo_url) === thisRepoKey)
       .map((s) => s.pr_url),
   )
   if (storyReuse) return storyReuse
@@ -1363,6 +1365,15 @@ export function registerUpdateJobStatusTool(server: McpServer) {
                 console.warn(`[update_job_status] markPullRequestReady error:`, err)
               }
             }
+            // M21: opt-in auto-deploy voor de sprint-batch (ná ready-maken).
+            await maybeAutoDeploySprintBatchPr({
+              jobId: job_id,
+              userId: job.user_id,
+              productId: job.product_id,
+              sprintRunId: ctx.sprint_run_id,
+            }).catch((err) => {
+              console.warn('[update_job_status] sprint-batch auto-deploy error:', err)
+            })
           }
         }
 
@@ -1504,6 +1515,15 @@ export function registerUpdateJobStatusTool(server: McpServer) {
               } catch (err) {
                 console.warn(`[update_job_status] sprint-batch markPullRequestReady error:`, err)
               }
+              // M21: opt-in auto-deploy voor de single-session sprint-batch.
+              await maybeAutoDeploySprintBatchPr({
+                jobId: job_id,
+                userId: job.user_id,
+                productId: job.product_id,
+                sprintRunId: job.sprint_run_id,
+              }).catch((err) => {
+                console.warn('[update_job_status] sprint-batch auto-deploy error:', err)
+              })
             }
           } catch (err) {
             console.warn(`[update_job_status] finalizeSprintRunOnDone error:`, err)
