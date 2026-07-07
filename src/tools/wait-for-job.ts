@@ -24,6 +24,7 @@ import { fetchPrDiff, fetchCompareDiff, getPullRequestState } from '../git/pr.js
 import { parseForgejoPrUrl } from '../git/forgejo-rest.js'
 import { resolveRuntimeJobConfig } from '@shared/job-config.js'
 import { buildDocIndex } from '../lib/doc-index.js'
+import { buildDocsAuditPayload } from '../lib/docs-audit-payload.js'
 import { loadManualIdeaContext } from '../lib/manual-idea-context.js'
 import { resolvePrLinkedPlan, type LinkedPlan } from '../lib/pr-linked-plan.js'
 import { resolveTaskImplContext } from '../lib/task-review-context.js'
@@ -327,6 +328,7 @@ const CLAIMABLE_STANDALONE_KINDS = "('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIE
 const CLAIMABLE_JOB_KIND_FILTER = `AND (
               (cj.kind IN ${CLAIMABLE_STANDALONE_KINDS} AND cj.source <> 'ORCHESTRATOR')
               OR (cj.kind = 'DEPLOY' AND cj.source IN ('SYSTEM', 'MANUAL'))
+              OR (cj.kind = 'DOCS_AUDIT' AND cj.source IN ('SYSTEM', 'MANUAL'))
               OR (cj.kind = 'PLAN_CHAT'
                   AND cj.source = 'ORCHESTRATOR'
                   AND cj.task_id IS NULL
@@ -357,6 +359,24 @@ export function buildClaimableJobWhereClause(input: ClaimFilterInput): string {
             AND cj.status = 'QUEUED'
             AND cj.required_capability = 'deploy'
             AND cj.kind = 'DEPLOY'
+            AND cj.source IN ('SYSTEM', 'MANUAL')
+  `
+  }
+
+  // M19 (codex-review): een worker met exact ['docs_audit'] is een dedicated
+  // docs-worker — hard beperken tot DOCS_AUDIT en de NULL-capability-tak
+  // uitsluiten, zodat hij (met FORGEJO_TOKEN + Edit/Write/Bash) nooit een
+  // idea/plan-chat-job kan claimen. Byte-symmetrisch met deployOnly.
+  const docsAuditOnly =
+    (input.capabilities ?? []).length === 1 && input.capabilities?.[0] === 'docs_audit'
+  if (docsAuditOnly) {
+    return `
+          WHERE cj.user_id = \${userId}
+            ${productScope}
+            AND cj.runtime = '${input.runtime}'
+            AND cj.status = 'QUEUED'
+            AND cj.required_capability = 'docs_audit'
+            AND cj.kind = 'DOCS_AUDIT'
             AND cj.source IN ('SYSTEM', 'MANUAL')
   `
   }
@@ -395,6 +415,20 @@ export function buildClaimableJobWhereFragment(input: ClaimSqlFilterInput): Pris
             AND cj.status = 'QUEUED'
             AND cj.required_capability = 'deploy'
             AND cj.kind = 'DEPLOY'
+            AND cj.source IN ('SYSTEM', 'MANUAL')
+  `
+  }
+
+  // M19 (codex-review): docs_audit-only-isolatie, byte-symmetrisch met deployOnly.
+  const docsAuditOnly = capabilities.length === 1 && capabilities[0] === 'docs_audit'
+  if (docsAuditOnly) {
+    return Prisma.sql`
+          WHERE cj.user_id = ${input.userId}
+            ${productScope}
+            AND cj.runtime = ${input.runtime}::"AgentRuntime"
+            AND cj.status = 'QUEUED'
+            AND cj.required_capability = 'docs_audit'
+            AND cj.kind = 'DOCS_AUDIT'
             AND cj.source IN ('SYSTEM', 'MANUAL')
   `
   }
@@ -863,6 +897,7 @@ export async function getFullJobContext(jobId: string, runtime?: WorkerRuntime) 
       product: {
         select: {
           id: true,
+          code: true, // M19: is_scrum4me-detectie in de DOCS_AUDIT-payload
           name: true,
           repo_url: true,
           definition_of_done: true,
@@ -1169,6 +1204,49 @@ export async function getFullJobContext(jobId: string, runtime?: WorkerRuntime) 
       // Prompt-ownership (bestaand PR_REVIEW-patroon): de runner is
       // gezaghebbend via getKindPromptText('DEPLOY', runtime) — deze payload
       // draagt zelf geen prompt.
+      prompt_text: '',
+    }
+  }
+
+  // M19: DOCS_AUDIT-payload. Net als DEPLOY VÓÓR de source === 'MANUAL'-branch —
+  // een handmatige DOCS_AUDIT (source=MANUAL via dispatch_job) heeft geen
+  // manual_draft en zou anders door die branch worden teruggerold.
+  if (job.kind === 'DOCS_AUDIT') {
+    // Laatste geslaagde DOCS_AUDIT van dit product (finished_at gezet) → since.
+    const lastJob = await prisma.claudeJob.findFirst({
+      where: {
+        product_id: job.product.id,
+        kind: 'DOCS_AUDIT',
+        status: { in: ['DONE', 'SKIPPED'] },
+        finished_at: { not: null },
+        id: { not: job.id },
+      },
+      orderBy: { finished_at: 'desc' },
+      select: { finished_at: true, summary: true },
+    })
+    const payload = buildDocsAuditPayload({
+      product: {
+        id: job.product.id,
+        name: job.product.name,
+        repo_url: job.product.repo_url,
+        code: job.product.code,
+      },
+      lastJob,
+      docIndex,
+      now: new Date(),
+    })
+    return {
+      job_id: job.id,
+      kind: 'DOCS_AUDIT' as const,
+      source: job.source,
+      status: 'claimed' as const,
+      config,
+      doc_index: docIndex,
+      product: payload.product,
+      repo_url: job.product.repo_url,
+      since: payload.since,
+      is_scrum4me: payload.is_scrum4me,
+      // Prompt-ownership: de runner is gezaghebbend via getKindPromptText.
       prompt_text: '',
     }
   }

@@ -34,6 +34,7 @@ const KIND_TO_PROMPT_PATH: Partial<Record<ClaudeJobKind, string>> = {
   SPEC_REVIEW: 'spec/review.md',
   TASK_REVIEW: 'task/review.md',
   DEPLOY: 'deploy/run.md',
+  DOCS_AUDIT: 'docs-audit/audit.md',
 }
 
 // Runtime-specifieke overrides. Ontbreekt een (runtime, kind)-override, dan valt de
