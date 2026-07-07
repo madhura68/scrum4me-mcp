@@ -166,6 +166,7 @@ enum ClaudeJobKind {
   SPEC_REVIEW
   TASK_REVIEW
   DEPLOY
+  DOCS_AUDIT
 }
 
 enum ReviewVerdict {
