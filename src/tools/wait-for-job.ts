@@ -24,6 +24,7 @@ import { fetchPrDiff, fetchCompareDiff, getPullRequestState } from '../git/pr.js
 import { parseForgejoPrUrl } from '../git/forgejo-rest.js'
 import { resolveRuntimeJobConfig } from '@shared/job-config.js'
 import { buildDocIndex } from '../lib/doc-index.js'
+import { buildDocsAuditPayload } from '../lib/docs-audit-payload.js'
 import { loadManualIdeaContext } from '../lib/manual-idea-context.js'
 import { resolvePrLinkedPlan, type LinkedPlan } from '../lib/pr-linked-plan.js'
 import { resolveTaskImplContext } from '../lib/task-review-context.js'
@@ -863,6 +864,7 @@ export async function getFullJobContext(jobId: string, runtime?: WorkerRuntime) 
       product: {
         select: {
           id: true,
+          code: true, // M19: is_scrum4me-detectie in de DOCS_AUDIT-payload
           name: true,
           repo_url: true,
           definition_of_done: true,
@@ -1169,6 +1171,49 @@ export async function getFullJobContext(jobId: string, runtime?: WorkerRuntime) 
       // Prompt-ownership (bestaand PR_REVIEW-patroon): de runner is
       // gezaghebbend via getKindPromptText('DEPLOY', runtime) — deze payload
       // draagt zelf geen prompt.
+      prompt_text: '',
+    }
+  }
+
+  // M19: DOCS_AUDIT-payload. Net als DEPLOY VÓÓR de source === 'MANUAL'-branch —
+  // een handmatige DOCS_AUDIT (source=MANUAL via dispatch_job) heeft geen
+  // manual_draft en zou anders door die branch worden teruggerold.
+  if (job.kind === 'DOCS_AUDIT') {
+    // Laatste geslaagde DOCS_AUDIT van dit product (finished_at gezet) → since.
+    const lastJob = await prisma.claudeJob.findFirst({
+      where: {
+        product_id: job.product.id,
+        kind: 'DOCS_AUDIT',
+        status: { in: ['DONE', 'SKIPPED'] },
+        finished_at: { not: null },
+        id: { not: job.id },
+      },
+      orderBy: { finished_at: 'desc' },
+      select: { finished_at: true, summary: true },
+    })
+    const payload = buildDocsAuditPayload({
+      product: {
+        id: job.product.id,
+        name: job.product.name,
+        repo_url: job.product.repo_url,
+        code: job.product.code,
+      },
+      lastJob,
+      docIndex,
+      now: new Date(),
+    })
+    return {
+      job_id: job.id,
+      kind: 'DOCS_AUDIT' as const,
+      source: job.source,
+      status: 'claimed' as const,
+      config,
+      doc_index: docIndex,
+      product: payload.product,
+      repo_url: job.product.repo_url,
+      since: payload.since,
+      is_scrum4me: payload.is_scrum4me,
+      // Prompt-ownership: de runner is gezaghebbend via getKindPromptText.
       prompt_text: '',
     }
   }
