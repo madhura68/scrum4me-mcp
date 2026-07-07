@@ -31,7 +31,7 @@ export type FlowEffect =
     }
 
 export type AutoMergeOutcome =
-  | { effect: 'ENABLE_AUTO_MERGE'; ok: true }
+  | { effect: 'ENABLE_AUTO_MERGE'; ok: true; mode: 'merged' | 'scheduled' }
   | {
       effect: 'ENABLE_AUTO_MERGE'
       ok: false
@@ -86,7 +86,10 @@ async function executeEffect(effect: FlowEffect): Promise<AutoMergeOutcome | und
         prUrl: effect.prUrl,
         expectedHeadSha: effect.expectedHeadSha,
       })
-      if (result.ok) return { effect: 'ENABLE_AUTO_MERGE', ok: true }
+      if (result.ok) {
+        console.log(`[effects] ENABLE_AUTO_MERGE ${effect.prUrl}: ${result.mode}`)
+        return { effect: 'ENABLE_AUTO_MERGE', ok: true, mode: result.mode }
+      }
       return { effect: 'ENABLE_AUTO_MERGE', ok: false, reason: result.reason, stderr: result.stderr }
     }
     case 'MARK_PR_READY': {
