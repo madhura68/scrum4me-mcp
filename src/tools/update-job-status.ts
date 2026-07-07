@@ -27,6 +27,7 @@ import { releaseLocksOnTerminal } from '../git/job-locks.js'
 import { resolveRepoRoot } from './wait-for-job.js'
 import { pushBranchForJob } from '../git/push.js'
 import { notifyJobEnqueued } from '../lib/dispatch/notify.js'
+import { formatDocsAuditCursor } from '@shared/docs-audit-cursor.js'
 import { createPullRequest, getPullRequestState, listPullRequestFiles, markPullRequestReady } from '../git/pr.js'
 import { cancelPbiOnFailure } from '../cancel/pbi-cascade.js'
 import { propagateStatusUpwards } from '../lib/tasks-status-update.js'
@@ -55,6 +56,10 @@ const inputSchema = z.object({
   cache_read_tokens: z.number().int().nonnegative().optional(),
   cache_write_tokens: z.number().int().nonnegative().optional(),
   actual_thinking_tokens: z.number().int().nonnegative().optional(),
+  // M19 DOCS_AUDIT: cursor-input bij een gecapte run (>30 PR's). Server schrijft
+  // de canonieke marker in de summary; capped=true vereist een geldige ISO.
+  processed_until: z.string().datetime().optional(),
+  capped: z.boolean().optional(),
 })
 
 export async function cleanupWorktreeForTerminalStatus(
@@ -751,6 +756,94 @@ export async function applyDeployTerminalUpdate(input: DeployTerminalInput): Pro
   })
 }
 
+// ── M19 DOCS_AUDIT terminal-lifecycle ────────────────────────────────────────
+// Herbruikbaar door de tool (hieronder) én de runner (scrum4me-docker importeert
+// applyDocsAuditTerminalUpdate, net als runDeferredWorktreeCleanup). De agent
+// heeft update_job_status NIET in zijn allowlist en terminaliseert dus nooit zelf.
+
+export type DocsAuditTerminalStatus = 'done' | 'failed' | 'skipped'
+
+// Pure gate — zonder DB testbaar.
+export function checkDocsAuditTerminal(input: {
+  status: string
+  source: string
+  skipReason: string | null
+  processedUntil: string | null
+  capped: boolean
+}): { ok: true } | { ok: false; error: string } {
+  const { status, source, skipReason, processedUntil, capped } = input
+  if (source !== 'SYSTEM' && source !== 'MANUAL') {
+    return { ok: false, error: `DOCS_AUDIT terminal alleen voor SYSTEM/MANUAL (source=${source})` }
+  }
+  if (status !== 'done' && status !== 'failed' && status !== 'skipped') {
+    return { ok: false, error: `Ongeldige terminale status voor DOCS_AUDIT: ${status}` }
+  }
+  if (status === 'skipped' && (!skipReason || skipReason.trim().length === 0)) {
+    return { ok: false, error: "DOCS_AUDIT 'skipped' vereist een niet-lege reden" }
+  }
+  if (capped) {
+    const d = processedUntil ? new Date(processedUntil) : null
+    if (!d || Number.isNaN(d.getTime())) {
+      return { ok: false, error: 'DOCS_AUDIT capped=true vereist een geldige ISO processed_until' }
+    }
+  }
+  return { ok: true }
+}
+
+// Herbruikbare terminale update. Atomaire guard (codex r5): alle invarianten in
+// de WHERE, zodat een stale runner (lease verloren, rij door ander token opnieuw
+// geclaimd) of een al-terminale/CANCELLED rij niet overschreven wordt. DB-only:
+// geen worktree-cleanup, geen auto-PR/push, geen cascade. Bij capped schrijft de
+// server de canonieke cursor-marker in de summary (agent formatteert niets).
+export async function applyDocsAuditTerminalUpdate(input: {
+  jobId: string
+  callerTokenId: string | null
+  status: DocsAuditTerminalStatus
+  source: string
+  summary: string | null
+  skipReason: string | null
+  processedUntil: string | null
+  capped: boolean
+}): Promise<{ ok: true; status: string } | { ok: false; error: string }> {
+  const gate = checkDocsAuditTerminal({
+    status: input.status,
+    source: input.source,
+    skipReason: input.skipReason,
+    processedUntil: input.processedUntil,
+    capped: input.capped,
+  })
+  if (!gate.ok) return gate
+
+  const dbStatus =
+    input.status === 'done' ? 'DONE' : input.status === 'failed' ? 'FAILED' : 'SKIPPED'
+  let finalSummary = input.summary
+  if (input.capped && input.processedUntil) {
+    const marker = formatDocsAuditCursor(new Date(input.processedUntil))
+    finalSummary = finalSummary ? `${finalSummary}\n${marker}` : marker
+  }
+  const res = await prisma.claudeJob.updateMany({
+    where: {
+      id: input.jobId,
+      kind: 'DOCS_AUDIT',
+      claimed_by_token_id: input.callerTokenId,
+      status: { in: ['CLAIMED', 'RUNNING'] },
+    },
+    data: {
+      status: dbStatus as never,
+      summary: finalSummary ?? undefined,
+      error: input.status === 'skipped' ? input.skipReason ?? undefined : undefined,
+      finished_at: new Date(),
+    },
+  })
+  if (res.count === 0) {
+    return {
+      ok: false,
+      error: 'DOCS_AUDIT-job niet in CLAIMED/RUNNING of niet door dit token geclaimd (stale/terminaal)',
+    }
+  }
+  return { ok: true, status: dbStatus }
+}
+
 export function registerUpdateJobStatusTool(server: McpServer) {
   server.registerTool(
     'update_job_status',
@@ -791,6 +884,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
       cache_read_tokens,
       cache_write_tokens,
       actual_thinking_tokens,
+      processed_until,
+      capped,
     }) =>
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
@@ -835,6 +930,26 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         }
         if (!['CLAIMED', 'RUNNING'].includes(job.status)) {
           return toolError(`Job is already in terminal state: ${job.status.toLowerCase()}`)
+        }
+
+        // M19: DOCS_AUDIT terminaliseert via een eigen DB-only pad — VÓÓR de
+        // skipped-gate (die skipped alleen voor TASK_IMPLEMENTATION/DEPLOY
+        // toestaat) én vóór de source==='MANUAL'-shortcut. Zowel de tool (dit
+        // pad) als de runner (import) roepen dezelfde applyDocsAuditTerminalUpdate.
+        // 'running' valt door naar de generieke started_at-update.
+        if (job.kind === 'DOCS_AUDIT' && status !== 'running') {
+          const res = await applyDocsAuditTerminalUpdate({
+            jobId: job.id,
+            callerTokenId: tokenId,
+            status,
+            source: job.source,
+            summary: summary ?? null,
+            skipReason: error ?? null,
+            processedUntil: processed_until ?? null,
+            capped: capped ?? false,
+          })
+          if (!res.ok) return toolError(res.error)
+          return toolJson({ job_id: job.id, status: res.status })
         }
 
         // 'skipped' = no-op exit. Only valid for TASK_IMPLEMENTATION (verify=EMPTY
