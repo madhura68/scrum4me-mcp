@@ -328,6 +328,7 @@ const CLAIMABLE_STANDALONE_KINDS = "('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIE
 const CLAIMABLE_JOB_KIND_FILTER = `AND (
               (cj.kind IN ${CLAIMABLE_STANDALONE_KINDS} AND cj.source <> 'ORCHESTRATOR')
               OR (cj.kind = 'DEPLOY' AND cj.source IN ('SYSTEM', 'MANUAL'))
+              OR (cj.kind = 'DOCS_AUDIT' AND cj.source IN ('SYSTEM', 'MANUAL'))
               OR (cj.kind = 'PLAN_CHAT'
                   AND cj.source = 'ORCHESTRATOR'
                   AND cj.task_id IS NULL
@@ -358,6 +359,24 @@ export function buildClaimableJobWhereClause(input: ClaimFilterInput): string {
             AND cj.status = 'QUEUED'
             AND cj.required_capability = 'deploy'
             AND cj.kind = 'DEPLOY'
+            AND cj.source IN ('SYSTEM', 'MANUAL')
+  `
+  }
+
+  // M19 (codex-review): een worker met exact ['docs_audit'] is een dedicated
+  // docs-worker — hard beperken tot DOCS_AUDIT en de NULL-capability-tak
+  // uitsluiten, zodat hij (met FORGEJO_TOKEN + Edit/Write/Bash) nooit een
+  // idea/plan-chat-job kan claimen. Byte-symmetrisch met deployOnly.
+  const docsAuditOnly =
+    (input.capabilities ?? []).length === 1 && input.capabilities?.[0] === 'docs_audit'
+  if (docsAuditOnly) {
+    return `
+          WHERE cj.user_id = \${userId}
+            ${productScope}
+            AND cj.runtime = '${input.runtime}'
+            AND cj.status = 'QUEUED'
+            AND cj.required_capability = 'docs_audit'
+            AND cj.kind = 'DOCS_AUDIT'
             AND cj.source IN ('SYSTEM', 'MANUAL')
   `
   }
@@ -396,6 +415,20 @@ export function buildClaimableJobWhereFragment(input: ClaimSqlFilterInput): Pris
             AND cj.status = 'QUEUED'
             AND cj.required_capability = 'deploy'
             AND cj.kind = 'DEPLOY'
+            AND cj.source IN ('SYSTEM', 'MANUAL')
+  `
+  }
+
+  // M19 (codex-review): docs_audit-only-isolatie, byte-symmetrisch met deployOnly.
+  const docsAuditOnly = capabilities.length === 1 && capabilities[0] === 'docs_audit'
+  if (docsAuditOnly) {
+    return Prisma.sql`
+          WHERE cj.user_id = ${input.userId}
+            ${productScope}
+            AND cj.runtime = ${input.runtime}::"AgentRuntime"
+            AND cj.status = 'QUEUED'
+            AND cj.required_capability = 'docs_audit'
+            AND cj.kind = 'DOCS_AUDIT'
             AND cj.source IN ('SYSTEM', 'MANUAL')
   `
   }

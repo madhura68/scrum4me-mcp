@@ -51,3 +51,31 @@ describe('claim-filter: DEPLOY (spec §5 + deploy-only-scoping)', () => {
     expect(clause).toContain("cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'IDEA_CHAT', 'PLAN_CHAT', 'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW')")
   })
 })
+
+describe('claim-filter: DOCS_AUDIT (M19 + docs_audit-only-isolatie)', () => {
+  it('generieke worker: DOCS_AUDIT-tak aanwezig voor SYSTEM|MANUAL', () => {
+    const clause = buildClaimableJobWhereClause({ runtime: 'CLAUDE', hasProductScope: false, capabilities: ['code_edit', 'planning', 'review'] })
+    expect(clause).toContain("cj.kind = 'DOCS_AUDIT' AND cj.source IN ('SYSTEM', 'MANUAL')")
+  })
+
+  it('docs_audit-only worker: claimt uitsluitend DOCS_AUDIT en nooit NULL-capability-jobs', () => {
+    const clause = buildClaimableJobWhereClause({ runtime: 'CLAUDE', hasProductScope: false, capabilities: ['docs_audit'] })
+    expect(clause).toContain("cj.kind = 'DOCS_AUDIT'")
+    expect(clause).toContain("cj.required_capability = 'docs_audit'")
+    expect(clause).not.toContain('cj.required_capability IS NULL') // geen idea/plan-chat-diefstal
+    expect(clause).not.toContain("'IDEA_GRILL'") // geen standalone-kinds-tak
+  })
+
+  it('docs_audit-only worker: Prisma.Sql-variant (fragment) matcht dezelfde docs-audit-only-tak', () => {
+    const fragment = buildClaimableJobWhereFragment({
+      userId: 'user-1',
+      runtime: 'CLAUDE',
+      hasProductScope: false,
+      capabilities: ['docs_audit'],
+    })
+    const text = sqlText(fragment)
+    expect(text).toContain("cj.required_capability = 'docs_audit'")
+    expect(text).toContain("cj.kind = 'DOCS_AUDIT'")
+    expect(text).not.toContain('cj.required_capability IS NULL')
+  })
+})
