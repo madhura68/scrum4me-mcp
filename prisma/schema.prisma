@@ -328,6 +328,11 @@ model Product {
   // Phase 4: per-product opt-in voor automatische codex-reviews (advisory).
   auto_pr_review            Boolean            @default(false)
   auto_task_review          Boolean            @default(false)
+  // M20: idea plan-review-loop — auto-dispatch codex-review na PLAN_READY +
+  // auto-revisie na CHANGES_REQUESTED; auto-materialisatie (PBI-tree) bij APPROVED.
+  // Default aan (JP-besluit spec v3); géén migration-time backfill.
+  auto_plan_review          Boolean            @default(true)
+  auto_materialize_plan     Boolean            @default(true)
   // M17: per-product opt-in voor auto-deploy na PR-merge + ops-agent-flownaam.
   // Invariant (app-level, Zod): auto_deploy=true vereist deploy_flow.
   auto_deploy               Boolean            @default(false)
