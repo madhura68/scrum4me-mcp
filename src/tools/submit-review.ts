@@ -71,19 +71,42 @@ type IdeaReviewJob = {
   product_id: string
   runtime: string
   orchestration_key: string | null
+  status: string
+  claimed_by_token_id: string | null
   idea: { id: string; status: string; plan_review_log: unknown } | null
   product: { auto_plan_review: boolean; auto_materialize_plan: boolean } | null
 }
 
 type VerdictOutcome = {
-  outcome: 'already-processed' | 'revision' | 'manual-stop' | 'approved' | 'rejected'
+  // 'stale' = de review-job is niet meer actief (user-cancel / reclaim / terminaal);
+  // het verdict wordt bewust NIET toegepast (noodrem, zie applyIdeaReviewVerdict).
+  outcome: 'already-processed' | 'revision' | 'manual-stop' | 'approved' | 'rejected' | 'stale'
   revisionJobId?: string
+}
+
+// Een review-verdict landt alleen als DEZE worker de job nog steeds actief
+// geclaimd heeft (CLAIMED/RUNNING + eigen token). Zo niet — user-cancel, reclaim
+// onder een ander token, of terminaal — dan is de review gestopt en wordt het
+// verdict verworpen. Spiegelt update-job-status.ts:919/931.
+function reviewStillActive(
+  job: { status: string; claimed_by_token_id: string | null } | null,
+  callerTokenId: string | undefined,
+): boolean {
+  return (
+    !!job &&
+    job.claimed_by_token_id === callerTokenId &&
+    (job.status === 'CLAIMED' || job.status === 'RUNNING')
+  )
 }
 
 // Alles-of-niets: ReviewLog + status + vervolg-job/vraag in één transactie.
 // De in-tx guard op de ReviewLog-rij is de idempotentie. Auto-materialize draait
 // bewust ná commit (buiten deze functie).
-async function applyIdeaReviewVerdict(job: IdeaReviewJob, input: SubmitReviewInput): Promise<VerdictOutcome> {
+async function applyIdeaReviewVerdict(
+  job: IdeaReviewJob,
+  input: SubmitReviewInput,
+  callerTokenId: string | undefined,
+): Promise<VerdictOutcome> {
   const ideaId = job.idea!.id
   const round = Math.max(parseLoopRound(job.orchestration_key), 1)
   const now = new Date()
@@ -105,6 +128,29 @@ async function applyIdeaReviewVerdict(job: IdeaReviewJob, input: SubmitReviewInp
       select: { id: true },
     })
     if (existing) return { outcome: 'already-processed' as const }
+
+    // Noodrem-guard (spiegelt update-job-status.ts:919/922/931): een verdict landt
+    // alleen als DEZE worker de job nog steeds actief geclaimd heeft. Annuleerde de
+    // gebruiker de review (job → CANCELLED) terwijl de worker nog draaide, of is de
+    // job onder een ander token opnieuw geclaimd / terminaal, dan wordt het verdict
+    // verworpen — de keten blijft gestopt op de door de cancel gezette idee-status.
+    // De job-status wordt hier binnen de tx (na de idee-lock) her-lezen omdat de
+    // cancel ná de outer findUnique kan zijn gecommit.
+    const live = await tx.claudeJob.findUnique({
+      where: { id: job.id },
+      select: { status: true, claimed_by_token_id: true },
+    })
+    if (!reviewStillActive(live, callerTokenId)) {
+      await tx.ideaLog.create({
+        data: {
+          idea_id: ideaId,
+          type: 'PLAN_REVIEW_RESULT',
+          content: `Review r${round}: verdict ${input.verdict} verworpen — review niet meer actief (${live?.status ?? 'verwijderd'}); de loop is gestopt`,
+          metadata: { job_id: job.id, verdict: input.verdict, round, job_status: live?.status ?? null },
+        },
+      })
+      return { outcome: 'stale' as const }
+    }
 
     await tx.reviewLog.create({
       data: {
@@ -226,6 +272,8 @@ export async function handleSubmitReview(
         product_id: true,
         runtime: true,
         orchestration_key: true,
+        status: true,
+        claimed_by_token_id: true,
         doc_id: true,
         task_id: true,
         doc: { select: { current_revision_id: true } },
@@ -243,7 +291,11 @@ export async function handleSubmitReview(
     // ── M20 idea-plan-review-loop ────────────────────────────────────────
     if (job.kind === 'IDEA_REVIEW_PLAN') {
       if (!job.idea) return toolError('Review job has no idea')
-      const result = await applyIdeaReviewVerdict(job as IdeaReviewJob, { job_id, verdict, findings, summary })
+      const result = await applyIdeaReviewVerdict(
+        job as IdeaReviewJob,
+        { job_id, verdict, findings, summary },
+        auth.tokenId,
+      )
 
       // Post-commit side-effects (best-effort; falen breekt de review-afsluiting niet).
       if (result.outcome === 'revision' && result.revisionJobId) {
@@ -256,20 +308,38 @@ export async function handleSubmitReview(
         })
       }
       if (result.outcome === 'approved' && job.product?.auto_materialize_plan) {
-        try {
-          await materializeIdeaPlan(prisma, { ideaId: job.idea.id, userId: job.user_id })
-          // Hardstop: hierná wordt níets ge-enqueued.
-        } catch (err) {
-          // Materialize-fout mag de review-afsluiting niet breken: idea blijft
-          // PLAN_REVIEWED, de gebruiker kan handmatig materialiseren.
+        // Materialize draait ná commit, buiten de idee-lock. Her-check dat de job
+        // niet net (na de verdict-commit) geannuleerd/verlopen/her-geclaimd is —
+        // anders bouwen we een durabele PBI-boom uit een gestopte review.
+        const stillActive = await prisma.claudeJob.findUnique({
+          where: { id: job.id },
+          select: { status: true, claimed_by_token_id: true },
+        })
+        if (!reviewStillActive(stillActive, auth.tokenId)) {
           await prisma.ideaLog.create({
             data: {
               idea_id: job.idea.id,
               type: 'JOB_EVENT',
-              content: `Auto-materialize mislukt: ${(err as Error).message}`,
+              content: `Auto-materialize overgeslagen: review niet meer actief (${stillActive?.status ?? 'verwijderd'})`,
               metadata: { job_id: job.id },
             },
           })
+        } else {
+          try {
+            await materializeIdeaPlan(prisma, { ideaId: job.idea.id, userId: job.user_id })
+            // Hardstop: hierná wordt níets ge-enqueued.
+          } catch (err) {
+            // Materialize-fout mag de review-afsluiting niet breken: idea blijft
+            // PLAN_REVIEWED, de gebruiker kan handmatig materialiseren.
+            await prisma.ideaLog.create({
+              data: {
+                idea_id: job.idea.id,
+                type: 'JOB_EVENT',
+                content: `Auto-materialize mislukt: ${(err as Error).message}`,
+                metadata: { job_id: job.id },
+              },
+            })
+          }
         }
       }
       if (result.outcome === 'rejected') {
@@ -281,10 +351,14 @@ export async function handleSubmitReview(
         })
       }
 
-      await prisma.claudeJob.update({
-        where: { id: job.id },
-        data: { summary: `IDEA_REVIEW_PLAN ${verdict} (${findings.length} findings): ${summary.slice(0, 280)}` },
-      })
+      // Bij een stale (geannuleerde/verlopen) review de summary NIET herstempelen:
+      // de job is terminaal en mag geen verdict-samenvatting krijgen.
+      if (result.outcome !== 'stale') {
+        await prisma.claudeJob.update({
+          where: { id: job.id },
+          data: { summary: `IDEA_REVIEW_PLAN ${verdict} (${findings.length} findings): ${summary.slice(0, 280)}` },
+        })
+      }
       return toolJson({ ok: true, verdict, findings_count: findings.length, outcome: result.outcome })
     }
 
