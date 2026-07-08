@@ -12,6 +12,12 @@ import * as path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { prisma } from '../prisma.js'
+import {
+  cloneRepoOnDemand,
+  TerminalJobError,
+  OwnershipLostError,
+  type CloneOwnerCtx,
+} from '../git/on-demand-clone.js'
 
 const execFileP = promisify(execFile)
 import { requireWriteAccess } from '../auth.js'
@@ -55,7 +61,14 @@ export function repoNameFromUrl(repoUrl: string | null | undefined): string | nu
 export async function resolveRepoRoot(
   productId: string,
   taskRepoUrl?: string | null,
+  opts?: { ownerCtx?: CloneOwnerCtx | null; allowOnDemandClone?: boolean },
 ): Promise<string | null> {
+  const ownerCtx = opts?.ownerCtx ?? null
+  // On-demand cloning is opt-in: only legit resolution callers (SPRINT/IDEA/TASK
+  // claim) enable it. Cleanup callers leave it off so worktree-removal never
+  // triggers an expensive clone of a repo that isn't even present.
+  const allowClone = opts?.allowOnDemandClone ?? false
+
   const resolved = (via: string, repoRoot: string): string => {
     claimLog('repoRoot.resolved', { productId, via, repoRoot })
     return repoRoot
@@ -63,6 +76,26 @@ export async function resolveRepoRoot(
   const unresolved = (): null => {
     claimLog('repoRoot.unresolved', { productId, taskRepoUrl: taskRepoUrl ?? null })
     return null
+  }
+
+  // On-demand clone fallback (spec §4): clone the repo when neither preclone nor
+  // config/env resolved it. Terminal / ownership-lost errors propagate so the
+  // runner can mark the job FAILED (no requeue loop); a transient failure
+  // degrades to `unresolved()` (rollback/requeue) — it never silently falls back
+  // to a DIFFERENT repo.
+  const tryOnDemand = async (repoUrl: string, name: string, via: string): Promise<string | null> => {
+    try {
+      const repoRoot = await cloneRepoOnDemand({ repoUrl, name, ownerCtx })
+      return resolved(via, repoRoot)
+    } catch (err) {
+      if (err instanceof TerminalJobError || err instanceof OwnershipLostError) throw err
+      claimLog('repoRoot.onDemandTransientFail', {
+        productId,
+        name,
+        error: String((err as Error).message).slice(0, 200),
+      })
+      return unresolved()
+    }
   }
 
   // 1. Task-level override: match by repo-name through config/convention
@@ -83,7 +116,12 @@ export async function resolveRepoRoot(
       try {
         await fs.access(path.join(candidate, '.git'))
         return resolved('task-convention', candidate)
-      } catch { /* fall through to product-level */ }
+      } catch { /* not precloned */ }
+
+      // On-demand clone the TASK repo. A cross-repo task must run in ITS repo, so
+      // we do NOT fall through to product-level resolution here (spec §4).
+      if (allowClone) return await tryOnDemand(taskRepoUrl, taskRepoName, 'task-on-demand')
+      // clone disabled (cleanup path) → keep legacy fall-through to product-level
     }
   }
 
@@ -101,19 +139,51 @@ export async function resolveRepoRoot(
     // ignore — fall through
   }
 
-  // 4. Convention via product.repo_url
+  // 4. Convention via product.repo_url, else on-demand clone.
   try {
     const product = await prisma.product.findUnique({
       where: { id: productId },
       select: { repo_url: true },
     })
     const name = repoNameFromUrl(product?.repo_url)
-    if (!name) return unresolved()
+    if (!name || !product?.repo_url) return unresolved()
     const candidate = path.join(os.homedir(), 'Projects', name)
-    await fs.access(path.join(candidate, '.git'))
-    return resolved('product-convention', candidate)
-  } catch {
+    try {
+      await fs.access(path.join(candidate, '.git'))
+      return resolved('product-convention', candidate)
+    } catch { /* not precloned */ }
+    if (allowClone) return await tryOnDemand(product.repo_url, name, 'product-on-demand')
     return unresolved()
+  } catch (err) {
+    if (err instanceof TerminalJobError || err instanceof OwnershipLostError) throw err
+    return unresolved()
+  }
+}
+
+/**
+ * Terminal failure for a claimed job (spec §7): mark it FAILED with a reason
+ * WITHOUT rolling it back to QUEUED — a truly unresolvable repo must not loop.
+ * For SPRINT jobs the SprintRun is failed too, so it doesn't hang in RUNNING.
+ * Shared by the wait_for_job tool and the docker runner (run-one-job.ts).
+ */
+export async function markJobTerminallyFailed(jobId: string, reason: string): Promise<void> {
+  const trimmed = reason.slice(0, 2000)
+  const job = await prisma.claudeJob.findUnique({
+    where: { id: jobId },
+    select: { kind: true, sprint_run_id: true },
+  })
+  await prisma.claudeJob.update({
+    where: { id: jobId },
+    data: { status: 'FAILED', finished_at: new Date(), error: trimmed },
+  })
+  await releaseLocksOnTerminal(jobId).catch(() => {})
+  if (job?.kind === 'SPRINT_IMPLEMENTATION' && job.sprint_run_id) {
+    await prisma.sprintRun
+      .update({
+        where: { id: job.sprint_run_id },
+        data: { status: 'FAILED', failure_reason: trimmed },
+      })
+      .catch(() => {})
   }
 }
 
@@ -249,9 +319,10 @@ export async function attachWorktreeToJob(
   jobId: string,
   storyId: string,
   taskRepoUrl?: string | null,
+  ownerCtx?: CloneOwnerCtx | null,
 ): Promise<{ worktree_path: string; branch_name: string; reused_branch: boolean } | { error: string }> {
   claimLog('attach.start', { jobId, productId })
-  const repoRoot = await resolveRepoRoot(productId, taskRepoUrl)
+  const repoRoot = await resolveRepoRoot(productId, taskRepoUrl, { ownerCtx, allowOnDemandClone: true })
   if (!repoRoot) {
     await rollbackClaim(jobId)
     const repoHint = taskRepoUrl
@@ -850,7 +921,11 @@ interface SprintExecutionRow {
   base_sha: string | null
 }
 
-export async function getFullJobContext(jobId: string, runtime?: WorkerRuntime) {
+export async function getFullJobContext(
+  jobId: string,
+  runtime?: WorkerRuntime,
+  ownerCtx?: CloneOwnerCtx | null,
+) {
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     include: {
@@ -1498,7 +1573,7 @@ export async function getFullJobContext(jobId: string, runtime?: WorkerRuntime) 
         worktrees = await setupProductWorktrees(
           job.id,
           involvedProductIds,
-          (pid) => resolveRepoRoot(pid),
+          (pid) => resolveRepoRoot(pid, null, { ownerCtx, allowOnDemandClone: true }),
         )
       } catch (err) {
         console.warn(
@@ -1588,7 +1663,10 @@ export async function getFullJobContext(jobId: string, runtime?: WorkerRuntime) 
       return null
     }
 
-    const repoRoot = await resolveRepoRoot(sprintRun.sprint.product_id)
+    const repoRoot = await resolveRepoRoot(sprintRun.sprint.product_id, null, {
+      ownerCtx,
+      allowOnDemandClone: true,
+    })
     if (!repoRoot) {
       await rollbackClaim(job.id)
       return null
@@ -1803,25 +1881,36 @@ export function registerWaitForJobTool(server: McpServer) {
         // 2. Try immediate claim
         let jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities, capability ?? null)
         if (jobId) {
-          const ctx = await getFullJobContext(jobId, runtime)
-          if (!ctx) return toolError('Job claimed but context fetch failed')
-          // M12: idee-jobs hebben geen worktree nodig — de agent werkt in de
-          // bestaande user-repo (geen branch/commit-flow). Alleen task-jobs
-          // krijgen een worktree.
-          if (ctx.kind === 'TASK_IMPLEMENTATION' && !('source' in ctx && ctx.source === 'MANUAL')) {
-            if (!ctx.story || !ctx.task) {
-              return toolError('Task-job claimed but story/task context is incomplete')
+          const ownerCtx: CloneOwnerCtx = { jobId, instanceId, tokenId }
+          try {
+            const ctx = await getFullJobContext(jobId, runtime, ownerCtx)
+            if (!ctx) return toolError('Job claimed but context fetch failed')
+            // M12: idee-jobs hebben geen worktree nodig — de agent werkt in de
+            // bestaande user-repo (geen branch/commit-flow). Alleen task-jobs
+            // krijgen een worktree.
+            if (ctx.kind === 'TASK_IMPLEMENTATION' && !('source' in ctx && ctx.source === 'MANUAL')) {
+              if (!ctx.story || !ctx.task) {
+                return toolError('Task-job claimed but story/task context is incomplete')
+              }
+              const wt = await attachWorktreeToJob(
+                ctx.product.id,
+                jobId,
+                ctx.story.id,
+                ctx.task.repo_url,
+                ownerCtx,
+              )
+              if ('error' in wt) return toolError(wt.error)
+              return toolJson({ ...ctx, worktree_path: wt.worktree_path, branch_name: wt.branch_name })
             }
-            const wt = await attachWorktreeToJob(
-              ctx.product.id,
-              jobId,
-              ctx.story.id,
-              ctx.task.repo_url,
-            )
-            if ('error' in wt) return toolError(wt.error)
-            return toolJson({ ...ctx, worktree_path: wt.worktree_path, branch_name: wt.branch_name })
+            return toolJson(ctx)
+          } catch (err) {
+            if (err instanceof TerminalJobError) {
+              await markJobTerminallyFailed(jobId, err.reason)
+              return toolError(`Job failed (unresolvable repo): ${err.reason}`)
+            }
+            if (err instanceof OwnershipLostError) return toolError(err.message)
+            throw err
           }
-          return toolJson(ctx)
         }
 
         // 3. No job available — LISTEN and poll until timeout
@@ -1855,22 +1944,33 @@ export function registerWaitForJobTool(server: McpServer) {
             await resetStaleClaimedJobs(userId)
             jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities, capability ?? null)
             if (jobId) {
-              const ctx = await getFullJobContext(jobId, runtime)
-              if (!ctx) return toolError('Job claimed but context fetch failed')
-              if (ctx.kind === 'TASK_IMPLEMENTATION' && !('source' in ctx && ctx.source === 'MANUAL')) {
-                if (!ctx.story || !ctx.task) {
-                  return toolError('Task-job claimed but story/task context is incomplete')
+              const ownerCtx: CloneOwnerCtx = { jobId, instanceId, tokenId }
+              try {
+                const ctx = await getFullJobContext(jobId, runtime, ownerCtx)
+                if (!ctx) return toolError('Job claimed but context fetch failed')
+                if (ctx.kind === 'TASK_IMPLEMENTATION' && !('source' in ctx && ctx.source === 'MANUAL')) {
+                  if (!ctx.story || !ctx.task) {
+                    return toolError('Task-job claimed but story/task context is incomplete')
+                  }
+                  const wt = await attachWorktreeToJob(
+                    ctx.product.id,
+                    jobId,
+                    ctx.story.id,
+                    ctx.task.repo_url,
+                    ownerCtx,
+                  )
+                  if ('error' in wt) return toolError(wt.error)
+                  return toolJson({ ...ctx, worktree_path: wt.worktree_path, branch_name: wt.branch_name })
                 }
-                const wt = await attachWorktreeToJob(
-                  ctx.product.id,
-                  jobId,
-                  ctx.story.id,
-                  ctx.task.repo_url,
-                )
-                if ('error' in wt) return toolError(wt.error)
-                return toolJson({ ...ctx, worktree_path: wt.worktree_path, branch_name: wt.branch_name })
+                return toolJson(ctx)
+              } catch (err) {
+                if (err instanceof TerminalJobError) {
+                  await markJobTerminallyFailed(jobId, err.reason)
+                  return toolError(`Job failed (unresolvable repo): ${err.reason}`)
+                }
+                if (err instanceof OwnershipLostError) return toolError(err.message)
+                throw err
               }
-              return toolJson(ctx)
             }
           }
         } finally {
