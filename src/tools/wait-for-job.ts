@@ -37,6 +37,7 @@ import { resolveTaskImplContext } from '../lib/task-review-context.js'
 import { claimLog } from '../lib/claim-log.js'
 import { getInstanceId } from '../presence/instance.js'
 import { getWorkerRuntimeFromEnv, type WorkerRuntime } from '../worker-runtime.js'
+import { parseLoopRound } from '../lib/idea-plan-loop.js'
 
 /** Parse `https://github.com/<owner>/<name>(.git)?` → `<name>`. */
 export function repoNameFromUrl(repoUrl: string | null | undefined): string | null {
@@ -921,6 +922,34 @@ interface SprintExecutionRow {
   base_sha: string | null
 }
 
+// M20 revisie-modus: als een IDEA_MAKE_PLAN is aangemaakt door een
+// IDEA_REVIEW_PLAN (created_by_job_id), laad de ReviewLog van de parent zodat de
+// maker het plan minimaal aanpast op de findings i.p.v. het te herschrijven.
+// Claim-time resolve (geen payload-veld op ClaudeJob).
+export async function resolveReviewFeedback(job: {
+  kind: string
+  created_by_job_id: string | null
+  orchestration_key: string | null
+}): Promise<{ round: number; verdict: string; findings: unknown; summary: string } | undefined> {
+  if (job.kind !== 'IDEA_MAKE_PLAN' || !job.created_by_job_id) return undefined
+  const parent = await prisma.claudeJob.findUnique({
+    where: { id: job.created_by_job_id },
+    select: { id: true, kind: true },
+  })
+  if (parent?.kind !== 'IDEA_REVIEW_PLAN') return undefined
+  const review = await prisma.reviewLog.findUnique({
+    where: { review_job_id: parent.id },
+    select: { verdict: true, findings: true, summary: true },
+  })
+  if (!review) return undefined
+  return {
+    round: parseLoopRound(job.orchestration_key),
+    verdict: review.verdict,
+    findings: review.findings,
+    summary: review.summary,
+  }
+}
+
 export async function getFullJobContext(
   jobId: string,
   runtime?: WorkerRuntime,
@@ -1586,6 +1615,10 @@ export async function getFullJobContext(
       }
     }
 
+    // M20 revisie-modus: claim-time resolve van de review-context (zie
+    // resolveReviewFeedback). De maker past het plan minimaal aan op de findings.
+    const reviewFeedback = await resolveReviewFeedback(job)
+
     return {
       job_id: job.id,
       kind: job.kind,
@@ -1611,7 +1644,9 @@ export async function getFullJobContext(
       },
       pbi: idea.pbi,
       repo_url: job.product.repo_url,
-      prompt_text: getIdeaPromptText(job.kind),
+      ...(reviewFeedback ? { review_feedback: reviewFeedback } : {}),
+      // M20: CODEX-review krijgt de codex-promptvariant (RUNTIME_PROMPT_OVERRIDES).
+      prompt_text: getIdeaPromptText(job.kind, effectiveRuntime),
       branch_suggestion: `feat/idea-${idea.code.toLowerCase()}-${(() => {
         if (job.kind === 'IDEA_GRILL') return 'grill'
         if (job.kind === 'IDEA_REVIEW_PLAN') return 'review'
