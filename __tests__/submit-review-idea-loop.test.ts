@@ -13,7 +13,7 @@ const { m } = vi.hoisted(() => ({
 }))
 vi.mock('../src/prisma.js', () => ({ prisma: m }))
 vi.mock('../src/auth.js', () => ({
-  requireWriteAccess: vi.fn().mockResolvedValue({ userId: 'u1' }),
+  requireWriteAccess: vi.fn().mockResolvedValue({ userId: 'u1', tokenId: 'tok-1' }),
   PermissionDeniedError: class PermissionDeniedError extends Error {},
 }))
 vi.mock('../src/lib/upsert-review-log.js', () => ({ upsertReviewLog: vi.fn() }))
@@ -37,6 +37,8 @@ function setupJob(opts: {
   auto_plan_review?: boolean
   auto_materialize_plan?: boolean
   existingReviewLog?: boolean
+  job_status?: string
+  claimed_by_token_id?: string | null
 }) {
   vi.clearAllMocks()
   m.claudeJob.findUnique.mockResolvedValue({
@@ -46,6 +48,8 @@ function setupJob(opts: {
     product_id: 'p1',
     runtime: opts.runtime ?? 'CODEX',
     orchestration_key: opts.orchestration_key ?? `idea:${IDEA_ID}:plan-loop:r1`,
+    status: opts.job_status ?? 'CLAIMED',
+    claimed_by_token_id: opts.claimed_by_token_id === undefined ? 'tok-1' : opts.claimed_by_token_id,
     doc_id: null,
     task_id: null,
     doc: null,
@@ -132,6 +136,60 @@ describe('submit_review — IDEA_REVIEW_PLAN verdict-keten (M20)', () => {
     await handleSubmitReview({ job_id: JOB_ID, verdict: 'CHANGES_REQUESTED', findings: [{ severity: 'major', message: 'X' }], summary: 'NO-GO' })
     expect(ideaUpdateData().status).toBe('PLAN_REVIEW_FAILED')
     expect(m.claudeJob.create).not.toHaveBeenCalled()
+  })
+
+  it('noodrem: verdict op een CANCELLED review-job landt NIET (stale)', async () => {
+    // Gebruiker cancelde de review terwijl de worker nog draaide; de late
+    // submit_review mag de keten niet alsnog voortzetten.
+    setupJob({ job_status: 'CANCELLED', auto_plan_review: true, auto_materialize_plan: true })
+    await handleSubmitReview({
+      job_id: JOB_ID,
+      verdict: 'CHANGES_REQUESTED',
+      findings: [{ severity: 'major', message: 'X' }],
+      summary: 'NO-GO',
+    })
+    expect(m.reviewLog.create).not.toHaveBeenCalled()
+    expect(m.idea.update).not.toHaveBeenCalled()
+    expect(m.claudeJob.create).not.toHaveBeenCalled() // geen revisie-job
+    expect(mockMaterialize).not.toHaveBeenCalled()
+    expect(m.claudeJob.update).not.toHaveBeenCalled() // geen summary-restamp op de cancelled job
+    // wél een waarheidsgetrouwe IdeaLog dat het verdict verworpen is
+    const logContents = m.ideaLog.create.mock.calls.map((c) => c[0]?.data?.content ?? '')
+    expect(logContents.some((t: string) => /verworpen/i.test(t))).toBe(true)
+  })
+
+  it('noodrem: verdict op een APPROVED+CANCELLED job materialiseert GEEN PBI', async () => {
+    setupJob({ job_status: 'CANCELLED', auto_materialize_plan: true })
+    await handleSubmitReview({ job_id: JOB_ID, verdict: 'APPROVED', findings: [], summary: 'GO' })
+    expect(m.reviewLog.create).not.toHaveBeenCalled()
+    expect(m.idea.update).not.toHaveBeenCalled()
+    expect(mockMaterialize).not.toHaveBeenCalled()
+  })
+
+  it('noodrem: cancel ná verdict-commit maar vóór materialize → GEEN PBI', async () => {
+    // Race: bij de verdict-tx was de job nog CLAIMED (verdict = approved, committed),
+    // maar de cancel landt in het venster vóór de post-commit materialize. De
+    // materialize-hercheck moet de PBI-bouw dan overslaan.
+    setupJob({ auto_materialize_plan: true })
+    const full = await m.claudeJob.findUnique() // volledige job (CLAIMED) uit setupJob
+    let n = 0
+    m.claudeJob.findUnique.mockReset()
+    m.claudeJob.findUnique.mockImplementation(async () => {
+      n++
+      // 1=outer, 2=in-tx guard → CLAIMED (verdict landt); 3=materialize-hercheck → CANCELLED
+      return n >= 3 ? { status: 'CANCELLED', claimed_by_token_id: 'tok-1' } : full
+    })
+    await handleSubmitReview({ job_id: JOB_ID, verdict: 'APPROVED', findings: [], summary: 'GO' })
+    expect(m.reviewLog.create).toHaveBeenCalled() // verdict WEL toegepast (job was live bij tx)
+    expect(mockMaterialize).not.toHaveBeenCalled() // maar PBI NIET gebouwd
+  })
+
+  it('stale-reclaim: verdict van een job geclaimd door ander token landt NIET', async () => {
+    setupJob({ job_status: 'RUNNING', claimed_by_token_id: 'ander-token' })
+    await handleSubmitReview({ job_id: JOB_ID, verdict: 'APPROVED', findings: [], summary: 'GO' })
+    expect(m.reviewLog.create).not.toHaveBeenCalled()
+    expect(m.idea.update).not.toHaveBeenCalled()
+    expect(mockMaterialize).not.toHaveBeenCalled()
   })
 
   it.each(['APPROVED', 'CHANGES_REQUESTED', 'REJECTED'] as const)(
