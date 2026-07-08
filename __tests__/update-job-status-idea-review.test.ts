@@ -44,6 +44,9 @@ vi.mock('../src/prisma.js', () => ({
       findFirst: vi.fn(),
       updateMany: vi.fn(),
     },
+    idea: { update: vi.fn() },
+    ideaLog: { create: vi.fn() },
+    $transaction: vi.fn(),
   },
 }))
 
@@ -60,6 +63,9 @@ const mockPrisma = prisma as unknown as {
     findFirst: ReturnType<typeof vi.fn>
     updateMany: ReturnType<typeof vi.fn>
   }
+  idea: { update: ReturnType<typeof vi.fn> }
+  ideaLog: { create: ReturnType<typeof vi.fn> }
+  $transaction: ReturnType<typeof vi.fn>
 }
 
 function registerHandler() {
@@ -142,5 +148,23 @@ describe('update_job_status IDEA_REVIEW_PLAN jobs', () => {
 
     // No git push should happen for a standalone idea-job
     expect(pushMocks.pushBranchForJob).not.toHaveBeenCalled()
+  })
+
+  it('rolt idea naar PLAN_REVIEW_FAILED bij een gefaalde IDEA_REVIEW_PLAN (M20)', async () => {
+    mockPrisma.$transaction.mockResolvedValue([])
+    mockPrisma.idea.update.mockResolvedValue({})
+    mockPrisma.ideaLog.create.mockResolvedValue({})
+    const handler = registerHandler() as unknown as (
+      input: { job_id: string; status: string; error?: string },
+    ) => Promise<unknown>
+
+    await handler({ job_id: 'job-review-plan', status: 'failed', error: 'boom' })
+
+    expect(mockPrisma.idea.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'idea-42' },
+        data: expect.objectContaining({ status: 'PLAN_REVIEW_FAILED' }),
+      }),
+    )
   })
 })

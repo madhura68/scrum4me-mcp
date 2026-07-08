@@ -1501,7 +1501,9 @@ export function registerUpdateJobStatusTool(server: McpServer) {
               ? 'GRILL_FAILED'
               : job.kind === 'IDEA_MAKE_PLAN'
                 ? 'PLAN_FAILED'
-                : null
+                : job.kind === 'IDEA_REVIEW_PLAN'
+                  ? 'PLAN_REVIEW_FAILED' // M20: gefaalde review strandt niet in REVIEWING_PLAN
+                  : null
           if (newIdeaStatus) {
             await prisma.$transaction([
               prisma.idea.update({
