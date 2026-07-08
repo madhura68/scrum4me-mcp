@@ -9,11 +9,13 @@ describe('idea kinds can manage questions', () => {
     expect(tools).toContain('mcp__scrum4me__list_open_questions')
   })
 
-  it('IDEA_REVIEW_PLAN allows the full question-management triple', () => {
+  it('IDEA_REVIEW_PLAN is pure review (M20): submit_review, geen question-management', () => {
     const tools = getKindDefault('IDEA_REVIEW_PLAN').allowed_tools ?? []
-    expect(tools).toContain('mcp__scrum4me__get_question_answer')
-    expect(tools).toContain('mcp__scrum4me__cancel_question')
-    expect(tools).toContain('mcp__scrum4me__list_open_questions')
+    expect(tools).toContain('mcp__scrum4me__submit_review')
+    expect(tools).toContain('mcp__scrum4me__get_idea_context')
+    expect(tools).not.toContain('mcp__scrum4me__ask_user_question')
+    expect(tools).not.toContain('mcp__scrum4me__get_question_answer')
+    expect(tools).not.toContain('mcp__scrum4me__update_idea_plan_md')
   })
 })
 

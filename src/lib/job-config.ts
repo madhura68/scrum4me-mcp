@@ -121,26 +121,26 @@ const KIND_DEFAULTS: Record<string, JobConfig> = {
       'mcp__scrum4me__update_job_status',
     ],
   },
+  // M20 pure adversarial review — de reviewer muteert het plan niet en stelt
+  // geen vragen; revisie gebeurt door IDEA_MAKE_PLAN in revisie-modus. Daarom
+  // geen Write / update_idea_plan_md / update_idea_plan_reviewed / question-tools.
+  // Spiegelt @shared/job-config (parity-test).
   IDEA_REVIEW_PLAN: {
     model: 'claude-opus-4-8',
     thinking_budget: 6000,
-    permission_mode: 'acceptEdits',
-    max_turns: 1,
+    permission_mode: 'default',
+    max_turns: 50,
     allowed_tools: [
-      'Read', 'Write', 'Grep', 'Glob',
+      'Read', 'Grep', 'Glob',
       'mcp__scrum4me__get_agent_guide',
       'mcp__scrum4me__list_product_docs',
       'mcp__scrum4me__get_product_doc',
       'mcp__scrum4me__search_product_docs',
       'mcp__scrum4me__related_product_docs',
-      'mcp__scrum4me__update_idea_plan_md',
-      'mcp__scrum4me__update_idea_plan_reviewed',
-      'mcp__scrum4me__log_idea_decision',
+      'mcp__scrum4me__get_idea_context',
+      'mcp__scrum4me__get_review',
+      'mcp__scrum4me__submit_review',
       'mcp__scrum4me__update_job_status',
-      'mcp__scrum4me__ask_user_question',
-      'mcp__scrum4me__get_question_answer',
-      'mcp__scrum4me__cancel_question',
-      'mcp__scrum4me__list_open_questions',
     ],
   },
   PLAN_CHAT: {

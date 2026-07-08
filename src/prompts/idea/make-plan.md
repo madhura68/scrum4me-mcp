@@ -51,6 +51,21 @@ Als `payload.instruction` aanwezig is, weeg die expliciet mee in je vragen/plan.
 7. Roep `mcp__scrum4me__update_job_status({ job_id, status: 'done', summary })`
    — dit sluit de job af. **Verplicht**, ook bij parse-failure.
 
+## Revisie-modus (`payload.review_feedback` aanwezig) — M20 plan-review-loop
+
+Bevat de payload een `review_feedback` (`{ round, verdict, findings, summary }`),
+dan is dit een **revisieronde** na een codex-review die `CHANGES_REQUESTED` gaf:
+
+1. Lees het **bestaande** `idea.plan_md` — dit is de basis, GEEN nieuwe opzet.
+2. Pas het plan **minimaal** aan op `review_feedback.findings`: herstel precies
+   wat genoemd is, herschrijf niet, behoud de structuur en de YAML-frontmatter
+   (de parser-eisen hieronder blijven gelden).
+3. Noem in de story-/taak-beschrijvingen niets over de review zelf.
+4. Sla op via `mcp__scrum4me__update_idea_plan_md({ idea_id, markdown })` en sluit
+   af met `mcp__scrum4me__update_job_status({ job_id, status: 'done', summary: 'revisie r{round+1}' })`.
+
+De keten start hierna automatisch een nieuwe codex-review op het herziene plan.
+
 ## Dependency-cascade-grep (verplicht bij removal/refactor)
 
 Wanneer het idee een **bestaand symbool, model, route of component

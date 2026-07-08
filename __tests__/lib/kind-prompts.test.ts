@@ -8,9 +8,11 @@ describe('getKindPromptText runtime-awareness', () => {
     expect(text).not.toContain('ask_user_question')
   })
 
-  it('returns the existing Claude prompt for (IDEA_REVIEW_PLAN, CLAUDE)', () => {
+  it('returns the pure-review Claude prompt for (IDEA_REVIEW_PLAN, CLAUDE) (M20)', () => {
     const text = getKindPromptText('IDEA_REVIEW_PLAN', 'CLAUDE')
-    expect(text).toContain('ask_user_question')
+    expect(text).toContain('submit_review')
+    expect(text).toContain('pure')
+    expect(text).not.toContain('ask_user_question')
   })
 
   it('defaults to CLAUDE when runtime is omitted (back-compat)', () => {
