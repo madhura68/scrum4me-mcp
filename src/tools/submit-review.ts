@@ -1,17 +1,34 @@
-// MCP-tool: schrijft het verdict van een SPEC_REVIEW/TASK_REVIEW-job naar de
-// generieke ReviewLog en zet een verdict-trace op ClaudeJob.summary. De job
-// is de autoriteit: kind + target komen uit de jób, nooit uit de input.
-// Upsert op review_job_id → retry-idempotent (1 verdict-rij per job; her-
-// review-historie = meerdere jobs). Een DB-fout faalt de tool (geen stil
-// verlies — Phase 2-principe). Model: post-pr-review.ts.
+// MCP-tool: schrijft het verdict van een SPEC_REVIEW/TASK_REVIEW/IDEA_REVIEW_PLAN-
+// job naar de generieke ReviewLog en zet een verdict-trace op ClaudeJob.summary.
+// De job is de autoriteit: kind + target komen uit de jób, nooit uit de input.
+//
+// SPEC/TASK: upsert op review_job_id → retry-idempotent (1 verdict-rij per job).
+// IDEA_REVIEW_PLAN (M20 plan-review-loop): pure adversarial review. Het verdict
+// stuurt de keten atomair aan — de ReviewLog-rij binnen dezelfde transactie is
+// de idempotentie-guard (rollback bij een side-effect-fout → retry verwerkt
+// alsnog volledig; gecommitte rij → retry is no-op):
+//   APPROVED           → PLAN_REVIEWED (+ auto-materialize bij toggle) + hardstop
+//   CHANGES_REQUESTED  → PLANNING + revisie-job r{n+1} (toggle-uit → PLAN_REVIEW_FAILED)
+//   REJECTED           → PLAN_REVIEW_FAILED + escalatie-vraag aan de gebruiker
 
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import type { Prisma } from '@prisma/client'
 
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { upsertReviewLog } from '../lib/upsert-review-log.js'
+import {
+  appendPlanReviewRound,
+  findActiveLoopJob,
+  lockIdeaRow,
+  loopKey,
+  parseLoopRound,
+} from '../lib/idea-plan-loop.js'
+import { materializeIdeaPlan } from '../lib/idea-materialize.js'
+import { notifyJobEnqueued } from '../lib/dispatch/notify.js'
+import { triggerPush } from '../lib/push-trigger.js'
 
 export const inputSchema = z.object({
   job_id: z.string().min(1),
@@ -25,8 +42,178 @@ export const inputSchema = z.object({
   review_log: z.object({}).passthrough().optional(),
 })
 
+type SubmitReviewInput = z.infer<typeof inputSchema>
+
+// Escalatie-vraag ín de verdict-transactie (dezelfde DB). Shape gelijk aan
+// ask-user-question.ts (ClaudeQuestion.status is een verplicht String-veld).
+// De web-push volgt post-commit.
+async function createIdeaEscalationQuestion(
+  tx: Prisma.TransactionClient,
+  params: { ideaId: string; productId: string; userId: string; question: string },
+): Promise<void> {
+  await tx.claudeQuestion.create({
+    data: {
+      story_id: null,
+      idea_id: params.ideaId,
+      task_id: null,
+      product_id: params.productId,
+      asked_by: params.userId,
+      question: params.question,
+      status: 'open',
+      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    },
+  })
+}
+
+type IdeaReviewJob = {
+  id: string
+  user_id: string
+  product_id: string
+  runtime: string
+  orchestration_key: string | null
+  idea: { id: string; status: string; plan_review_log: unknown } | null
+  product: { auto_plan_review: boolean; auto_materialize_plan: boolean } | null
+}
+
+type VerdictOutcome = {
+  outcome: 'already-processed' | 'revision' | 'manual-stop' | 'approved' | 'rejected'
+  revisionJobId?: string
+}
+
+// Alles-of-niets: ReviewLog + status + vervolg-job/vraag in één transactie.
+// De in-tx guard op de ReviewLog-rij is de idempotentie. Auto-materialize draait
+// bewust ná commit (buiten deze functie).
+async function applyIdeaReviewVerdict(job: IdeaReviewJob, input: SubmitReviewInput): Promise<VerdictOutcome> {
+  const ideaId = job.idea!.id
+  const round = Math.max(parseLoopRound(job.orchestration_key), 1)
+  const now = new Date()
+  const planReviewLog = appendPlanReviewRound(job.idea!.plan_review_log, {
+    round,
+    verdict: input.verdict,
+    model: job.runtime === 'CODEX' ? 'codex' : 'claude',
+    findings: input.findings,
+    summary: input.summary,
+    timestamp: now.toISOString(),
+  })
+  const planReviewLogJson = planReviewLog as unknown as Prisma.InputJsonValue
+  const findingsJson = input.findings as unknown as Prisma.InputJsonValue
+
+  return prisma.$transaction(async (tx) => {
+    await lockIdeaRow(tx, ideaId)
+    const existing = await tx.reviewLog.findUnique({
+      where: { review_job_id: job.id },
+      select: { id: true },
+    })
+    if (existing) return { outcome: 'already-processed' as const }
+
+    await tx.reviewLog.create({
+      data: {
+        review_job_id: job.id,
+        kind: 'IDEA_REVIEW_PLAN',
+        product_id: job.product_id,
+        idea_id: ideaId,
+        verdict: input.verdict,
+        findings: findingsJson,
+        summary: input.summary,
+      },
+    })
+
+    if (input.verdict === 'CHANGES_REQUESTED' && job.product?.auto_plan_review) {
+      const active = await findActiveLoopJob(tx, ideaId, job.id)
+      if (active) {
+        // Randgeval: een andere loop-job is al actief — geen nieuwe revisie én
+        // geen status-claim die niet waar is; alleen waarheidsgetrouw loggen.
+        await tx.idea.update({
+          where: { id: ideaId },
+          data: { plan_review_log: planReviewLogJson, reviewed_at: now },
+        })
+        await tx.ideaLog.create({
+          data: {
+            idea_id: ideaId,
+            type: 'PLAN_REVIEW_RESULT',
+            content: `Review r${round}: CHANGES_REQUESTED — bestaande loop-job ${active.kind} actief, geen nieuwe revisie gequeued`,
+            metadata: { job_id: job.id, verdict: input.verdict, round, active_job_id: active.id },
+          },
+        })
+        return { outcome: 'already-processed' as const }
+      }
+      const revision = await tx.claudeJob.create({
+        data: {
+          user_id: job.user_id,
+          product_id: job.product_id,
+          idea_id: ideaId,
+          kind: 'IDEA_MAKE_PLAN',
+          status: 'QUEUED',
+          source: 'SYSTEM',
+          created_by_job_id: job.id,
+          orchestration_key: loopKey(ideaId, round + 1),
+          summary: `Plan-revisie r${round + 1} na review r${round}`,
+        },
+        select: { id: true },
+      })
+      await tx.idea.update({
+        where: { id: ideaId },
+        data: { status: 'PLANNING', plan_review_log: planReviewLogJson, reviewed_at: now },
+      })
+      await tx.ideaLog.create({
+        data: {
+          idea_id: ideaId,
+          type: 'PLAN_REVIEW_RESULT',
+          content: `Review r${round}: CHANGES_REQUESTED (${input.findings.length} findings) — revisie r${round + 1} queued`,
+          metadata: { job_id: job.id, verdict: input.verdict, round },
+        },
+      })
+      return { outcome: 'revision' as const, revisionJobId: revision.id }
+    }
+
+    if (input.verdict === 'CHANGES_REQUESTED') {
+      // Toggle uit = handmatige review-flow (verdict landt, gebruiker beslist) —
+      // géén auto-revisie; niet-approved → PLAN_REVIEW_FAILED.
+      await tx.idea.update({
+        where: { id: ideaId },
+        data: { status: 'PLAN_REVIEW_FAILED', plan_review_log: planReviewLogJson, reviewed_at: now },
+      })
+      await tx.ideaLog.create({
+        data: {
+          idea_id: ideaId,
+          type: 'PLAN_REVIEW_RESULT',
+          content: `Review r${round}: CHANGES_REQUESTED (${input.findings.length} findings) — handmatige flow, geen auto-revisie`,
+          metadata: { job_id: job.id, verdict: input.verdict, round },
+        },
+      })
+      return { outcome: 'manual-stop' as const }
+    }
+
+    const nextStatus = input.verdict === 'APPROVED' ? 'PLAN_REVIEWED' : 'PLAN_REVIEW_FAILED'
+    await tx.idea.update({
+      where: { id: ideaId },
+      data: { status: nextStatus, plan_review_log: planReviewLogJson, reviewed_at: now },
+    })
+    await tx.ideaLog.create({
+      data: {
+        idea_id: ideaId,
+        type: 'PLAN_REVIEW_RESULT',
+        content:
+          input.verdict === 'APPROVED'
+            ? `Review r${round}: APPROVED (GO)`
+            : `Review r${round}: REJECTED — escalatie naar gebruiker`,
+        metadata: { job_id: job.id, verdict: input.verdict, round },
+      },
+    })
+    if (input.verdict === 'REJECTED') {
+      await createIdeaEscalationQuestion(tx, {
+        ideaId,
+        productId: job.product_id,
+        userId: job.user_id,
+        question: `Codex wijst het plan fundamenteel af (r${round}): ${input.summary.slice(0, 400)} — hoe verder? (opnieuw plannen / plan handmatig bijwerken / afbreken)`,
+      })
+    }
+    return { outcome: input.verdict === 'APPROVED' ? ('approved' as const) : ('rejected' as const) }
+  })
+}
+
 export async function handleSubmitReview(
-  { job_id, verdict, findings, summary }: z.infer<typeof inputSchema>,
+  { job_id, verdict, findings, summary }: SubmitReviewInput,
 ) {
   return withToolErrors(async () => {
     const auth = await requireWriteAccess()
@@ -37,18 +224,71 @@ export async function handleSubmitReview(
         user_id: true,
         kind: true,
         product_id: true,
+        runtime: true,
+        orchestration_key: true,
         doc_id: true,
         task_id: true,
         doc: { select: { current_revision_id: true } },
+        idea: { select: { id: true, status: true, plan_review_log: true } },
+        product: { select: { auto_plan_review: true, auto_materialize_plan: true } },
       },
     })
     if (!job || job.user_id !== auth.userId) {
       return toolError('Job not found')
     }
-    if (job.kind !== 'SPEC_REVIEW' && job.kind !== 'TASK_REVIEW') {
-      return toolError('Job is not a SPEC_REVIEW/TASK_REVIEW job')
+    if (job.kind !== 'SPEC_REVIEW' && job.kind !== 'TASK_REVIEW' && job.kind !== 'IDEA_REVIEW_PLAN') {
+      return toolError('Job is not a SPEC_REVIEW/TASK_REVIEW/IDEA_REVIEW_PLAN job')
     }
 
+    // ── M20 idea-plan-review-loop ────────────────────────────────────────
+    if (job.kind === 'IDEA_REVIEW_PLAN') {
+      if (!job.idea) return toolError('Review job has no idea')
+      const result = await applyIdeaReviewVerdict(job as IdeaReviewJob, { job_id, verdict, findings, summary })
+
+      // Post-commit side-effects (best-effort; falen breekt de review-afsluiting niet).
+      if (result.outcome === 'revision' && result.revisionJobId) {
+        await notifyJobEnqueued({
+          job_id: result.revisionJobId,
+          user_id: job.user_id,
+          product_id: job.product_id,
+          kind: 'IDEA_MAKE_PLAN',
+          idea_id: job.idea.id,
+        })
+      }
+      if (result.outcome === 'approved' && job.product?.auto_materialize_plan) {
+        try {
+          await materializeIdeaPlan(prisma, { ideaId: job.idea.id, userId: job.user_id })
+          // Hardstop: hierná wordt níets ge-enqueued.
+        } catch (err) {
+          // Materialize-fout mag de review-afsluiting niet breken: idea blijft
+          // PLAN_REVIEWED, de gebruiker kan handmatig materialiseren.
+          await prisma.ideaLog.create({
+            data: {
+              idea_id: job.idea.id,
+              type: 'JOB_EVENT',
+              content: `Auto-materialize mislukt: ${(err as Error).message}`,
+              metadata: { job_id: job.id },
+            },
+          })
+        }
+      }
+      if (result.outcome === 'rejected') {
+        void triggerPush(job.user_id, {
+          title: 'Plan afgewezen door review',
+          body: summary.slice(0, 120),
+          url: '/ideas',
+          tag: `idea-review-${job.id}`,
+        })
+      }
+
+      await prisma.claudeJob.update({
+        where: { id: job.id },
+        data: { summary: `IDEA_REVIEW_PLAN ${verdict} (${findings.length} findings): ${summary.slice(0, 280)}` },
+      })
+      return toolJson({ ok: true, verdict, findings_count: findings.length, outcome: result.outcome })
+    }
+
+    // ── SPEC_REVIEW / TASK_REVIEW (ongewijzigd) ──────────────────────────
     let docRevisionId: string | null = null
     let executionId: string | null = null
     if (job.kind === 'SPEC_REVIEW') {
@@ -95,11 +335,11 @@ export function registerSubmitReviewTool(server: McpServer) {
     {
       title: 'Submit a review verdict (ReviewLog)',
       description:
-        'Persist the verdict of a SPEC_REVIEW/TASK_REVIEW job into the generic ' +
+        'Persist the verdict of a SPEC_REVIEW/TASK_REVIEW/IDEA_REVIEW_PLAN job into the generic ' +
         'ReviewLog and record a verdict-trace on the job. The job is the ' +
-        'authority: kind and target (doc_id/task_id) come from the job, never ' +
-        'from the input. Idempotent per job (upsert on review_job_id). A DB ' +
-        'failure fails the tool (never a silent success). Forbidden for demo accounts.',
+        'authority: kind and target come from the job, never from the input. ' +
+        'Idempotent per job. For IDEA_REVIEW_PLAN the verdict drives the M20 ' +
+        'plan-review-loop (revision / auto-materialize / escalation). Forbidden for demo accounts.',
       inputSchema,
     },
     handleSubmitReview,
