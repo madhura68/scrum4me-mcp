@@ -33,6 +33,7 @@ Top-level index of all documentation in this repository, grouped by folder.
 - [Sprint-context bounding via per-task sub-agents (+ token attribution)](superpowers/specs/2026-05-23-sprint-subagent-execution-design.md)
 - [Worker operating manual — consolidate into the agent-guide](superpowers/specs/2026-05-23-worker-agent-guide-consolidation-design.md)
 - [Reused worktree freshness — prefer origin over a stale local branch](superpowers/specs/2026-05-24-reused-worktree-freshness-design.md)
+- [On-demand repo-clone fallback voor resolveRepoRoot](superpowers/specs/2026-07-08-on-demand-repo-clone-fallback-design.md)
 
 ## Superpowers — Reviews
 

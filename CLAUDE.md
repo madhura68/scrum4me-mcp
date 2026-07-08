@@ -95,7 +95,7 @@ Or add to `~/.scrum4me-agent-config.json`:
 }
 ```
 
-If no repo root is found, `wait_for_job` rolls the claim back to QUEUED and returns an error.
+If no local root is found, `wait_for_job` tries an **on-demand clone** of `product.repo_url` (spec: `docs/superpowers/specs/2026-07-08-on-demand-repo-clone-fallback-design.md`). Only if the clone also fails does it roll the claim back to QUEUED and return an error. Explicit configuration is therefore optional for any product with a valid `repo_url`.
 
 ## Token-usage capture (PostToolUse hook)
 
@@ -134,6 +134,7 @@ Server-startup registers a `ClaudeWorker` record + starts a 10 s heartbeat; SIGT
 | File | Purpose |
 |---|---|
 | `src/git/worktree.ts` | `createWorktreeForJob` + `removeWorktreeForJob` |
+| `src/git/on-demand-clone.ts` | `cloneRepoOnDemand` — on-demand clone fallback voor `resolveRepoRoot` |
 | `src/tools/wait-for-job.ts` | `resolveRepoRoot`, `rollbackClaim`, `attachWorktreeToJob` |
 | `src/tools/update-job-status.ts` | `cleanupWorktreeForTerminalStatus` |
 | `src/tools/cleanup-my-worktrees.ts` | `cleanup_my_worktrees` tool — scans + removes stale worktrees |
