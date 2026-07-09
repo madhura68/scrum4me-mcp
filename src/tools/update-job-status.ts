@@ -1034,6 +1034,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           } else if (
             job.kind === 'IDEA_GRILL' ||
             job.kind === 'IDEA_MAKE_PLAN' ||
+            job.kind === 'IDEA_MAKE_SPEC' ||
+            job.kind === 'IDEA_REVISE_SPEC' ||
             (job.source !== 'ORCHESTRATOR' &&
               (job.kind === 'IDEA_REVIEW_PLAN' ||
                 job.kind === 'PR_REVIEW' ||

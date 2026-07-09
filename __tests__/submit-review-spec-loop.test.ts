@@ -104,6 +104,33 @@ describe('applySpecReviewVerdict (M23)', () => {
     expect(m.idea.update).toHaveBeenCalledWith(expect.objectContaining({ data: { status: 'SPEC_DRAFTING' } }))
   })
 
+  // M23 E2E-1 race: het verdict kan landen terwijl de maker die deze review
+  // dispatchte nog CLAIMED is (codex sneller dan de maker-afsluiting). Die maker
+  // telt niet als "actieve spec-loop-job" — anders verdampt de revisie en hangt
+  // het idee op SPEC_REVIEWING.
+  it('CHANGES_REQUESTED sluit de dispatchende maker uit van de active-job-check', async () => {
+    setupJob()
+    const r = await handleSubmitReview({ ...input, verdict: 'CHANGES_REQUESTED' })
+    expect(parse(r).outcome).toBe('revision')
+    expect(m.claudeJob.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        id: { notIn: expect.arrayContaining(['rev-job-1']) },
+      }),
+    }))
+    expect(m.claudeJob.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ kind: 'IDEA_REVISE_SPEC' }),
+    }))
+  })
+
+  it('CHANGES_REQUESTED met een ándere actieve spec-loop-job → already-processed (geen dubbele keten)', async () => {
+    setupJob()
+    m.claudeJob.findFirst.mockResolvedValue({ id: 'other-job-9', kind: 'IDEA_REVISE_SPEC' })
+    const r = await handleSubmitReview({ ...input, verdict: 'CHANGES_REQUESTED' })
+    expect(parse(r).outcome).toBe('already-processed')
+    expect(m.claudeJob.create).not.toHaveBeenCalled()
+    expect(m.idea.update).not.toHaveBeenCalled()
+  })
+
   it('REJECTED → SPEC_FAILED + escalatie-vraag met productId', async () => {
     setupJob()
     const r = await handleSubmitReview({ ...input, verdict: 'REJECTED', summary: 'fundamenteel mis' })
