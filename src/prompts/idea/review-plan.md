@@ -20,6 +20,7 @@ Je context (meegegeven in `wait_for_job`-payload):
 - `doc_index`: bestaande ProductDocs per folder. Lees relevante docs met
   `get_product_doc({product_id, folder, slug})`; `search_product_docs` voor
   full-text; `list_product_docs` voor de index.
+- `review_round` / `max_rounds`: huidige loop-ronde en de harde rondegrens
 
 ## Werkwijze
 
@@ -38,6 +39,16 @@ Kies precies één:
 - **CHANGES_REQUESTED** — concrete, oplosbare gebreken (findings met verwijzing).
 - **REJECTED** — fundamenteel fout (verkeerde aanpak/scope), niet met een
   revisieronde te repareren.
+
+## Rondebeleid (convergentie)
+
+Het doel van de loop is convergentie, geen perfectie:
+- Vanaf ronde 3 rechtvaardigen alleen `blocker`-findings nog **CHANGES_REQUESTED**;
+  resterende majors/minors rapporteer je als findings bij **APPROVED**.
+- Voer geen nieuwe niet-blockers op over plantekst die in eerdere rondes al zo stond.
+- Bij `review_round >= max_rounds` is dit de laatste ronde: na nóg een
+  **CHANGES_REQUESTED** stopt het systeem de loop en escaleert het naar de gebruiker.
+Een echte blocker wuif je nooit weg om te convergeren.
 
 ## Output (verplicht, exact deze volgorde)
 

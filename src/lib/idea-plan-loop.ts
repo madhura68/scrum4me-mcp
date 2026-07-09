@@ -21,6 +21,13 @@ export function specLoopKey(ideaId: string, round: number): string {
   return `idea:${ideaId}:spec-loop:r${round}`
 }
 
+// Max-rondes-noodrem (M23-follow-up): bij CHANGES_REQUESTED in ronde >= deze
+// grens queuet submit_review geen nieuwe revisie meer maar volgt het
+// REJECTED-escalatiepad (status *_FAILED + claude_question). Geldt voor de
+// plan- én de spec-loop; de reviewprompts krijgen dezelfde grens als
+// max_rounds in de payload mee (rondebeleid).
+export const MAX_LOOP_ROUNDS = 5
+
 const LOOP_KINDS = ['IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN'] as const
 export const SPEC_LOOP_KINDS = ['IDEA_MAKE_SPEC', 'IDEA_REVISE_SPEC', 'SPEC_REVIEW'] as const
 const ACTIVE = ['QUEUED', 'CLAIMED', 'RUNNING'] as const

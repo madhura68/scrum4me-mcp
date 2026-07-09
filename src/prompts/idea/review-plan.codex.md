@@ -17,6 +17,7 @@ Lees het payload-bestand op `$PAYLOAD_PATH` (JSON). Daarin staan onder meer:
 - `idea.grill_md`: bindende scope / acceptatie / risico uit de grill-fase
 - `product`: gekoppeld product (`definition_of_done`, repo-context)
 - `doc_index`: bestaande ProductDocs per folder
+- `review_round` / `max_rounds`: huidige loop-ronde en de harde rondegrens
 
 Lees relevante docs met `mcp__scrum4me__get_product_doc({ product_id, folder, slug })`;
 `mcp__scrum4me__search_product_docs` voor full-text; `mcp__scrum4me__list_product_docs`
@@ -41,6 +42,16 @@ Kies precies één:
 - **CHANGES_REQUESTED** — concrete, oplosbare gebreken (findings met verwijzing).
 - **REJECTED** — fundamenteel fout (verkeerde aanpak/scope), niet met een
   revisieronde te repareren.
+
+## Rondebeleid (convergentie)
+
+Het doel van de loop is convergentie, geen perfectie:
+- Vanaf ronde 3 rechtvaardigen alleen `blocker`-findings nog **CHANGES_REQUESTED**;
+  resterende majors/minors rapporteer je als findings bij **APPROVED**.
+- Voer geen nieuwe niet-blockers op over plantekst die in eerdere rondes al zo stond.
+- Bij `review_round >= max_rounds` is dit de laatste ronde: na nóg een
+  **CHANGES_REQUESTED** stopt het systeem de loop en escaleert het naar de gebruiker.
+Een echte blocker wuif je nooit weg om te convergeren.
 
 ## Output (verplicht, exact deze volgorde)
 

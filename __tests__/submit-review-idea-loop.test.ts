@@ -117,6 +117,27 @@ describe('submit_review — IDEA_REVIEW_PLAN verdict-keten (M20)', () => {
     expect(m.claudeJob.create.mock.calls[0][0].data.kind).toBe('IDEA_MAKE_PLAN')
   })
 
+  // Max-rondes-noodrem (spiegel van de spec-loop): ook de plan-loop mag niet
+  // onbeperkt IDEA_MAKE_PLAN-revisierondes blijven queuen.
+  it('CHANGES_REQUESTED in ronde 5 (max) → geen revisie maar PLAN_REVIEW_FAILED + escalatie-vraag + push', async () => {
+    setupJob({ orchestration_key: `idea:${IDEA_ID}:plan-loop:r5` })
+    await handleSubmitReview({ job_id: JOB_ID, verdict: 'CHANGES_REQUESTED', findings: [{ severity: 'major', message: 'X' }], summary: 'NO-GO' })
+    expect(ideaUpdateData().status).toBe('PLAN_REVIEW_FAILED')
+    // verdict-ronde blijft wél in de dual-write plan_review_log staan
+    expect(ideaUpdateData().plan_review_log.rounds).toHaveLength(1)
+    expect(m.claudeJob.create).not.toHaveBeenCalled()
+    expect(m.claudeQuestion.create).toHaveBeenCalled()
+    expect(mockPush).toHaveBeenCalled()
+    expect(mockNotify).not.toHaveBeenCalled()
+  })
+
+  it('CHANGES_REQUESTED in ronde 4 (net onder max) → gewoon revisie r5', async () => {
+    setupJob({ orchestration_key: `idea:${IDEA_ID}:plan-loop:r4` })
+    await handleSubmitReview({ job_id: JOB_ID, verdict: 'CHANGES_REQUESTED', findings: [], summary: 'NO-GO' })
+    expect(m.claudeJob.create.mock.calls[0][0].data.orchestration_key).toBe(`idea:${IDEA_ID}:plan-loop:r5`)
+    expect(m.claudeQuestion.create).not.toHaveBeenCalled()
+  })
+
   it('APPROVED + auto_materialize → PLAN_REVIEWED en materialize aangeroepen', async () => {
     setupJob({ auto_materialize_plan: true })
     await handleSubmitReview({ job_id: JOB_ID, verdict: 'APPROVED', findings: [], summary: 'GO' })
