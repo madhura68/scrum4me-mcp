@@ -137,3 +137,10 @@ describe('getIdeaPromptText (back-compat)', () => {
     expect(getIdeaPromptText('TASK_IMPLEMENTATION')).toBe('')
   })
 })
+
+describe('M23 spec-maker-prompts', () => {
+  it('resolvet make-spec en revise-spec via getIdeaPromptText', () => {
+    expect(getIdeaPromptText('IDEA_MAKE_SPEC')).toContain('IDEA_MAKE_SPEC')
+    expect(getIdeaPromptText('IDEA_REVISE_SPEC')).toContain('review_feedback')
+  })
+})

@@ -26,6 +26,8 @@ const KIND_TO_PROMPT_PATH: Partial<Record<ClaudeJobKind, string>> = {
   IDEA_GRILL: 'idea/grill.md',
   IDEA_MAKE_PLAN: 'idea/make-plan.md',
   IDEA_REVIEW_PLAN: 'idea/review-plan.md',
+  IDEA_MAKE_SPEC: 'idea/make-spec.md',
+  IDEA_REVISE_SPEC: 'idea/revise-spec.md',
   IDEA_CHAT: 'idea-chat/chat.md',
   TASK_IMPLEMENTATION: 'task/implementation.md',
   SPRINT_IMPLEMENTATION: 'sprint/implementation.md',
@@ -65,6 +67,8 @@ export function getIdeaPromptText(kind: ClaudeJobKind, runtime: WorkerRuntime = 
     kind !== 'IDEA_GRILL' &&
     kind !== 'IDEA_MAKE_PLAN' &&
     kind !== 'IDEA_REVIEW_PLAN' &&
+    kind !== 'IDEA_MAKE_SPEC' &&
+    kind !== 'IDEA_REVISE_SPEC' &&
     kind !== 'IDEA_CHAT' &&
     kind !== 'PLAN_CHAT'
   ) return ''

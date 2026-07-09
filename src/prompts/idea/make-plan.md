@@ -145,6 +145,8 @@ stories:
     tasks:
       - title: "..."
         priority: 2
+        implementation_plan: |
+          1. ...
 ---
 
 # Overwegingen
@@ -174,9 +176,12 @@ Beschrijf:
 ## Validatie-regels die de parser afdwingt
 
 - `pbi.title`: 1–200 chars, **verplicht**.
-- `pbi.priority`, `story.priority`, `task.priority`: integer 1–4.
+- `pbi.priority`, `story.priority`, `task.priority`: integer 1–4 — task-priority is **verplicht** (M23).
 - Minimaal 1 story; per story minimaal 1 taak.
-- `implementation_plan`: max 8000 chars.
+- `implementation_plan`: **verplicht per taak** (M23 — een taak zonder plan blokkeert
+  de SprintRun-pre-flight), max 8000 chars.
+- Optioneel `sprint:`-blok op root-niveau met `goal:` (≤500 chars) — voedt de
+  Sprint-creatie van de eindactie "Maak sprint en start bouw"; fallback = PBI-titel.
 - `verify_required`: enum exact `ALIGNED` | `ALIGNED_OR_PARTIAL` | `ANY`.
 - Alle string-velden trimmen, geen lege strings.
 
