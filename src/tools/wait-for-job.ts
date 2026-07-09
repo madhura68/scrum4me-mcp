@@ -37,7 +37,7 @@ import { resolveTaskImplContext } from '../lib/task-review-context.js'
 import { claimLog } from '../lib/claim-log.js'
 import { getInstanceId } from '../presence/instance.js'
 import { getWorkerRuntimeFromEnv, type WorkerRuntime } from '../worker-runtime.js'
-import { parseLoopRound } from '../lib/idea-plan-loop.js'
+import { MAX_LOOP_ROUNDS, parseLoopRound } from '../lib/idea-plan-loop.js'
 
 /** Parse `https://github.com/<owner>/<name>(.git)?` → `<name>`. */
 export function repoNameFromUrl(repoUrl: string | null | undefined): string | null {
@@ -1206,6 +1206,10 @@ export async function getFullJobContext(
               status: job.idea.status,
               grill_md: job.idea.grill_doc?.current_revision?.content_md ?? job.idea.grill_md,
             },
+            // Rondebeleid: de reviewer kent zijn ronde + de harde grens
+            // (server-cap in submit_review bij CHANGES_REQUESTED op de grens).
+            review_round: Math.max(parseLoopRound(job.orchestration_key), 1),
+            max_rounds: MAX_LOOP_ROUNDS,
           }
         : {}),
       instruction,
@@ -1684,6 +1688,13 @@ export async function getFullJobContext(
       pbi: idea.pbi,
       repo_url: job.product.repo_url,
       ...(reviewFeedback ? { review_feedback: reviewFeedback } : {}),
+      // Rondebeleid (alleen de review-kind): ronde + harde grens voor de prompt.
+      ...(job.kind === 'IDEA_REVIEW_PLAN'
+        ? {
+            review_round: Math.max(parseLoopRound(job.orchestration_key), 1),
+            max_rounds: MAX_LOOP_ROUNDS,
+          }
+        : {}),
       // M20: CODEX-review krijgt de codex-promptvariant (RUNTIME_PROMPT_OVERRIDES).
       prompt_text: getIdeaPromptText(job.kind, effectiveRuntime),
       branch_suggestion: `feat/idea-${idea.code.toLowerCase()}-${(() => {

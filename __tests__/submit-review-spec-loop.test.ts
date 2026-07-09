@@ -131,6 +131,42 @@ describe('applySpecReviewVerdict (M23)', () => {
     expect(m.idea.update).not.toHaveBeenCalled()
   })
 
+  // Max-rondes-noodrem: een niet-convergerende reviewer mag niet onbeperkt
+  // IDEA_REVISE_SPEC-rondes (opus, ~$1/ronde) blijven queuen. Bij
+  // CHANGES_REQUESTED in ronde >= MAX_LOOP_ROUNDS (5) volgt het
+  // REJECTED-escalatiepad i.p.v. een nieuwe revisie.
+  it('CHANGES_REQUESTED in ronde 5 (max) → geen revisie maar SPEC_FAILED + escalatie-vraag + push', async () => {
+    setupJob({ orchestration_key: 'idea:i1:spec-loop:r5' })
+    const r = await handleSubmitReview({ ...input, verdict: 'CHANGES_REQUESTED', summary: 'convergeert niet' })
+    expect(parse(r).outcome).toBe('max-rounds')
+    expect(m.claudeJob.create).not.toHaveBeenCalled()
+    expect(m.idea.update).toHaveBeenCalledWith(expect.objectContaining({ data: { status: 'SPEC_FAILED' } }))
+    expect(m.claudeQuestion.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ idea_id: 'i1', product_id: 'p1' }),
+    }))
+    expect(mockPush).toHaveBeenCalled()
+    expect(mockNotify).not.toHaveBeenCalled()
+  })
+
+  it('CHANGES_REQUESTED in ronde 4 (net onder max) → gewoon revisie r5', async () => {
+    setupJob({ orchestration_key: 'idea:i1:spec-loop:r4' })
+    const r = await handleSubmitReview({ ...input, verdict: 'CHANGES_REQUESTED' })
+    expect(parse(r).outcome).toBe('revision')
+    expect(m.claudeJob.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ kind: 'IDEA_REVISE_SPEC', orchestration_key: 'idea:i1:spec-loop:r5' }),
+    }))
+    expect(m.claudeQuestion.create).not.toHaveBeenCalled()
+  })
+
+  it('max-ronde mét andere actieve spec-loop-job → already-processed (geen valse SPEC_FAILED)', async () => {
+    setupJob({ orchestration_key: 'idea:i1:spec-loop:r5' })
+    m.claudeJob.findFirst.mockResolvedValue({ id: 'other-job-9', kind: 'IDEA_REVISE_SPEC' })
+    const r = await handleSubmitReview({ ...input, verdict: 'CHANGES_REQUESTED' })
+    expect(parse(r).outcome).toBe('already-processed')
+    expect(m.idea.update).not.toHaveBeenCalled()
+    expect(m.claudeQuestion.create).not.toHaveBeenCalled()
+  })
+
   it('REJECTED → SPEC_FAILED + escalatie-vraag met productId', async () => {
     setupJob()
     const r = await handleSubmitReview({ ...input, verdict: 'REJECTED', summary: 'fundamenteel mis' })

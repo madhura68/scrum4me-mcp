@@ -8,7 +8,8 @@
 // de idempotentie-guard (rollback bij een side-effect-fout → retry verwerkt
 // alsnog volledig; gecommitte rij → retry is no-op):
 //   APPROVED           → PLAN_REVIEWED (+ auto-materialize bij toggle) + hardstop
-//   CHANGES_REQUESTED  → PLANNING + revisie-job r{n+1} (toggle-uit → PLAN_REVIEW_FAILED)
+//   CHANGES_REQUESTED  → PLANNING + revisie-job r{n+1} (toggle-uit → PLAN_REVIEW_FAILED;
+//                        ronde >= MAX_LOOP_ROUNDS → escalatie i.p.v. revisie)
 //   REJECTED           → PLAN_REVIEW_FAILED + escalatie-vraag aan de gebruiker
 
 import { z } from 'zod'
@@ -24,6 +25,7 @@ import {
   findActiveLoopJob,
   lockIdeaRow,
   loopKey,
+  MAX_LOOP_ROUNDS,
   parseLoopRound,
   findActiveSpecLoopJob,
   specLoopKey,
@@ -88,7 +90,8 @@ type VerdictOutcome = {
   // 'stale' = de review-job is niet meer actief (user-cancel / reclaim / terminaal);
   // het verdict wordt bewust NIET toegepast (noodrem, zie applyIdeaReviewVerdict).
   // 'plan-started' (M23) = spec APPROVED → IDEA_MAKE_PLAN gedispatcht.
-  outcome: 'already-processed' | 'revision' | 'manual-stop' | 'approved' | 'rejected' | 'stale' | 'plan-started'
+  // 'max-rounds' = CHANGES_REQUESTED op de rondegrens: geen revisie, escalatie.
+  outcome: 'already-processed' | 'revision' | 'manual-stop' | 'approved' | 'rejected' | 'stale' | 'plan-started' | 'max-rounds'
   revisionJobId?: string
 }
 
@@ -196,6 +199,29 @@ async function applyIdeaReviewVerdict(
           },
         })
         return { outcome: 'already-processed' as const }
+      }
+      if (round >= MAX_LOOP_ROUNDS) {
+        // Max-rondes-noodrem: de loop convergeert niet — geen revisie r{n+1}
+        // maar het REJECTED-escalatiepad, met eerlijke log- en vraagtekst.
+        await tx.idea.update({
+          where: { id: ideaId },
+          data: { status: 'PLAN_REVIEW_FAILED', plan_review_log: planReviewLogJson, reviewed_at: now },
+        })
+        await tx.ideaLog.create({
+          data: {
+            idea_id: ideaId,
+            type: 'PLAN_REVIEW_RESULT',
+            content: `Review r${round}: CHANGES_REQUESTED (${input.findings.length} findings) — max rondes (${MAX_LOOP_ROUNDS}) bereikt, escalatie naar gebruiker`,
+            metadata: { job_id: job.id, verdict: input.verdict, round, max_rounds: MAX_LOOP_ROUNDS },
+          },
+        })
+        await createIdeaEscalationQuestion(tx, {
+          ideaId,
+          productId: job.product_id,
+          userId: job.user_id,
+          question: `Plan-review convergeert niet (r${round}, nog ${input.findings.length} findings): ${input.summary.slice(0, 400)} — hoe verder? (plan handmatig bijwerken / opnieuw plannen / afbreken)`,
+        })
+        return { outcome: 'max-rounds' as const }
       }
       const revision = await tx.claudeJob.create({
         data: {
@@ -372,6 +398,27 @@ async function applySpecReviewVerdict(
         })
         return { outcome: 'already-processed' as const }
       }
+      if (round >= MAX_LOOP_ROUNDS) {
+        // Max-rondes-noodrem (spiegel van de plan-loop): geen revisie meer maar
+        // het REJECTED-escalatiepad — anders queuet een niet-convergerende
+        // reviewer onbeperkt IDEA_REVISE_SPEC-rondes.
+        await tx.idea.update({ where: { id: ideaId }, data: { status: 'SPEC_FAILED' } })
+        await tx.ideaLog.create({
+          data: {
+            idea_id: ideaId,
+            type: 'JOB_EVENT',
+            content: `Spec-review r${round}: CHANGES_REQUESTED (${input.findings.length} findings) — max rondes (${MAX_LOOP_ROUNDS}) bereikt, escalatie naar gebruiker`,
+            metadata: { job_id: job.id, round, max_rounds: MAX_LOOP_ROUNDS },
+          },
+        })
+        await createIdeaEscalationQuestion(tx, {
+          ideaId,
+          productId: job.product_id,
+          userId: job.user_id,
+          question: `Spec-review convergeert niet (r${round}, nog ${input.findings.length} findings): ${input.summary.slice(0, 400)} — hoe verder? (spec handmatig bijwerken / opnieuw / afbreken)`,
+        })
+        return { outcome: 'max-rounds' as const }
+      }
       const revision = await tx.claudeJob.create({
         data: {
           user_id: job.user_id,
@@ -504,9 +551,9 @@ export async function handleSubmitReview(
           }
         }
       }
-      if (result.outcome === 'rejected') {
+      if (result.outcome === 'rejected' || result.outcome === 'max-rounds') {
         void triggerPush(job.user_id, {
-          title: 'Plan afgewezen door review',
+          title: result.outcome === 'rejected' ? 'Plan afgewezen door review' : 'Plan-review convergeert niet',
           body: summary.slice(0, 120),
           url: '/ideas',
           tag: `idea-review-${job.id}`,
@@ -540,9 +587,9 @@ export async function handleSubmitReview(
           idea_id: job.idea.id,
         })
       }
-      if (result.outcome === 'rejected') {
+      if (result.outcome === 'rejected' || result.outcome === 'max-rounds') {
         void triggerPush(job.user_id, {
-          title: 'Spec afgewezen door review',
+          title: result.outcome === 'rejected' ? 'Spec afgewezen door review' : 'Spec-review convergeert niet',
           body: summary.slice(0, 120),
           url: '/ideas',
           tag: `idea-spec-review-${job.id}`,
