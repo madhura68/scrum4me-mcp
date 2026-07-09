@@ -7,6 +7,7 @@ import { prisma } from '../../prisma.js'
 import { getJobConfigSnapshot } from './snapshot.js'
 import { notifyJobEnqueued } from './notify.js'
 import { DispatchError } from './errors.js'
+import { resolveTaskImplContext } from '../task-review-context.js'
 
 // Spec §6.3 (v0.4): pr_url parsen, normaliseren (Forgejo + bekende
 // mirror-vormen) en host+owner/repo matchen met Product.repo_url.
@@ -161,10 +162,32 @@ export async function dispatchTaskReview(opts: {
 }): Promise<{ job_id: string }> {
   const task = await prisma.task.findUnique({
     where: { id: opts.taskId },
-    select: { id: true, story: { select: { product_id: true } } },
+    select: {
+      id: true,
+      repo_url: true,
+      story: { select: { product_id: true } },
+    },
   })
   if (!task || task.story.product_id !== opts.productId) {
     throw new DispatchError(`Task ${opts.taskId} not found in this product`)
+  }
+  // Guard: een TASK_REVIEW zonder diff-bron kan de worker nooit uitvoeren
+  // (getFullJobContext gooit dan TerminalJobError). Weiger hem hier al, anders
+  // maken we een job aan die per definitie FAILED eindigt.
+  const impl = await resolveTaskImplContext(task.id)
+  const product = await prisma.product.findUnique({
+    where: { id: opts.productId },
+    select: { repo_url: true },
+  })
+  const diffRepoUrl = task.repo_url ?? product?.repo_url ?? null
+  const canCompare = Boolean(
+    diffRepoUrl && impl.base_sha && impl.head_sha && impl.base_sha !== impl.head_sha,
+  )
+  if (!canCompare && !impl.pr_url) {
+    throw new DispatchError(
+      `Task ${opts.taskId} heeft geen implementatie-context: geen base/head-sha ` +
+        `en geen PR-url. Een review zonder diff is zinloos.`,
+    )
   }
   const snapshot = await getJobConfigSnapshot({
     kind: 'TASK_REVIEW',
