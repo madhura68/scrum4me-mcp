@@ -15,7 +15,7 @@ export { DispatchError } from './errors.js'
 export const ACTIVE_JOB_STATUSES = ['QUEUED', 'CLAIMED', 'RUNNING'] as const
 const WORKER_FRESH_MS = 15_000
 
-type IdeaJobKind = Extract<ClaudeJobKind, 'IDEA_GRILL' | 'IDEA_MAKE_PLAN' | 'IDEA_REVIEW_PLAN'>
+type IdeaJobKind = Extract<ClaudeJobKind, 'IDEA_GRILL' | 'IDEA_MAKE_PLAN' | 'IDEA_REVIEW_PLAN' | 'IDEA_MAKE_SPEC'>
 
 const IDEA_KIND_RULES: Record<IdeaJobKind, { newStatus: IdeaStatus; allowedFrom: IdeaStatus[] }> = {
   IDEA_GRILL: {
@@ -29,6 +29,12 @@ const IDEA_KIND_RULES: Record<IdeaJobKind, { newStatus: IdeaStatus; allowedFrom:
   IDEA_REVIEW_PLAN: {
     newStatus: 'REVIEWING_PLAN',
     allowedFrom: ['PLAN_READY', 'PLAN_REVIEWED'],
+  },
+  // M23: copilot/web-startpad van de spec-pipeline. IDEA_REVISE_SPEC is bewust
+  // GEEN dispatch-kind — revisies ontstaan alleen als submit_review-side-effect.
+  IDEA_MAKE_SPEC: {
+    newStatus: 'SPEC_DRAFTING',
+    allowedFrom: ['GRILLED', 'SPEC_FAILED'],
   },
 }
 

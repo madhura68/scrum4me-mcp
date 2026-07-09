@@ -69,6 +69,7 @@ beforeEach(() => {
     user_id: 'user-1',
     product_id: 'prod-1',
     title: 'T',
+    status: 'GRILLING',
   })
 })
 
@@ -98,4 +99,27 @@ it('schrijft het grill-resultaat als ASSISTANT/GRILL_RESULT-kanaalbericht, niet 
   })
   // Dubbel-render-preventie (spec §3): géén IdeaLog GRILL_RESULT meer.
   expect(txMocks.ideaLog.create).not.toHaveBeenCalled()
+})
+
+it('M23 chat-gate: weigert grill-write vanuit SPEC_REVIEWING (pipeline actief)', async () => {
+  mockFindUnique.mockResolvedValue({
+    id: 'idea-1', code: 'IDEA-042', user_id: 'user-1', product_id: 'prod-1',
+    title: 'T', status: 'SPEC_REVIEWING',
+  })
+  const handler = captureHandler()
+  const res = await handler({ idea_id: 'idea-1', markdown: '# grill' })
+  expect(res.isError).toBe(true)
+  expect(res.content[0].text).toContain('Grill-write niet toegestaan')
+})
+
+it('M23 chat-gate: staat grill-write toe vanuit GRILLED (voorbereidingsfase)', async () => {
+  mockFindUnique.mockResolvedValue({
+    id: 'idea-1', code: 'IDEA-042', user_id: 'user-1', product_id: 'prod-1',
+    title: 'T', status: 'GRILLED',
+  })
+  txMocks.idea.update.mockResolvedValue({ id: 'idea-1', status: 'GRILLED', code: 'IDEA-042' })
+  txMocks.ideaChatMessage.create.mockResolvedValue({ id: 'msg-1' })
+  const handler = captureHandler()
+  const res = await handler({ idea_id: 'idea-1', markdown: '# grill' })
+  expect(res.isError).toBeFalsy()
 })

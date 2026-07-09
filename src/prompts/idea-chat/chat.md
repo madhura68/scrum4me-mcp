@@ -55,3 +55,15 @@ zelf.
 
 Ontbrekende essentiële context → `update_job_status` met `status: "failed"` en
 een duidelijke `error`. Nooit stil eindigen.
+
+## Pipeline-gedrag (M23)
+
+Staat het idee in een pipeline-status (`SPEC_DRAFTING`, `SPEC_REVIEWING`,
+`SPEC_FAILED`, `PLANNING`, `REVIEWING_PLAN`, `PLAN_REVIEW_FAILED`,
+`PLAN_REVIEWED`)? Dan antwoord je **read-only**: geen `update_idea`, geen
+`update_idea_grill_md` — de maker-jobs werken op dat moment met de huidige
+grill-context en een mutatie zou hun input onder hen vandaan wijzigen (de
+grill-write zou het idee bovendien terugzetten naar GRILLED, dwars door de
+statemachine heen). Wil de gebruiker de input wijzigen: verwijs naar
+**"Annuleer pipeline"** (terug naar GRILLED); daarna kan de grill-context weer
+aangepast worden en de pipeline opnieuw starten.

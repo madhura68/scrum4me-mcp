@@ -22,7 +22,7 @@ import { dispatchDocsAudit } from '../lib/dispatch/docs-audit-dispatch.js'
 // Geëxporteerd t.b.v. de invariant-test (copilot idea-chat spec §3.7): IDEA_CHAT
 // mag hier NOOIT bij — chat-beurten ontstaan uitsluitend via send_idea_chat_message.
 export const KIND_VALUES = [
-  'IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN',
+  'IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'IDEA_MAKE_SPEC',
   'TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION',
   'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW', 'DEPLOY', 'DOCS_AUDIT',
 ] as const
@@ -39,6 +39,7 @@ const REF_MATRIX: Record<DispatchKind, { required: RefKey[]; oneOf?: RefKey[] }>
   IDEA_GRILL: { required: ['idea_id'] },
   IDEA_MAKE_PLAN: { required: ['idea_id'] },
   IDEA_REVIEW_PLAN: { required: ['idea_id'] },
+  IDEA_MAKE_SPEC: { required: ['idea_id'] },
   TASK_IMPLEMENTATION: { required: ['task_id'] },
   SPRINT_IMPLEMENTATION: { required: ['sprint_id'] },
   PR_REVIEW: { required: ['pr_url'] },
@@ -100,6 +101,7 @@ export async function handleDispatchJob(rawInput: Input) {
       switch (input.kind) {
         case 'IDEA_GRILL':
         case 'IDEA_MAKE_PLAN':
+        case 'IDEA_MAKE_SPEC':
         case 'IDEA_REVIEW_PLAN':
           return toolJson(await dispatchIdeaJob({
             kind: input.kind, ideaId: input.idea_id!, productId: input.product_id, userId: auth.userId,

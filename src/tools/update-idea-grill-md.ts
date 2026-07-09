@@ -46,10 +46,21 @@ export function registerUpdateIdeaGrillMdTool(server: McpServer) {
 
         const idea = await prisma.idea.findUnique({
           where: { id: idea_id },
-          select: { id: true, code: true, user_id: true, product_id: true, title: true },
+          select: { id: true, code: true, user_id: true, product_id: true, title: true, status: true },
         })
         if (!idea?.product_id) {
           return toolError('Idea has no product_id — assign product before GRILL')
+        }
+        // M23 chat-gate (fail-closed): een grill-write zet status onvoorwaardelijk
+        // op GRILLED en mag dus nooit midden in de spec/plan-pipeline landen —
+        // dat zou de statemachine corrumperen (bv. een IDEA_CHAT-beurt die
+        // update_idea_grill_md aanroept tijdens SPEC_REVIEWING). Alleen de
+        // grill-flow zelf en de vrije voorbereidingsfase zijn toegestaan.
+        const GRILL_WRITE_ALLOWED_FROM = ['GRILLING', 'GRILLED', 'PLAN_READY'] as const
+        if (!(GRILL_WRITE_ALLOWED_FROM as readonly string[]).includes(idea.status)) {
+          return toolError(
+            `Grill-write niet toegestaan vanuit status ${idea.status} — annuleer eerst de pipeline (terug naar GRILLED)`,
+          )
         }
         // Product-bound wanneer de caller een product_id meegeeft (copilot-service):
         // mismatch ⇒ 404-stijl, zodat een idee uit een ander product van dezelfde
