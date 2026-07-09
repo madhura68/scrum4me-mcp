@@ -48,7 +48,7 @@ describe('claim-filter: DEPLOY (spec §5 + deploy-only-scoping)', () => {
   it('IDEA_CHAT claimgedrag (PR #60) blijft ongemoeid door de DEPLOY-tak', () => {
     const clause = buildClaimableJobWhereClause({ runtime: 'CLAUDE', hasProductScope: false, capabilities: ['code_edit', 'planning', 'review'] })
     expect(clause).toContain("'IDEA_CHAT'")
-    expect(clause).toContain("cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'IDEA_CHAT', 'PLAN_CHAT', 'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW')")
+    expect(clause).toContain("cj.kind IN ('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'IDEA_MAKE_SPEC', 'IDEA_REVISE_SPEC', 'IDEA_CHAT', 'PLAN_CHAT', 'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW')")
   })
 })
 
