@@ -37,3 +37,25 @@ export type ComputedUsage = {
 export type UsageTotals = { input: number; output: number; cacheRead: number; cacheWrite: number }
 
 export type PersistJobUsageResult = 'skipped' | 'written' | 'noop'
+
+export type WorkerRuntime = 'CLAUDE' | 'CODEX'
+
+export type PricingModelSource = 'observed_event' | 'cli_model' | 'pricing_default'
+
+export type UsageCaptureSource = 'claude_post_tool_use' | 'codex_exec_jsonl'
+
+export type UsageCaptureStatus = 'captured' | 'no_usage_events' | 'parse_error' | 'missing_model'
+
+export type JobUsageSnapshot = {
+  runtime: WorkerRuntime
+  modelId: string | null
+  pricingModelId: string | null
+  pricingModelSource: PricingModelSource | null
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  reasoningOutputTokens: number | null
+  captureSource: UsageCaptureSource
+  captureStatus: UsageCaptureStatus
+}
