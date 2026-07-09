@@ -20,6 +20,7 @@
     "typecheck": "tsc --noEmit",
     "typecheck:tests": "tsc --noEmit -p tsconfig.type-tests.json",
     "pretest": "npm run typecheck:tests",
+    "usage:canary": "tsx scripts/check-worker-usage-capture.ts",
     "sync-schema": "bash scripts/sync-schema.sh",
     "test": "vitest run"
   },
