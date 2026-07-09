@@ -75,6 +75,10 @@ type IdeaReviewJob = {
   orchestration_key: string | null
   status: string
   claimed_by_token_id: string | null
+  // M23 pin-retrofit: de review-job draagt sinds de dispatch-pin ook het
+  // beoordeelde doc + de exacte revisie; null voor pre-M23-jobs (legacy).
+  doc_id?: string | null
+  doc_revision_id?: string | null
   idea: { id: string; status: string; plan_review_log: unknown } | null
   product: { auto_plan_review: boolean; auto_materialize_plan: boolean } | null
 }
@@ -161,6 +165,10 @@ async function applyIdeaReviewVerdict(
         kind: 'IDEA_REVIEW_PLAN',
         product_id: job.product_id,
         idea_id: ideaId,
+        // M23: pin van dispatch-moment mee de log in (null = pre-M23 legacy;
+        // resolvePlanSource behandelt dat als legacy-goedkeuring van current).
+        doc_id: job.doc_id ?? null,
+        doc_revision_id: job.doc_revision_id ?? null,
         verdict: input.verdict,
         findings: findingsJson,
         summary: input.summary,

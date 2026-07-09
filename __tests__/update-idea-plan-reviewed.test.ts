@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('../src/prisma.js', () => ({
   prisma: {
     claudeJob: { findUnique: vi.fn() },
-    idea: { update: vi.fn() },
+    idea: { update: vi.fn(), findUnique: vi.fn() },
     ideaLog: { create: vi.fn() },
     reviewLog: { upsert: vi.fn() },
     $transaction: vi.fn(),
@@ -25,7 +25,7 @@ import { handleUpdateIdeaPlanReviewed } from '../src/tools/update-idea-plan-revi
 
 const p = prisma as unknown as {
   claudeJob: { findUnique: ReturnType<typeof vi.fn> }
-  idea: { update: ReturnType<typeof vi.fn> }
+  idea: { update: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn> }
   ideaLog: { create: ReturnType<typeof vi.fn> }
   reviewLog: { upsert: ReturnType<typeof vi.fn> }
   $transaction: ReturnType<typeof vi.fn>
@@ -38,6 +38,8 @@ const USER_ID = 'user-1'
 const REVIEW_LOG = { rounds: [{ score: 88 }], convergence: { stable_at_round: 2 }, approval: { status: 'approved' }, findings: [{ severity: 'major', message: 'x' }] }
 
 beforeEach(() => {
+  // M23 pin-retrofit: idea-fetch vóór de tx.
+  p.idea.findUnique.mockResolvedValue({ plan_doc_id: 'pd-1', plan_doc: { current_revision_id: 'rev-9' } })
   vi.clearAllMocks()
   mockAuth.mockResolvedValue({ userId: USER_ID, tokenId: 't', username: 'a', isDemo: false })
   p.claudeJob.findUnique.mockResolvedValue({
@@ -87,4 +89,10 @@ describe('update_idea_plan_reviewed job-binding + ReviewLog', () => {
     await handleUpdateIdeaPlanReviewed({ idea_id: IDEA_ID, job_id: JOB_ID, review_log: REVIEW_LOG })
     expect(p.reviewLog.upsert.mock.calls[0][0].create.verdict).toBe('CHANGES_REQUESTED')
   })
+})
+
+it('M23: pint doc_id + doc_revision_id (current) in de ReviewLog-pins', async () => {
+  await handleUpdateIdeaPlanReviewed({ idea_id: IDEA_ID, job_id: JOB_ID, review_log: REVIEW_LOG, approval_status: 'approved' })
+  const arg = p.reviewLog.upsert.mock.calls[0][0]
+  expect(arg.create).toEqual(expect.objectContaining({ doc_id: 'pd-1', doc_revision_id: 'rev-9' }))
 })

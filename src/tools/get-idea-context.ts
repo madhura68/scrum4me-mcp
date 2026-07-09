@@ -64,6 +64,14 @@ export function registerGetIdeaContextTool(server: McpServer) {
                 },
               },
             },
+            // M23: spec-fase-pointer voor pipeline-consumenten (copilot e.a.).
+            spec_doc: {
+              select: {
+                id: true,
+                slug: true,
+                current_revision: { select: { id: true, revision: true } },
+              },
+            },
           },
         })
         if (!idea) {
@@ -116,6 +124,10 @@ export function registerGetIdeaContextTool(server: McpServer) {
             status: idea.status,
             product_id: idea.product_id,
             pbi_id: idea.pbi_id,
+            // M23: pipeline-pointers (spec-fase + eindactie-traceability).
+            spec_doc_id: idea.spec_doc_id,
+            build_sprint_id: idea.build_sprint_id,
+            build_sprint_run_id: idea.build_sprint_run_id,
             archived: idea.archived,
             created_at: idea.created_at.toISOString(),
             updated_at: idea.updated_at.toISOString(),
@@ -136,6 +148,13 @@ export function registerGetIdeaContextTool(server: McpServer) {
                       revision: idea.plan_doc.current_revision.revision,
                     }
                   : null,
+              }
+            : null,
+          spec_doc: idea.spec_doc
+            ? {
+                id: idea.spec_doc.id,
+                slug: idea.spec_doc.slug,
+                revision: idea.spec_doc.current_revision?.revision ?? null,
               }
             : null,
           grill_doc: idea.grill_doc

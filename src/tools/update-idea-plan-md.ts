@@ -35,7 +35,13 @@ export const inputSchema = z.object({
 // die de codex-worker claimt. Ronde n = ronde van de triggerende
 // IDEA_MAKE_PLAN-job (plan r{n} ↔ review r{n}; button-job zonder key = ronde 1).
 // Idempotent via de composiet-unique (created_by_job_id, orchestration_key).
-async function maybeAutoDispatchPlanReview(ideaId: string, autoPlanReview: boolean): Promise<void> {
+async function maybeAutoDispatchPlanReview(
+  ideaId: string,
+  autoPlanReview: boolean,
+  // M23: pin — het zojuist geschreven plan-doc + de exacte revisie die de
+  // reviewer moet beoordelen (doorgegeven aan ReviewLog bij verdict).
+  pin?: { docId: string; revisionId: string },
+): Promise<void> {
   if (!autoPlanReview) return
 
   const makePlanJob = await prisma.claudeJob.findFirst({
@@ -59,6 +65,7 @@ async function maybeAutoDispatchPlanReview(ideaId: string, autoPlanReview: boole
           product_id: makePlanJob.product_id,
           idea_id: ideaId,
           kind: 'IDEA_REVIEW_PLAN',
+          ...(pin ? { doc_id: pin.docId, doc_revision_id: pin.revisionId } : {}),
           ...REVIEW_JOB_FIELDS,
           source: 'SYSTEM', // systeem-geïnitieerd (override COPILOT uit REVIEW_JOB_FIELDS)
           created_by_job_id: makePlanJob.id,
@@ -190,7 +197,7 @@ export async function handleUpdateIdeaPlanMd(input: { idea_id: string; markdown:
     // niet-fataal (de plan-write is al gecommit; een dispatch-fout mag de
     // tool-respons niet breken).
     try {
-      await maybeAutoDispatchPlanReview(idea_id, idea.product?.auto_plan_review ?? false)
+      await maybeAutoDispatchPlanReview(idea_id, idea.product?.auto_plan_review ?? false, { docId: result.wr.doc_id, revisionId: result.wr.revision_id })
     } catch (err) {
       console.error('maybeAutoDispatchPlanReview failed (plan is al PLAN_READY):', err)
     }
