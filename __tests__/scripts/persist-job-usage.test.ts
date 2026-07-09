@@ -269,6 +269,12 @@ describe('persistJobUsage', () => {
         output_tokens: 20,
         cache_read_tokens: 40,
         cache_write_tokens: 30,
+        pricing_model_id: 'claude-sonnet-4-6',
+        pricing_model_source: 'observed_event',
+        reasoning_output_tokens: null,
+        usage_capture_source: 'claude_post_tool_use',
+        usage_capture_status: 'captured',
+        usage_capture_error: null,
       },
     })
     cleanup()
