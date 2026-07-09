@@ -267,7 +267,7 @@ Alternatively, configure repo roots in `~/.scrum4me-agent-config.json`:
 }
 ```
 
-If no repo root is configured for the product, `wait_for_job` rolls back the claim to `QUEUED` and returns an error.
+If no repo root is configured for the product, `wait_for_job` tries an **on-demand clone** of `product.repo_url` (spec: `docs/superpowers/specs/2026-07-08-on-demand-repo-clone-fallback-design.md`). Only if the clone also fails does it roll the claim back to `QUEUED` and return an error. Explicit configuration is therefore optional for any product with a valid `repo_url`.
 
 ### Smoke-test checklist
 
