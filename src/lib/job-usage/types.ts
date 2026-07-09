@@ -38,6 +38,8 @@ export type UsageTotals = { input: number; output: number; cacheRead: number; ca
 
 export type PersistJobUsageResult = 'skipped' | 'written' | 'noop'
 
+export type PersistUsageSnapshotResult = 'skipped' | 'written' | 'guard_mismatch'
+
 export type WorkerRuntime = 'CLAUDE' | 'CODEX'
 
 export type PricingModelSource = 'observed_event' | 'cli_model' | 'pricing_default'
@@ -58,4 +60,9 @@ export type JobUsageSnapshot = {
   reasoningOutputTokens: number | null
   captureSource: UsageCaptureSource
   captureStatus: UsageCaptureStatus
+}
+
+export type UsageOwnerGuard = {
+  claimedByTokenId?: string | null
+  workerInstanceId?: string | null
 }
