@@ -94,6 +94,29 @@ describe('submit_review — IDEA_REVIEW_PLAN verdict-keten (M20)', () => {
     expect(mockNotify).toHaveBeenCalled()
   })
 
+  // Zelfde race als de M23-spec-loop: het verdict kan landen terwijl de maker
+  // die deze review dispatchte nog CLAIMED is — die telt niet als actieve
+  // loop-job, anders verdampt de revisie en hangt het idee op REVIEWING_PLAN.
+  it('CHANGES_REQUESTED sluit de dispatchende maker uit van de active-job-check', async () => {
+    setupJob({ orchestration_key: `idea:${IDEA_ID}:plan-loop:r1` })
+    m.claudeJob.findUnique.mockResolvedValue({
+      id: JOB_ID, user_id: 'u1', kind: 'IDEA_REVIEW_PLAN', product_id: 'p1',
+      runtime: 'CODEX', orchestration_key: `idea:${IDEA_ID}:plan-loop:r1`,
+      status: 'CLAIMED', claimed_by_token_id: 'tok-1',
+      doc_id: null, task_id: null, doc: null,
+      created_by_job_id: 'maker-plan-1',
+      idea: { id: IDEA_ID, status: 'REVIEWING_PLAN', plan_review_log: null },
+      product: { auto_plan_review: true, auto_materialize_plan: true },
+    })
+    await handleSubmitReview({ job_id: JOB_ID, verdict: 'CHANGES_REQUESTED', findings: [{ severity: 'major', message: 'X' }], summary: 'NO-GO' })
+    expect(m.claudeJob.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        id: { notIn: expect.arrayContaining([JOB_ID, 'maker-plan-1']) },
+      }),
+    }))
+    expect(m.claudeJob.create.mock.calls[0][0].data.kind).toBe('IDEA_MAKE_PLAN')
+  })
+
   it('APPROVED + auto_materialize → PLAN_REVIEWED en materialize aangeroepen', async () => {
     setupJob({ auto_materialize_plan: true })
     await handleSubmitReview({ job_id: JOB_ID, verdict: 'APPROVED', findings: [], summary: 'GO' })
