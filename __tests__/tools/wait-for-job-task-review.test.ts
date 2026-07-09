@@ -38,6 +38,7 @@ import { prisma } from '../../src/prisma.js'
 import { fetchCompareDiff, fetchPrDiff } from '../../src/git/pr.js'
 import { resolveTaskImplContext } from '../../src/lib/task-review-context.js'
 import { getFullJobContext } from '../../src/tools/wait-for-job.js'
+import { TerminalJobError } from '../../src/git/on-demand-clone.js'
 
 const mockPrisma = prisma as unknown as {
   claudeJob: { findUnique: ReturnType<typeof vi.fn> }
@@ -120,27 +121,26 @@ describe('getFullJobContext TASK_REVIEW', () => {
     mockFetchPrDiff.mockResolvedValue(null)
   })
 
-  it('TASK_REVIEW with task_id null → rollbackClaim + null', async () => {
-    mockPrisma.claudeJob.findUnique
-      .mockResolvedValueOnce({ ...BASE_JOB, task_id: null })
-      .mockResolvedValueOnce({ kind: 'TASK_REVIEW', product_id: 'prod-1', task: null })
+  // Structureel onherstelbaar → TerminalJobError, GEEN rollbackClaim. Zou de
+  // code hier requeuen, dan claimt de volgende worker dezelfde job en faalt
+  // identiek: de poison-loop die de fleet UNHEALTHY maakte (2026-07-09).
+  it('TASK_REVIEW with task_id null → TerminalJobError, geen rollback', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({ ...BASE_JOB, task_id: null })
 
-    const ctx = await getFullJobContext('job-task-review-1', 'CLAUDE')
-
-    expect(ctx).toBeNull()
-    expect(mockPrisma.$executeRaw).toHaveBeenCalled()
+    await expect(getFullJobContext('job-task-review-1', 'CLAUDE')).rejects.toThrow(
+      TerminalJobError,
+    )
+    expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
   })
 
-  it('task.findUnique → null → rollbackClaim + null', async () => {
+  it('task.findUnique → null → TerminalJobError, geen rollback', async () => {
     mockPrisma.task.findUnique.mockResolvedValue(null)
-    mockPrisma.claudeJob.findUnique
-      .mockResolvedValueOnce(BASE_JOB)
-      .mockResolvedValueOnce({ kind: 'TASK_REVIEW', product_id: 'prod-1', task: null })
+    mockPrisma.claudeJob.findUnique.mockResolvedValue(BASE_JOB)
 
-    const ctx = await getFullJobContext('job-task-review-1', 'CLAUDE')
-
-    expect(ctx).toBeNull()
-    expect(mockPrisma.$executeRaw).toHaveBeenCalled()
+    await expect(getFullJobContext('job-task-review-1', 'CLAUDE')).rejects.toThrow(
+      TerminalJobError,
+    )
+    expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
   })
 
   it('shas present (base≠head) + fetchCompareDiff returns string → diff_source compare, uses product repo_url when task.repo_url is null', async () => {
@@ -206,7 +206,9 @@ describe('getFullJobContext TASK_REVIEW', () => {
     expect(ctx.task_diff).toBe('diff --git fallback\n')
   })
 
-  it('no diff source at all (no shas, no pr_url) → rollbackClaim + null', async () => {
+  // Geen enkele diff-BRON → structureel → terminaal. Er is nooit een fetch
+  // geprobeerd, dus herhalen kan het nooit oplossen.
+  it('no diff source at all (no shas, no pr_url) → TerminalJobError, geen fetch, geen rollback', async () => {
     mockResolveTaskImplContext.mockResolvedValue({
       plan_snapshot: null,
       base_sha: null,
@@ -214,6 +216,22 @@ describe('getFullJobContext TASK_REVIEW', () => {
       pr_url: null,
       execution_id: null,
     })
+    mockPrisma.claudeJob.findUnique.mockResolvedValue(BASE_JOB)
+
+    await expect(getFullJobContext('job-task-review-1', 'CLAUDE')).rejects.toThrow(
+      TerminalJobError,
+    )
+    expect(mockFetchCompareDiff).not.toHaveBeenCalled()
+    expect(mockFetchPrDiff).not.toHaveBeenCalled()
+    expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
+  })
+
+  // Bronnen bestaan, maar de fetch faalt: Forgejo down, timeout, of de
+  // reviewer-account mist repo-toegang. Dat is buiten de job om op te lossen →
+  // requeue, NIET terminaal. Anders vernietigt één storing alle open reviews.
+  it('both fetchers fail (sources present) → rollbackClaim + null, GEEN TerminalJobError', async () => {
+    mockFetchCompareDiff.mockResolvedValue({ error: 'compare failed: HTTP 503' })
+    mockFetchPrDiff.mockResolvedValue({ error: 'pr diff failed: HTTP 503' })
     mockPrisma.claudeJob.findUnique
       .mockResolvedValueOnce(BASE_JOB)
       .mockResolvedValueOnce({ kind: 'TASK_REVIEW', product_id: 'prod-1', task: null })
@@ -224,9 +242,12 @@ describe('getFullJobContext TASK_REVIEW', () => {
     expect(mockPrisma.$executeRaw).toHaveBeenCalled()
   })
 
-  it('both fetchers fail → rollbackClaim + null', async () => {
-    mockFetchCompareDiff.mockResolvedValue({ error: 'compare failed' })
-    mockFetchPrDiff.mockResolvedValue({ error: 'pr diff failed' })
+  // Regressie-vangnet voor de 2026-07-09-storing: een 404 van de compare-API
+  // (repo bestaat, maar het reviewer-account is geen collaborator) mag de job
+  // NIET vernietigen — die is oplosbaar door rechten te geven.
+  it('compare 404 + geen pr_url → rollbackClaim + null, GEEN TerminalJobError', async () => {
+    mockResolveTaskImplContext.mockResolvedValue({ ...BASE_IMPL, pr_url: null })
+    mockFetchCompareDiff.mockResolvedValue({ error: 'compare failed: HTTP 404' })
     mockPrisma.claudeJob.findUnique
       .mockResolvedValueOnce(BASE_JOB)
       .mockResolvedValueOnce({ kind: 'TASK_REVIEW', product_id: 'prod-1', task: null })
@@ -234,6 +255,7 @@ describe('getFullJobContext TASK_REVIEW', () => {
     const ctx = await getFullJobContext('job-task-review-1', 'CLAUDE')
 
     expect(ctx).toBeNull()
+    expect(mockFetchPrDiff).not.toHaveBeenCalled()
     expect(mockPrisma.$executeRaw).toHaveBeenCalled()
   })
 

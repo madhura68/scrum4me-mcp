@@ -1225,9 +1225,13 @@ export async function getFullJobContext(
   }
 
   if (job.kind === 'TASK_REVIEW') {
+    // Structureel onherstelbaar: een job zonder task_id, of met een task die niet
+    // (meer) bestaat, wordt door herhalen nooit beter. `rollbackClaim` zou hem op
+    // QUEUED zetten en de volgende claim faalt identiek — de poison-loop die de
+    // worker na 5 pogingen UNHEALTHY maakt. Gooi TerminalJobError: de runner
+    // markt de job FAILED en rollbackt NIET (zie run-one-job.ts).
     if (!job.task_id) {
-      await rollbackClaim(job.id)
-      return null
+      throw new TerminalJobError(`TASK_REVIEW job ${job.id} heeft geen task_id`)
     }
     const task = await prisma.task.findUnique({
       where: { id: job.task_id },
@@ -1241,36 +1245,66 @@ export async function getFullJobContext(
       },
     })
     if (!task) {
-      await rollbackClaim(job.id)
-      return null
+      throw new TerminalJobError(
+        `TASK_REVIEW job ${job.id}: task ${job.task_id} bestaat niet (meer)`,
+      )
     }
     const impl = await resolveTaskImplContext(task.id)
     // Diff-repo: task-override wint (spec §5 — cross-repo-taken; zelfde
     // bucket-regel als de PR-hergebruik-logica in update-job-status.ts).
     const diffRepoUrl = task.repo_url ?? job.product.repo_url
 
+    // Onderscheid "er is geen diff-BRON" (structureel) van "de fetch MISLUKTE"
+    // (transiënt). `fetchCompareDiff`/`fetchPrDiff` gooien nooit — ze geven een
+    // {error}-object terug bij netwerkfouten, 5xx, timeouts én permissiefouten.
+    // Zonder dit onderscheid valt elke Forgejo-hik in hetzelfde pad als een
+    // structureel kansloze job.
+    const canCompare = Boolean(
+      diffRepoUrl && impl.base_sha && impl.head_sha && impl.base_sha !== impl.head_sha,
+    )
+    const canPr = Boolean(impl.pr_url)
+    if (!canCompare && !canPr) {
+      // Geen enkele bron: geen DONE-execution met base/head-sha, geen impl-job
+      // met sha's, geen pr_url. Herhalen lost dit nooit op (spec §5/§10).
+      throw new TerminalJobError(
+        `TASK_REVIEW job ${job.id}: geen diff-bron voor task ${task.id} ` +
+          `(geen base/head-sha, geen pr_url${diffRepoUrl ? '' : ', geen repo_url'})`,
+      )
+    }
+
     let taskDiff: string | null = null
     let diffSource: 'compare' | 'pr' | null = null
-    if (diffRepoUrl && impl.base_sha && impl.head_sha && impl.base_sha !== impl.head_sha) {
+    const fetchErrors: string[] = []
+    if (canCompare) {
       const compared = await fetchCompareDiff({
-        repoUrl: diffRepoUrl,
-        baseSha: impl.base_sha,
-        headSha: impl.head_sha,
+        repoUrl: diffRepoUrl as string,
+        baseSha: impl.base_sha as string,
+        headSha: impl.head_sha as string,
       })
       if (typeof compared === 'string') {
         taskDiff = compared
         diffSource = 'compare'
+      } else {
+        fetchErrors.push(`compare: ${compared.error}`)
       }
     }
-    if (!taskDiff && impl.pr_url) {
-      const prDiff = await fetchPrDiff({ prUrl: impl.pr_url })
+    if (!taskDiff && canPr) {
+      const prDiff = await fetchPrDiff({ prUrl: impl.pr_url as string })
       if (typeof prDiff === 'string') {
         taskDiff = prDiff
         diffSource = 'pr'
+      } else {
+        fetchErrors.push(`pr: ${prDiff.error}`)
       }
     }
     if (!taskDiff) {
-      // Een implementatie-review zonder diff is zinloos (spec §5/§10).
+      // De bronnen bestaan, maar ophalen lukte niet. Dat is buiten deze job om op
+      // te lossen (Forgejo down, timeout, of de reviewer-account mist toegang tot
+      // de repo). Requeue i.p.v. terminaal falen — anders vernietigt één storing
+      // alle openstaande reviews.
+      console.error(
+        `getFullJobContext: TASK_REVIEW ${job.id} diff-fetch mislukt, requeue — ${fetchErrors.join('; ')}`,
+      )
       await rollbackClaim(job.id)
       return null
     }
