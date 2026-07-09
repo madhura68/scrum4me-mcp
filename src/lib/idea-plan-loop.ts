@@ -43,17 +43,23 @@ export async function findActiveLoopJob(
 }
 
 // M23: spec-fase-variant van de active-job-check (kinds: maker/revise/review).
+// excludeJobIds: de aanroepende job én (bij verdicts) de maker die de review
+// dispatchte — die maker kan nog CLAIMED zijn terwijl het verdict al landt
+// (codex-review sneller dan de maker-afsluiting) en mag een revisie niet blokkeren.
 export async function findActiveSpecLoopJob(
   tx: Prisma.TransactionClient,
   ideaId: string,
-  excludeJobId?: string | null,
+  excludeJobIds?: (string | null | undefined)[] | string | null,
 ): Promise<{ id: string; kind: string } | null> {
+  const excludes = (Array.isArray(excludeJobIds) ? excludeJobIds : [excludeJobIds]).filter(
+    (id): id is string => typeof id === 'string' && id.length > 0,
+  )
   return tx.claudeJob.findFirst({
     where: {
       idea_id: ideaId,
       kind: { in: [...SPEC_LOOP_KINDS] },
       status: { in: [...ACTIVE] },
-      ...(excludeJobId ? { id: { not: excludeJobId } } : {}),
+      ...(excludes.length ? { id: { notIn: excludes } } : {}),
     },
     select: { id: true, kind: true },
   })

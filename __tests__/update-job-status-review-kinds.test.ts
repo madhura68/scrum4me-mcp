@@ -198,6 +198,46 @@ describe('update_job_status COPILOT review jobs — done-gate exemption', () => 
     expect(pushMocks.pushBranchForJob).not.toHaveBeenCalled()
   })
 
+  // M23 E2E-1 regressie: de spec-makers completen via hun sink (update_idea_spec_md)
+  // en hebben geen task/worktree/verify_result — zonder exemption zit de agent in
+  // een catch-22 (done vereist verify; verify_task_against_plan is niet toegestaan
+  // én niet van toepassing) en blijft de job eeuwig CLAIMED hangen.
+  it('marks IDEA_MAKE_SPEC (source=COPILOT) done without hitting the verify-gate', async () => {
+    const jobId = 'job-idea-make-spec-copilot'
+    mockPrisma.claudeJob.findUnique.mockResolvedValue(makeJob('IDEA_MAKE_SPEC', jobId))
+    mockPrisma.claudeJob.update.mockResolvedValue(makeUpdatedJob(jobId))
+
+    const handler = registerHandler()
+    const result = await handler({ job_id: jobId, status: 'done', summary: 'Spec geschreven.' })
+
+    expect(result).not.toMatchObject({ isError: true })
+    expect(mockPrisma.claudeJob.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: jobId },
+        data: expect.objectContaining({ status: 'DONE' }),
+      }),
+    )
+    expect(pushMocks.pushBranchForJob).not.toHaveBeenCalled()
+  })
+
+  it('marks IDEA_REVISE_SPEC done without hitting the verify-gate (alle sources)', async () => {
+    const jobId = 'job-idea-revise-spec-system'
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({ ...makeJob('IDEA_REVISE_SPEC', jobId), source: 'SYSTEM' })
+    mockPrisma.claudeJob.update.mockResolvedValue(makeUpdatedJob(jobId))
+
+    const handler = registerHandler()
+    const result = await handler({ job_id: jobId, status: 'done', summary: 'Spec gereviseerd.' })
+
+    expect(result).not.toMatchObject({ isError: true })
+    expect(mockPrisma.claudeJob.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: jobId },
+        data: expect.objectContaining({ status: 'DONE' }),
+      }),
+    )
+    expect(pushMocks.pushBranchForJob).not.toHaveBeenCalled()
+  })
+
   // Regression guard: the ORCHESTRATOR exclusion applies ONLY to the review kinds.
   // IDEA_GRILL / IDEA_MAKE_PLAN stay exempt for ALL sources (incl. ORCHESTRATOR),
   // exactly as before this fix.

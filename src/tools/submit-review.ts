@@ -79,6 +79,7 @@ type IdeaReviewJob = {
   // beoordeelde doc + de exacte revisie; null voor pre-M23-jobs (legacy).
   doc_id?: string | null
   doc_revision_id?: string | null
+  created_by_job_id?: string | null
   idea: { id: string; status: string; plan_review_log: unknown } | null
   product: { auto_plan_review: boolean; auto_materialize_plan: boolean } | null
 }
@@ -354,7 +355,10 @@ async function applySpecReviewVerdict(
     }
 
     if (input.verdict === 'CHANGES_REQUESTED') {
-      const active = await findActiveSpecLoopJob(tx, ideaId, job.id)
+      // Sluit óók de maker uit die deze review dispatchte: die kan nog CLAIMED
+      // zijn (verdict sneller dan maker-afsluiting) en is geen reden om de
+      // revisie te skippen — zonder revisie hangt het idee op SPEC_REVIEWING.
+      const active = await findActiveSpecLoopJob(tx, ideaId, [job.id, job.created_by_job_id])
       if (active) {
         await tx.ideaLog.create({
           data: {
@@ -430,6 +434,7 @@ export async function handleSubmitReview(
         claimed_by_token_id: true,
         doc_id: true,
         doc_revision_id: true,
+        created_by_job_id: true,
         task_id: true,
         doc: { select: { current_revision_id: true } },
         idea: { select: { id: true, status: true, plan_review_log: true } },
