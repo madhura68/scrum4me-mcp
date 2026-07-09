@@ -26,17 +26,23 @@ export const SPEC_LOOP_KINDS = ['IDEA_MAKE_SPEC', 'IDEA_REVISE_SPEC', 'SPEC_REVI
 const ACTIVE = ['QUEUED', 'CLAIMED', 'RUNNING'] as const
 
 // Kind-gescopete active-job-check; sluit de triggerende (nog-RUNNING) job uit.
+// excludeJobIds accepteert ook de maker die de review dispatchte — die kan nog
+// CLAIMED zijn als het verdict eerder landt dan de maker-afsluiting (zelfde
+// race als de M23-spec-loop; zie findActiveSpecLoopJob).
 export async function findActiveLoopJob(
   tx: Prisma.TransactionClient,
   ideaId: string,
-  excludeJobId: string | null,
+  excludeJobIds?: (string | null | undefined)[] | string | null,
 ): Promise<{ id: string; kind: string } | null> {
+  const excludes = (Array.isArray(excludeJobIds) ? excludeJobIds : [excludeJobIds]).filter(
+    (id): id is string => typeof id === 'string' && id.length > 0,
+  )
   return tx.claudeJob.findFirst({
     where: {
       idea_id: ideaId,
       kind: { in: [...LOOP_KINDS] },
       status: { in: [...ACTIVE] },
-      ...(excludeJobId ? { id: { not: excludeJobId } } : {}),
+      ...(excludes.length ? { id: { notIn: excludes } } : {}),
     },
     select: { id: true, kind: true },
   })

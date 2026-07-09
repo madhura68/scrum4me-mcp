@@ -177,7 +177,9 @@ async function applyIdeaReviewVerdict(
     })
 
     if (input.verdict === 'CHANGES_REQUESTED' && job.product?.auto_plan_review) {
-      const active = await findActiveLoopJob(tx, ideaId, job.id)
+      // Zelfde uitsluiting als de spec-loop: de maker die deze review dispatchte
+      // kan nog CLAIMED zijn en mag de revisie niet blokkeren.
+      const active = await findActiveLoopJob(tx, ideaId, [job.id, job.created_by_job_id])
       if (active) {
         // Randgeval: een andere loop-job is al actief — geen nieuwe revisie én
         // geen status-claim die niet waar is; alleen waarheidsgetrouw loggen.
