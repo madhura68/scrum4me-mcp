@@ -4,7 +4,8 @@
 // composiet-unique (created_by_job_id, orchestration_key).
 import { Prisma } from '@prisma/client'
 
-const LOOP_KEY_RE = /^idea:.+:plan-loop:r(\d+)$/
+// M23: dekt zowel de plan-loop als de spec-loop (idea:{id}:spec-loop:r{n}).
+const LOOP_KEY_RE = /^idea:.+:(?:plan|spec)-loop:r(\d+)$/
 
 export function parseLoopRound(key: string | null | undefined): number {
   const m = key?.match(LOOP_KEY_RE)
@@ -15,7 +16,13 @@ export function loopKey(ideaId: string, round: number): string {
   return `idea:${ideaId}:plan-loop:r${round}`
 }
 
+// M23: spec-fase-keten (IDEA_MAKE_SPEC/IDEA_REVISE_SPEC/SPEC_REVIEW-met-idea_id).
+export function specLoopKey(ideaId: string, round: number): string {
+  return `idea:${ideaId}:spec-loop:r${round}`
+}
+
 const LOOP_KINDS = ['IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN'] as const
+export const SPEC_LOOP_KINDS = ['IDEA_MAKE_SPEC', 'IDEA_REVISE_SPEC', 'SPEC_REVIEW'] as const
 const ACTIVE = ['QUEUED', 'CLAIMED', 'RUNNING'] as const
 
 // Kind-gescopete active-job-check; sluit de triggerende (nog-RUNNING) job uit.
@@ -28,6 +35,23 @@ export async function findActiveLoopJob(
     where: {
       idea_id: ideaId,
       kind: { in: [...LOOP_KINDS] },
+      status: { in: [...ACTIVE] },
+      ...(excludeJobId ? { id: { not: excludeJobId } } : {}),
+    },
+    select: { id: true, kind: true },
+  })
+}
+
+// M23: spec-fase-variant van de active-job-check (kinds: maker/revise/review).
+export async function findActiveSpecLoopJob(
+  tx: Prisma.TransactionClient,
+  ideaId: string,
+  excludeJobId?: string | null,
+): Promise<{ id: string; kind: string } | null> {
+  return tx.claudeJob.findFirst({
+    where: {
+      idea_id: ideaId,
+      kind: { in: [...SPEC_LOOP_KINDS] },
       status: { in: [...ACTIVE] },
       ...(excludeJobId ? { id: { not: excludeJobId } } : {}),
     },

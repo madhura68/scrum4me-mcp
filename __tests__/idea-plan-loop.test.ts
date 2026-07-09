@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 
-import { parseLoopRound, loopKey, appendPlanReviewRound } from '../src/lib/idea-plan-loop.js'
+import { parseLoopRound, loopKey, specLoopKey, appendPlanReviewRound } from '../src/lib/idea-plan-loop.js'
 
 describe('parseLoopRound', () => {
   it('null/undefined → 0', () => {
@@ -93,5 +93,15 @@ describe('appendPlanReviewRound', () => {
     })
     expect(log.rounds[0].issues[0].severity).toBe('warning')
     expect(log.rounds[0].issues[1].severity).toBe('info')
+  })
+})
+
+describe('M23 spec-loop-helpers', () => {
+  it('specLoopKey bouwt idea:{id}:spec-loop:r{n}', () => {
+    expect(specLoopKey('i1', 2)).toBe('idea:i1:spec-loop:r2')
+  })
+  it('parseLoopRound leest ook spec-loop-keys', () => {
+    expect(parseLoopRound('idea:i1:spec-loop:r3')).toBe(3)
+    expect(parseLoopRound('idea:i1:plan-loop:r2')).toBe(2)
   })
 })
