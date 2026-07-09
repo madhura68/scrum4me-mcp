@@ -576,14 +576,20 @@ model ClaudeJob {
   pushed_at                 DateTime?
   verify_result             VerifyResult?
   model_id                  String?
+  pricing_model_id          String?
+  pricing_model_source      String?
   input_tokens              Int?
   output_tokens             Int?
   cache_read_tokens         Int?
   cache_write_tokens        Int?
+  usage_capture_source      String?
+  usage_capture_status      String?
+  usage_capture_error       String?
   requested_model           String?
   requested_thinking_budget Int?
   requested_permission_mode String?
   actual_thinking_tokens    Int?
+  reasoning_output_tokens   Int?
   plan_snapshot             String?
   base_sha                  String?
   head_sha                  String?
@@ -621,6 +627,8 @@ model ClaudeJob {
   @@index([user_id, runtime, status])
   @@index([product_id, runtime, status])
   @@index([runtime, status, required_capability])
+  @@index([runtime, usage_capture_status])
+  @@index([pricing_model_id])
   @@index([source, status])
   @@index([created_by_job_id])
   @@unique([created_by_job_id, orchestration_key])
