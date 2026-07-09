@@ -48,3 +48,5 @@ Kies precies één:
 **NOOIT** `update_idea_plan_md` of `update_idea_plan_reviewed` aanroepen — je
 muteert het plan niet; de status-transitie en de vervolg-dispatch (revisie bij
 `CHANGES_REQUESTED`) regelt de keten via `submit_review`.
+
+- **Contract (M23):** elke task heeft een concreet `implementation_plan` én een `priority` (1–4); een plan dat dit mist is per definitie CHANGES_REQUESTED.

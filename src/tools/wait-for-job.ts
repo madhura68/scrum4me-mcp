@@ -395,7 +395,7 @@ export type ClaimSqlFilterInput =
   | (ClaimFilterInput & { userId: string; hasProductScope: false; productId?: undefined })
   | (ClaimFilterInput & { userId: string; hasProductScope: true; productId: string })
 
-const CLAIMABLE_STANDALONE_KINDS = "('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'IDEA_CHAT', 'PLAN_CHAT', 'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW')"
+const CLAIMABLE_STANDALONE_KINDS = "('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'IDEA_MAKE_SPEC', 'IDEA_REVISE_SPEC', 'IDEA_CHAT', 'PLAN_CHAT', 'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW')"
 
 const CLAIMABLE_JOB_KIND_FILTER = `AND (
               (cj.kind IN ${CLAIMABLE_STANDALONE_KINDS} AND cj.source <> 'ORCHESTRATOR')
@@ -931,12 +931,17 @@ export async function resolveReviewFeedback(job: {
   created_by_job_id: string | null
   orchestration_key: string | null
 }): Promise<{ round: number; verdict: string; findings: unknown; summary: string } | undefined> {
-  if (job.kind !== 'IDEA_MAKE_PLAN' || !job.created_by_job_id) return undefined
+  // M23: ook IDEA_REVISE_SPEC (parent = SPEC_REVIEW) krijgt de vorige findings.
+  // Een IDEA_MAKE_PLAN met SPEC_REVIEW-parent (spec-approved-doorstroom) krijgt
+  // bewust GEEN feedback — er valt niets te reviseren.
+  if (!job.created_by_job_id) return undefined
+  if (job.kind !== 'IDEA_MAKE_PLAN' && job.kind !== 'IDEA_REVISE_SPEC') return undefined
   const parent = await prisma.claudeJob.findUnique({
     where: { id: job.created_by_job_id },
     select: { id: true, kind: true },
   })
-  if (parent?.kind !== 'IDEA_REVIEW_PLAN') return undefined
+  const expectedParent = job.kind === 'IDEA_MAKE_PLAN' ? 'IDEA_REVIEW_PLAN' : 'SPEC_REVIEW'
+  if (parent?.kind !== expectedParent) return undefined
   const review = await prisma.reviewLog.findUnique({
     where: { review_job_id: parent.id },
     select: { verdict: true, findings: true, summary: true },
@@ -983,6 +988,10 @@ export async function getFullJobContext(
             select: { current_revision: { select: { content_md: true } } },
           },
           grill_doc: {
+            select: { current_revision: { select: { content_md: true } } },
+          },
+          // M23: spec-fase — huidige spec-content voor IDEA_REVISE_SPEC-payloads.
+          spec_doc: {
             select: { current_revision: { select: { content_md: true } } },
           },
           user_questions: {
@@ -1154,6 +1163,20 @@ export async function getFullJobContext(
       await rollbackClaim(job.id)
       return null
     }
+    // M23: pipeline-reviews pinnen de revisie op dispatch-moment — serveer díe
+    // revisie (niet current), zodat de reviewer exact beoordeelt wat gepind is.
+    let revision = {
+      id: doc.current_revision.id,
+      revision: doc.current_revision.revision,
+      content_md: doc.current_revision.content_md,
+    }
+    if (job.doc_revision_id && job.doc_revision_id !== doc.current_revision.id) {
+      const pinned = await prisma.productDocRevision.findUnique({
+        where: { id: job.doc_revision_id },
+        select: { id: true, revision: true, content_md: true },
+      })
+      if (pinned) revision = pinned
+    }
     const instruction = job.manual_drafts[0]?.prompt_md ?? ''
     return {
       job_id: job.id,
@@ -1168,10 +1191,23 @@ export async function getFullJobContext(
         folder: doc.folder,
         title: doc.title,
         status: doc.status,
-        revision_id: doc.current_revision.id,
-        revision: doc.current_revision.revision,
-        content_md: doc.current_revision.content_md,
+        revision_id: revision.id,
+        revision: revision.revision,
+        content_md: revision.content_md,
       },
+      // M23: pipeline-context — de reviewer toetst scope/user value tegen de grill.
+      ...(job.idea
+        ? {
+            idea: {
+              id: job.idea.id,
+              code: job.idea.code,
+              title: job.idea.title,
+              description: job.idea.description,
+              status: job.idea.status,
+              grill_md: job.idea.grill_doc?.current_revision?.content_md ?? job.idea.grill_md,
+            },
+          }
+        : {}),
       instruction,
       product: {
         id: job.product.id,
@@ -1578,7 +1614,8 @@ export async function getFullJobContext(
 
   // M12: branch on kind. Idea-jobs hebben geen task/story/pbi/sprint; ze
   // hebben in plaats daarvan idea + embedded prompt_text.
-  if (job.kind === 'IDEA_GRILL' || job.kind === 'IDEA_MAKE_PLAN' || job.kind === 'IDEA_REVIEW_PLAN') {
+  if (job.kind === 'IDEA_GRILL' || job.kind === 'IDEA_MAKE_PLAN' || job.kind === 'IDEA_REVIEW_PLAN'
+      || job.kind === 'IDEA_MAKE_SPEC' || job.kind === 'IDEA_REVISE_SPEC') {
     if (!job.idea) return null
     const { idea } = job
     const { getIdeaPromptText } = await import('../lib/kind-prompts.js')
@@ -1633,6 +1670,8 @@ export async function getFullJobContext(
         // PBI-102: revision-content wint; fallback naar legacy strings
         grill_md: idea.grill_doc?.current_revision?.content_md ?? idea.grill_md,
         plan_md: idea.plan_doc?.current_revision?.content_md ?? idea.plan_md,
+        // M23: huidige spec-content (vorige ronde) voor IDEA_REVISE_SPEC.
+        spec_md: idea.spec_doc?.current_revision?.content_md ?? null,
         status: idea.status,
         product_id: idea.product_id,
       },
@@ -1650,6 +1689,7 @@ export async function getFullJobContext(
       branch_suggestion: `feat/idea-${idea.code.toLowerCase()}-${(() => {
         if (job.kind === 'IDEA_GRILL') return 'grill'
         if (job.kind === 'IDEA_REVIEW_PLAN') return 'review'
+        if (job.kind === 'IDEA_MAKE_SPEC' || job.kind === 'IDEA_REVISE_SPEC') return 'spec'
         return 'plan'
       })()}`,
       product_worktrees: worktrees.map((w) => ({

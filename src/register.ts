@@ -46,6 +46,7 @@ import { registerRelatedProductDocsTool } from './tools/related-product-docs.js'
 import { registerGetIdeaContextTool } from './tools/get-idea-context.js'
 import { registerUpdateIdeaGrillMdTool } from './tools/update-idea-grill-md.js'
 import { registerUpdateIdeaPlanMdTool } from './tools/update-idea-plan-md.js'
+import { registerUpdateIdeaSpecMdTool } from './tools/update-idea-spec-md.js'
 import { registerUpdateIdeaPlanReviewedTool } from './tools/update-idea-plan-reviewed.js'
 import { registerPostPrReviewTool } from './tools/post-pr-review.js'
 import { registerSubmitReviewTool } from './tools/submit-review.js'
@@ -111,6 +112,7 @@ export function registerSharedTools(server: McpServer): void {
   // M12: idee-job tools
   registerGetIdeaContextTool(server)
   registerUpdateIdeaGrillMdTool(server)
+  registerUpdateIdeaSpecMdTool(server)
   registerUpdateIdeaPlanMdTool(server)
   registerUpdateIdeaPlanReviewedTool(server)
   registerPostPrReviewTool(server)

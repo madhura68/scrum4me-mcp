@@ -50,6 +50,16 @@ export async function handleUpdateIdeaPlanReviewed(
     // Log summary metrics from review_log
     const logSummary = buildReviewLogSummary(review_log)
 
+    // M23 pin-retrofit (server-r1 B1, derde pad): dit bestand had geen
+    // idea-fetch (alleen een array-transactie) — expliciete read vóór de tx
+    // zodat de ReviewLog de beoordeelde plan-revisie pint. De reviewer
+    // beoordeelde de op dat moment huidige revisie; null blijft toegestaan
+    // (idea zonder plan-doc → legacy-fallback in resolvePlanSource).
+    const ideaDoc = await prisma.idea.findUnique({
+      where: { id: idea_id },
+      select: { plan_doc_id: true, plan_doc: { select: { current_revision_id: true } } },
+    })
+
     const result = await prisma.$transaction([
       prisma.idea.update({
         where: { id: idea_id },
@@ -88,7 +98,11 @@ export async function handleUpdateIdeaPlanReviewed(
       verdict,
       findings,
       summary: logSummary.summary,
-      pins: { idea_id },
+      pins: {
+        idea_id,
+        doc_id: ideaDoc?.plan_doc_id ?? null,
+        doc_revision_id: ideaDoc?.plan_doc?.current_revision_id ?? null,
+      },
     })
 
     return toolJson({

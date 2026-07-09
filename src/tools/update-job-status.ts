@@ -1503,7 +1503,11 @@ export function registerUpdateJobStatusTool(server: McpServer) {
                 ? 'PLAN_FAILED'
                 : job.kind === 'IDEA_REVIEW_PLAN'
                   ? 'PLAN_REVIEW_FAILED' // M20: gefaalde review strandt niet in REVIEWING_PLAN
-                  : null
+                  : job.kind === 'IDEA_MAKE_SPEC' || job.kind === 'IDEA_REVISE_SPEC'
+                    ? 'SPEC_FAILED' // M23: gefaalde spec-maker strandt niet in SPEC_DRAFTING
+                    : job.kind === 'SPEC_REVIEW'
+                      ? 'SPEC_FAILED' // M23: pipeline-review (idea_id gezet); ad-hoc heeft geen idea_id
+                      : null
           if (newIdeaStatus) {
             await prisma.$transaction([
               prisma.idea.update({

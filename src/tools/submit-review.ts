@@ -25,6 +25,8 @@ import {
   lockIdeaRow,
   loopKey,
   parseLoopRound,
+  findActiveSpecLoopJob,
+  specLoopKey,
 } from '../lib/idea-plan-loop.js'
 import { materializeIdeaPlan } from '../lib/idea-materialize.js'
 import { notifyJobEnqueued } from '../lib/dispatch/notify.js'
@@ -73,6 +75,10 @@ type IdeaReviewJob = {
   orchestration_key: string | null
   status: string
   claimed_by_token_id: string | null
+  // M23 pin-retrofit: de review-job draagt sinds de dispatch-pin ook het
+  // beoordeelde doc + de exacte revisie; null voor pre-M23-jobs (legacy).
+  doc_id?: string | null
+  doc_revision_id?: string | null
   idea: { id: string; status: string; plan_review_log: unknown } | null
   product: { auto_plan_review: boolean; auto_materialize_plan: boolean } | null
 }
@@ -80,7 +86,8 @@ type IdeaReviewJob = {
 type VerdictOutcome = {
   // 'stale' = de review-job is niet meer actief (user-cancel / reclaim / terminaal);
   // het verdict wordt bewust NIET toegepast (noodrem, zie applyIdeaReviewVerdict).
-  outcome: 'already-processed' | 'revision' | 'manual-stop' | 'approved' | 'rejected' | 'stale'
+  // 'plan-started' (M23) = spec APPROVED → IDEA_MAKE_PLAN gedispatcht.
+  outcome: 'already-processed' | 'revision' | 'manual-stop' | 'approved' | 'rejected' | 'stale' | 'plan-started'
   revisionJobId?: string
 }
 
@@ -158,6 +165,10 @@ async function applyIdeaReviewVerdict(
         kind: 'IDEA_REVIEW_PLAN',
         product_id: job.product_id,
         idea_id: ideaId,
+        // M23: pin van dispatch-moment mee de log in (null = pre-M23 legacy;
+        // resolvePlanSource behandelt dat als legacy-goedkeuring van current).
+        doc_id: job.doc_id ?? null,
+        doc_revision_id: job.doc_revision_id ?? null,
         verdict: input.verdict,
         findings: findingsJson,
         summary: input.summary,
@@ -258,6 +269,149 @@ async function applyIdeaReviewVerdict(
   })
 }
 
+// M23: pipeline-SPEC_REVIEW (job.idea gezet) — de spec-fase-tegenhanger van
+// applyIdeaReviewVerdict, met dezelfde hardening: idea-lock, create-once,
+// reviewStillActive-noodrem. Ad-hoc SPEC_REVIEW (zonder idea) raakt dit pad niet.
+type SpecPipelineReviewJob = IdeaReviewJob & {
+  doc_id: string | null
+  doc_revision_id: string | null
+}
+
+async function applySpecReviewVerdict(
+  job: SpecPipelineReviewJob,
+  input: SubmitReviewInput,
+  callerTokenId: string | undefined,
+): Promise<VerdictOutcome> {
+  const ideaId = job.idea!.id
+  const round = Math.max(parseLoopRound(job.orchestration_key), 1)
+  const findingsJson = input.findings as unknown as Prisma.InputJsonValue
+
+  return prisma.$transaction(async (tx) => {
+    await lockIdeaRow(tx, ideaId)
+    const existing = await tx.reviewLog.findUnique({
+      where: { review_job_id: job.id },
+      select: { id: true },
+    })
+    if (existing) return { outcome: 'already-processed' as const }
+
+    // Noodrem (M20-patroon): verdict landt alleen op een nog-actieve claim.
+    const live = await tx.claudeJob.findUnique({
+      where: { id: job.id },
+      select: { status: true, claimed_by_token_id: true },
+    })
+    if (!reviewStillActive(live, callerTokenId)) {
+      await tx.ideaLog.create({
+        data: {
+          idea_id: ideaId,
+          type: 'JOB_EVENT',
+          content: `Spec-review r${round}: verdict ${input.verdict} verworpen — review niet meer actief (${live?.status ?? 'verwijderd'})`,
+          metadata: { job_id: job.id, verdict: input.verdict, round, job_status: live?.status ?? null },
+        },
+      })
+      return { outcome: 'stale' as const }
+    }
+
+    await tx.reviewLog.create({
+      data: {
+        review_job_id: job.id,
+        kind: 'SPEC_REVIEW',
+        product_id: job.product_id,
+        idea_id: ideaId,
+        doc_id: job.doc_id,
+        doc_revision_id: job.doc_revision_id, // pin van dispatch-moment
+        verdict: input.verdict,
+        findings: findingsJson,
+        summary: input.summary,
+      },
+    })
+
+    if (input.verdict === 'APPROVED') {
+      // Doorstroom naar de bestaande M20-plan-loop.
+      const j = await tx.claudeJob.create({
+        data: {
+          user_id: job.user_id,
+          product_id: job.product_id,
+          idea_id: ideaId,
+          kind: 'IDEA_MAKE_PLAN',
+          status: 'QUEUED',
+          source: 'SYSTEM',
+          created_by_job_id: job.id,
+          orchestration_key: loopKey(ideaId, 1),
+          summary: 'Plan-fase gestart na spec-approval (M23)',
+        },
+        select: { id: true },
+      })
+      await tx.idea.update({ where: { id: ideaId }, data: { status: 'PLANNING' } })
+      await tx.ideaLog.create({
+        data: {
+          idea_id: ideaId,
+          type: 'JOB_EVENT',
+          content: `Spec-review r${round}: APPROVED — IDEA_MAKE_PLAN queued`,
+          metadata: { job_id: job.id, round, next_job_id: j.id },
+        },
+      })
+      return { outcome: 'plan-started' as const, revisionJobId: j.id }
+    }
+
+    if (input.verdict === 'CHANGES_REQUESTED') {
+      const active = await findActiveSpecLoopJob(tx, ideaId, job.id)
+      if (active) {
+        await tx.ideaLog.create({
+          data: {
+            idea_id: ideaId,
+            type: 'JOB_EVENT',
+            content: `Spec-review r${round}: CHANGES_REQUESTED — bestaande spec-loop-job ${active.kind} actief, geen nieuwe revisie gequeued`,
+            metadata: { job_id: job.id, round, active_job_id: active.id },
+          },
+        })
+        return { outcome: 'already-processed' as const }
+      }
+      const revision = await tx.claudeJob.create({
+        data: {
+          user_id: job.user_id,
+          product_id: job.product_id,
+          idea_id: ideaId,
+          kind: 'IDEA_REVISE_SPEC',
+          status: 'QUEUED',
+          source: 'SYSTEM',
+          created_by_job_id: job.id,
+          orchestration_key: specLoopKey(ideaId, round + 1),
+          summary: `Spec-revisie r${round + 1} na CHANGES_REQUESTED`,
+        },
+        select: { id: true },
+      })
+      await tx.idea.update({ where: { id: ideaId }, data: { status: 'SPEC_DRAFTING' } })
+      await tx.ideaLog.create({
+        data: {
+          idea_id: ideaId,
+          type: 'JOB_EVENT',
+          content: `Spec-review r${round}: CHANGES_REQUESTED (${input.findings.length} findings) — spec-revisie r${round + 1} queued`,
+          metadata: { job_id: job.id, round },
+        },
+      })
+      return { outcome: 'revision' as const, revisionJobId: revision.id }
+    }
+
+    // REJECTED — pipeline stopt; user beslist (retry of terug naar GRILLED).
+    await tx.idea.update({ where: { id: ideaId }, data: { status: 'SPEC_FAILED' } })
+    await tx.ideaLog.create({
+      data: {
+        idea_id: ideaId,
+        type: 'JOB_EVENT',
+        content: `Spec-review r${round}: REJECTED — escalatie naar gebruiker`,
+        metadata: { job_id: job.id, round },
+      },
+    })
+    await createIdeaEscalationQuestion(tx, {
+      ideaId,
+      productId: job.product_id,
+      userId: job.user_id,
+      question: `Codex wijst de spec fundamenteel af (r${round}): ${input.summary.slice(0, 400)} — hoe verder? (spec opnieuw maken / terug naar GRILLED / afbreken)`,
+    })
+    return { outcome: 'rejected' as const }
+  })
+}
+
 export async function handleSubmitReview(
   { job_id, verdict, findings, summary }: SubmitReviewInput,
 ) {
@@ -275,6 +429,7 @@ export async function handleSubmitReview(
         status: true,
         claimed_by_token_id: true,
         doc_id: true,
+        doc_revision_id: true,
         task_id: true,
         doc: { select: { current_revision_id: true } },
         idea: { select: { id: true, status: true, plan_review_log: true } },
@@ -362,7 +517,40 @@ export async function handleSubmitReview(
       return toolJson({ ok: true, verdict, findings_count: findings.length, outcome: result.outcome })
     }
 
-    // ── SPEC_REVIEW / TASK_REVIEW (ongewijzigd) ──────────────────────────
+    // ── M23 spec-pipeline: SPEC_REVIEW mét idea = pipeline-verdictpad ────
+    if (job.kind === 'SPEC_REVIEW' && job.idea) {
+      const result = await applySpecReviewVerdict(
+        job as SpecPipelineReviewJob,
+        { job_id, verdict, findings, summary },
+        auth.tokenId,
+      )
+      if ((result.outcome === 'plan-started' || result.outcome === 'revision') && result.revisionJobId) {
+        await notifyJobEnqueued({
+          job_id: result.revisionJobId,
+          user_id: job.user_id,
+          product_id: job.product_id,
+          kind: result.outcome === 'plan-started' ? 'IDEA_MAKE_PLAN' : 'IDEA_REVISE_SPEC',
+          idea_id: job.idea.id,
+        })
+      }
+      if (result.outcome === 'rejected') {
+        void triggerPush(job.user_id, {
+          title: 'Spec afgewezen door review',
+          body: summary.slice(0, 120),
+          url: '/ideas',
+          tag: `idea-spec-review-${job.id}`,
+        })
+      }
+      if (result.outcome !== 'stale') {
+        await prisma.claudeJob.update({
+          where: { id: job.id },
+          data: { summary: `SPEC_REVIEW ${verdict} (${findings.length} findings): ${summary.slice(0, 280)}` },
+        })
+      }
+      return toolJson({ ok: true, verdict, findings_count: findings.length, outcome: result.outcome })
+    }
+
+    // ── SPEC_REVIEW (ad-hoc) / TASK_REVIEW (ongewijzigd) ─────────────────
     let docRevisionId: string | null = null
     let executionId: string | null = null
     if (job.kind === 'SPEC_REVIEW') {

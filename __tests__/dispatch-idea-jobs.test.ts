@@ -132,3 +132,11 @@ describe('dispatchIdeaJob', () => {
     ).rejects.toThrow(/content_policy|configuratie/i)
   })
 })
+
+describe('M23 IDEA_MAKE_SPEC dispatch', () => {
+  it('IDEA_KIND_RULES: SPEC_DRAFTING vanuit GRILLED/SPEC_FAILED, en IDEA_REVISE_SPEC is géén dispatch-kind', async () => {
+    const src = (await import('node:fs')).readFileSync('src/lib/dispatch/idea-jobs.ts', 'utf8')
+    expect(src).toMatch(/IDEA_MAKE_SPEC: \{\s*\n\s*newStatus: 'SPEC_DRAFTING',\s*\n\s*allowedFrom: \['GRILLED', 'SPEC_FAILED'\],/)
+    expect(src).not.toMatch(/IDEA_REVISE_SPEC: \{/)
+  })
+})

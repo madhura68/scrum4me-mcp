@@ -15,11 +15,13 @@ stories:
         implementation_plan: "1. Doe X"
       - title: Task A2
         priority: 2
+        implementation_plan: "1. Doe Y"
   - title: Story B
     priority: 3
     tasks:
       - title: Task B1
         priority: 3
+        implementation_plan: "1. Doe Z"
 ---
 
 body
@@ -50,11 +52,15 @@ function makeDb(idea: Record<string, unknown> | null) {
     },
     idea: { update: vi.fn() },
     ideaLog: { create: vi.fn() },
+    pbiDoc: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    sprint: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({ id: 'sprint-1' }) },
   }
   const db = {
     idea: { findFirst: vi.fn().mockResolvedValue(idea) },
     task: { count: vi.fn().mockResolvedValue(0) },
     pbi: { findUnique: vi.fn().mockResolvedValue(null) },
+    reviewLog: { findFirst: vi.fn().mockResolvedValue(null) },
+    productDoc: { findUnique: vi.fn().mockResolvedValue(null) },
     $transaction: vi.fn(async (cb: (t: typeof tx) => unknown) => cb(tx)),
   }
   return { db, tx }
@@ -92,5 +98,23 @@ describe('materializeIdeaPlan (mcp)', () => {
     await expect(
       materializeIdeaPlan(db as never, { ideaId: 'idea-1', userId: 'u1' }),
     ).rejects.toBeInstanceOf(MaterializeError)
+  })
+})
+
+describe('M23 spiegel: pinning + buildSprint', () => {
+  it('resolvePlanSource: gepinde approval ≠ current met andere content → STALE_PLAN', async () => {
+    const { resolvePlanSource, MaterializeError } = await import('../src/lib/idea-materialize.js')
+    const db = {
+      productDoc: { findUnique: vi.fn().mockResolvedValue({
+        current_revision_id: 'rev-3',
+        current_revision: { id: 'rev-3', content_md: '# anders' },
+      }) },
+      reviewLog: { findFirst: vi.fn().mockResolvedValue({
+        doc_revision_id: 'rev-2', doc_revision: { content_md: '# origineel' },
+      }) },
+    }
+    await expect(resolvePlanSource(db as never, {
+      id: 'i1', status: 'PLAN_REVIEWED' as never, plan_md: null, plan_doc_id: 'pd-1',
+    })).rejects.toBeInstanceOf(MaterializeError)
   })
 })

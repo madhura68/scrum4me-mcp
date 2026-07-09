@@ -145,6 +145,9 @@ enum IdeaStatus {
   GRILLING
   GRILL_FAILED
   GRILLED
+  SPEC_DRAFTING
+  SPEC_REVIEWING
+  SPEC_FAILED
   PLANNING
   PLAN_FAILED
   PLAN_READY
@@ -159,6 +162,8 @@ enum ClaudeJobKind {
   IDEA_GRILL
   IDEA_MAKE_PLAN
   IDEA_REVIEW_PLAN
+  IDEA_MAKE_SPEC
+  IDEA_REVISE_SPEC
   IDEA_CHAT
   PLAN_CHAT
   SPRINT_IMPLEMENTATION
@@ -238,6 +243,7 @@ enum ProductDocLogType {
 enum PbiDocRole {
   PLAN
   GRILL
+  SPEC
 }
 
 model User {
@@ -459,6 +465,7 @@ model Sprint {
   stories      Story[]
   tasks        Task[]
   sprint_runs  SprintRun[]
+  idea_builds  Idea[]       @relation("IdeaBuildSprint")
 
   @@unique([product_id, code])
   @@index([product_id, status])
@@ -484,6 +491,7 @@ model SprintRun {
   previous_run_id String?         @unique
   previous_run    SprintRun?      @relation("SprintRunChain", fields: [previous_run_id], references: [id], onDelete: SetNull)
   next_run        SprintRun?      @relation("SprintRunChain")
+  idea_builds     Idea[]          @relation("IdeaBuildSprintRun")
   created_at      DateTime        @default(now())
   updated_at      DateTime        @updatedAt
   jobs            ClaudeJob[]
@@ -544,6 +552,10 @@ model ClaudeJob {
   // Phase 3: SPEC_REVIEW-target (task_id bestaat al voor TASK_REVIEW).
   doc                       ProductDoc?           @relation("JobReviewDoc", fields: [doc_id], references: [id], onDelete: SetNull)
   doc_id                    String?
+  // M23: revisie-pin — de exacte ProductDocRevision die deze (review-)job
+  // beoordeelt; gezet op dispatch-moment, gekopieerd naar ReviewLog bij verdict.
+  doc_revision              ProductDocRevision?   @relation("JobReviewDocRevision", fields: [doc_revision_id], references: [id], onDelete: SetNull)
+  doc_revision_id           String?
   sprint_run                SprintRun?            @relation(fields: [sprint_run_id], references: [id], onDelete: SetNull)
   sprint_run_id             String?
   kind                      ClaudeJobKind         @default(TASK_IMPLEMENTATION)
@@ -600,6 +612,7 @@ model ClaudeJob {
   @@index([task_id, status])
   @@index([idea_id, status])
   @@index([doc_id])
+  @@index([doc_revision_id])
   @@index([sprint_run_id, status])
   @@index([status, claimed_at])
   @@index([status, finished_at])
@@ -790,6 +803,7 @@ model ProductDoc {
   // grill_doc_id met @unique).
   idea_plan            Idea?                @relation("IdeaPlanDoc")
   idea_grill           Idea?                @relation("IdeaGrillDoc")
+  idea_spec            Idea?                @relation("IdeaSpecDoc")
   review_logs          ReviewLog[]          @relation("DocReviewLogs")
   review_jobs          ClaudeJob[]          @relation("JobReviewDoc")
 
@@ -818,6 +832,7 @@ model ProductDocRevision {
   current_for  ProductDoc? @relation("CurrentRevision")
   sections     ProductDocSection[] @relation("ProductDocRevisionSections")
   review_logs  ReviewLog[] @relation("DocRevisionReviewLogs")
+  review_jobs  ClaudeJob[] @relation("JobReviewDocRevision")
 
   @@unique([doc_id, revision])
   @@index([doc_id, created_at])
@@ -960,6 +975,14 @@ model Idea {
   plan_doc_id     String?     @unique
   grill_doc       ProductDoc? @relation("IdeaGrillDoc", fields: [grill_doc_id], references: [id], onDelete: SetNull)
   grill_doc_id    String?     @unique
+  // M23: spec-plan-exec pipeline. spec_doc = ProductDoc(SPECS) van de spec-fase;
+  // build_sprint/run = traceability van de eindactie "Maak sprint en start bouw".
+  spec_doc            ProductDoc? @relation("IdeaSpecDoc", fields: [spec_doc_id], references: [id], onDelete: SetNull)
+  spec_doc_id         String?     @unique
+  build_sprint        Sprint?     @relation("IdeaBuildSprint", fields: [build_sprint_id], references: [id], onDelete: SetNull)
+  build_sprint_id     String?
+  build_sprint_run    SprintRun?  @relation("IdeaBuildSprintRun", fields: [build_sprint_run_id], references: [id], onDelete: SetNull)
+  build_sprint_run_id String?
   status          IdeaStatus  @default(DRAFT)
   archived        Boolean     @default(false)
   created_at      DateTime    @default(now())

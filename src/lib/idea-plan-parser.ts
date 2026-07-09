@@ -18,7 +18,8 @@ const verifyRequiredEnum = z.enum(['ALIGNED', 'ALIGNED_OR_PARTIAL', 'ANY'])
 const planTaskSchema = z.object({
   title: z.string().min(1).max(200),
   description: z.string().max(4000).optional(),
-  implementation_plan: z.string().max(8000).optional(),
+  // M23: verplicht — een taak zonder plan blokkeert de SprintRun-pre-flight.
+  implementation_plan: z.string().min(1).max(8000),
   priority: z.number().int().min(1).max(4),
   verify_required: verifyRequiredEnum.optional(),
   verify_only: z.boolean().optional(),
@@ -39,6 +40,8 @@ const planPbiSchema = z.object({
 })
 
 export const ideaPlanMdFrontmatterSchema = z.object({
+  // M23: optioneel sprint-blok — voedt de Sprint-creatie van de eindactie.
+  sprint: z.object({ goal: z.string().min(1).max(500) }).optional(),
   pbi: planPbiSchema,
   stories: z.array(planStorySchema).min(1, 'Plan moet minimaal 1 story bevatten'),
 })

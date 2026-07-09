@@ -39,6 +39,7 @@ stories:
     tasks:
       - title: Task A1
         priority: 2
+        implementation_plan: "1. Doe X"
 ---
 
 body
