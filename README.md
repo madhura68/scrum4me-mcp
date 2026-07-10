@@ -37,6 +37,7 @@ activity and create todos via native tool calls instead of curl.
 | `job_heartbeat` | Extend `claude_jobs.lease_until` by 5 min. For SPRINT-jobs: response includes `sprint_run_status` + `sprint_run_pause_reason` so the worker can break its task-loop on UI-side cancel/pause | no |
 | `get_idea_chat_channel` | Fetch channel items (messages/logs/questions) for an idea, with composite cursor, `active_job`, and `question_states` (copilot idea-chat) | n/a |
 | `send_idea_chat_message` | Post a user message to an idea's chat channel and enqueue (or coalesce) an IDEA_CHAT job | no |
+| `update_idea_spec_md` | Write the spec document (ProductDoc SPECS + immutable revision) for an idea, set `Idea.spec_doc_id`, and dispatch the SPEC_REVIEW pipeline. Called as the last step of `IDEA_MAKE_SPEC`/`IDEA_REVISE_SPEC` jobs | no |
 
 Demo accounts may read but writes return `PERMISSION_DENIED`.
 
