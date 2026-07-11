@@ -1,6 +1,6 @@
 // MCP authoring tool: create een Product Backlog Item.
 //
-// Sort_order wordt automatisch op last+1 binnen de prioriteits-groep gezet als
+// Sort_order wordt automatisch op last+1 binnen het product gezet als
 // niet meegegeven. Code wordt auto-gegenereerd als PBI-N (zelfde logica als de
 // Scrum4Me-app), met retry bij een race-condition op de unique constraint.
 //
@@ -65,7 +65,7 @@ export function registerCreatePbiTool(server: McpServer) {
     {
       title: 'Create PBI',
       description:
-        'Add a Product Backlog Item to a product. Sort_order auto-set to last+1 within the priority group if not provided. PBI-102: optional source_docs link the PBI to ProductDoc revisions (PLAN/GRILL); revision_id is frozen at link-time. Forbidden for demo accounts.',
+        'Add a Product Backlog Item to a product. Priority is team importance only; execution order appends within the parent and can be changed through backlog reorder. PBI-102: optional source_docs link the PBI to ProductDoc revisions (PLAN/GRILL); revision_id is frozen at link-time. Forbidden for demo accounts.',
       inputSchema,
     },
     async ({ product_id, title, description, priority, sort_order, source_docs }) =>
@@ -118,8 +118,8 @@ export function registerCreatePbiTool(server: McpServer) {
         let resolvedSortOrder = sort_order
         if (resolvedSortOrder === undefined) {
           const last = await prisma.pbi.findFirst({
-            where: { product_id, priority },
-            orderBy: { sort_order: 'desc' },
+            where: { product_id },
+            orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
             select: { sort_order: true },
           })
           resolvedSortOrder = (last?.sort_order ?? 0) + 1.0

@@ -8,19 +8,19 @@ pbi:
   priority: 2
 stories:
   - title: Story A
-    priority: 2
+    priority: 4
     tasks:
       - title: Task A1
-        priority: 2
+        priority: 1
         implementation_plan: "1. Doe X"
       - title: Task A2
-        priority: 2
+        priority: 3
         implementation_plan: "1. Doe Y"
   - title: Story B
-    priority: 3
+    priority: 1
     tasks:
       - title: Task B1
-        priority: 3
+        priority: 4
         implementation_plan: "1. Doe Z"
 ---
 
@@ -76,11 +76,20 @@ describe('materializeIdeaPlan (mcp)', () => {
 
   it('maakt PBI + stories + tasks vanuit PLAN_REVIEWED en zet PLANNED', async () => {
     const { db, tx } = makeDb({ id: 'idea-1', status: 'PLAN_REVIEWED', product_id: 'p1', plan_md: VALID_PLAN, pbi_id: null })
+    tx.story.findMany.mockResolvedValue([{ code: 'ST-020' }])
+    tx.task.findMany.mockResolvedValue([{ code: 'T-40' }])
     const r = await materializeIdeaPlan(db as never, { ideaId: 'idea-1', userId: 'u1' })
     expect(r.pbi_code).toBe('PBI-1')
     expect(r.story_ids).toEqual(['s-A', 's-B'])
     expect(r.task_ids).toEqual(['t-A1', 't-A2', 't-B1'])
     expect(r.product_id).toBe('p1')
+    expect(tx.pbi.findFirst).toHaveBeenCalledWith({
+      where: { product_id: 'p1' },
+      orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
+      select: { sort_order: true },
+    })
+    expect(tx.story.create.mock.calls.map(([args]) => args.data.sort_order)).toEqual([1, 2])
+    expect(tx.task.create.mock.calls.map(([args]) => args.data.sort_order)).toEqual([1, 2, 1])
     expect(tx.idea.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'PLANNED' }) }),
     )

@@ -64,7 +64,11 @@ export function registerGetClaudeContextTool(server: McpServer) {
                 { tasks: { some: { status: { not: 'DONE' } } } },
               ],
             },
-            orderBy: [{ priority: 'asc' }, { sort_order: 'asc' }],
+            orderBy: [
+              { sort_order: 'asc' },
+              { created_at: 'asc' },
+              { id: 'asc' },
+            ],
             select: {
               id: true,
               code: true,
@@ -74,7 +78,11 @@ export function registerGetClaudeContextTool(server: McpServer) {
               priority: true,
               status: true,
               tasks: {
-                orderBy: [{ priority: 'asc' }, { sort_order: 'asc' }],
+                orderBy: [
+                  { sort_order: 'asc' },
+                  { created_at: 'asc' },
+                  { id: 'asc' },
+                ],
                 select: {
                   id: true,
                   title: true,

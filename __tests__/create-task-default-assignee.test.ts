@@ -53,6 +53,28 @@ beforeEach(() => {
 })
 
 describe('handleCreateTask default assignee', () => {
+  it('voegt toe na de laatste task in de story ongeacht priority', async () => {
+    mockPrisma.story.findUnique.mockResolvedValue({
+      product_id: 'prod-1',
+      sprint_id: null,
+      assignee_id: null,
+    })
+    mockPrisma.task.findFirst.mockResolvedValue({ sort_order: 3 })
+
+    await handleCreateTask({
+      story_id: 'story-1',
+      title: 'Low-priority task',
+      priority: 4,
+    })
+
+    expect(mockPrisma.task.findFirst).toHaveBeenCalledWith({
+      where: { story_id: 'story-1' },
+      orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
+      select: { sort_order: true },
+    })
+    expect(mockPrisma.task.create.mock.calls[0][0].data.sort_order).toBe(4)
+  })
+
   it('claimt een ongeclaimde sprint-story voor de token-user', async () => {
     mockPrisma.story.findUnique.mockResolvedValue({
       product_id: 'prod-1',

@@ -46,7 +46,6 @@ const inputSchema = z.object({
   description: z.string().max(4000).optional(),
   acceptance_criteria: z.string().max(4000).optional(),
   priority: z.number().int().min(1).max(4),
-  sort_order: z.number().optional(),
   // Optionele sprint-koppeling: bij creatie de story direct aan een sprint
   // hangen (status=IN_SPRINT). De sprint moet bij hetzelfde product horen.
   sprint_id: z.string().min(1).optional(),
@@ -59,7 +58,6 @@ export async function handleCreateStory(
     description,
     acceptance_criteria,
     priority,
-    sort_order,
     sprint_id,
   }: z.infer<typeof inputSchema>,
 ) {
@@ -90,15 +88,12 @@ export async function handleCreateStory(
       }
     }
 
-    let resolvedSortOrder = sort_order
-    if (resolvedSortOrder === undefined) {
-      const last = await prisma.story.findFirst({
-        where: { pbi_id, priority },
-        orderBy: { sort_order: 'desc' },
-        select: { sort_order: true },
-      })
-      resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
-    }
+    const last = await prisma.story.findFirst({
+      where: { pbi_id },
+      orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
+      select: { sort_order: true },
+    })
+    const resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
 
     let lastError: unknown
     for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
@@ -146,7 +141,7 @@ export function registerCreateStoryTool(server: McpServer) {
     {
       title: 'Create story',
       description:
-        'Add a story under an existing PBI. Optionally link it to a sprint via sprint_id — when given, the story is created with status=IN_SPRINT and the sprint must belong to the same product as the PBI; otherwise status=OPEN and the story lands in the product backlog. Sort_order auto-set to last+1 within the PBI/priority group if not provided. Forbidden for demo accounts.',
+        'Add a story under an existing PBI. Optionally link it to a sprint via sprint_id — when given, the story is created with status=IN_SPRINT and the sprint must belong to the same product as the PBI; otherwise status=OPEN and the story lands in the product backlog. Priority is team importance only; execution order appends within the parent and can be changed through backlog reorder. Forbidden for demo accounts.',
       inputSchema,
     },
     handleCreateStory,

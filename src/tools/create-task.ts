@@ -44,7 +44,6 @@ const inputSchema = z.object({
   description: z.string().max(4000).optional(),
   implementation_plan: z.string().max(8000).optional(),
   priority: z.number().int().min(1).max(4),
-  sort_order: z.number().optional(),
   // Cross-repo override: zet expliciet de repo waarop de worker deze task
   // moet uitvoeren (overrides product.repo_url). Gebruik dit voor PBI's die
   // werk in meerdere repos coördineren — bv. PBI op Scrum4Me-product met
@@ -62,7 +61,6 @@ export async function handleCreateTask({
   description,
   implementation_plan,
   priority,
-  sort_order,
   repo_url,
 }: CreateTaskInput) {
   return withToolErrors(async () => {
@@ -77,15 +75,12 @@ export async function handleCreateTask({
       return toolError(`Story ${story_id} not accessible`)
     }
 
-    let resolvedSortOrder = sort_order
-    if (resolvedSortOrder === undefined) {
-      const last = await prisma.task.findFirst({
-        where: { story_id, priority },
-        orderBy: { sort_order: 'desc' },
-        select: { sort_order: true },
-      })
-      resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
-    }
+    const last = await prisma.task.findFirst({
+      where: { story_id },
+      orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
+      select: { sort_order: true },
+    })
+    const resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
 
     let lastError: unknown
     for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
@@ -143,7 +138,7 @@ export function registerCreateTaskTool(server: McpServer) {
     {
       title: 'Create task',
       description:
-        'Add a task under an existing story. Inherits sprint_id from the story (denormalized). Status defaults to TO_DO. Sort_order auto-set to last+1 within the story/priority group if not provided. Optional repo_url overrides the product.repo_url for cross-repo work (e.g. tasks targeting scrum4me-mcp under a Scrum4Me PBI). Forbidden for demo accounts.',
+        'Add a task under an existing story. Inherits sprint_id from the story (denormalized). Status defaults to TO_DO. Priority is team importance only; execution order appends within the parent and can be changed through backlog reorder. Optional repo_url overrides the product.repo_url for cross-repo work (e.g. tasks targeting scrum4me-mcp under a Scrum4Me PBI). Forbidden for demo accounts.',
       inputSchema,
     },
     handleCreateTask,

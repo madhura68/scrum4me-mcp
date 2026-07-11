@@ -81,6 +81,19 @@ describe('handleCreateStory', () => {
     expect(parseResult(result).status).toBe('OPEN')
   })
 
+  it('appends after the last story in the PBI regardless of priority', async () => {
+    mockPrisma.story.findFirst.mockResolvedValue({ sort_order: 3 })
+
+    await handleCreateStory({ pbi_id: PBI_ID, title: 'Urgent story', priority: 1 })
+
+    expect(mockPrisma.story.findFirst).toHaveBeenCalledWith({
+      where: { pbi_id: PBI_ID },
+      orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
+      select: { sort_order: true },
+    })
+    expect(mockPrisma.story.create.mock.calls[0][0].data.sort_order).toBe(4)
+  })
+
   it('with valid sprint_id: links story to sprint with status IN_SPRINT', async () => {
     mockPrisma.sprint.findUnique.mockResolvedValue({ product_id: PRODUCT_ID })
 

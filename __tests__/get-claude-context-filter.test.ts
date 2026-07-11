@@ -65,6 +65,45 @@ beforeEach(() => {
 })
 
 describe('get_claude_context safety-net filter', () => {
+  it('uses canonical sibling order and preserves task order despite contrary priorities', async () => {
+    mockStoryFindFirst.mockResolvedValue({
+      id: 'story-1',
+      code: 'ST-001',
+      title: 'Story',
+      description: null,
+      acceptance_criteria: null,
+      priority: 4,
+      status: 'IN_SPRINT',
+      tasks: [
+        { id: 'task-1', title: 'First', priority: 4, sort_order: 1, status: 'TO_DO' },
+        { id: 'task-2', title: 'Second', priority: 1, sort_order: 2, status: 'TO_DO' },
+      ],
+    })
+    const server = makeServer()
+    registerGetClaudeContextTool(server as never)
+
+    const result = await server.call({ product_id: 'prod-1' }) as {
+      content: Array<{ type: string; text: string }>
+    }
+
+    const query = mockStoryFindFirst.mock.calls[0][0]
+    expect(query.orderBy).toEqual([
+      { sort_order: 'asc' },
+      { created_at: 'asc' },
+      { id: 'asc' },
+    ])
+    expect(query.select.tasks.orderBy).toEqual([
+      { sort_order: 'asc' },
+      { created_at: 'asc' },
+      { id: 'asc' },
+    ])
+    const body = JSON.parse(result.content[0].text)
+    expect(body.next_story.tasks.map((task: { id: string; code: string }) => [task.id, task.code])).toEqual([
+      ['task-1', 'ST-001.1'],
+      ['task-2', 'ST-001.2'],
+    ])
+  })
+
   it('passes OR tasks filter in next-story query', async () => {
     const server = makeServer()
     registerGetClaudeContextTool(server as never)

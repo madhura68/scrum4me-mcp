@@ -1769,10 +1769,18 @@ export async function getFullJobContext(
                 },
                 tasks: {
                   where: { status: 'TO_DO' },
-                  orderBy: [{ priority: 'asc' }, { sort_order: 'asc' }],
+                  orderBy: [
+                    { sort_order: 'asc' },
+                    { created_at: 'asc' },
+                    { id: 'asc' },
+                  ],
                 },
               },
-              orderBy: [{ priority: 'asc' }, { sort_order: 'asc' }],
+              orderBy: [
+                { sort_order: 'asc' },
+                { created_at: 'asc' },
+                { id: 'asc' },
+              ],
             },
           },
         },
