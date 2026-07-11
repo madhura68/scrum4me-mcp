@@ -136,13 +136,6 @@ function nextNumber(existing: (string | null)[], re: RegExp): number {
   return max + 1
 }
 
-// Web gebruikt parseCodeNumber(@/lib/code); mcp inlinet dezelfde semantiek:
-// trailing getal uit een code ("ST-001" → 1, "T-3" → 3).
-function codeNumber(code: string): number {
-  const m = code.match(/(\d+)$/)
-  return m ? Number.parseInt(m[1], 10) : 0
-}
-
 export async function materializeIdeaPlan(
   db: PrismaClient,
   params: { ideaId: string; userId: string; allowAlongside?: boolean; withBuildSprint?: boolean },
@@ -234,8 +227,8 @@ export async function materializeIdeaPlan(
     let nextTaskN = nextNumber(existingTasks.map((t) => t.code), TASK_AUTO_RE)
 
     const lastPbi = await tx.pbi.findFirst({
-      where: { product_id: productId, priority: plan.pbi.priority },
-      orderBy: { sort_order: 'desc' },
+      where: { product_id: productId },
+      orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
       select: { sort_order: true },
     })
     const pbiSortOrder = (lastPbi?.sort_order ?? 0) + 1.0
@@ -268,7 +261,7 @@ export async function materializeIdeaPlan(
           description: s.description ?? null,
           acceptance_criteria: s.acceptance_criteria ?? null,
           priority: s.priority,
-          sort_order: codeNumber(storyCode),
+          sort_order: si + 1,
           status: 'OPEN',
         },
         select: { id: true },
@@ -295,7 +288,7 @@ export async function materializeIdeaPlan(
             description: t.description ?? null,
             implementation_plan: t.implementation_plan ?? null,
             priority: s.priority,
-            sort_order: codeNumber(taskCode),
+            sort_order: ti + 1,
             status: 'TO_DO',
             verify_required: effectiveVerifyRequired,
             verify_only: t.verify_only ?? false,

@@ -9,6 +9,16 @@ Volgt de globale Scrum4Me-methodiek (`~/.claude/rules/scrum4me-methodiek.md` voo
 
 MCP server that exposes the Scrum4Me dev-flow as native tools for Codex.
 
+## Parent-scoped authoring
+
+`create_pbi`, `create_story`, and `create_task` do not accept caller-controlled
+`sort_order`. Each reads the current sibling maximum and creates the new row in one
+Serializable transaction. The transaction layer retries only Prisma `P2034` serialization
+conflicts, at most three times. Code allocation has a separate outer retry: only the exact
+`(product_id, code)` `P2002`
+(or that model's known constraint name) reruns the whole Serializable create attempt, at most
+three times. Other errors, including unrelated `P2002` violations, surface immediately.
+
 ## Agent worktree-flow
 
 `wait_for_job` creates an isolated git worktree per job so agent changes never touch the user's main checkout.

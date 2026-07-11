@@ -410,7 +410,8 @@ model Pbi {
   docs         PbiDoc[]
 
   @@unique([product_id, code])
-  @@index([product_id, priority, sort_order])
+  @@index([product_id, sort_order])
+  @@index([product_id, priority])
   @@index([product_id, status])
   @@map("pbis")
 }
@@ -439,7 +440,8 @@ model Story {
   claude_questions    ClaudeQuestion[]
 
   @@unique([product_id, code])
-  @@index([pbi_id, priority, sort_order])
+  @@index([pbi_id, sort_order])
+  @@index([pbi_id, priority])
   @@index([sprint_id, sort_order])
   @@index([product_id, status])
   @@index([sprint_id, assignee_id])
@@ -544,7 +546,8 @@ model Task {
   review_logs            ReviewLog[]           @relation("TaskReviewLogs")
 
   @@unique([product_id, code])
-  @@index([story_id, priority, sort_order])
+  @@index([story_id, sort_order])
+  @@index([story_id, priority])
   @@index([sprint_id, status])
   @@index([product_id])
   @@map("tasks")
@@ -569,6 +572,7 @@ model ClaudeJob {
   doc_revision_id           String?
   sprint_run                SprintRun?            @relation(fields: [sprint_run_id], references: [id], onDelete: SetNull)
   sprint_run_id             String?
+  sprint_sequence           Int?
   kind                      ClaudeJobKind         @default(TASK_IMPLEMENTATION)
   status                    ClaudeJobStatus       @default(QUEUED)
   runtime                   AgentRuntime          @default(CLAUDE)
@@ -642,6 +646,7 @@ model ClaudeJob {
   @@index([pricing_model_id])
   @@index([source, status])
   @@index([created_by_job_id])
+  @@unique([sprint_run_id, sprint_sequence])
   @@unique([created_by_job_id, orchestration_key])
   @@map("claude_jobs")
 }

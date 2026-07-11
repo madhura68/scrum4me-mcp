@@ -9,6 +9,48 @@ Volgt de globale Scrum4Me-methodiek (`~/.claude/rules/scrum4me-methodiek.md` voo
 
 MCP server that exposes the Scrum4Me dev-flow as native tools for Claude Code.
 
+## Hierarchical ordering contract
+
+`get_claude_context` is the canonical starting point for interactive Scrum4Me work. Its
+next story and tasks are ordered by parent-scoped `sort_order` (then `created_at` and `id`
+as deterministic tie-breakers). Follow that order; never infer work order from priority or
+from item codes.
+
+**Priority** indicates how important an item is to the team. It is a label and optional
+filter only; it never determines presentation order, job order, or execution order.
+
+**`sort_order`** is the mutable ordering key within the direct parent: PBI within product,
+story within PBI, and task within story. Reordering changes only `sort_order`; stable item
+codes do not change and do not encode execution order.
+
+MCP authoring is parent-scoped append-only: `create_pbi`, `create_story`, and `create_task`
+accept no `sort_order` and append within their direct parent. The sibling max-read and create
+share one Serializable transaction; only Prisma `P2034` is retried, at most three times.
+An outer bounded retry reruns that complete transaction only for the tool's expected
+`(product_id, code)` `P2002`; unrelated `P2002` errors are not retried.
+All three still require `priority` as team-importance metadata, but changing priority never
+moves an item.
+
+### Frozen sprint execution and claims
+
+Sprint dispatch flattens work as PBI `sort_order` → story `sort_order` → task `sort_order`,
+with stable timestamp/id tie-breakers. Once the applicable freeze point below has been
+reached, later backlog reordering does not mutate the run:
+
+- Batch (`SPRINT_BATCH`) runs freeze the list at claim time into
+  `SprintTaskExecution.order`; process the returned `task_executions[]` in that order.
+- Per-task runs freeze the list at dispatch time into `claude_jobs.sprint_sequence`.
+
+For per-task runs, `wait_for_job` will not claim a job while an earlier sibling in the same
+SprintRun (smaller non-NULL `sprint_sequence`) is `QUEUED`, `CLAIMED`, or `RUNNING`.
+Terminal earlier siblings (`DONE`, `FAILED`, `SKIPPED`, `CANCELLED`) do not block the next claim; the
+existing failure/cancellation cascade decides whether other jobs are cancelled.
+
+Legacy rows with `sprint_sequence = NULL` stay claimable and do not participate in the
+earlier-sibling comparison, preventing mixed legacy/new queues from deadlocking during
+rollout. Database migration is therefore first: deploy the nullable column and index before
+deploying the MCP/worker claim SQL.
+
 ## Agent worktree-flow
 
 `wait_for_job` creates an isolated git worktree per job so agent changes never touch the user's main checkout.

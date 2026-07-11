@@ -105,11 +105,21 @@ async function startSprintRunCore(
     .slice()
     .sort(
       (a, b) =>
-        a.pbi.priority - b.pbi.priority ||
         a.pbi.sort_order - b.pbi.sort_order ||
-        a.sort_order - b.sort_order,
+        +a.pbi.created_at - +b.pbi.created_at ||
+        a.pbi.id.localeCompare(b.pbi.id) ||
+        a.sort_order - b.sort_order ||
+        +a.created_at - +b.created_at ||
+        a.id.localeCompare(b.id),
     )
-    .flatMap((s) => s.tasks)
+    .flatMap((s) =>
+      s.tasks.slice().sort(
+        (a, b) =>
+          a.sort_order - b.sort_order ||
+          +a.created_at - +b.created_at ||
+          a.id.localeCompare(b.id),
+      ),
+    )
 
   if (sprint.product.pr_strategy === 'SPRINT_BATCH') {
     const sprintSnapshot = await getJobConfigSnapshot({
@@ -123,6 +133,7 @@ async function startSprintRunCore(
         task_id: null,
         idea_id: null,
         sprint_run_id: sprintRun.id,
+        sprint_sequence: null,
         kind: 'SPRINT_IMPLEMENTATION',
         status: 'QUEUED',
         source: 'COPILOT', // COPILOT: web default is SYSTEM
@@ -135,7 +146,7 @@ async function startSprintRunCore(
   // STORY / SPRINT (per-task): snapshot per task zodat task.requires_opus
   // de cascade kan overrulen (identiek aan web).
   let jobsCount = 0
-  for (const t of orderedTasks) {
+  for (const [sprintSequence, t] of orderedTasks.entries()) {
     const taskSnapshot = await getJobConfigSnapshot({
       kind: 'TASK_IMPLEMENTATION',
       productId: sprint.product_id,
@@ -146,7 +157,9 @@ async function startSprintRunCore(
         user_id: opts.userId,
         product_id: sprint.product_id,
         task_id: t.id,
+        idea_id: null,
         sprint_run_id: sprintRun.id,
+        sprint_sequence: sprintSequence,
         kind: 'TASK_IMPLEMENTATION',
         status: 'QUEUED',
         source: 'COPILOT', // COPILOT: web default is SYSTEM

@@ -9,6 +9,7 @@ vi.mock('../src/prisma.js', () => ({
       findMany: vi.fn(),
       create: vi.fn(),
     },
+    $transaction: vi.fn(),
   },
 }))
 
@@ -39,6 +40,7 @@ const mockPrisma = prisma as unknown as {
     findMany: ReturnType<typeof vi.fn>
     create: ReturnType<typeof vi.fn>
   }
+  $transaction: ReturnType<typeof vi.fn>
 }
 const mockRequireWriteAccess = requireWriteAccess as ReturnType<typeof vi.fn>
 const mockUserCanAccessProduct = userCanAccessProduct as ReturnType<typeof vi.fn>
@@ -52,6 +54,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockRequireWriteAccess.mockResolvedValue({ userId: USER_ID, tokenId: 'tok-1', username: 'alice', isDemo: false })
   mockUserCanAccessProduct.mockResolvedValue(true)
+  mockPrisma.$transaction.mockImplementation(async (run: (tx: typeof prisma) => Promise<unknown>) => run(prisma))
   mockPrisma.pbi.findUnique.mockResolvedValue({ product_id: PRODUCT_ID })
   mockPrisma.story.findMany.mockResolvedValue([])
   mockPrisma.story.findFirst.mockResolvedValue(null)
@@ -79,6 +82,19 @@ describe('handleCreateStory', () => {
     expect(data.sprint_id).toBeNull()
     expect(data.product_id).toBe(PRODUCT_ID)
     expect(parseResult(result).status).toBe('OPEN')
+  })
+
+  it('appends after the last story in the PBI regardless of priority', async () => {
+    mockPrisma.story.findFirst.mockResolvedValue({ sort_order: 3 })
+
+    await handleCreateStory({ pbi_id: PBI_ID, title: 'Urgent story', priority: 1 })
+
+    expect(mockPrisma.story.findFirst).toHaveBeenCalledWith({
+      where: { pbi_id: PBI_ID },
+      orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
+      select: { sort_order: true },
+    })
+    expect(mockPrisma.story.create.mock.calls[0][0].data.sort_order).toBe(4)
   })
 
   it('with valid sprint_id: links story to sprint with status IN_SPRINT', async () => {

@@ -18,7 +18,7 @@ activity and create todos via native tool calls instead of curl.
 | `log_test_result` | Append TEST_RESULT (PASSED/FAILED) | no |
 | `log_commit` | Append COMMIT with hash and message | no |
 | `create_todo` | Add a todo, optionally scoped to a product | no |
-| `create_pbi` | Add a Product Backlog Item to a product (auto sort_order) | no |
+| `create_pbi` | Add a Product Backlog Item to a product (parent-scoped append) | no |
 | `create_story` | Add a story under a PBI (status=OPEN, lands in product backlog) | no |
 | `create_task` | Add a task under a story (status=TO_DO, inherits sprint_id) | no |
 | `ask_user_question` | Post a question to the active user about a story; optional `wait_seconds` (max 600) polls for the answer | no |
@@ -40,6 +40,53 @@ activity and create todos via native tool calls instead of curl.
 | `update_idea_spec_md` | Write the spec document (ProductDoc SPECS + immutable revision) for an idea, set `Idea.spec_doc_id`, and dispatch the SPEC_REVIEW pipeline. Called as the last step of `IDEA_MAKE_SPEC`/`IDEA_REVISE_SPEC` jobs | no |
 
 Demo accounts may read but writes return `PERMISSION_DENIED`.
+
+## Hierarchical ordering contract
+
+`get_claude_context` is the canonical entry point for interactive Scrum4Me work. It returns
+the active sprint and the next story with its tasks in parent-scoped `sort_order` (with
+`created_at` and `id` as deterministic tie-breakers). Agents must use that returned order;
+they must not derive work order from priority or from item codes.
+
+**Priority** indicates how important an item is to the team. It is a label and optional
+filter only; it never determines presentation order, job order, or execution order.
+
+**`sort_order`** is the mutable ordering key within the direct parent: PBI within product,
+story within PBI, and task within story. Reordering changes only `sort_order`; stable item
+codes do not change and do not encode execution order.
+
+The authoring tools enforce parent-scoped append semantics:
+
+- `create_pbi`, `create_story`, and `create_task` accept no `sort_order` input. Each appends
+  after the existing direct siblings inside a Serializable transaction; only Prisma `P2034`
+  serialization conflicts are retried by that transaction layer, at most three times. A separate
+  bounded outer retry reruns the complete create attempt only for the expected
+  `(product_id, code)` `P2002`; unrelated unique violations surface immediately.
+- `priority` remains required team-importance metadata on all three tools, but changing it does
+  not move an item.
+
+### Frozen sprint execution order
+
+Sprint dispatch flattens the hierarchy as PBI `sort_order` → story `sort_order` → task
+`sort_order`, with stable timestamp/id tie-breakers. Once the applicable freeze point below
+has been reached, later backlog reordering does not change the run's order:
+
+- A `SPRINT_BATCH` run creates one `SPRINT_IMPLEMENTATION` job. At claim time it freezes
+  the flat task list into `SprintTaskExecution` rows; `SprintTaskExecution.order` is the
+  canonical batch sequence returned in `task_executions[]`.
+- A per-task sprint run creates one `TASK_IMPLEMENTATION` job per task and freezes the flat
+  sequence in `claude_jobs.sprint_sequence`.
+
+The per-task claim barrier serializes jobs within one SprintRun: a candidate cannot be
+claimed while an earlier job in that run (smaller non-NULL `sprint_sequence`) is `QUEUED`,
+`CLAIMED`, or `RUNNING`. Earlier terminal jobs (`DONE`, `FAILED`, `SKIPPED`, or `CANCELLED`) do not
+block the next claim; failure/cancellation cascades remain responsible for any wider
+run-level cancellation.
+
+Legacy jobs with `sprint_sequence = NULL` remain claimable during migration. NULL does not
+participate in the earlier-sibling comparison, so mixed legacy/new queues do not deadlock.
+Deploy the nullable `sprint_sequence` column and its index before deploying MCP/worker code
+that uses this claim barrier.
 
 ### verify_task_against_plan
 

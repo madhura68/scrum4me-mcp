@@ -1,8 +1,8 @@
 // MCP authoring tool: create een Product Backlog Item.
 //
-// Sort_order wordt automatisch op last+1 binnen de prioriteits-groep gezet als
-// niet meegegeven. Code wordt auto-gegenereerd als PBI-N (zelfde logica als de
-// Scrum4Me-app), met retry bij een race-condition op de unique constraint.
+// Sort_order wordt automatisch op last+1 binnen het product gezet. Code wordt
+// auto-gegenereerd als PBI-N (zelfde logica als de Scrum4Me-app). De max-reads
+// en create delen één Serializable transactie met begrensde P2034-retry.
 //
 // PBI-102: optionele `source_docs` koppelt de PBI bij creatie aan
 // ProductDoc-revisies via PbiDoc (junction). Zonder revision_id resolvet
@@ -11,17 +11,20 @@
 
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { Prisma } from '@prisma/client'
+import type { Prisma } from '@prisma/client'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
+import { withSerializableRetry } from '../lib/serializable-transaction.js'
+import { withCodeUniqueRetry } from '../lib/code-unique-retry.js'
 
 const PBI_AUTO_RE = /^PBI-(\d+)$/
-const MAX_CODE_ATTEMPTS = 3
-
-async function generateNextPbiCode(productId: string): Promise<string> {
-  const pbis = await prisma.pbi.findMany({
+async function generateNextPbiCode(
+  tx: Prisma.TransactionClient,
+  productId: string,
+): Promise<string> {
+  const pbis = await tx.pbi.findMany({
     where: { product_id: productId },
     select: { code: true },
   })
@@ -36,14 +39,6 @@ async function generateNextPbiCode(productId: string): Promise<string> {
   return `PBI-${max + 1}`
 }
 
-function isCodeUniqueConflict(error: unknown): boolean {
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false
-  if (error.code !== 'P2002') return false
-  const target = (error.meta as { target?: string[] | string } | undefined)?.target
-  if (!target) return false
-  return Array.isArray(target) ? target.includes('code') : target.includes('code')
-}
-
 const sourceDocSchema = z.object({
   doc_id: z.string().min(1),
   revision_id: z.string().optional(),
@@ -55,7 +50,6 @@ const inputSchema = z.object({
   title: z.string().min(1).max(200),
   description: z.string().max(4000).optional(),
   priority: z.number().int().min(1).max(4),
-  sort_order: z.number().optional(),
   source_docs: z.array(sourceDocSchema).max(10).optional(),
 })
 
@@ -65,10 +59,10 @@ export function registerCreatePbiTool(server: McpServer) {
     {
       title: 'Create PBI',
       description:
-        'Add a Product Backlog Item to a product. Sort_order auto-set to last+1 within the priority group if not provided. PBI-102: optional source_docs link the PBI to ProductDoc revisions (PLAN/GRILL); revision_id is frozen at link-time. Forbidden for demo accounts.',
+        'Add a Product Backlog Item to a product. Priority is team importance only; execution order appends within the parent and can be changed through backlog reorder. PBI-102: optional source_docs link the PBI to ProductDoc revisions (PLAN/GRILL); revision_id is frozen at link-time. Forbidden for demo accounts.',
       inputSchema,
     },
-    async ({ product_id, title, description, priority, sort_order, source_docs }) =>
+    async ({ product_id, title, description, priority, source_docs }) =>
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
         if (!(await userCanAccessProduct(product_id, auth.userId))) {
@@ -115,88 +109,73 @@ export function registerCreatePbiTool(server: McpServer) {
           }
         }
 
-        let resolvedSortOrder = sort_order
-        if (resolvedSortOrder === undefined) {
-          const last = await prisma.pbi.findFirst({
-            where: { product_id, priority },
-            orderBy: { sort_order: 'desc' },
+        const createPbi = () => withSerializableRetry(async (tx) => {
+          const last = await tx.pbi.findFirst({
+            where: { product_id },
+            orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
             select: { sort_order: true },
           })
-          resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
-        }
+          const resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
+          const code = await generateNextPbiCode(tx, product_id)
+          const pbi = await tx.pbi.create({
+            data: {
+              product_id,
+              code,
+              title,
+              description: description ?? null,
+              priority,
+              sort_order: resolvedSortOrder,
+            },
+            select: {
+              id: true,
+              code: true,
+              title: true,
+              description: true,
+              priority: true,
+              sort_order: true,
+              created_at: true,
+            },
+          })
 
-        let lastError: unknown
-        for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
-          const code = await generateNextPbiCode(product_id)
-          try {
-            const created = await prisma.$transaction(async (tx) => {
-              const pbi = await tx.pbi.create({
-                data: {
-                  product_id,
-                  code,
-                  title,
-                  description: description ?? null,
-                  priority,
-                  sort_order: resolvedSortOrder!,
+          const links: Array<{
+            doc_id: string
+            revision_id: string
+            revision: number
+            role: 'PLAN' | 'GRILL'
+          }> = []
+          for (const l of resolvedLinks) {
+            const link = await tx.pbiDoc.upsert({
+              where: {
+                pbi_id_doc_revision_id_role: {
+                  pbi_id: pbi.id,
+                  doc_revision_id: l.revision_id,
+                  role: l.role,
                 },
-                select: {
-                  id: true,
-                  code: true,
-                  title: true,
-                  description: true,
-                  priority: true,
-                  sort_order: true,
-                  created_at: true,
+              },
+              create: {
+                pbi_id: pbi.id,
+                doc_revision_id: l.revision_id,
+                role: l.role,
+                created_by: auth.userId,
+              },
+              update: {},
+              include: {
+                doc_revision: {
+                  select: { revision: true, doc_id: true },
                 },
-              })
-
-              const links: Array<{
-                doc_id: string
-                revision_id: string
-                revision: number
-                role: 'PLAN' | 'GRILL'
-              }> = []
-              for (const l of resolvedLinks) {
-                const link = await tx.pbiDoc.upsert({
-                  where: {
-                    pbi_id_doc_revision_id_role: {
-                      pbi_id: pbi.id,
-                      doc_revision_id: l.revision_id,
-                      role: l.role,
-                    },
-                  },
-                  create: {
-                    pbi_id: pbi.id,
-                    doc_revision_id: l.revision_id,
-                    role: l.role,
-                    created_by: auth.userId,
-                  },
-                  update: {},
-                  include: {
-                    doc_revision: {
-                      select: { revision: true, doc_id: true },
-                    },
-                  },
-                })
-                links.push({
-                  doc_id: link.doc_revision.doc_id,
-                  revision_id: link.doc_revision_id,
-                  revision: link.doc_revision.revision,
-                  role: link.role as 'PLAN' | 'GRILL',
-                })
-              }
-              return { ...pbi, source_docs: links }
+              },
             })
-            return toolJson(created)
-          } catch (e) {
-            if (isCodeUniqueConflict(e)) {
-              lastError = e
-              continue
-            }
-            throw e
+            links.push({
+              doc_id: link.doc_revision.doc_id,
+              revision_id: link.doc_revision_id,
+              revision: link.doc_revision.revision,
+              role: link.role as 'PLAN' | 'GRILL',
+            })
           }
-        }
-        throw lastError ?? new Error('Kon geen unieke PBI-code genereren')
+          return { ...pbi, source_docs: links }
+        })
+        const created = await withCodeUniqueRetry('pbis_product_id_code_key', createPbi)
+        return toolJson(created)
       }),
   )
 }
