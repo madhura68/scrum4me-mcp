@@ -13,6 +13,7 @@ import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { withSerializableRetry } from '../lib/serializable-transaction.js'
+import { withCodeUniqueRetry } from '../lib/code-unique-retry.js'
 
 const STORY_AUTO_RE = /^ST-(\d+)$/
 async function generateNextStoryCode(
@@ -82,7 +83,7 @@ export async function handleCreateStory(
       }
     }
 
-    const story = await withSerializableRetry(async (tx) => {
+    const createStory = () => withSerializableRetry(async (tx) => {
       const last = await tx.story.findFirst({
         where: { pbi_id },
         orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
@@ -117,6 +118,7 @@ export async function handleCreateStory(
         },
       })
     })
+    const story = await withCodeUniqueRetry('stories_product_id_code_key', createStory)
     return toolJson(story)
   })
 }

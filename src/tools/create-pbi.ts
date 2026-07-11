@@ -17,6 +17,7 @@ import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { withSerializableRetry } from '../lib/serializable-transaction.js'
+import { withCodeUniqueRetry } from '../lib/code-unique-retry.js'
 
 const PBI_AUTO_RE = /^PBI-(\d+)$/
 async function generateNextPbiCode(
@@ -108,7 +109,7 @@ export function registerCreatePbiTool(server: McpServer) {
           }
         }
 
-        const created = await withSerializableRetry(async (tx) => {
+        const createPbi = () => withSerializableRetry(async (tx) => {
           const last = await tx.pbi.findFirst({
             where: { product_id },
             orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
@@ -173,6 +174,7 @@ export function registerCreatePbiTool(server: McpServer) {
           }
           return { ...pbi, source_docs: links }
         })
+        const created = await withCodeUniqueRetry('pbis_product_id_code_key', createPbi)
         return toolJson(created)
       }),
   )

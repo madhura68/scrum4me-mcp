@@ -26,7 +26,9 @@ codes do not change and do not encode execution order.
 MCP authoring is parent-scoped append-only: `create_pbi`, `create_story`, and `create_task`
 accept no `sort_order` and append within their direct parent. The sibling max-read and create
 share one Serializable transaction; only Prisma `P2034` is retried, at most three times.
-Both still require `priority` as team-importance metadata, but changing priority never
+An outer bounded retry reruns that complete transaction only for the tool's expected
+`(product_id, code)` `P2002`; unrelated `P2002` errors are not retried.
+All three still require `priority` as team-importance metadata, but changing priority never
 moves an item.
 
 ### Frozen sprint execution and claims

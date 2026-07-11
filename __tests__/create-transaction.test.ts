@@ -41,6 +41,14 @@ function p2034() {
   })
 }
 
+function p2002(target: string[] | string) {
+  return new Prisma.PrismaClientKnownRequestError('unique', {
+    code: 'P2002',
+    clientVersion: 'test',
+    meta: { target },
+  })
+}
+
 function capturePbiHandler() {
   let handler: ((input: Record<string, unknown>) => Promise<unknown>) | undefined
   registerCreatePbiTool({
@@ -51,6 +59,7 @@ function capturePbiHandler() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  root.$transaction.mockReset()
   root.pbi.findUnique.mockResolvedValue({ product_id: 'product-1' })
   root.story.findUnique.mockResolvedValue({ product_id: 'product-1', sprint_id: null, assignee_id: null })
   root.productDoc.findMany.mockResolvedValue([])
@@ -111,6 +120,39 @@ describe('create tools serialize parent-scoped append', () => {
 
     await handleCreateTask({ story_id: 'story-1', title: 'Task', priority: 2 })
 
+    expect(root.$transaction).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['pbi', () => capturePbiHandler()({ product_id: 'product-1', title: 'PBI', priority: 2 })],
+    ['story', () => handleCreateStory({ pbi_id: 'pbi-1', title: 'Story', priority: 2 })],
+    ['task', () => handleCreateTask({ story_id: 'story-1', title: 'Task', priority: 2 })],
+  ] as const)('%s retries the complete create attempt after the expected code P2002', async (_name, create) => {
+    root.$transaction
+      .mockRejectedValueOnce(p2002(['product_id', 'code']))
+      .mockImplementationOnce(async (callback) => callback(tx))
+
+    const result = await create()
+
+    expect(result.isError).not.toBe(true)
+    expect(root.$transaction).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops after three expected code P2002 retries', async () => {
+    root.$transaction.mockRejectedValue(p2002('tasks_product_id_code_key'))
+
+    const result = await handleCreateTask({ story_id: 'story-1', title: 'Task', priority: 2 })
+
+    expect(result.isError).toBe(true)
+    expect(root.$transaction).toHaveBeenCalledTimes(4)
+  })
+
+  it('propagates an unrelated P2002 without outer retry', async () => {
+    root.$transaction.mockRejectedValueOnce(p2002(['story_id', 'sort_order']))
+
+    const result = await handleCreateTask({ story_id: 'story-1', title: 'Task', priority: 2 })
+
+    expect(result.isError).toBe(true)
     expect(root.$transaction).toHaveBeenCalledTimes(1)
   })
 })

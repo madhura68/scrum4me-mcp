@@ -11,6 +11,7 @@ import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { withSerializableRetry } from '../lib/serializable-transaction.js'
+import { withCodeUniqueRetry } from '../lib/code-unique-retry.js'
 
 const TASK_AUTO_RE = /^T-(\d+)$/
 async function generateNextTaskCode(
@@ -69,7 +70,7 @@ export async function handleCreateTask({
       return toolError(`Story ${story_id} not accessible`)
     }
 
-    const task = await withSerializableRetry(async (tx) => {
+    const createTask = () => withSerializableRetry(async (tx) => {
       const last = await tx.task.findFirst({
         where: { story_id },
         orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
@@ -112,6 +113,7 @@ export async function handleCreateTask({
         },
       })
     })
+    const task = await withCodeUniqueRetry('tasks_product_id_code_key', createTask)
     return toolJson(task)
   })
 }

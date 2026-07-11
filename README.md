@@ -59,7 +59,9 @@ The authoring tools enforce parent-scoped append semantics:
 
 - `create_pbi`, `create_story`, and `create_task` accept no `sort_order` input. Each appends
   after the existing direct siblings inside a Serializable transaction; only Prisma `P2034`
-  serialization conflicts are retried, at most three times.
+  serialization conflicts are retried by that transaction layer, at most three times. A separate
+  bounded outer retry reruns the complete create attempt only for the expected
+  `(product_id, code)` `P2002`; unrelated unique violations surface immediately.
 - `priority` remains required team-importance metadata on all three tools, but changing it does
   not move an item.
 
