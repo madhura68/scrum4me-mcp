@@ -38,13 +38,15 @@ const baseTask = {
   implementation_plan: 'Plan here',
   repo_url: null,
   sort_order: 0,
+  created_at: new Date(0),
 }
 
 const baseStories = [
   {
     id: 'story-1',
     sort_order: 0,
-    pbi: { id: 'pbi-1', code: 'PBI-1', title: 'First PBI', status: 'TODO', priority: 1, sort_order: 0 },
+    created_at: new Date(0),
+    pbi: { id: 'pbi-1', code: 'PBI-1', title: 'First PBI', status: 'TODO', priority: 1, sort_order: 0, created_at: new Date(0) },
     tasks: [baseTask],
   },
 ]
@@ -72,6 +74,7 @@ describe('dispatchSprintRun', () => {
           kind: 'SPRINT_IMPLEMENTATION',
           source: 'COPILOT',
           sprint_run_id: 'run-1',
+          sprint_sequence: null,
         }),
       }),
     )
@@ -111,32 +114,40 @@ describe('dispatchSprintRun', () => {
   })
 
   // (f) STORY-strategie: per TO_DO-task één TASK_IMPLEMENTATION-job
-  it('maakt per task 1 TASK_IMPLEMENTATION-job bij pr_strategy STORY, gesorteerd op pbi.priority → pbi.sort_order → story.sort_order', async () => {
+  it('bevriest per-task jobs in canonieke PBI → story → task-volgorde met sprint_sequence', async () => {
     mockSprint.mockResolvedValue({
       ...baseSprint,
       product: { ...baseSprint.product, pr_strategy: 'STORY' },
     })
-    const taskA = { ...baseTask, id: 't-a', code: 'T-A', sort_order: 1 }
-    const taskB = { ...baseTask, id: 't-b', code: 'T-B', sort_order: 0 }
     mockStories.mockResolvedValue([
       {
-        id: 'story-2',
+        id: 's-later',
         sort_order: 1,
-        pbi: { id: 'pbi-2', code: 'PBI-2', title: 'Second', status: 'TODO', priority: 2, sort_order: 1 },
-        tasks: [taskA],
+        created_at: new Date(3),
+        pbi: { id: 'p-later', code: 'PBI-2', title: 'Later', status: 'TODO', priority: 1, sort_order: 2, created_at: new Date(2) },
+        tasks: [{ ...baseTask, id: 't3', code: 'T-3', sort_order: 1, created_at: new Date(3), priority: 1 }],
       },
       {
-        id: 'story-1',
-        sort_order: 0,
-        pbi: { id: 'pbi-1', code: 'PBI-1', title: 'First', status: 'TODO', priority: 1, sort_order: 0 },
-        tasks: [taskB],
+        id: 's-first',
+        sort_order: 1,
+        created_at: new Date(2),
+        pbi: { id: 'p-first', code: 'PBI-1', title: 'First', status: 'TODO', priority: 4, sort_order: 1, created_at: new Date(1) },
+        tasks: [
+          { ...baseTask, id: 't2', code: 'T-2', sort_order: 2, created_at: new Date(2), priority: 1 },
+          { ...baseTask, id: 't1', code: 'T-1', sort_order: 1, created_at: new Date(1), priority: 4 },
+        ],
       },
     ])
     const res = await dispatchSprintRun(opts)
-    expect(res.jobs_count).toBe(2)
-    expect(tx.claudeJob.create).toHaveBeenCalledTimes(2)
-    const calls = tx.claudeJob.create.mock.calls
-    expect(calls[0][0].data).toMatchObject({ kind: 'TASK_IMPLEMENTATION', source: 'COPILOT', sprint_run_id: 'run-1', task_id: 't-b' })
-    expect(calls[1][0].data).toMatchObject({ kind: 'TASK_IMPLEMENTATION', source: 'COPILOT', sprint_run_id: 'run-1', task_id: 't-a' })
+    expect(res.jobs_count).toBe(3)
+    expect(tx.claudeJob.create).toHaveBeenCalledTimes(3)
+    expect(tx.claudeJob.create.mock.calls.map(([arg]) => ({
+      task_id: arg.data.task_id,
+      sprint_sequence: arg.data.sprint_sequence,
+    }))).toEqual([
+      { task_id: 't1', sprint_sequence: 0 },
+      { task_id: 't2', sprint_sequence: 1 },
+      { task_id: 't3', sprint_sequence: 2 },
+    ])
   })
 })

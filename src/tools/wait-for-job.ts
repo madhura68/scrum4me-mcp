@@ -794,6 +794,20 @@ export async function tryClaimJob(
           selfCapability: capability,
         })
       : Prisma.empty
+    const sprintSequenceClause = Prisma.sql`
+      AND (
+        cj.kind <> 'TASK_IMPLEMENTATION'
+        OR cj.sprint_run_id IS NULL
+        OR NOT EXISTS (
+          SELECT 1
+          FROM claude_jobs earlier
+          WHERE earlier.sprint_run_id = cj.sprint_run_id
+            AND earlier.kind = 'TASK_IMPLEMENTATION'
+            AND earlier.sprint_sequence < cj.sprint_sequence
+            AND earlier.status IN ('QUEUED','CLAIMED','RUNNING')
+        )
+      )
+    `
     const found = productId
       ? await tx.$queryRaw<
           Array<{ id: string; implementation_plan: string | null; sprint_run_id: string | null; kind: string; idea_id: string | null }>
@@ -804,7 +818,11 @@ export async function tryClaimJob(
           LEFT JOIN sprint_runs sr ON sr.id = cj.sprint_run_id
           ${whereClause}
           ${tierClause}
-          ORDER BY cj.created_at ASC
+          ${sprintSequenceClause}
+          ORDER BY
+            cj.created_at ASC,
+            COALESCE(cj.sprint_sequence, 2147483647) ASC,
+            cj.id ASC
           LIMIT 1
           FOR UPDATE OF cj SKIP LOCKED
         `
@@ -817,7 +835,11 @@ export async function tryClaimJob(
           LEFT JOIN sprint_runs sr ON sr.id = cj.sprint_run_id
           ${whereClause}
           ${tierClause}
-          ORDER BY cj.created_at ASC
+          ${sprintSequenceClause}
+          ORDER BY
+            cj.created_at ASC,
+            COALESCE(cj.sprint_sequence, 2147483647) ASC,
+            cj.id ASC
           LIMIT 1
           FOR UPDATE OF cj SKIP LOCKED
         `
