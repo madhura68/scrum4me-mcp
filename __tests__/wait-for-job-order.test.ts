@@ -1,10 +1,54 @@
-import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-describe('SPRINT_IMPLEMENTATION scope ordering', () => {
-  it('does not use priority as execution order', () => {
-    const source = readFileSync(new URL('../src/tools/wait-for-job.ts', import.meta.url), 'utf8')
+import * as waitForJob from '../src/tools/wait-for-job.js'
 
-    expect(source).not.toMatch(/orderBy[^\n]*priority|priority[^\n]*orderBy|priority ASC/)
+describe('SPRINT_IMPLEMENTATION scope ordering', () => {
+  it('builds the Prisma query in canonical PBI → story → task order', () => {
+    const buildSprintScopeInclude = (
+      waitForJob as unknown as {
+        buildSprintScopeInclude?: () => unknown
+      }
+    ).buildSprintScopeInclude
+
+    expect(buildSprintScopeInclude).toBeTypeOf('function')
+    expect(buildSprintScopeInclude!()).toEqual({
+      sprint: {
+        include: {
+          product: true,
+          stories: {
+            where: { status: { not: 'DONE' } },
+            include: {
+              pbi: {
+                select: {
+                  id: true,
+                  code: true,
+                  title: true,
+                  priority: true,
+                  sort_order: true,
+                  created_at: true,
+                  status: true,
+                },
+              },
+              tasks: {
+                where: { status: 'TO_DO' },
+                orderBy: [
+                  { sort_order: 'asc' },
+                  { created_at: 'asc' },
+                  { id: 'asc' },
+                ],
+              },
+            },
+            orderBy: [
+              { pbi: { sort_order: 'asc' } },
+              { pbi: { created_at: 'asc' } },
+              { pbi: { id: 'asc' } },
+              { sort_order: 'asc' },
+              { created_at: 'asc' },
+              { id: 'asc' },
+            ],
+          },
+        },
+      },
+    })
   })
 })

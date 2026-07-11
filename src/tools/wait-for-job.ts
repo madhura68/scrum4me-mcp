@@ -914,6 +914,48 @@ interface SprintScopeStory {
   pbi: SprintScopePbi
 }
 
+export function buildSprintScopeInclude() {
+  return Prisma.validator<Prisma.SprintRunInclude>()({
+    sprint: {
+      include: {
+        product: true,
+        stories: {
+          where: { status: { not: 'DONE' } },
+          include: {
+            pbi: {
+              select: {
+                id: true,
+                code: true,
+                title: true,
+                priority: true,
+                sort_order: true,
+                created_at: true,
+                status: true,
+              },
+            },
+            tasks: {
+              where: { status: 'TO_DO' },
+              orderBy: [
+                { sort_order: 'asc' },
+                { created_at: 'asc' },
+                { id: 'asc' },
+              ],
+            },
+          },
+          orderBy: [
+            { pbi: { sort_order: 'asc' } },
+            { pbi: { created_at: 'asc' } },
+            { pbi: { id: 'asc' } },
+            { sort_order: 'asc' },
+            { created_at: 'asc' },
+            { id: 'asc' },
+          ],
+        },
+      },
+    },
+  })
+}
+
 /** Select-shape van de execution-id lookup na de scope-snapshot insert. */
 interface SprintExecutionRow {
   id: string
@@ -1757,34 +1799,7 @@ export async function getFullJobContext(
     }
     const sprintRun = await prisma.sprintRun.findUnique({
       where: { id: job.sprint_run_id },
-      include: {
-        sprint: {
-          include: {
-            product: true,
-            stories: {
-              where: { status: { not: 'DONE' } },
-              include: {
-                pbi: {
-                  select: { id: true, code: true, title: true, priority: true, sort_order: true, status: true },
-                },
-                tasks: {
-                  where: { status: 'TO_DO' },
-                  orderBy: [
-                    { sort_order: 'asc' },
-                    { created_at: 'asc' },
-                    { id: 'asc' },
-                  ],
-                },
-              },
-              orderBy: [
-                { sort_order: 'asc' },
-                { created_at: 'asc' },
-                { id: 'asc' },
-              ],
-            },
-          },
-        },
-      },
+      include: buildSprintScopeInclude(),
     })
     if (!sprintRun) {
       await rollbackClaim(job.id)
