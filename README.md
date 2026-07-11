@@ -78,7 +78,7 @@ has been reached, later backlog reordering does not change the run's order:
 
 The per-task claim barrier serializes jobs within one SprintRun: a candidate cannot be
 claimed while an earlier job in that run (smaller non-NULL `sprint_sequence`) is `QUEUED`,
-`CLAIMED`, or `RUNNING`. Earlier terminal jobs (`DONE`, `FAILED`, or `CANCELLED`) do not
+`CLAIMED`, or `RUNNING`. Earlier terminal jobs (`DONE`, `FAILED`, `SKIPPED`, or `CANCELLED`) do not
 block the next claim; failure/cancellation cascades remain responsible for any wider
 run-level cancellation.
 

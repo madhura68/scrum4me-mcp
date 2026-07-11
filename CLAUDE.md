@@ -40,7 +40,7 @@ reached, later backlog reordering does not mutate the run:
 
 For per-task runs, `wait_for_job` will not claim a job while an earlier sibling in the same
 SprintRun (smaller non-NULL `sprint_sequence`) is `QUEUED`, `CLAIMED`, or `RUNNING`.
-Terminal earlier siblings (`DONE`, `FAILED`, `CANCELLED`) do not block the next claim; the
+Terminal earlier siblings (`DONE`, `FAILED`, `SKIPPED`, `CANCELLED`) do not block the next claim; the
 existing failure/cancellation cascade decides whether other jobs are cancelled.
 
 Legacy rows with `sprint_sequence = NULL` stay claimable and do not participate in the
