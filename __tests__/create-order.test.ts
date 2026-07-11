@@ -76,6 +76,7 @@ describe('create tool execution order', () => {
   })
 
   it.each([
+    ['pbi', registerCreatePbiTool],
     ['story', registerCreateStoryTool],
     ['task', registerCreateTaskTool],
   ])('does not expose caller-controlled sort_order for %s creation', (_name, register) => {

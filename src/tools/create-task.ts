@@ -5,17 +5,19 @@
 
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { Prisma } from '@prisma/client'
+import type { Prisma } from '@prisma/client'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
+import { withSerializableRetry } from '../lib/serializable-transaction.js'
 
 const TASK_AUTO_RE = /^T-(\d+)$/
-const MAX_CODE_ATTEMPTS = 3
-
-async function generateNextTaskCode(productId: string): Promise<string> {
-  const tasks = await prisma.task.findMany({
+async function generateNextTaskCode(
+  tx: Prisma.TransactionClient,
+  productId: string,
+): Promise<string> {
+  const tasks = await tx.task.findMany({
     where: { product_id: productId },
     select: { code: true },
   })
@@ -28,14 +30,6 @@ async function generateNextTaskCode(productId: string): Promise<string> {
     }
   }
   return `T-${max + 1}`
-}
-
-function isCodeUniqueConflict(error: unknown): boolean {
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false
-  if (error.code !== 'P2002') return false
-  const target = (error.meta as { target?: string[] | string } | undefined)?.target
-  if (!target) return false
-  return Array.isArray(target) ? target.includes('code') : target.includes('code')
 }
 
 const inputSchema = z.object({
@@ -75,60 +69,50 @@ export async function handleCreateTask({
       return toolError(`Story ${story_id} not accessible`)
     }
 
-    const last = await prisma.task.findFirst({
-      where: { story_id },
-      orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
-      select: { sort_order: true },
-    })
-    const resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
-
-    let lastError: unknown
-    for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
-      const code = await generateNextTaskCode(story.product_id)
-      try {
-        const task = await prisma.$transaction(async (tx) => {
-          if (story.sprint_id && story.assignee_id === null) {
-            await tx.story.updateMany({
-              where: { id: story_id, assignee_id: null },
-              data: { assignee_id: auth.userId },
-            })
-          }
-
-          return tx.task.create({
-            data: {
-              story_id,
-              product_id: story.product_id, // denormalized — erf van story
-              sprint_id: story.sprint_id,   // denormalized — erf van story
-              code,
-              title,
-              description: description ?? null,
-              implementation_plan: implementation_plan ?? null,
-              priority,
-              sort_order: resolvedSortOrder,
-              status: 'TO_DO',
-              repo_url: repo_url ?? null,
-            },
-            select: {
-              id: true,
-              code: true,
-              title: true,
-              description: true,
-              implementation_plan: true,
-              priority: true,
-              sort_order: true,
-              status: true,
-              repo_url: true,
-              created_at: true,
-            },
-          })
+    const task = await withSerializableRetry(async (tx) => {
+      const last = await tx.task.findFirst({
+        where: { story_id },
+        orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
+        select: { sort_order: true },
+      })
+      const resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
+      const code = await generateNextTaskCode(tx, story.product_id)
+      if (story.sprint_id && story.assignee_id === null) {
+        await tx.story.updateMany({
+          where: { id: story_id, assignee_id: null },
+          data: { assignee_id: auth.userId },
         })
-        return toolJson(task)
-      } catch (e) {
-        if (isCodeUniqueConflict(e)) { lastError = e; continue }
-        throw e
       }
-    }
-    throw lastError ?? new Error('Kon geen unieke Task-code genereren')
+
+      return tx.task.create({
+        data: {
+          story_id,
+          product_id: story.product_id, // denormalized — erf van story
+          sprint_id: story.sprint_id,   // denormalized — erf van story
+          code,
+          title,
+          description: description ?? null,
+          implementation_plan: implementation_plan ?? null,
+          priority,
+          sort_order: resolvedSortOrder,
+          status: 'TO_DO',
+          repo_url: repo_url ?? null,
+        },
+        select: {
+          id: true,
+          code: true,
+          title: true,
+          description: true,
+          implementation_plan: true,
+          priority: true,
+          sort_order: true,
+          status: true,
+          repo_url: true,
+          created_at: true,
+        },
+      })
+    })
+    return toolJson(task)
   })
 }
 

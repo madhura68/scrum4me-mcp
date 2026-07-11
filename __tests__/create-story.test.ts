@@ -9,6 +9,7 @@ vi.mock('../src/prisma.js', () => ({
       findMany: vi.fn(),
       create: vi.fn(),
     },
+    $transaction: vi.fn(),
   },
 }))
 
@@ -39,6 +40,7 @@ const mockPrisma = prisma as unknown as {
     findMany: ReturnType<typeof vi.fn>
     create: ReturnType<typeof vi.fn>
   }
+  $transaction: ReturnType<typeof vi.fn>
 }
 const mockRequireWriteAccess = requireWriteAccess as ReturnType<typeof vi.fn>
 const mockUserCanAccessProduct = userCanAccessProduct as ReturnType<typeof vi.fn>
@@ -52,6 +54,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockRequireWriteAccess.mockResolvedValue({ userId: USER_ID, tokenId: 'tok-1', username: 'alice', isDemo: false })
   mockUserCanAccessProduct.mockResolvedValue(true)
+  mockPrisma.$transaction.mockImplementation(async (run: (tx: typeof prisma) => Promise<unknown>) => run(prisma))
   mockPrisma.pbi.findUnique.mockResolvedValue({ product_id: PRODUCT_ID })
   mockPrisma.story.findMany.mockResolvedValue([])
   mockPrisma.story.findFirst.mockResolvedValue(null)

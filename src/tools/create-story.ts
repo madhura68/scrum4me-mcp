@@ -7,17 +7,19 @@
 
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
-import { Prisma } from '@prisma/client'
+import type { Prisma } from '@prisma/client'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
+import { withSerializableRetry } from '../lib/serializable-transaction.js'
 
 const STORY_AUTO_RE = /^ST-(\d+)$/
-const MAX_CODE_ATTEMPTS = 3
-
-async function generateNextStoryCode(productId: string): Promise<string> {
-  const stories = await prisma.story.findMany({
+async function generateNextStoryCode(
+  tx: Prisma.TransactionClient,
+  productId: string,
+): Promise<string> {
+  const stories = await tx.story.findMany({
     where: { product_id: productId },
     select: { code: true },
   })
@@ -30,14 +32,6 @@ async function generateNextStoryCode(productId: string): Promise<string> {
     }
   }
   return `ST-${String(max + 1).padStart(3, '0')}`
-}
-
-function isCodeUniqueConflict(error: unknown): boolean {
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false
-  if (error.code !== 'P2002') return false
-  const target = (error.meta as { target?: string[] | string } | undefined)?.target
-  if (!target) return false
-  return Array.isArray(target) ? target.includes('code') : target.includes('code')
 }
 
 const inputSchema = z.object({
@@ -88,50 +82,42 @@ export async function handleCreateStory(
       }
     }
 
-    const last = await prisma.story.findFirst({
-      where: { pbi_id },
-      orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
-      select: { sort_order: true },
+    const story = await withSerializableRetry(async (tx) => {
+      const last = await tx.story.findFirst({
+        where: { pbi_id },
+        orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
+        select: { sort_order: true },
+      })
+      const resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
+      const code = await generateNextStoryCode(tx, pbi.product_id)
+      return tx.story.create({
+        data: {
+          pbi_id,
+          product_id: pbi.product_id, // denormalized uit DB-parent, niet uit input
+          sprint_id: sprint_id ?? null,
+          code,
+          title,
+          description: description ?? null,
+          acceptance_criteria: acceptance_criteria ?? null,
+          priority,
+          sort_order: resolvedSortOrder,
+          status: sprint_id ? 'IN_SPRINT' : 'OPEN',
+        },
+        select: {
+          id: true,
+          code: true,
+          title: true,
+          description: true,
+          acceptance_criteria: true,
+          priority: true,
+          sort_order: true,
+          status: true,
+          sprint_id: true,
+          created_at: true,
+        },
+      })
     })
-    const resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
-
-    let lastError: unknown
-    for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
-      const code = await generateNextStoryCode(pbi.product_id)
-      try {
-        const story = await prisma.story.create({
-          data: {
-            pbi_id,
-            product_id: pbi.product_id, // denormalized uit DB-parent, niet uit input
-            sprint_id: sprint_id ?? null,
-            code,
-            title,
-            description: description ?? null,
-            acceptance_criteria: acceptance_criteria ?? null,
-            priority,
-            sort_order: resolvedSortOrder,
-            status: sprint_id ? 'IN_SPRINT' : 'OPEN',
-          },
-          select: {
-            id: true,
-            code: true,
-            title: true,
-            description: true,
-            acceptance_criteria: true,
-            priority: true,
-            sort_order: true,
-            status: true,
-            sprint_id: true,
-            created_at: true,
-          },
-        })
-        return toolJson(story)
-      } catch (e) {
-        if (isCodeUniqueConflict(e)) { lastError = e; continue }
-        throw e
-      }
-    }
-    throw lastError ?? new Error('Kon geen unieke Story-code genereren')
+    return toolJson(story)
   })
 }
 

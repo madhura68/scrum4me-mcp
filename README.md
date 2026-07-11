@@ -18,7 +18,7 @@ activity and create todos via native tool calls instead of curl.
 | `log_test_result` | Append TEST_RESULT (PASSED/FAILED) | no |
 | `log_commit` | Append COMMIT with hash and message | no |
 | `create_todo` | Add a todo, optionally scoped to a product | no |
-| `create_pbi` | Add a Product Backlog Item to a product (auto sort_order) | no |
+| `create_pbi` | Add a Product Backlog Item to a product (parent-scoped append) | no |
 | `create_story` | Add a story under a PBI (status=OPEN, lands in product backlog) | no |
 | `create_task` | Add a task under a story (status=TO_DO, inherits sprint_id) | no |
 | `ask_user_question` | Post a question to the active user about a story; optional `wait_seconds` (max 600) polls for the answer | no |
@@ -57,11 +57,10 @@ codes do not change and do not encode execution order.
 
 The authoring tools enforce parent-scoped append semantics:
 
-- `create_story` accepts no `sort_order` input and appends after the existing stories of its
-  PBI.
-- `create_task` accepts no `sort_order` input and appends after the existing tasks of its
-  story.
-- `priority` remains required team-importance metadata on both tools, but changing it does
+- `create_pbi`, `create_story`, and `create_task` accept no `sort_order` input. Each appends
+  after the existing direct siblings inside a Serializable transaction; only Prisma `P2034`
+  serialization conflicts are retried, at most three times.
+- `priority` remains required team-importance metadata on all three tools, but changing it does
   not move an item.
 
 ### Frozen sprint execution order

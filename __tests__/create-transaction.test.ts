@@ -1,0 +1,116 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Prisma } from '@prisma/client'
+
+vi.mock('../src/auth.js', () => ({
+  requireWriteAccess: vi.fn().mockResolvedValue({ userId: 'user-1', tokenId: 'token-1' }),
+  PermissionDeniedError: class PermissionDeniedError extends Error {},
+}))
+vi.mock('../src/access.js', () => ({
+  userCanAccessProduct: vi.fn().mockResolvedValue(true),
+}))
+
+const { tx, root } = vi.hoisted(() => {
+  const transactionClient = {
+    pbi: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn() },
+    story: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), updateMany: vi.fn() },
+    task: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn() },
+    pbiDoc: { upsert: vi.fn() },
+  }
+  const prismaClient = {
+    pbi: { findUnique: vi.fn(), findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn() },
+    sprint: { findUnique: vi.fn() },
+    story: { findUnique: vi.fn(), findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), updateMany: vi.fn() },
+    task: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn() },
+    productDoc: { findMany: vi.fn() },
+    productDocRevision: { findUnique: vi.fn() },
+    $transaction: vi.fn(),
+  }
+  return { tx: transactionClient, root: prismaClient }
+})
+
+vi.mock('../src/prisma.js', () => ({ prisma: root }))
+
+import { registerCreatePbiTool } from '../src/tools/create-pbi.js'
+import { handleCreateStory } from '../src/tools/create-story.js'
+import { handleCreateTask } from '../src/tools/create-task.js'
+
+function p2034() {
+  return new Prisma.PrismaClientKnownRequestError('write conflict', {
+    code: 'P2034',
+    clientVersion: 'test',
+  })
+}
+
+function capturePbiHandler() {
+  let handler: ((input: Record<string, unknown>) => Promise<unknown>) | undefined
+  registerCreatePbiTool({
+    registerTool: vi.fn((_name, _definition, callback) => { handler = callback }),
+  } as never)
+  return handler!
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  root.pbi.findUnique.mockResolvedValue({ product_id: 'product-1' })
+  root.story.findUnique.mockResolvedValue({ product_id: 'product-1', sprint_id: null, assignee_id: null })
+  root.productDoc.findMany.mockResolvedValue([])
+  root.pbi.findMany.mockResolvedValue([])
+  root.pbi.findFirst.mockResolvedValue({ sort_order: 3 })
+  root.story.findMany.mockResolvedValue([])
+  root.story.findFirst.mockResolvedValue({ sort_order: 5 })
+  root.story.create.mockResolvedValue({ id: 'story-root', code: 'ST-001', sort_order: 6 })
+  root.task.findMany.mockResolvedValue([])
+  root.task.findFirst.mockResolvedValue({ sort_order: 7 })
+  root.task.create.mockResolvedValue({ id: 'task-root', code: 'T-1', sort_order: 8 })
+  tx.pbi.findMany.mockResolvedValue([])
+  tx.pbi.findFirst.mockResolvedValue({ sort_order: 3 })
+  tx.pbi.create.mockResolvedValue({ id: 'pbi-1', code: 'PBI-1', sort_order: 4 })
+  tx.story.findMany.mockResolvedValue([])
+  tx.story.findFirst.mockResolvedValue({ sort_order: 5 })
+  tx.story.create.mockResolvedValue({ id: 'story-1', code: 'ST-001', sort_order: 6 })
+  tx.task.findMany.mockResolvedValue([])
+  tx.task.findFirst.mockResolvedValue({ sort_order: 7 })
+  tx.task.create.mockResolvedValue({ id: 'task-1', code: 'T-1', sort_order: 8 })
+  root.$transaction.mockImplementation(async (callback) => callback(tx))
+})
+
+describe('create tools serialize parent-scoped append', () => {
+  it.each([
+    ['pbi', () => capturePbiHandler()({ product_id: 'product-1', title: 'PBI', priority: 2 }), tx.pbi, root.pbi],
+    ['story', () => handleCreateStory({ pbi_id: 'pbi-1', title: 'Story', priority: 2 }), tx.story, root.story],
+    ['task', () => handleCreateTask({ story_id: 'story-1', title: 'Task', priority: 2 }), tx.task, root.task],
+  ] as const)('%s reads the parent max and creates inside one Serializable transaction', async (_name, create, txModel, rootModel) => {
+    await create()
+
+    expect(root.$transaction).toHaveBeenCalledTimes(1)
+    expect(root.$transaction.mock.calls[0][1]).toEqual({
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    })
+    expect(txModel.findFirst).toHaveBeenCalledOnce()
+    expect(txModel.create).toHaveBeenCalledOnce()
+    expect(rootModel.findFirst).not.toHaveBeenCalled()
+    expect(rootModel.create).not.toHaveBeenCalled()
+  })
+
+  it('retries P2034 at most three times and reruns the complete transaction', async () => {
+    root.$transaction
+      .mockRejectedValueOnce(p2034())
+      .mockRejectedValueOnce(p2034())
+      .mockRejectedValueOnce(p2034())
+      .mockImplementationOnce(async (callback) => callback(tx))
+
+    await handleCreateTask({ story_id: 'story-1', title: 'Task', priority: 2 })
+
+    expect(root.$transaction).toHaveBeenCalledTimes(4)
+  })
+
+  it('does not retry errors other than P2034', async () => {
+    root.$transaction.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('unique', { code: 'P2002', clientVersion: 'test' }),
+    )
+
+    await handleCreateTask({ story_id: 'story-1', title: 'Task', priority: 2 })
+
+    expect(root.$transaction).toHaveBeenCalledTimes(1)
+  })
+})
