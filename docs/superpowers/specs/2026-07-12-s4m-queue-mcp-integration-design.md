@@ -57,12 +57,12 @@ Het NOTIFY-kanaal `agent_queue` verhuist automatisch mee (NOTIFY is per-database
 
 ## 5. Fase 2 — MCP-kernset (7 tools)
 
-Alle tools in de **shared**-groep (puur DB; de repo-autofill in `queue_push` is een best-effort extraatje dat alleen in stdio-mode actief is), bestand-per-tool in `src/tools/queue-*.ts`, geregistreerd in `src/register.ts`, handlers in `withToolErrors()` met `toolJson()`/`toolError()`.
+Alle queue-tools worden **stdio-only** geregistreerd — zelfde registratiepunt als de worktree-tools, maar om een andere reden: niet filesystem-binding maar **caller-identiteit**. Het stdio-proces draait op de host van de caller, draagt diens `S4M_SERVER`/`S4M_MODEL` en heeft een `ClaudeWorker`-presence-registratie; de centrale HTTP-server heeft geen van drieën en zou claims aan de verkeerde identiteit/presence koppelen. Queue via HTTP is buiten scope (§9). Bestand-per-tool in `src/tools/queue-*.ts`, geregistreerd in `src/register.ts`, handlers in `withToolErrors()` met `toolJson()`/`toolError()`.
 
 ### 5.1 `queue_push` `{to, type, body, meta?, cwd?, as?}`
 Insert + NOTIFY (na commit, best-effort). Retourneert `{message_id, to, type}` plus de hint *"haal het antwoord op met queue_wait_reply(message_id)"*.
 **Herkomst:** MCP-writes krijgen `source='mcp'` (CHECK uitgebreid in de fase-1-migratie, §4.2). `source` blijft transportherkomst betekenen; dashboardweergave/-filters op `source` worden in de testmatrix (§8) meegenomen.
-Gemak: bij `task`/`review_request` levert de agent alleen `cwd` + inhoudelijke velden (`objective`, `verification`, `response_format`); de tool leidt `repo` best-effort af via `git remote get-url origin` in die cwd (alleen stdio-mode; lukt het niet of draait de server in HTTP-mode, dan is expliciete `meta.repo` verplicht → `VALIDATION_ERROR` met die uitleg). Zelfde meta-validatie als CLI (`validateTaskMeta`).
+Gemak: bij `task`/`review_request` levert de agent alleen `cwd` + inhoudelijke velden (`objective`, `verification`, `response_format`); de tool leidt `repo` best-effort af via `git remote get-url origin` in die cwd (lukt het afleiden niet, dan is expliciete `meta.repo` verplicht → `VALIDATION_ERROR` met die uitleg). Zelfde meta-validatie als CLI (`validateTaskMeta`).
 
 ### 5.2 `queue_wait_reply` `{message_ids: string[], wait_seconds?: 0–600 (default 300)}` — de mis-routing-fix
 Claim-query met het correlatie-filter **ín de WHERE-clause**:
@@ -81,6 +81,8 @@ Een sessie kan per constructie alleen antwoorden op háár eigen requests claime
 
 **Delivery-semantiek — auto-ack + idempotente read.** De claim gaat in dezelfde transactie naar `done` (lezen = verwerkt; de rij met body blijft bestaan voor audit/`queue_status`). Die commit kan echter slagen terwijl het toolresultaat de client nooit bereikt (cancel of verbindingsverlies ná commit). Daarom retourneert `queue_wait_reply` óók replies op de opgegeven `message_ids` die al `done` zijn — de idempotente read als eerste stap. Netto: at-least-once-levering aan de aanvrager; dubbel lezen door dezelfde sessie is onschadelijk (zelfde body). Een cancel-rollback is voor deze tool niet nodig: claim+ack is één transactie — óf hij committe (en de volgende aanroep vindt de reply via de idempotente read), óf er is niets gebeurd.
 
+**Voortgangscontract bij meerdere `message_ids`.** De respons bevat **álle** op dat moment beschikbare replies voor de set in één keer — de al-`done` replies (idempotente read) plus alle nu claimbare pending replies (claim+ack per rij) — elk mét `in_reply_to`. Alleen als er niets beschikbaar is, wacht de tool (bounded) op de éérste reply. Een enkelvoudige "oudste eerst"-respons zou bij herhaalde aanroepen dezelfde done-reply eindeloos herhalen en een tweede reply in de set nooit bereiken. Caller-protocol (in de tool-description): verwijder beantwoorde request-ids uit volgende aanroepen — mechanisch mogelijk doordat elke reply zijn `in_reply_to` draagt.
+
 Twee gebruiksmodi (een MCP-tool-call is synchroon; er bestaat geen push naar het model):
 - **Blokkerend:** `wait_seconds: 300` — sessie wacht in de call (zoals `wait_for_job`).
 - **Niet-blokkerend:** `wait_seconds: 0` — direct claimen of direct timeout; sessie werkt door en checkt op natuurlijke momenten.
@@ -89,7 +91,7 @@ Buiten MCP om blijft een echt "seintje" mogelijk via `s4m-queue inbox --wait` al
 
 ### 5.3 `queue_next` `{wait_seconds?: 0–600 (default 0)}`
 Claim het volgende request (`task`/`info`/`review_request`) voor het eigen adres, FIFO, zelfde bounded-wait-mechaniek (zonder `in_reply_to`-filter — competing consumers is hier gewénst gedrag). Response = bericht + meta + **`claim_token`** + instructie ("voer uit binnen `meta.task.cwd`; ontbreekt vereiste context → `queue_fail`, niet raden").
-**Eigenaarscontract (transportbestendig):** de claim genereert een onvoorspelbaar token en schrijft `claimed_by = 'mcp:<instance_id>:<claim_token>'` — het bestaande text-veld, geen schema-uitbreiding (de CLI schrijft daar al `<server>:<pid>`). Het token bewijst eigenaarschap bij `queue_done`/`queue_fail`, onafhankelijk van transport: in HTTP-mode mag een vervolgcall op een ander proces landen, het token reist met de caller mee. De `<instance_id>`-component dient de presence-sweep (§6.1).
+**Eigenaarscontract (transportbestendig):** de claim genereert een onvoorspelbaar token en schrijft `claimed_by = 'mcp:<instance_id>:<claim_token>'` — het bestaande text-veld, geen schema-uitbreiding (de CLI schrijft daar al `<server>:<pid>`). Het token bewijst eigenaarschap bij `queue_done`/`queue_fail` over procesgrenzen heen: na een sessieherstart draait een níeuw stdio-proces (nieuwe `instance_id`), maar wie het token heeft mag afronden. De `<instance_id>`-component dient de presence-sweep (§6.1).
 
 ### 5.4 `queue_done` `{message_id, reply?, claim_token?}`
 Mét `reply`: transactioneel reply-rij (type volgens `REPLY_TYPE`-mapping, `in_reply_to` = request-id, from/to gespiegeld) + request → `done` + beide NOTIFYs — zoals CLI `doneWithReply`. Zónder `reply`: ack op een geclaimd request/bericht.
@@ -118,7 +120,7 @@ Conform de consensus uit pg-boss / Graphile Worker / River / Oban:
 ## 6. Fase 3 — Hardening
 
 1. **Automatische, presence-gebonden stale-sweep** (vervangt handmatig `list --stale` + `requeue`): in de bestaande MCP-heartbeat-loop een sweep op gerandomiseerd interval (8–10 min, Graphile-patroon), idempotent — drie hosts mogen tegelijk sweepen, geen leader-election. Tweetraps (Solid-Queue-patroon; mogelijk doordat `agent_message` en `claude_workers` na fase 1 in dezelfde DB staan):
-   - **MCP-claims** (herkenbaar aan de `mcp:<instance_id>:`-prefix in `claimed_by`): requeue al na een korte drempel (~5 min) wanneer de instance géén recente `ClaudeWorker`-heartbeat meer heeft — een crash leidt binnen minuten tot requeue in plaats van uren. Leeft de instance nog, dan geldt de reclaim-default (4 h) als vangnet voor levende processen met een gestrande sessie.
+   - **MCP-claims** (herkenbaar aan de `mcp:<instance_id>:`-prefix in `claimed_by`): requeue al na een korte drempel (~5 min) zodra de instance géén recente `ClaudeWorker`-heartbeat meer heeft — een crash leidt binnen minuten tot requeue in plaats van uren. **Zolang de instance leeft, beschermt presence de claim onbeperkt**: automatisch herstel vindt pas ná procesdood plaats. Presence kan een actieve taak namelijk niet onderscheiden van een gestrande sessie in hetzelfde levende proces, en een tijdgebonden requeue van een aantoonbaar levende worker is onveilig (dubbele uitvoering). Voor het zeldzame geval "levend proces, gestrande sessie" blijft handmatig ingrijpen beschikbaar: CLI `requeue <id>` (jp).
    - **CLI-claims** (`<server>:<pid>`, geen presence): alleen de reclaim-default van 4 h, zoals vandaag.
 2. **Dubbele-afrondings-bescherming — en eerlijk zijn over de grens.** Terminal-statusvalidatie garandeert alleen dat van twee racende afronders er precies één de status schrijft; het voorkomt géén dubbele *uitvoering* van bijwerkingen (commits, PR's, deploys) wanneer een request onterecht gerequeued werd terwijl de oorspronkelijke worker nog bezig was. Mitigaties, in volgorde: de presence-sweep (punt 1) maakt onterechte reclaims zeldzaam; `queue_done`/`queue_fail` valideren het claim-token (§5.4); en task-handlers horen idempotent te zijn waar mogelijk — vastgelegd als eis in de rules-file. Test: worker die langer dan het reclaim-window actief blijft terwijl een sweep draait (§8).
 3. **CLI-pariteit, minimaal:** CLI krijgt alleen `inbox --in-reply-to <id,...>` zodat ook CLI-gebruik correlatie-veilig kán. Verder blijft de CLI ongemoeid (jp's flow mag niet breken); cleanup-bins werken ongewijzigd.
@@ -134,7 +136,7 @@ Conform de consensus uit pg-boss / Graphile Worker / River / Oban:
 | Done/fail zonder geldig `claim_token` op een claimed bericht (incl. CLI-claims en andermans token) | `QUEUE_NOT_CLAIMER` |
 | Meta-validatie faalt | `VALIDATION_ERROR` (zod / `validateTaskMeta`) |
 | Timeout op wait | géén error: `{status:'timeout'}` |
-| MCP-cancel tijdens wait | `rollbackClaim`, bericht nooit zoek |
+| MCP-cancel tijdens wait | per tool: `queue_next` → `rollbackClaim` (claimed → pending); `queue_wait_reply` → geen rollback nodig, idempotente read vangt post-commit-verlies (§5.2) |
 | NOTIFY faalt | best-effort, nooit tool-falen (bestaande conventie) |
 
 Typed-error-vorm volgt de repo-conventie: string-prefix in `toolError('CODE: message')`, mapping in `withToolErrors`.
@@ -145,17 +147,19 @@ Typed-error-vorm volgt de repo-conventie: string-prefix in `toolError('CODE: mes
 - **Correlatie-race-integratietest** (de kern, deterministisch): twee gesimuleerde sessies pushen elk een request; replies arriveren in omgekeerde volgorde; élke `queue_wait_reply` krijgt aantoonbaar het antwoord op zijn éigen request. De legacy-consumer (CLI-semantiek zonder filter) wordt daarná apart getest met een eigen reply — een ongefilterde consumer concurreert per definitie met alle andere, dus de volgorde ligt in de test expliciet vast.
 - **Claim-atomiciteit:** parallelle `queue_wait_reply`-calls op overlappende `message_ids` — `FOR UPDATE SKIP LOCKED` garandeert exact één winnaar; idempotente read levert de verliezer daarna dezelfde reply.
 - **Delivery/cancel:** cancel vóór, tijdens en direct ná de claim-transactie van `queue_wait_reply` (idempotente read vangt post-commit-verlies) en `queue_next` (`rollbackClaim`).
+- **Idempotente-read-voortgang:** twee request-ids waarvan beide replies al `done` zijn → één `queue_wait_reply`-aanroep retourneert ze allebei (§5.2-voortgangscontract).
 - **Eigenaarscontract cross-process:** claim via `queue_next` op proces A, `queue_done` met token via proces B slaagt; zonder token of met verkeerd token → `QUEUE_NOT_CLAIMER`; CLI-claim afronden via MCP → `QUEUE_NOT_CLAIMER`.
 - **Archivering:** volledige rij met onderscheidende waarden per veld door de cleanup halen en veld-voor-veld vergelijken (bewaakt de expliciete-kolomlijsten-fix, §4.1).
 - **Sweep:** twee gelijktijdige sweeps requeuen samen precies één keer; worker die langer dan het reclaim-window actief blijft (levende presence) wordt níet gerequeued; dode instance wél binnen minuten.
 - **CLI-compatibiliteit:** de bestaande s4m-queue-testsuite draait tegen de scrum4me-test-DB als bewijs dat de migratie compatibel is.
-- **E2E-cutover-matrix** (draaiboek §4.4): CLI (`push/next/inbox/done/status`), MCP stdio, MCP HTTP, Messages-dashboard incl. SSE, cleanup-bin (`S4M_QUEUE_MAINTENANCE_URL`) en de drie host-configs — allemaal aantoonbaar tegen de scrum4me-DB, inclusief dashboardweergave van `source='mcp'`.
+- **E2E-cutover-matrix** (draaiboek §4.4): CLI (`push/next/inbox/done/status`), MCP stdio (queue-tools; plus verificatie dat de HTTP-entrypoint ze **niet** exposeert), Messages-dashboard incl. SSE, cleanup-bin (`S4M_QUEUE_MAINTENANCE_URL`) en de drie host-configs — allemaal aantoonbaar tegen de scrum4me-DB, inclusief dashboardweergave van `source='mcp'`.
 
 ## 9. Buiten scope
 
 - Sessie-scoped identiteiten / reply-adressen (request-handle gekozen; heroverwegen alleen als het handle-model in de praktijk tekortschiet).
 - MCP Tasks (experimenteel in spec 2025-11-25): het datamodel mapt er al bijna 1-op-1 op (pending/claimed/done/failed ≈ working/completed/failed/cancelled); overstap kan later zonder schemawijziging zodra clients het ondersteunen.
 - Streamable-HTTP-push (pg_notify → SSE) voor echte "bericht klaar"-signalen: overkill op deze schaal.
+- Queue-tools op de HTTP-entrypoint: vereist een geauthenticeerd caller-adres + caller-presence-contract (de centrale server kent de remote caller niet). Er is geen HTTP-consument — claude en codex draaien elk een eigen stdio-proces per host. Toevoegen zodra die consument er echt is.
 - Admin-tools als MCP (`requeue`, `cancel`, volledige `list`): blijft CLI.
 - Verwijderen van de `ops_dashboard`-legacy-tabellen: aparte opruimactie na een week stabiel draaien.
 
@@ -182,3 +186,12 @@ Typed-error-vorm volgt de repo-conventie: string-prefix in `toolError('CODE: mes
 | 5 | major | §5.2: auto-ack behouden mét idempotente read (variant b uit de review — minder API-oppervlak dan een losse ack-call); abort-signal expliciet, per tool gespecificeerd. |
 | 6 | major | §6.1–6.2: presence-gebonden tweetraps-sweep i.p.v. lease-extension (hergebruikt bestaande `ClaudeWorker`-heartbeat; agents kunnen mid-taak geen lease verlengen), eerlijke herformulering dubbele-afronding vs. dubbele-uitvoering + idempotentie-eis. |
 | 7 | minor | §8: E2E-cutover-matrix (incl. `S4M_QUEUE_MAINTENANCE_URL`) en deterministische correlatietest. |
+
+**Ronde 2 — codex (2026-07-12): NO-GO** op `2e2d423..73967ed` (ronde-1-blockers opgelost verklaard; reviewdocument: `docs/superpowers/reviews/2026-07-12-s4m-queue-mcp-integration-round-2-review.md`); 4 nieuwe findings, alle verwerkt:
+
+| # | Ernst | Verwerking |
+|---|---|---|
+| 1 | blocker | §5-intro + §9: queue-tools **stdio-only** (optie a — er is geen HTTP-consument; caller-identiteit/-presence bestaat alleen in het per-host stdio-proces). E2E-matrix verifieert dat HTTP ze niet exposeert. |
+| 2 | major | §6.1: tegenspraak geschrapt — presence beschermt levende instances onbeperkt, automatisch herstel pas na procesdood; "levend proces, gestrande sessie" blijft handmatige `requeue` (jp). |
+| 3 | major | §5.2: voortgangscontract — respons bevat álle beschikbare replies voor de set (elk met `in_reply_to`) + caller-protocol; test met twee al-done replies in §8. |
+| 4 | minor | §7: cancel-gedrag per tool uitgesplitst. |
