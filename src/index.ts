@@ -69,7 +69,7 @@ async function main() {
     hostname,
     pid: process.pid,
   })
-  registerShutdownHandlers({
+  const { shutdown } = registerShutdownHandlers({
     userId: auth.userId,
     tokenId: auth.tokenId,
     instanceId,
@@ -77,6 +77,10 @@ async function main() {
   })
 
   const transport = new StdioServerTransport()
+  // Canoniek SDK-signaal voor "de client is weg". De stdin-handlers in
+  // registerShutdownHandlers zijn het vangnet als de transport zelf niet meer
+  // aan onclose toekomt.
+  transport.onclose = () => void shutdown()
   await server.connect(transport)
 
   console.error(`scrum4me-mcp ${VERSION} running on stdio`)

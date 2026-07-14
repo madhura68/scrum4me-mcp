@@ -53,5 +53,10 @@ export function startHeartbeat(opts: {
     }
   }, opts.intervalMs ?? 10_000)
 
+  // Een lopende heartbeat mag op zichzelf geen reden zijn om te blijven leven.
+  // Zonder unref houdt deze interval de event-loop open, ook nadat de
+  // MCP-client verdwenen is — precies wat de wees-processen in stand hield.
+  timer.unref?.()
+
   return { stop: () => clearInterval(timer) }
 }
