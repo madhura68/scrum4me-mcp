@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { CODEX_MODELS } from '@shared/codex-config.js'
 import { buildCodexArgs } from '../../src/lib/codex-args.js'
 
 describe('buildCodexArgs', () => {
@@ -31,10 +32,10 @@ describe('buildCodexArgs', () => {
     }
   })
 
-  it('adds --model when model is set', () => {
-    const args = buildCodexArgs({ promptText: 'p', cwd: '/opt/agent', model: 'gpt-5.1-codex' })
+  it.each(CODEX_MODELS)('geeft model %s exact door via --model', (model) => {
+    const args = buildCodexArgs({ promptText: 'p', cwd: '/opt/agent', model })
     expect(args).toContain('--model')
-    expect(args[args.indexOf('--model') + 1]).toBe('gpt-5.1-codex')
+    expect(args[args.indexOf('--model') + 1]).toBe(model)
     expect(args[args.length - 1]).toBe('p')
   })
 
@@ -56,7 +57,7 @@ describe('buildCodexArgs', () => {
     const args = buildCodexArgs({
       promptText: 'DO IT',
       cwd: '/home/agent/wt/y',
-      model: 'gpt-5.1-codex',
+      model: 'gpt-5.6-terra',
       sandboxMode: 'workspace-write',
       thinkingBudget: 9000,
     })
@@ -70,7 +71,7 @@ describe('buildCodexArgs', () => {
       '--cd',
       '/home/agent/wt/y',
       '--model',
-      'gpt-5.1-codex',
+      'gpt-5.6-terra',
       '--sandbox',
       'workspace-write',
       '-c',

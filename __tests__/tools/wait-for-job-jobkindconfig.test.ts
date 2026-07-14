@@ -86,7 +86,7 @@ describe('getFullJobContext — live JobKindConfig-resolutie', () => {
     mockPrisma.jobKindConfig.findUnique.mockResolvedValue({
       kind: 'IDEA_GRILL',
       claude_model: 'claude-opus-4-8',
-      codex_model: 'gpt-5.1-codex',
+      codex_model: 'gpt-5.6-sol',
       thinking_budget: 9000,
       claude_permission_mode: 'default',
       codex_sandbox_mode: 'read-only',
@@ -98,7 +98,7 @@ describe('getFullJobContext — live JobKindConfig-resolutie', () => {
 
     const ctx = (await getFullJobContext('job-jkc-1', 'CODEX')) as any
     expect(ctx.config.runtime).toBe('CODEX')
-    expect(ctx.config.model).toBe('gpt-5.1-codex')
+    expect(ctx.config.model).toBe('gpt-5.6-sol')
     expect(ctx.config.sandbox_mode).toBe('read-only')
     expect(ctx.config).not.toHaveProperty('allowed_tools')
     expect(ctx.config.skills).toEqual(['skill-a'])
@@ -119,5 +119,31 @@ describe('getFullJobContext — live JobKindConfig-resolutie', () => {
 
     const ctx = (await getFullJobContext('job-jkc-1', 'CLAUDE')) as any
     expect(ctx.config.model).toBe('claude-sonnet-4-6')
+  })
+
+  it('CODEX zonder DB-rij resolveert claim-time naar GPT-5.5', async () => {
+    mockPrisma.jobKindConfig.findUnique.mockResolvedValue(null)
+
+    const ctx = (await getFullJobContext('job-jkc-1', 'CODEX')) as any
+    expect(ctx.config.runtime).toBe('CODEX')
+    expect(ctx.config.model).toBe('gpt-5.5')
+  })
+
+  it('CODEX met legacy DB-waarde resolveert claim-time naar GPT-5.5', async () => {
+    mockPrisma.jobKindConfig.findUnique.mockResolvedValue({
+      kind: 'IDEA_GRILL',
+      claude_model: null,
+      codex_model: 'o3',
+      thinking_budget: null,
+      claude_permission_mode: null,
+      codex_sandbox_mode: null,
+      allow_all_tools: false,
+      allowed_tools: [],
+      skills: [],
+      max_turns: null,
+    })
+
+    const ctx = (await getFullJobContext('job-jkc-1', 'CODEX')) as any
+    expect(ctx.config.model).toBe('gpt-5.5')
   })
 })
