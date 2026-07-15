@@ -96,14 +96,14 @@ Run `cleanup_my_worktrees` (no arguments) to scan `~/.scrum4me-agent-worktrees/`
 
 ## Worker presence
 
-Server-startup registers a `ClaudeWorker` record + starts a 10 s heartbeat; SIGTERM/SIGINT cleans it up. The Scrum4Me NavBar counts active workers via `last_seen_at < now() - 15s` — at 10 s interval one missed tick + jitter can flicker the indicator; bump that threshold in Scrum4Me to ≥ 25 s if needed.
+Server-startup registers a `ClaudeWorker` record + starts a 10 s heartbeat; shutdown fires on SIGTERM/SIGINT, on stdin EOF (`end`/`close`), or on `transport.onclose`, and cleans it up. Under the agent-runner Claude spawns the server via an `npx tsx …` wrapper chain, so the real node process is a grandchild that never receives SIGTERM/SIGINT — stdin EOF / `transport.onclose` is the exit signal a spawned stdio-MCP can actually rely on. The Scrum4Me NavBar counts active workers via `last_seen_at < now() - 15s` — at 10 s interval one missed tick + jitter can flicker the indicator; bump that threshold in Scrum4Me to ≥ 25 s if needed.
 
 | File | Purpose |
 |---|---|
 | `src/presence/worker.ts` | `registerWorker` (upsert + pg_notify worker_connected) + `unregisterWorker` |
-| `src/presence/heartbeat.ts` | `startHeartbeat` — 10 s interval, self-heals by re-registering when record disappears |
-| `src/presence/shutdown.ts` | `registerShutdownHandlers` — SIGTERM/SIGINT → stop heartbeat + unregister |
-| `src/index.ts` | Bootstrap: calls `getAuth` → `registerWorker` → `startHeartbeat` → `registerShutdownHandlers` |
+| `src/presence/heartbeat.ts` | `startHeartbeat` — 10 s interval (`unref`ed, so it never keeps the process alive on its own), self-heals by re-registering when record disappears |
+| `src/presence/shutdown.ts` | `registerShutdownHandlers` — SIGTERM/SIGINT + stdin `end`/`close` → stop heartbeat + unregister; returns `shutdown()` so the caller can also trigger it (e.g. from `transport.onclose`) |
+| `src/index.ts` | Bootstrap: calls `getAuth` → `registerWorker` → `startHeartbeat` → `registerShutdownHandlers`, and wires `transport.onclose` → `shutdown()` |
 
 ## Key source files
 
