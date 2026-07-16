@@ -26,7 +26,10 @@
 | Dashboard-config | `~/Development/scrum4me-workers/lib/queue/ops-db.ts` regel 19: `process.env.OPS_DATABASE_URL` (lokaal `.env`; niet in `.env.example`) |
 | Cleanup-bin prod | scrum4me-server systemd: `s4m-queue-cleanup.timer` (dagelijks 03:00) → `s4m-queue-cleanup.service`, `EnvironmentFile=/etc/s4m-queue/cleanup.env` (`S4M_QUEUE_MAINTENANCE_URL`), bin `/usr/bin/s4m-queue-cleanup` via `sudo npm i -g .` |
 | Host-env queue-CLI | mac: `~/.zshenv`; scrum4me-server: `~/.config/s4m-queue.env`; max2: equivalent (ter plekke verifiëren) |
-| Prod scrum4me-DB | Neon; `DIRECT_URL` in `~/Development/Scrum4Me/.env.local` (waarde nooit printen). **Let op:** `prisma.config.ts` pakt `DIRECT_URL || DATABASE_URL` — draai in Scrum4Me dus nooit `prisma migrate dev` "zomaar lokaal" |
+| Prod scrum4me-DB | **`100.118.195.120:5432/scrum4me`** — de zelf-gehoste Postgres op `scrum4me-srv` (Tailscale), **niet Neon**. Vastgesteld 2026-07-16: `DATABASE_URL` (regel 8) en `DIRECT_URL` (regel 9) in `~/Development/Scrum4Me/.env.local` wijzen daarheen; `NEON_DATABASE_URL`/`NEON_URL` (regel 11-12) staan er wél maar worden door Prisma niet gebruikt (`prisma.config.ts` pakt `DIRECT_URL \|\| DATABASE_URL`). Een eerdere planversie gokte "Neon" op basis van die regels — fout. Waarden nooit printen; draai nooit `prisma migrate dev` "zomaar lokaal" |
+| Queue-DB (bron) | **`100.118.195.120:5432/ops_dashboard`** — **zelfde Postgres-server** als de doel-DB. De cutover is dus cross-**database**, niet cross-host: `pg_dump`/`psql` lopen lokaal op één server. Stop-the-world blijft nodig (er is geen cross-DB-transactie), maar het window is korter |
+| "Test"-DB | **Is de live queue-DB.** `S4M_TEST_DATABASE_URL` = `…/ops_dashboard`, identiek aan `S4M_QUEUE_URL`. Er is géén aparte test-DB. De suite isoleert op **schema**-niveau: per run een eigen `s4m_test_<hex>`, daarna gedropt. Werkt, maar weet wat je doet: een test die buiten zijn schema schrijft, raakt productie |
+| Hostnamen | Tailscale-host heet **`scrum4me-srv`** (100.118.195.120), niet `scrum4me-server` — dat laatste is de `S4M_SERVER`-waarde in de queue. `ssh scrum4me-server` resolvet niet |
 
 ---
 
@@ -534,8 +537,8 @@ TDD-noot: een Prisma-schema heeft geen unit-test; de "test" is hier `prisma vali
 
 - [ ] **Cleanup-fix deployen op scrum4me-server** (vóór de cutover, spec §4.1; de globale bin wordt door de systemd-service gebruikt). Pad van de checkout op de server ter plekke verifiëren (open vraag 7):
   ```bash
-  ssh scrum4me-server 'cd ~/Development/s4m-queue && git pull && npm ci && npm run build && sudo npm i -g .'
-  ssh scrum4me-server "grep -c 'in_reply_to, error, claimed_by' \$(readlink -f /usr/bin/s4m-queue-cleanup)"
+  ssh scrum4me-srv 'cd ~/Development/s4m-queue && git pull && npm ci && npm run build && sudo npm i -g .'
+  ssh scrum4me-srv "grep -c 'in_reply_to, error, claimed_by' \$(readlink -f /usr/bin/s4m-queue-cleanup)"
   ```
   Verwacht: laatste commando print `2` (kolomlijst staat in zowel INSERT als SELECT van de gebouwde bin).
 
@@ -566,10 +569,10 @@ TDD-noot: een Prisma-schema heeft geen unit-test; de "test" is hier `prisma vali
 
 - [ ] **Writers stoppen** (checken dat niets pending/claimed staat stopt geen nieuwe push — de bronnen zelf uitzetten):
   ```bash
-  ssh scrum4me-server 'sudo systemctl stop s4m-queue-cleanup.timer'
+  ssh scrum4me-srv 'sudo systemctl stop s4m-queue-cleanup.timer'
   # Messages-dashboard: stop de scrum4me-workers-service op scrum4me-server
   # (exacte unit-/procesnaam: open vraag 3), bijv.:
-  ssh scrum4me-server 'sudo systemctl stop <scrum4me-workers-unit>'
+  ssh scrum4me-srv 'sudo systemctl stop <scrum4me-workers-unit>'
   ```
   Daarna wachten tot er geen `claimed`-rijen meer zijn (een worker die mid-taak is zou na de cutover zijn `done` op de oude DB schrijven):
   ```bash
@@ -581,7 +584,7 @@ TDD-noot: een Prisma-schema heeft geen unit-test; de "test" is hier `prisma vali
   ```bash
   mkdir -p ~/s4m-cutover && chmod 700 ~/s4m-cutover
   grep 'S4M_QUEUE_URL' ~/.zshenv > ~/s4m-cutover/old-env-mac.txt
-  ssh scrum4me-server 'grep S4M_QUEUE_URL ~/.config/s4m-queue.env; sudo grep S4M_QUEUE_MAINTENANCE_URL /etc/s4m-queue/cleanup.env' > ~/s4m-cutover/old-env-server.txt
+  ssh scrum4me-srv 'grep S4M_QUEUE_URL ~/.config/s4m-queue.env; sudo grep S4M_QUEUE_MAINTENANCE_URL /etc/s4m-queue/cleanup.env' > ~/s4m-cutover/old-env-server.txt
   ssh max2 'grep -H S4M_QUEUE_URL ~/.zshenv ~/.config/s4m-queue.env 2>/dev/null' > ~/s4m-cutover/old-env-max2.txt
   chmod 600 ~/s4m-cutover/old-env-*.txt
   ```
@@ -683,8 +686,8 @@ TDD-noot: een Prisma-schema heeft geen unit-test; de "test" is hier `prisma vali
 
 - [ ] **Consumers herstarten** (pas ná geslaagde canary):
   ```bash
-  ssh scrum4me-server 'sudo systemctl start <scrum4me-workers-unit>'
-  ssh scrum4me-server 'sudo systemctl start s4m-queue-cleanup.timer && systemctl list-timers s4m-queue-cleanup.timer'
+  ssh scrum4me-srv 'sudo systemctl start <scrum4me-workers-unit>'
+  ssh scrum4me-srv 'sudo systemctl start s4m-queue-cleanup.timer && systemctl list-timers s4m-queue-cleanup.timer'
   ```
   Verwacht: timer staat weer gepland (volgende run 03:00). JP geeft de agents het sein dat de queue weer open is. Log de afronding + artefact-locatie (`~/s4m-cutover/`) in het cutover-doc van Task 6.
 
