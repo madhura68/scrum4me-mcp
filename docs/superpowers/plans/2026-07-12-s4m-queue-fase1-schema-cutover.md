@@ -209,6 +209,13 @@
    * fysieke kolomvolgorde afhangen (fase 1 s4m-queue-in-scrum4me-migratie).
   ```
 
+- [ ] **Drift-guard toevoegen** (toegevoegd na de kwaliteitsreview van deze taak — empirisch aangetoond gat). Expliciete kolomlijsten sluiten het *reorder*-gat maar openen een *toevoeg*-gat: krijgt een tabel er later een kolom bij zonder dat `cleanup.ts` wordt bijgewerkt, dan archiveert de cleanup die kolom stil niet en verwijdert daarna de bronrij — permanent verlies, zonder error of falende test. Uitgerekend de oude `SELECT *` deed dát geval goed, en de trigger (Prisma neemt het schema over, §4.2) is precies wat dit plan in gang zet. Daarom:
+  - Exporteer de kolomlijst als één const uit `src/cleanup.ts` en bouw beide clausules ermee (kolomnamen zijn hardcoded constanten, geen input — interpolatie is hier veilig). Dat haalt tegelijk de drievoudige duplicatie weg (INSERT-lijst, SELECT-lijst, `COLUMNS` in de test).
+  - Voeg één test toe die die const set-gewijs vergelijkt met `information_schema.columns` van **beide** tabellen en faalt bij een verschil in beide richtingen. Volgorde negeren — dat is juist het punt van de fix.
+  - Verifieer dat die test écht rood wordt: voeg tijdelijk een kolom aan beide tabellen toe zonder de const bij te werken.
+
+  Zo wordt een toekomstige `ADD COLUMN` een falende test in plaats van stil dataverlies. Relevant voor Task 3: de migratie daar draait de s4m-queue-suite tegen de scrum4me-test-DB, dus de drift-guard vuurt daar automatisch.
+
 - [ ] **Groen draaien + volledige suite**
   ```bash
   cd /Users/janpetervisser/Development/s4m-queue && npm test && npm run typecheck && npm run build
