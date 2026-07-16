@@ -426,8 +426,12 @@ TDD-noot: een Prisma-schema heeft geen unit-test; de "test" is hier `prisma vali
   CREATE INDEX agent_message_in_reply_to_idx
     ON "agent_message" (in_reply_to);
 
-  -- Archief: kolommen identiek aan agent_message, bewust zonder FK,
-  -- reply_link_matches_type en claim-index (zie 002_archive.sql).
+  -- Archief: kolommen identiek aan agent_message, maar bewust ZONDER FK,
+  -- zonder indexen en met NUL CHECK-constraints — dus ook geen type/source/
+  -- status-CHECK (zie 002_archive.sql; de header daar noemt alleen
+  -- reply_link_matches_type, wat te onprecies is). Neem hier dus géén CHECKs
+  -- over uit agent_message: dat zou van 002_archive.sql afwijken en de
+  -- constraints-diff in de equivalentiestap hieronder laten falen.
   CREATE TABLE "agent_message_archive" (
     id           uuid PRIMARY KEY,
     type         text NOT NULL,
