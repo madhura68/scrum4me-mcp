@@ -42,7 +42,8 @@ Het NOTIFY-kanaal `agent_queue` verhuist automatisch mee (NOTIFY is per-database
 ## 4. Fase 1 — Schema & data-migratie
 
 1. **Voorbereiding in s4m-queue (vóór de cutover):** `cleanup.ts` archiveert met `INSERT INTO agent_message_archive SELECT * FROM agent_message` en hangt daarmee aan identieke *fysieke kolomvolgorde* van beide tabellen. Dit wordt eerst omgezet naar expliciete kolomlijsten aan beide kanten, met een integratietest die een volledige rij met onderscheidende waarden per veld archiveert en veld-voor-veld vergelijkt.
-2. **Prisma-modellen** `AgentMessage` / `AgentMessageArchive` in scrum4me-shared met `@@map("agent_message")` / `@@map("agent_message_archive")` en `@map` per kolom: tabel- en kolomnamen identiek aan `s4m-queue/migrations/001_init.sql` + `002_archive.sql`, met **één bewuste afwijking**: de `source`-CHECK wordt uitgebreid met `'mcp'` (zie §5.1) — bestaande writers (`cli`, `dashboard`) blijven geldig. Check-constraints (`reply_link_matches_type`, type/status-CHECKs) en `agent_message_claim_idx (to_server, to_model, status, created_at)` gaan mee in de SQL-migratie.
+2. **Prisma-modellen** `AgentMessage` / `AgentMessageArchive` in scrum4me-shared met `@@map("agent_message")` / `@@map("agent_message_archive")`: tabel- en kolomnamen identiek aan `s4m-queue/migrations/001_init.sql` + `002_archive.sql`, met **één bewuste afwijking**: de `source`-CHECK wordt uitgebreid met `'mcp'` (zie §5.1) — bestaande writers (`cli`, `dashboard`) blijven geldig. Check-constraints (`reply_link_matches_type`, type/status-CHECKs) en `agent_message_claim_idx (to_server, to_model, status, created_at)` gaan mee in de SQL-migratie.
+   `@map` per kolom is **niet** nodig: snake_case is de huisstijl van dit schema, dus veldnaam == kolomnaam en 34 `@map`-attributen zouden no-ops zijn. Wél load-bearing en dus niet "op te ruimen": `map:` op `@@index` (zonder die pin genereert Prisma `agent_message_to_server_to_model_status_created_at_idx`), `onUpdate: NoAction` op de self-relation (Prisma's default is `Cascade`, de bron-FK heeft `NO ACTION`), en het relatiepaar `replied_to`/`replies` zelf — dat bestaat uitsluitend om de FK te emitten en niets consumeert het; weghalen laat `prisma validate` groen en verwijdert de FK stil. Een guard-test in scrum4me-shared pint deze drie vast.
 3. **Nieuwe index** op `in_reply_to` — nodig voor de reply-claim-filter (fase 2); maakt ook het bestaande `status <id>` sneller.
 4. **Data-cutover** — expliciet stop-the-world draaiboek (de bron- en doeltabel staan in verschillende databases; er bestaat géén atomaire cross-DB-transactie, dus writers moeten aantoonbaar stil liggen — alleen checken dat niets pending/claimed staat, stopt geen nieuwe `push`, dashboardmutatie of cleanup-run):
    1. Stop álle writers: agents pauzeren queue-gebruik, Messages-dashboard uit of read-only, cleanup-/scheduled-jobs gepauzeerd.
@@ -61,7 +62,7 @@ Alle queue-tools worden **stdio-only** geregistreerd — zelfde registratiepunt 
 
 ### 5.1 `queue_push` `{to, type, body, meta?, cwd?, as?}`
 Insert + NOTIFY (na commit, best-effort). Retourneert `{message_id, to, type}` plus de hint *"haal het antwoord op met queue_wait_reply(message_id)"*.
-**Herkomst:** MCP-writes krijgen `source='mcp'` (CHECK uitgebreid in de fase-1-migratie, §4.2). `source` blijft transportherkomst betekenen; dashboardweergave/-filters op `source` worden in de testmatrix (§8) meegenomen.
+**Herkomst:** MCP-writes krijgen `source='mcp'` (CHECK uitgebreid in de fase-1-migratie, §4 punt 2). `source` blijft transportherkomst betekenen; dashboardweergave/-filters op `source` worden in de testmatrix (§8) meegenomen.
 Gemak: bij `task`/`review_request` levert de agent alleen `cwd` + inhoudelijke velden (`objective`, `verification`, `response_format`); de tool leidt `repo` best-effort af via `git remote get-url origin` in die cwd (lukt het afleiden niet, dan is expliciete `meta.repo` verplicht → `VALIDATION_ERROR` met die uitleg). Zelfde meta-validatie als CLI (`validateTaskMeta`).
 
 ### 5.2 `queue_wait_reply` `{message_ids: string[], wait_seconds?: 0–600 (default 300)}` — de mis-routing-fix
@@ -91,7 +92,7 @@ Buiten MCP om blijft een echt "seintje" mogelijk via `s4m-queue inbox --wait` al
 
 ### 5.3 `queue_next` `{wait_seconds?: 0–600 (default 0)}`
 Claim het volgende request (`task`/`info`/`review_request`) voor het eigen adres, FIFO, zelfde bounded-wait-mechaniek (zonder `in_reply_to`-filter — competing consumers is hier gewénst gedrag). Response = bericht + meta + **`claim_token`** + instructie ("voer uit binnen `meta.task.cwd`; ontbreekt vereiste context → `queue_fail`, niet raden").
-**Eigenaarscontract (per proces-incarnatie):** de claim genereert een onvoorspelbaar token en schrijft `claimed_by = 'mcp:<instance_id>:<claim_token>'` — het bestaande text-veld, geen schema-uitbreiding (de CLI schrijft daar al `<server>:<pid>`). Het token bewijst eigenaarschap bij `queue_done`/`queue_fail`. De claim is gebonden aan de **proces-incarnatie** die hem uitgaf (§6.1): sterft of herstart het MCP-proces, dan verloopt de lease en requeue't de sweep de claim — er is bewust géén cross-process-voortzetting. (Een resume-contract zou van de agent vragen een MCP-herstart te detecteren, en dat kan hij niet; een verplichting die de client niet kan nakomen is geen contract.) Afronden kan **uitsluitend vanuit het proces dat de claim uitgaf**: `queue_done`/`queue_fail` vereisen dat `(message_id, claim_token)` in het lokale lease-register van dít proces staat — een ander of nieuw proces met hetzelfde token wordt óók binnen het lease-venster geweigerd (`QUEUE_CLAIM_EXPIRED`), niet pas na de sweep. Een done/fail mét token op een inmiddels gerequeued bericht krijgt eveneens `QUEUE_CLAIM_EXPIRED`, op een door een ander herclaimd bericht `QUEUE_NOT_CLAIMER`; in alle gevallen gooit de sessie lokaal werk weg en begint desgewenst opnieuw via `queue_next` — het bestaande `JOB_CANCELLED`-patroon uit deze repo. De `<instance_id>`-component in `claimed_by` is puur audit; de sweep kijkt er niet naar.
+**Eigenaarscontract (per proces-incarnatie):** de claim genereert een onvoorspelbaar token en schrijft `claimed_by = 'mcp:<instance_id>:<claim_token>'` — het bestaande text-veld, geen schema-uitbreiding (de CLI schrijft daar al `<server>:<pid>`). Het token bewijst eigenaarschap bij `queue_done`/`queue_fail`. De claim is gebonden aan de **proces-incarnatie** die hem uitgaf (§6 punt 1): sterft of herstart het MCP-proces, dan verloopt de lease en requeue't de sweep de claim — er is bewust géén cross-process-voortzetting. (Een resume-contract zou van de agent vragen een MCP-herstart te detecteren, en dat kan hij niet; een verplichting die de client niet kan nakomen is geen contract.) Afronden kan **uitsluitend vanuit het proces dat de claim uitgaf**: `queue_done`/`queue_fail` vereisen dat `(message_id, claim_token)` in het lokale lease-register van dít proces staat — een ander of nieuw proces met hetzelfde token wordt óók binnen het lease-venster geweigerd (`QUEUE_CLAIM_EXPIRED`), niet pas na de sweep. Een done/fail mét token op een inmiddels gerequeued bericht krijgt eveneens `QUEUE_CLAIM_EXPIRED`, op een door een ander herclaimd bericht `QUEUE_NOT_CLAIMER`; in alle gevallen gooit de sessie lokaal werk weg en begint desgewenst opnieuw via `queue_next` — het bestaande `JOB_CANCELLED`-patroon uit deze repo. De `<instance_id>`-component in `claimed_by` is puur audit; de sweep kijkt er niet naar.
 
 ### 5.4 `queue_done` `{message_id, reply?, claim_token?}`
 Mét `reply`: transactioneel reply-rij (type volgens `REPLY_TYPE`-mapping, `in_reply_to` = request-id, from/to gespiegeld) + request → `done` + beide NOTIFYs — zoals CLI `doneWithReply`. Zónder `reply`: ack op een geclaimd request/bericht.
@@ -152,12 +153,12 @@ Typed-error-vorm volgt de repo-conventie: string-prefix in `toolError('CODE: mes
 - **Delivery/cancel:** cancel vóór, tijdens en direct ná de claim-transactie van `queue_wait_reply` (idempotente read vangt post-commit-verlies) en `queue_next` (`rollbackClaim`).
 - **Idempotente-read-voortgang:** twee request-ids waarvan beide replies al `done` zijn → één `queue_wait_reply`-aanroep retourneert ze allebei (§5.2-voortgangscontract).
 - **Eigenaarscontract per proces-incarnatie** (testnamen volgen de precedentiematrix uit §5.4): A rondt af met zijn lokaal geregistreerde token → slaagt; proces B met A's token wordt **vóór én ná** lease-expiry afgewezen (`QUEUE_CLAIM_EXPIRED`, stap a); entry aanwezig maar verkeerd/ontbrekend token → `QUEUE_NOT_CLAIMER` (stap b); CLI-claims via MCP → `QUEUE_NOT_CLAIMER` (stap c).
-- **Lease-pruning:** handmatige CLI-`requeue` gevolgd door een refresh-tick → de registry-entry wordt gesnoeid en er wordt niets meer ververst (§6.1).
-- **Archivering:** volledige rij met onderscheidende waarden per veld door de cleanup halen en veld-voor-veld vergelijken (bewaakt de expliciete-kolomlijsten-fix, §4.1).
+- **Lease-pruning:** handmatige CLI-`requeue` gevolgd door een refresh-tick → de registry-entry wordt gesnoeid en er wordt niets meer ververst (§6 punt 1).
+- **Archivering:** volledige rij met onderscheidende waarden per veld door de cleanup halen en veld-voor-veld vergelijken (bewaakt de expliciete-kolomlijsten-fix, §4 punt 1).
 - **Sweep/lease:** twee gelijktijdige sweeps requeuen samen precies één keer; een levend proces (lease ververst door) wordt nóóit gerequeued, ook niet voorbij het reclaim-window; en het incarnatie-scenario uit reviewronde 3: proces A claimt en sterft, proces B start direct met dezelfde stabiele instance-config → A's claim wordt ondanks B's aanwezigheid binnen de drempel gerequeued.
 - **Verlopen-claim-protocol (reviewronde 4):** A claimt, MCP-proces herstart, lease verloopt en de sweep requeue't → A's `queue_done` mét token krijgt `QUEUE_CLAIM_EXPIRED` (pending) of `QUEUE_NOT_CLAIMER` (herclaimd door ander) — geen stille zombie-afronding via de FIFO-bypass; tokenloze bypass-reply op pending blijft wél werken.
 - **CLI-compatibiliteit:** de bestaande s4m-queue-testsuite draait tegen de scrum4me-test-DB als bewijs dat de migratie compatibel is.
-- **E2E-cutover-matrix** (draaiboek §4.4): CLI (`push/next/inbox/done/status`), MCP stdio (queue-tools; plus verificatie dat de HTTP-entrypoint ze **niet** exposeert), Messages-dashboard incl. SSE, cleanup-bin (`S4M_QUEUE_MAINTENANCE_URL`) en de drie host-configs — allemaal aantoonbaar tegen de scrum4me-DB, inclusief dashboardweergave van `source='mcp'`.
+- **E2E-cutover-matrix** (draaiboek §4 punt 4): CLI (`push/next/inbox/done/status`), MCP stdio (queue-tools; plus verificatie dat de HTTP-entrypoint ze **niet** exposeert), Messages-dashboard incl. SSE, cleanup-bin (`S4M_QUEUE_MAINTENANCE_URL`) en de drie host-configs — allemaal aantoonbaar tegen de scrum4me-DB, inclusief dashboardweergave van `source='mcp'`.
 
 ## 9. Buiten scope
 
@@ -184,12 +185,12 @@ Typed-error-vorm volgt de repo-conventie: string-prefix in `toolError('CODE: mes
 
 | # | Ernst | Verwerking |
 |---|---|---|
-| 1 | blocker | §4.4: stop-the-world draaiboek met watermark, validatie, canary en expliciet rollback-window (verliesvrij tot writers herstarten; daarna roll-forward). Geen rename bij cutover. |
+| 1 | blocker | §4 punt 4: stop-the-world draaiboek met watermark, validatie, canary en expliciet rollback-window (verliesvrij tot writers herstarten; daarna roll-forward). Geen rename bij cutover. |
 | 2 | blocker | §5.3–5.5: `claim_token` in `claimed_by` (`mcp:<instance_id>:<token>`, geen schema-uitbreiding), vereist bij done/fail; cross-tool contract MCP↔CLI vastgelegd. |
-| 3 | major | §4.1: cleanup eerst naar expliciete kolomlijsten + archiveer-integratietest; ordinal-position-validatie in het draaiboek. |
+| 3 | major | §4 punt 1: cleanup eerst naar expliciete kolomlijsten + archiveer-integratietest; ordinal-position-validatie in het draaiboek. |
 | 4 | major | §5.1: beslissing `source='mcp'`, CHECK bewust uitgebreid in de fase-1-migratie; dashboard-reads in de testmatrix. |
 | 5 | major | §5.2: auto-ack behouden mét idempotente read (variant b uit de review — minder API-oppervlak dan een losse ack-call); abort-signal expliciet, per tool gespecificeerd. |
-| 6 | major | §6.1–6.2: presence-gebonden tweetraps-sweep i.p.v. lease-extension (hergebruikt bestaande `ClaudeWorker`-heartbeat; agents kunnen mid-taak geen lease verlengen), eerlijke herformulering dubbele-afronding vs. dubbele-uitvoering + idempotentie-eis. |
+| 6 | major | §6 punt 1–2: presence-gebonden tweetraps-sweep i.p.v. lease-extension (hergebruikt bestaande `ClaudeWorker`-heartbeat; agents kunnen mid-taak geen lease verlengen), eerlijke herformulering dubbele-afronding vs. dubbele-uitvoering + idempotentie-eis. |
 | 7 | minor | §8: E2E-cutover-matrix (incl. `S4M_QUEUE_MAINTENANCE_URL`) en deterministische correlatietest. |
 
 **Ronde 2 — codex (2026-07-12): NO-GO** op `2e2d423..73967ed` (ronde-1-blockers opgelost verklaard; reviewdocument: `docs/superpowers/reviews/2026-07-12-s4m-queue-mcp-integration-round-2-review.md`); 4 nieuwe findings, alle verwerkt:
@@ -197,7 +198,7 @@ Typed-error-vorm volgt de repo-conventie: string-prefix in `toolError('CODE: mes
 | # | Ernst | Verwerking |
 |---|---|---|
 | 1 | blocker | §5-intro + §9: queue-tools **stdio-only** (optie a — er is geen HTTP-consument; caller-identiteit/-presence bestaat alleen in het per-host stdio-proces). E2E-matrix verifieert dat HTTP ze niet exposeert. |
-| 2 | major | §6.1: tegenspraak geschrapt — presence beschermt levende instances onbeperkt, automatisch herstel pas na procesdood; "levend proces, gestrande sessie" blijft handmatige `requeue` (jp). |
+| 2 | major | §6 punt 1: tegenspraak geschrapt — presence beschermt levende instances onbeperkt, automatisch herstel pas na procesdood; "levend proces, gestrande sessie" blijft handmatige `requeue` (jp). |
 | 3 | major | §5.2: voortgangscontract — respons bevat álle beschikbare replies voor de set (elk met `in_reply_to`) + caller-protocol; test met twee al-done replies in §8. |
 | 4 | minor | §7: cancel-gedrag per tool uitgesplitst. |
 
@@ -205,13 +206,13 @@ Typed-error-vorm volgt de repo-conventie: string-prefix in `toolError('CODE: mes
 
 | # | Ernst | Verwerking |
 |---|---|---|
-| 1 | blocker | §5.3 + §6.1: `instance_id` is bewust stabiel over herstarts in worker-/containerconfigs, dus presence-op-instance kan een herstart proces de claim van zijn dode voorganger laten beschermen. Opgelost met de **proces-gebonden claim-lease** (codex' ronde-2-alternatief): in-memory tokenbezit + `claimed_at`-verversing op de bestaande 10 s-heartbeat — een herstart proces ververst per definitie niets van zijn voorganger; geen `ClaudeWorker`-join, geen incarnatie-id nodig, geen schemawijziging. `instance_id` in `claimed_by` is nu puur audit. Incarnatie-integratietest toegevoegd (§8). |
+| 1 | blocker | §5.3 + §6 punt 1: `instance_id` is bewust stabiel over herstarts in worker-/containerconfigs, dus presence-op-instance kan een herstart proces de claim van zijn dode voorganger laten beschermen. Opgelost met de **proces-gebonden claim-lease** (codex' ronde-2-alternatief): in-memory tokenbezit + `claimed_at`-verversing op de bestaande 10 s-heartbeat — een herstart proces ververst per definitie niets van zijn voorganger; geen `ClaudeWorker`-join, geen incarnatie-id nodig, geen schemawijziging. `instance_id` in `claimed_by` is nu puur audit. Incarnatie-integratietest toegevoegd (§8). |
 
 **Ronde 4 — codex (2026-07-12): NO-GO** op `764f0d7..1de2929` (ronde-3-blocker opgelost voor niet-hervatte claims; reviewdocument: `docs/superpowers/reviews/2026-07-12-s4m-queue-mcp-integration-round-4-review.md`); 1 finding, verwerkt:
 
 | # | Ernst | Verwerking |
 |---|---|---|
-| 1 | blocker | §5.3 beloofde cross-process-afronding met token, maar de in-memory lease (§6.1) kan een hervatte claim niet beschermen — tegenspraak. Opgelost met codex' optie (b): **cross-process-voortzetting geschrapt** — claim en token zijn per proces-incarnatie; de agent kan een MCP-herstart immers niet detecteren, dus een resume-verplichting (optie a) is een contract dat de client niet kan nakomen. Zombie-afronding expliciet gemaakt: done/fail mét token op gerequeued bericht → nieuw `QUEUE_CLAIM_EXPIRED` (§5.4, §7; de tokenloze FIFO-bypass blijft); herstelprotocol in de rules-file (§6.4); verlopen-claim-test in §8. |
+| 1 | blocker | §5.3 beloofde cross-process-afronding met token, maar de in-memory lease (§6 punt 1) kan een hervatte claim niet beschermen — tegenspraak. Opgelost met codex' optie (b): **cross-process-voortzetting geschrapt** — claim en token zijn per proces-incarnatie; de agent kan een MCP-herstart immers niet detecteren, dus een resume-verplichting (optie a) is een contract dat de client niet kan nakomen. Zombie-afronding expliciet gemaakt: done/fail mét token op gerequeued bericht → nieuw `QUEUE_CLAIM_EXPIRED` (§5.4, §7; de tokenloze FIFO-bypass blijft); herstelprotocol in de rules-file (§6 punt 4); verlopen-claim-test in §8. |
 
 **Ronde 5 — codex (2026-07-12): NO-GO** op `1de2929..4366d43` (reviewdocument: `docs/superpowers/reviews/2026-07-12-s4m-queue-mcp-integration-round-5-review.md`); 1 finding, verwerkt:
 
@@ -224,4 +225,4 @@ Typed-error-vorm volgt de repo-conventie: string-prefix in `toolError('CODE: mes
 | # | Ernst | Verwerking |
 |---|---|---|
 | 1 | minor | §5.4 + §8: foutprecedentie exact vastgelegd — register als map `message_id → claim_token`; geen entry → `QUEUE_CLAIM_EXPIRED`, entry + token-mismatch → `QUEUE_NOT_CLAIMER`, daarna atomische DB-check met strikte `claimed_by`-gelijkheid; testnamen volgen de matrix. |
-| 2 | minor | §6.1 + §8: lease-pruning — refresh updatet alleen exact matchende `status='claimed' AND claimed_by=<verwacht>`-rijen (geen `LIKE`); entries zonder geraakte rij worden direct gesnoeid; test voor handmatige requeue + refresh-tick. |
+| 2 | minor | §6 punt 1 + §8: lease-pruning — refresh updatet alleen exact matchende `status='claimed' AND claimed_by=<verwacht>`-rijen (geen `LIKE`); entries zonder geraakte rij worden direct gesnoeid; test voor handmatige requeue + refresh-tick. |
