@@ -503,11 +503,13 @@ TDD-noot: een Prisma-schema heeft geen unit-test; de "test" is hier `prisma vali
   psql "$S4M_TEST_DATABASE_URL" -c "DROP SCHEMA s4m_mig_base CASCADE; DROP SCHEMA s4m_mig_new CASCADE"
   ```
 
-- [ ] **CLI-compatibiliteitsbewijs (spec §8):** de bestaande s4m-queue-testsuite tegen de scrum4me-test-DB draaien — zet `S4M_TEST_DATABASE_URL` voor deze ene run op de scrum4me-test-DB-URL (zie open vraag 2; de suite maakt eigen wegwerp-schema's en raakt niets anders):
+- [ ] **CLI-compatibiliteitsbewijs (spec §8):** de bestaande s4m-queue-testsuite draaien tegen de Postgres uit `S4M_TEST_DATABASE_URL` (`s4m-queue/.env`) — **besloten door JP op 2026-07-16**: geen aparte scrum4me-test-DB. De suite maakt per run eigen wegwerp-schema's (`s4m_test_<hex>`) en raakt niets anders:
   ```bash
-  cd /Users/janpetervisser/Development/s4m-queue && S4M_TEST_DATABASE_URL="$SCRUM4ME_TEST_DB_URL_UIT_OPEN_VRAAG_2" npm test
+  cd /Users/janpetervisser/Development/s4m-queue && npm test
   ```
-  Verwacht: volledige suite groen (bewijst o.a. `gen_random_uuid()`, LISTEN/NOTIFY en de claim-semantiek op die Postgres).
+  Verwacht: volledige suite groen (bewijst `gen_random_uuid()`, LISTEN/NOTIFY, de claim-semantiek en — sinds Task 1 — de drift-guard tegen `information_schema`).
+
+  **Grens van dit bewijs, expliciet:** dit toont aan dat de CLI-semantiek werkt op een Postgres met deze DDL, niet dat het werkt op de échte scrum4me-Postgres (versie/extensies/config kunnen afwijken). Die laatste stap is de canary-roundtrip in Task 5, ná de cutover — dat is de plek waar dat bewezen wordt, niet hier.
 
 - [ ] **Committen + pushen** (PR opent JP)
   ```bash
