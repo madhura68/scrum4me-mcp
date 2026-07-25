@@ -6,6 +6,7 @@
 
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import type { ReviewVerdict } from '@prisma/client'
 
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
@@ -21,6 +22,15 @@ export const inputSchema = z.object({
   commit_id: z.string().optional(),
   review_log: z.object({}).passthrough().optional(),
 })
+
+// Forgejo-review-event → ReviewVerdict. De vocabulaires lopen bewust niet
+// gelijk: Forgejo kent REQUEST_CHANGES, de enum CHANGES_REQUESTED. Als Record
+// getypeerd zodat een nieuw event niet stilzwijgend ongemapt kan blijven.
+const VERDICT_BY_EVENT: Record<z.infer<typeof inputSchema>['event'], ReviewVerdict> = {
+  APPROVED: 'APPROVED',
+  REQUEST_CHANGES: 'CHANGES_REQUESTED',
+  COMMENT: 'COMMENT',
+}
 
 export async function handlePostPrReview(
   { job_id, pr_url, event, body, commit_id, review_log }: z.infer<typeof inputSchema>,
@@ -63,21 +73,22 @@ export async function handlePostPrReview(
       data: { summary: `PR review ${event}${findingsSuffix}: ${body.slice(0, 280)}` },
     })
 
-    // Unified ReviewLog: alleen een echt verdict (APPROVED/REQUEST_CHANGES) persisteert;
-    // COMMENT is geen verdict. De Forgejo-post is de primaire actie en is al geslaagd.
-    if (event !== 'COMMENT') {
-      const raw = (review_log as { findings?: unknown } | undefined)?.findings
-      const findings: ReviewFinding[] = Array.isArray(raw) ? (raw as ReviewFinding[]) : []
-      await upsertReviewLog({
-        review_job_id: job_id,
-        kind: 'PR_REVIEW',
-        product_id: job.product_id,
-        verdict: event === 'APPROVED' ? 'APPROVED' : 'CHANGES_REQUESTED',
-        findings,
-        summary: body,
-        pins: { pr_commit_id: commit_id ?? null },
-      })
-    }
+    // Unified ReviewLog: élk van de drie events persisteert. COMMENT gold eerder
+    // als "geen verdict" en werd overgeslagen, maar zo'n review draagt wél
+    // findings — die vielen daarmee buiten de queryable audit-trail (19 van de
+    // 149 afgeronde PR_REVIEW-jobs sinds 2026-07-01). De Forgejo-post blijft de
+    // primaire actie; dit is de trail ernaast.
+    const raw = (review_log as { findings?: unknown } | undefined)?.findings
+    const reviewFindings: ReviewFinding[] = Array.isArray(raw) ? (raw as ReviewFinding[]) : []
+    await upsertReviewLog({
+      review_job_id: job_id,
+      kind: 'PR_REVIEW',
+      product_id: job.product_id,
+      verdict: VERDICT_BY_EVENT[event],
+      findings: reviewFindings,
+      summary: body,
+      pins: { pr_commit_id: commit_id ?? null },
+    })
 
     return toolJson({ ok: true, event, review_id: posted.reviewId ?? null })
   })

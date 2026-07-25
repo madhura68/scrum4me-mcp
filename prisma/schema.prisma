@@ -189,6 +189,7 @@ enum ReviewVerdict {
   APPROVED
   CHANGES_REQUESTED
   REJECTED
+  COMMENT
 }
 
 enum SprintTaskExecutionStatus {

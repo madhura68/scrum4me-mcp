@@ -1,8 +1,10 @@
 // src/tools/get-review.ts
 // Leest het gepersisteerde review-verdict + findings voor een review-job uit de
 // generieke ReviewLog. Drie toestanden: 'reviewed' (rij aanwezig), 'pending'
-// (job nog QUEUED/CLAIMED/RUNNING) of 'no_verdict' (job terminaal, geen rij —
-// bv. een PR-COMMENT). Scope: zelfde product-gescoopte 404 als get_job_status.
+// (job nog QUEUED/CLAIMED/RUNNING) of 'no_verdict' (job terminaal zonder rij —
+// bv. een review die faalde vóór het verdict). Een PR-COMMENT was hier ooit het
+// schoolvoorbeeld, maar die persisteert sinds de COMMENT-enum wél.
+// Scope: zelfde product-gescoopte 404 als get_job_status.
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
