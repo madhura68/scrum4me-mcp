@@ -210,16 +210,31 @@ afweging (besluit 2.1). Om te voorkomen dat het als vergeten drift leest:
 
 - Zet in `s4m-queue/src/types.ts` een header-comment die naar deze spec verwijst en vastlegt
   dat `scrum4me-shared/lib/queue-identity.ts` de gedeelde definitie is, dat deze kopie bewust
-  bestaat omdat de CLI geen submodule draagt, en dat wijzigingen op beide plekken moeten landen.
-- De pariteitstest van §5.2 dekt de CLI niet. Voor `type` en `status` is er nog een indirect
-  vangnet: die kolommen dragen een CHECK, dus een CLI die daar afdwaalt schrijft waarden die de
-  DB weigert — dat faalt luid. Voor `source` werkt zelfs dat niet: de CLI schrijft `'cli'`, wat
-  geldig blijft, dus een kopie die `'mcp'` mist blijft onzichtbaar. Dat is precies de drift uit §1.
-- **Voor `MODELS` en `SERVERS` is er geen enkel vangnet.** Die kolommen hebben geen CHECK (§5.2),
-  dus de DB accepteert elke waarde. Een CLI-kopie die achterloopt op shared uit zich niet als een
-  fout maar als een adres dat de CLI weigert te versturen terwijl het dashboard het wél kan —
-  stil, en aan één kant. Juist daarom is het header-comment geen formaliteit: het is de enige
-  bewaking die deze twee lijsten aan CLI-zijde hebben.
+  bestaat omdat de CLI geen submodule draagt, en op wélke plekken een wijziging moet landen.
+  Zolang §6.2 niet is uitgevoerd zijn dat er **drie** — CLI, shared én workers — niet twee.
+  Draagt de wijziging een `type`, `status` of `source`, dan hoort er bovendien een migratie in
+  `Scrum4Me/prisma/migrations/` bij: de CHECK-constraints wonen daar, niet in TypeScript.
+- **De pariteitstest van §5.2 dekt de CLI niet, en de DB evenmin — in de richting die telt.**
+  De CHECKs op `type` en `status` vangen een CLI die *vóórloopt* op de DDL: die INSERT wordt
+  geweigerd. Maar het header-comment waarschuwt voor het omgekeerde, een CLI die *achterloopt*
+  op shared, en in die richting zwijgt vrijwel alles:
+
+  | Lijst | Wat er gebeurt als de CLI-kopie achterloopt |
+  |---|---|
+  | `type` | `cli.ts:143` weigert een onbekend `--type` luid, maar `next`/`peek` filteren op `REQUEST_TYPES` (`cli.ts:155`, `:187`) — binnenkomende berichten van een nieuw type worden simpelweg niet gezien. Stil. |
+  | `status` | `--status` wordt niet gevalideerd (`cli.ts:191`) en `db.ts:129` leest een onbekende status als "al afgesloten". Stil. |
+  | `source` | De CLI schrijft altijd de literal `'cli'` (`db.ts:137`, `:292`), dus een ontbrekend lid wordt nooit uitgeprobeerd. Stil — precies de drift uit §1. |
+  | `SERVERS` | Geen CHECK. `loadConfig` (`config.ts:26`) weigert een onbekende `S4M_SERVER`, dus de CLI start niet eens op een nieuwe host. Luid, maar pas op die host. |
+  | `MODELS` | Geen CHECK. `parseTarget` weigert het adres. Luid voor wie het typt, onzichtbaar voor de rest. |
+
+  Juist daarom is het header-comment geen formaliteit: het is de enige bewaking die de CLI-kopie
+  heeft.
+
+  > Deze spec beweerde eerder dat een achterlopende CLI zich uit als "een adres dat de CLI weigert
+  > terwijl het dashboard het wél accepteert". Dat is onjuist zolang §6.2 niet is uitgevoerd:
+  > `scrum4me-workers` valideert een push met zijn **eigen** kopie (`actions/queue-messages.ts:70`),
+  > die vandaag identiek is aan die van de CLI. Beide kanten weigeren dan. De asymmetrie ontstaat
+  > pas wanneer workers re-exporteert uit shared.
 
 ## 8. Volgorde
 
