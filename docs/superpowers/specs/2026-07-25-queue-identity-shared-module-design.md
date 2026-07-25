@@ -181,9 +181,12 @@ test), `npm test` + `npm run typecheck` in workers en mcp.
   `STALE_CLAIM_INTERVAL` en `validateTaskMeta`. De re-export is dus geen extra laag maar één
   bestand met gemengde inhoud, waarvan de herkomst per export leesbaar is.
 - Fix meteen mee: `AgentMessage.source` wordt `QueueSource` en krijgt daarmee `'mcp'` erbij (§1).
-- **Geen** van de vijf importers wijzigt: `lib/rules/sync.ts:4`, `lib/queue/ops-db.ts:6`,
-  `actions/queue-messages.ts:15`, `app/(app)/queue/messages/_components/messages-view.tsx:15`,
-  `app/api/queue/messages/stream/route.ts:3`.
+- **Geen** van de zeven consumenten wijzigt. Vijf in productiecode —
+  `lib/rules/sync.ts:4`, `lib/queue/ops-db.ts:6`, `actions/queue-messages.ts:15`,
+  `app/(app)/queue/messages/_components/messages-view.tsx:15`,
+  `app/api/queue/messages/stream/route.ts:3` — plus twee tests:
+  `__tests__/app/queue-messages-view.test.tsx` en `__tests__/lib/queue/ops-db-retention.test.ts`,
+  die het bestand dynamisch importeert voor `parseRetentionDays`.
 
 ### 6.3 `scrum4me-mcp`
 
