@@ -215,8 +215,11 @@ afweging (besluit 2.1). Om te voorkomen dat het als vergeten drift leest:
   dat `scrum4me-shared/lib/queue-identity.ts` de gedeelde definitie is, dat deze kopie bewust
   bestaat omdat de CLI geen submodule draagt, en op wélke plekken een wijziging moet landen.
   Zolang §6.2 niet is uitgevoerd zijn dat er **drie** — CLI, shared én workers — niet twee.
-  Draagt de wijziging een `type`, `status` of `source`, dan hoort er bovendien een migratie in
-  `Scrum4Me/prisma/migrations/` bij: de CHECK-constraints wonen daar, niet in TypeScript.
+  Draagt de wijziging een `type`, `status` of `source`, dan horen daar ook de CHECK-constraints
+  bij, en die staan op **twee** plekken: `s4m-queue/migrations/001_init.sql` (het testschema dat
+  `test/helpers/db.ts` bij elke run uitvoert) én een nieuwe migratie in
+  `Scrum4Me/prisma/migrations/` voor de echte database. Prisma kent geen CHECK-constraints, dus
+  `schema.prisma` blijft buiten schot; voor `Server` en `Model` valt er niets te migreren.
 - **De pariteitstest van §5.2 dekt de CLI niet, en de DB evenmin — in de richting die telt.**
   De CHECKs op `type` en `status` vangen een CLI die *vóórloopt* op de DDL: die INSERT wordt
   geweigerd. Maar het header-comment waarschuwt voor het omgekeerde, een CLI die *achterloopt*
@@ -225,13 +228,19 @@ afweging (besluit 2.1). Om te voorkomen dat het als vergeten drift leest:
   | Lijst | Wat er gebeurt als de CLI-kopie achterloopt |
   |---|---|
   | `type` | `cli.ts:143` weigert een onbekend `--type` luid, maar `next`/`peek` filteren op `REQUEST_TYPES` (`cli.ts:155`, `:187`) — binnenkomende berichten van een nieuw type worden simpelweg niet gezien. Stil. |
-  | `status` | `--status` wordt niet gevalideerd (`cli.ts:191`) en `db.ts:129` leest een onbekende status als "al afgesloten". Stil. |
+  | `status` | `--status` wordt niet gevalideerd (`cli.ts:191`) en de claim-query (`db.ts:96`) en de NOTIFY-listener (`db.ts:272`) matchen een onbekende status nooit. Stil. |
   | `source` | De CLI schrijft altijd de literal `'cli'` (`db.ts:137`, `:292`), dus een ontbrekend lid wordt nooit uitgeprobeerd. Stil — precies de drift uit §1. |
-  | `SERVERS` | Geen CHECK. `loadConfig` (`config.ts:26`) weigert een onbekende `S4M_SERVER`, dus de CLI start niet eens op een nieuwe host. Luid, maar pas op die host. |
-  | `MODELS` | Geen CHECK. `parseTarget` weigert het adres. Luid voor wie het typt, onzichtbaar voor de rest. |
+  | `SERVERS` | Geen CHECK. `parseTarget` (`config.ts:46`) weigert het adres op élke host, en `loadConfig` (`config.ts:26`) verhindert bovendien dat de CLI op de nieuwe host start. Luid, overal. |
+  | `MODELS` | Geen CHECK. `cli.ts:20` weigert `--as`, dus het nieuwe model kan niets claimen of lezen; `parseTarget` weigert het ook als bestemming. Luid, en meteen. |
 
   Juist daarom is het header-comment geen formaliteit: het is de enige bewaking die de CLI-kopie
   heeft.
+
+  **En reken niet op de testsuite van `s4m-queue`.** Nagemeten op 2026-07-25: `src/types.ts`
+  muteren zonder `001_init.sql` bij te werken laat alle 74 tests groen, voor `Source`, `Status`
+  én een nieuw request/response-paar. De tests gebruiken `REQUEST_TYPES`/`RESPONSE_TYPES` alleen
+  als filterlijst en schrijven overal literals; `Status` en `Source` hebben er geen runtime-
+  constante. Alleen een échte `push` met een nieuw type loopt vast op de DB-CHECK (23514).
 
   > Deze spec beweerde eerder dat een achterlopende CLI zich uit als "een adres dat de CLI weigert
   > terwijl het dashboard het wél accepteert". Dat is onjuist zolang §6.2 niet is uitgevoerd:
