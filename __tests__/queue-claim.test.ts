@@ -88,6 +88,38 @@ describe('claimNextRequest — FIFO-claim met FOR UPDATE SKIP LOCKED (§5.3)', (
       previous_status: 'pending',
     })
   })
+
+  it('vraagt om verzoek-types, niet om antwoord-types', async () => {
+    // Zonder deze assertie mag QUEUE_REQUEST_TYPES vervangen worden door
+    // QUEUE_RESPONSE_TYPES: queue_next claimt dan antwoorden in plaats van
+    // verzoeken en alle negen tests blijven groen, want de mock geeft de
+    // fixture terug ongeacht de query.
+    txMock.$queryRaw.mockResolvedValueOnce([claimedRow])
+    await claimNextRequest({ server: 'mac', model: 'claude', claimedBy: 'mcp:i:t' })
+    expect(txMock.$queryRaw.mock.calls[0][3]).toEqual(['task', 'info', 'review_request'])
+  })
+
+  it('geeft het berekende reclaim-interval door aan de query', async () => {
+    // reclaimInterval() had eigen tests, maar niets bewees dat de uitkomst de
+    // SQL ook bereikt: een hardgecodeerde DEFAULT_RECLAIM_AFTER in de template
+    // maakt de env-override stil dood.
+    vi.stubEnv('S4M_RECLAIM_DEFAULT', '30 minutes')
+    txMock.$queryRaw.mockResolvedValueOnce([claimedRow])
+    await claimNextRequest({ server: 'mac', model: 'claude', claimedBy: 'mcp:i:t' })
+    expect(txMock.$queryRaw.mock.calls[0][4]).toBe('30 minutes')
+  })
+
+  it('zet de claim-timestamps en leest previous_status uit de pre-update rij', async () => {
+    // started_at ontbrak volledig in de asserties, en previous_status mocht uit
+    // updated.status komen in plaats van target.status -- dan draagt elke
+    // claim-envelope de nieuwe status als "vorige".
+    txMock.$queryRaw.mockResolvedValueOnce([claimedRow])
+    await claimNextRequest({ server: 'mac', model: 'claude', claimedBy: 'mcp:i:t' })
+    const sql = sqlOf(txMock.$queryRaw.mock.calls[0])
+    expect(sql).toContain('claimed_at = now()')
+    expect(sql).toContain('started_at = now()')
+    expect(sql).toContain('target.status AS previous_status')
+  })
 })
 
 describe('claimNextReply — correlatiefilter ín de WHERE-clause + auto-ack (§5.2)', () => {
