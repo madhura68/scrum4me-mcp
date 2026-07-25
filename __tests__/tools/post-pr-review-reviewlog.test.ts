@@ -49,7 +49,28 @@ describe('post_pr_review → ReviewLog', () => {
     expect(p.reviewLog.upsert.mock.calls[0][0].create.verdict).toBe('CHANGES_REQUESTED')
   })
 
-  it('COMMENT schrijft GEEN ReviewLog', async () => {
+  it('COMMENT → verdict COMMENT, mét findings en pin (was: sloeg de rij over)', async () => {
+    await handlePostPrReview({
+      job_id: 'job-1', pr_url: 'https://git/x/y/pulls/1', event: 'COMMENT',
+      body: 'note', commit_id: 'def456',
+      review_log: { findings: [{ severity: 'warning', ref: 'a.ts:1', message: 'let op' }] },
+    })
+    expect(p.reviewLog.upsert).toHaveBeenCalledTimes(1)
+    const arg = p.reviewLog.upsert.mock.calls[0][0]
+    expect(arg.where).toEqual({ review_job_id: 'job-1' })
+    expect(arg.create.verdict).toBe('COMMENT')
+    expect(arg.create.kind).toBe('PR_REVIEW')
+    expect(arg.create.pr_commit_id).toBe('def456')
+    expect(arg.create.findings).toEqual([{ severity: 'warning', ref: 'a.ts:1', message: 'let op' }])
+  })
+
+  it('COMMENT zonder review_log levert een lege findings-array, geen crash', async () => {
+    await handlePostPrReview({ job_id: 'job-1', pr_url: 'https://git/x/y/pulls/1', event: 'COMMENT', body: 'note' })
+    expect(p.reviewLog.upsert.mock.calls[0][0].create.findings).toEqual([])
+  })
+
+  it('een gefaalde Forgejo-post schrijft geen ReviewLog', async () => {
+    mockPost.mockResolvedValue({ error: 'boom' })
     await handlePostPrReview({ job_id: 'job-1', pr_url: 'https://git/x/y/pulls/1', event: 'COMMENT', body: 'note' })
     expect(p.reviewLog.upsert).not.toHaveBeenCalled()
   })
