@@ -1254,3 +1254,98 @@ model JobKindConfig {
 
   @@map("job_kind_config")
 }
+
+/// s4m-queue berichten-queue (fase 1 — scrum4me-mcp spec
+/// 2026-07-12-s4m-queue-mcp-integration-design.md §4). Tabel-DDL identiek aan
+/// s4m-queue/migrations/001_init.sql, met twee afwijkingen: de source-CHECK
+/// krijgt er 'mcp' bij (§4 punt 2 — staat in de SQL-migratie, niet hier) en er
+/// komt een index op in_reply_to (§4 punt 3 — nodig voor de reply-claim-filter
+/// van fase 2).
+///
+/// De s4m-queue-CLI (raw SQL) en het Messages-dashboard blijven op deze tabel
+/// werken en wisselen straks alléén van connection string — tabel- en
+/// kolomnamen zijn daarom byte-identiek aan de bron.
+///
+/// Bewuste afwijkingen van de huisstijl van dit schema (cuid + DateTime):
+/// - @db.Uuid + @db.Timestamptz(6) houden de kolomtypes gelijk aan 001_init.sql;
+///   id krijgt daarom dbgenerated("gen_random_uuid()") i.p.v. @default(cuid()).
+/// - replied_to/replies bestaan uitsluitend om de FK te emitten: Prisma kent
+///   geen FK zonder relatieveld en vereist daarbij de back-relation. Niets
+///   consumeert ze — CLI en dashboard zijn raw SQL. Ze zien er daardoor
+///   ongebruikt uit, maar het paar weghalen laat prisma validate groen terwijl
+///   de FK stilzwijgend uit de DDL verdwijnt (alleen `replies` weghalen geeft
+///   wél P1012). Alleen __tests__/agent-message-schema.test.ts vangt dat: die
+///   maakt npm run verify dan rood.
+/// - onUpdate: NoAction op de self-relation, omdat de bron-FK geen
+///   ON UPDATE-clausule heeft (Prisma's default is Cascade).
+/// - map: op @@index pint de indexnamen van 001_init.sql vast; zonder map:
+///   maakt Prisma er agent_message_to_server_to_model_status_created_at_idx
+///   van en breekt de belofte "DDL identiek aan 001_init.sql". Op de
+///   in_reply_to-index is map: toevallig gelijk aan Prisma's default; die
+///   blijft staan voor symmetrie en zodat de naam niet meedrift bij een
+///   kolomhernoeming.
+/// - CHECK-constraints (type, source, status, reply_link_matches_type) staan
+///   hier bewust niet: Prisma kent ze niet. Ze staan in de SQL-migratie.
+///
+/// Migratie draait in Scrum4Me (designated migrator), niet hier.
+model AgentMessage {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  type        String
+  from_server String
+  from_model  String
+  to_server   String
+  to_model    String
+  body        String
+  meta        Json      @default("{}")
+  source      String
+  status      String    @default("pending")
+  in_reply_to String?   @db.Uuid
+  error       String?
+  claimed_by  String?
+  claimed_at  DateTime? @db.Timestamptz(6)
+  started_at  DateTime? @db.Timestamptz(6)
+  finished_at DateTime? @db.Timestamptz(6)
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+
+  replied_to AgentMessage?  @relation("AgentMessageReplies", fields: [in_reply_to], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  replies    AgentMessage[] @relation("AgentMessageReplies")
+
+  @@index([to_server, to_model, status, created_at], map: "agent_message_claim_idx")
+  @@index([in_reply_to], map: "agent_message_in_reply_to_idx")
+  @@map("agent_message")
+}
+
+/// Archief voor s4m-queue-retention: kolommen identiek aan agent_message,
+/// bewust zonder FK, zonder CHECK-constraints en zonder indexen
+/// (zie s4m-queue/migrations/002_archive.sql).
+///
+/// Let op voor de SQL-migratie: dit archief krijgt in het geheel géén
+/// CHECK-constraints — dus óók niet op type, source en status, anders dan
+/// agent_message. De header van 002_archive.sql noemt bij de weglatingen
+/// alleen reply_link_matches_type, maar de DDL laat alle vier de CHECKs
+/// van 001_init.sql weg; die opsomming is onvolledig, niet de tabel.
+///
+/// id en created_at hebben hier géén default: archiefrijen nemen de waarden
+/// van de oorspronkelijke agent_message-rij over. status heeft om dezelfde
+/// reden geen default 'pending'.
+model AgentMessageArchive {
+  id          String    @id @db.Uuid
+  type        String
+  from_server String
+  from_model  String
+  to_server   String
+  to_model    String
+  body        String
+  meta        Json      @default("{}")
+  source      String
+  status      String
+  in_reply_to String?   @db.Uuid
+  error       String?
+  claimed_by  String?
+  claimed_at  DateTime? @db.Timestamptz(6)
+  started_at  DateTime? @db.Timestamptz(6)
+  finished_at DateTime? @db.Timestamptz(6)
+  created_at  DateTime  @db.Timestamptz(6)
+
+  @@map("agent_message_archive")
+}
