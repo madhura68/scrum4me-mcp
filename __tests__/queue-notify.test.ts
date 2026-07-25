@@ -51,3 +51,48 @@ describe('emitQueueNotifyBestEffort', () => {
     await expect(emitQueueNotifyBestEffort(envelopeOf(row, null))).resolves.toBeUndefined()
   })
 })
+
+describe('de payload die daadwerkelijk verzonden wordt', () => {
+  // De vijf tests hierboven kijken naar het object vóór serialisatie en naar
+  // óf $executeRaw is aangeroepen — niet naar wát er uit gaat. Dat liet een
+  // echte wire-breuk door: previousStatus ?? undefined in plaats van ?? null
+  // laat JSON.stringify de sleutel volledig weglaten, terwijl alle vijf groen
+  // bleven. Deze drie kijken naar de argumenten die de mock bereiken.
+  //
+  // Vorm van een tagged template: fn`..${a}..${b}..` roept de mock aan als
+  // (stringsArray, a, b) — dus calls[0][1] is het kanaal, calls[0][2] de JSON.
+
+  it('stuurt de volledige envelope, inclusief null-velden', async () => {
+    await emitQueueNotifyBestEffort(envelopeOf(row, null))
+    const payload = mockPrisma.$executeRaw.mock.calls[0][2] as string
+    // Bewust een hardgecodeerd literal en niet envelopeOf(...) opnieuw
+    // aanroepen: anders deelt de assertie een eventuele bug met de code die
+    // hij moet controleren.
+    expect(JSON.parse(payload)).toStrictEqual({
+      id: 'id-1',
+      type: 'task',
+      from_server: 'mac',
+      from_model: 'claude',
+      to_server: 'scrum4me-server',
+      to_model: 'claude',
+      in_reply_to: null,
+      status: 'pending',
+      previous_status: null,
+    })
+  })
+
+  it('verzendt op het kanaal dat QUEUE_CHANNEL exporteert', async () => {
+    // De kanaal-test hierboven controleert de export in isolatie. Een
+    // aanroepsite die een ander literal hardcodeert komt daar ongestraft
+    // doorheen; deze assertie koppelt de twee aan elkaar.
+    await emitQueueNotifyBestEffort(envelopeOf(row, null))
+    expect(mockPrisma.$executeRaw.mock.calls[0][1]).toBe(QUEUE_CHANNEL)
+  })
+
+  it('serialiseert null-velden als JSON null, niet als weggelaten sleutel', async () => {
+    await emitQueueNotifyBestEffort(envelopeOf(row, null))
+    const payload = mockPrisma.$executeRaw.mock.calls[0][2] as string
+    expect(payload).toContain('"in_reply_to":null')
+    expect(payload).toContain('"previous_status":null')
+  })
+})

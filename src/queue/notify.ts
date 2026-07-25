@@ -3,6 +3,11 @@
 // CLI --wait and the Messages-dashboard parse this payload unchanged.
 import { prisma } from '../prisma.js'
 
+// Het kanaal ligt hier vast op de CLI-default. De CLI leest het uit
+// S4M_QUEUE_CHANNEL (s4m-queue/src/config.ts) en kán dus afwijken; dat wordt
+// vandaag nergens gezet, en scrum4me-workers hardcodeert dezelfde waarde.
+// Wie die env-var ooit wél zet, krijgt een stil dood kanaal: de MCP notify't
+// op 'agent_queue' terwijl de CLI ergens anders luistert, zonder foutmelding.
 export const QUEUE_CHANNEL = 'agent_queue'
 
 export interface QueueMessageRow {
