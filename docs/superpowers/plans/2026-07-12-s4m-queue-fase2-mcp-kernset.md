@@ -51,16 +51,22 @@ De `AgentMessage`-Prismamodellen bestaan pas na fase 1 in scrum4me-shared. Deze 
 - [ ] Nulmeting: `npm run typecheck && npm test` → verwacht: beide groen (pretest draait `typecheck:tests`).
 - [ ] Commit: `git add vendor/scrum4me-shared prisma/schema.prisma && git commit -m "chore(schema): vendor-pin <sha> (fase 1 agent_message) + schema-sync"` (vul `<sha>` in uit de rev-parse-stap).
 
-> **Uitgevoerd op 2026-07-25** als onderdeel van
+> **Vendor-bump uitgevoerd op 2026-07-25** als onderdeel van
 > `docs/superpowers/plans/2026-07-25-queue-identity-shared-module.md` taak 4.
-> De bump ging naar `be67dbe` en bracht naast de `AgentMessage`-modellen ook
+> De pin ging naar `be67dbe` en bracht naast de `AgentMessage`-modellen ook
 > `@shared/queue-identity.js` mee, die Task 2 en 3 hieronder gebruiken.
+>
+> **De schema-sync-helft staat nog open.** `prisma/schema.prisma` in deze repo
+> is nog niet geregenereerd en mist de `agent_message`-modellen. Dat breekt
+> vandaag niets — `postinstall` en `prebuild` regenereren het bestand, en de
+> voorbereidingsstap hierboven draait `npm install` — maar de commit-stap en de
+> kolomverificatie hieronder horen nog wél bij deze taak.
 
 ---
 
-### Task 2: `src/queue/types.ts` — CLI-typevocabulaire + `validateTaskMeta`-port
+### Task 2: `src/queue/types.ts` — mcp-eigen aanvullingen + `validateTaskMeta`-port
 
-Port van `~/Development/s4m-queue/src/types.ts`: servers/models/typen/statussen, de `REPLY_TYPE`-mapping (task→result, info→data, review_request→reviewed) en `validateTaskMeta`. Enige bewuste wijziging: foutmeldingen krijgen het `VALIDATION_ERROR:`-prefix (repo-conventie §7) en zijn Engels.
+**Het vocabulaire wordt hier níet gedefinieerd.** Servers, models, typen, statussen, sources, de reply-mapping en de guards komen uit `@shared/queue-identity.js`; dit bestand houdt alleen wat mcp-eigen is: `QueueAddress`, `requiresTaskMeta` en de `validateTaskMeta`-port uit `~/Development/s4m-queue/src/types.ts`. Voeg hier geen kopie van die lijsten toe — dat zou de derde handkopie zijn die deze opzet juist wegneemt (zie de header van `vendor/scrum4me-shared/lib/queue-identity.ts`). Enige bewuste wijziging in de port: foutmeldingen krijgen het `VALIDATION_ERROR:`-prefix (repo-conventie §7) en zijn Engels.
 
 **Files:**
 - Create: `src/queue/types.ts`
@@ -178,7 +184,7 @@ export function validateTaskMeta(task: unknown): QueueTaskMeta {
 ```
 
 - [ ] Draai de test opnieuw: `npx vitest run __tests__/queue-types.test.ts` → verwacht: PASS (5 tests groen).
-- [ ] Commit: `git add src/queue/types.ts __tests__/queue-types.test.ts && git commit -m "feat(queue): port CLI type-vocabulaire + validateTaskMeta (fase 2, spec §5.1)"`
+- [ ] Commit: `git add src/queue/types.ts __tests__/queue-types.test.ts && git commit -m "feat(queue): mcp-eigen queue-types + validateTaskMeta-port (fase 2, spec §5.1)"`
 
 ---
 
@@ -1762,7 +1768,7 @@ Spec §5.4 mét de exacte foutprecedentie uit reviewronde 6, plus de §7-tabelri
 | claimed | aanwezig | afwezig of mismatch | `QUEUE_NOT_CLAIMER` (stap b) |
 | claimed | aanwezig | match | stap c: atomair in de tx — `claimed_by` moet **exact** gelijk zijn aan `lease.claimedBy` (strikte gelijkheid, geen substring/`LIKE`); mismatch → `QUEUE_NOT_CLAIMER` (vangt races met sweep/herclaim) |
 
-Mét `reply`: transactioneel reply-rij (type volgens `REPLY_TYPE`, `in_reply_to` = request-id, from/to gespiegeld uit de request-rij, `source='mcp'`) + request → `done` + **beide** NOTIFYs in dezelfde transactie — zoals CLI `doneWithReply`. Zónder `reply`: ack (status → `done`). `reply` op een response-type bericht → `VALIDATION_ERROR` (CLI-pariteit: "is geen verzoek"). Na terminale afronding: `releaseLease(message_id)` (§5.4: entry wordt na afronding verwijderd).
+Mét `reply`: transactioneel reply-rij (type volgens `QUEUE_REPLY_TYPE`, `in_reply_to` = request-id, from/to gespiegeld uit de request-rij, `source='mcp'`) + request → `done` + **beide** NOTIFYs in dezelfde transactie — zoals CLI `doneWithReply`. Zónder `reply`: ack (status → `done`). `reply` op een response-type bericht → `VALIDATION_ERROR` (CLI-pariteit: "is geen verzoek"). Na terminale afronding: `releaseLease(message_id)` (§5.4: entry wordt na afronding verwijderd).
 
 **Files:**
 - Create: `src/queue/ownership.ts`
