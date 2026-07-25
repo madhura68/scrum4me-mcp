@@ -51,6 +51,11 @@ De `AgentMessage`-Prismamodellen bestaan pas na fase 1 in scrum4me-shared. Deze 
 - [ ] Nulmeting: `npm run typecheck && npm test` → verwacht: beide groen (pretest draait `typecheck:tests`).
 - [ ] Commit: `git add vendor/scrum4me-shared prisma/schema.prisma && git commit -m "chore(schema): vendor-pin <sha> (fase 1 agent_message) + schema-sync"` (vul `<sha>` in uit de rev-parse-stap).
 
+> **Uitgevoerd op 2026-07-25** als onderdeel van
+> `docs/superpowers/plans/2026-07-25-queue-identity-shared-module.md` taak 4.
+> De bump ging naar `be67dbe` en bracht naast de `AgentMessage`-modellen ook
+> `@shared/queue-identity.js` mee, die Task 2 en 3 hieronder gebruiken.
+
 ---
 
 ### Task 2: `src/queue/types.ts` — CLI-typevocabulaire + `validateTaskMeta`-port
@@ -67,27 +72,9 @@ Port van `~/Development/s4m-queue/src/types.ts`: servers/models/typen/statussen,
 
 ```ts
 import { describe, it, expect } from 'vitest'
-import {
-  REPLY_TYPE, REQUEST_TYPES, RESPONSE_TYPES, TERMINAL_STATUSES,
-  isRequestType, requiresTaskMeta, validateTaskMeta,
-} from '../src/queue/types.js'
+import { requiresTaskMeta, validateTaskMeta } from '../src/queue/types.js'
 
 describe('queue types — CLI-pariteit (s4m-queue/src/types.ts)', () => {
-  it('mapt request-types op de juiste reply-types', () => {
-    expect(REPLY_TYPE).toEqual({ task: 'result', info: 'data', review_request: 'reviewed' })
-  })
-
-  it('kent de vaste type- en statusvocabulaires', () => {
-    expect(REQUEST_TYPES).toEqual(['task', 'info', 'review_request'])
-    expect(RESPONSE_TYPES).toEqual(['result', 'data', 'reviewed'])
-    expect(TERMINAL_STATUSES).toEqual(['done', 'failed', 'cancelled'])
-  })
-
-  it('herkent request-types', () => {
-    expect(isRequestType('task')).toBe(true)
-    expect(isRequestType('result')).toBe(false)
-  })
-
   it('vereist meta.task alleen voor task en review_request', () => {
     expect(requiresTaskMeta('task')).toBe(true)
     expect(requiresTaskMeta('review_request')).toBe(true)
@@ -129,37 +116,17 @@ describe('validateTaskMeta — geport uit de CLI, met VALIDATION_ERROR-prefix', 
 - [ ] Maak `src/queue/types.ts` met exact deze inhoud:
 
 ```ts
-// Ported from s4m-queue/src/types.ts — the CLI and the MCP tools must agree on
-// address vocabulary, the request→reply type mapping and meta.task validation.
-// Semantics identical to the CLI; only the VALIDATION_ERROR prefix is new
-// (repo convention: typed string prefixes surfaced via toolError()).
+// mcp-eigen aanvullingen op het gedeelde queue-vocabulaire. Het vocabulaire
+// zelf (servers, modellen, types, statussen, sources, reply-mapping en de
+// guards) komt uit scrum4me-shared/lib/queue-identity.ts en wordt hier
+// bewust NIET opnieuw ge-exporteerd: elke plek importeert het rechtstreeks,
+// zodat de herkomst per bestand leesbaar blijft.
 
-export type QueueServer = 'mac' | 'scrum4me-server' | 'max2'
-export type QueueModel = 'claude' | 'codex' | 'jp'
-export type QueueRequestType = 'task' | 'info' | 'review_request'
-export type QueueResponseType = 'result' | 'data' | 'reviewed'
-export type QueueMessageType = QueueRequestType | QueueResponseType
-export type QueueStatus = 'pending' | 'claimed' | 'done' | 'failed' | 'cancelled'
-
-export const SERVERS: readonly QueueServer[] = ['mac', 'scrum4me-server', 'max2']
-export const MODELS: readonly QueueModel[] = ['claude', 'codex', 'jp']
-export const REQUEST_TYPES: readonly QueueRequestType[] = ['task', 'info', 'review_request']
-export const RESPONSE_TYPES: readonly QueueResponseType[] = ['result', 'data', 'reviewed']
-export const TERMINAL_STATUSES: readonly QueueStatus[] = ['done', 'failed', 'cancelled']
-
-export const REPLY_TYPE: Record<QueueRequestType, QueueResponseType> = {
-  task: 'result',
-  info: 'data',
-  review_request: 'reviewed',
-}
+import type { QueueModel, QueueRequestType, QueueServer } from '@shared/queue-identity.js'
 
 export interface QueueAddress {
   server: QueueServer
   model: QueueModel
-}
-
-export function isRequestType(t: string): t is QueueRequestType {
-  return (REQUEST_TYPES as readonly string[]).includes(t)
 }
 
 export function requiresTaskMeta(t: QueueRequestType): boolean {
@@ -210,7 +177,7 @@ export function validateTaskMeta(task: unknown): QueueTaskMeta {
 }
 ```
 
-- [ ] Draai de test opnieuw: `npx vitest run __tests__/queue-types.test.ts` → verwacht: PASS (8 tests groen).
+- [ ] Draai de test opnieuw: `npx vitest run __tests__/queue-types.test.ts` → verwacht: PASS (5 tests groen).
 - [ ] Commit: `git add src/queue/types.ts __tests__/queue-types.test.ts && git commit -m "feat(queue): port CLI type-vocabulaire + validateTaskMeta (fase 2, spec §5.1)"`
 
 ---
@@ -284,7 +251,8 @@ describe('parseQueueTarget — CLI-pariteit (parseTarget)', () => {
 - [ ] Maak `src/queue/identity.ts` met exact deze inhoud:
 
 ```ts
-import { MODELS, SERVERS, type QueueAddress, type QueueModel, type QueueServer } from './types.js'
+import { QUEUE_MODELS, QUEUE_SERVERS, type QueueModel, type QueueServer } from '@shared/queue-identity.js'
+import type { QueueAddress } from './types.js'
 
 /**
  * Queue identity (spec §3): address = (S4M_SERVER, model). S4M_SERVER comes
@@ -295,15 +263,15 @@ import { MODELS, SERVERS, type QueueAddress, type QueueModel, type QueueServer }
  */
 export function resolveQueueIdentity(asOverride?: string): QueueAddress {
   const server = process.env.S4M_SERVER?.trim()
-  if (!server || !(SERVERS as readonly string[]).includes(server)) {
+  if (!server || !(QUEUE_SERVERS as readonly string[]).includes(server)) {
     throw new Error(
-      `QUEUE_IDENTITY_REQUIRED: S4M_SERVER must be one of [${SERVERS.join(', ')}] (was: ${server || 'empty'})`,
+      `QUEUE_IDENTITY_REQUIRED: S4M_SERVER must be one of [${QUEUE_SERVERS.join(', ')}] (was: ${server || 'empty'})`,
     )
   }
   const model = (asOverride ?? process.env.S4M_MODEL)?.trim()
-  if (!model || !(MODELS as readonly string[]).includes(model)) {
+  if (!model || !(QUEUE_MODELS as readonly string[]).includes(model)) {
     throw new Error(
-      `QUEUE_IDENTITY_REQUIRED: S4M_MODEL (or the 'as' parameter) must be one of [${MODELS.join(', ')}] (was: ${model || 'empty'})`,
+      `QUEUE_IDENTITY_REQUIRED: S4M_MODEL (or the 'as' parameter) must be one of [${QUEUE_MODELS.join(', ')}] (was: ${model || 'empty'})`,
     )
   }
   return { server: server as QueueServer, model: model as QueueModel }
@@ -315,12 +283,12 @@ export function parseQueueTarget(s: string): QueueAddress {
   const [server, model] = parts
   if (
     parts.length !== 2 ||
-    !(SERVERS as readonly string[]).includes(server) ||
-    !(MODELS as readonly string[]).includes(model)
+    !(QUEUE_SERVERS as readonly string[]).includes(server) ||
+    !(QUEUE_MODELS as readonly string[]).includes(model)
   ) {
     throw new Error(
       `VALIDATION_ERROR: invalid target '${s}', expected <server>:<model> with server in ` +
-        `[${SERVERS.join(', ')}], model in [${MODELS.join(', ')}]`,
+        `[${QUEUE_SERVERS.join(', ')}], model in [${QUEUE_MODELS.join(', ')}]`,
     )
   }
   return { server: server as QueueServer, model: model as QueueModel }
@@ -790,7 +758,7 @@ describe('rollbackQueueClaim — MCP-cancel ná claim (§7)', () => {
 // is the single source of truth.
 import { prisma } from '../prisma.js'
 import { QUEUE_CHANNEL, envelopeOf } from './notify.js'
-import { REQUEST_TYPES, RESPONSE_TYPES, type QueueModel, type QueueServer } from './types.js'
+import { QUEUE_REQUEST_TYPES, QUEUE_RESPONSE_TYPES, type QueueModel, type QueueServer } from '@shared/queue-identity.js'
 
 export const DEFAULT_RECLAIM_AFTER = '4 hours'
 
@@ -831,7 +799,7 @@ export async function claimNextRequest(opts: {
   claimedBy: string
 }): Promise<ClaimedAgentMessage | null> {
   const reclaim = reclaimInterval()
-  const types = [...REQUEST_TYPES]
+  const types = [...QUEUE_REQUEST_TYPES]
   return prisma.$transaction(async (tx) => {
     const rows = await tx.$queryRaw<ClaimedAgentMessage[]>`
       WITH target AS (
@@ -869,7 +837,7 @@ export async function claimNextReply(opts: {
   claimedBy: string
 }): Promise<ClaimedAgentMessage | null> {
   const reclaim = reclaimInterval()
-  const types = [...RESPONSE_TYPES]
+  const types = [...QUEUE_RESPONSE_TYPES]
   return prisma.$transaction(async (tx) => {
     // §5.2: claim + auto-ack in ONE transaction — reading is processing; the
     // row itself stays (status done) for audit/queue_status and the idempotent
@@ -2086,7 +2054,7 @@ describe('queue_done — happy paths (§5.4)', () => {
     const result = await server.call({ message_id: MSG_ID, reply: 'klaar', claim_token: 'tok' })
     const body = JSON.parse(result.content[0].text)
     expect(body).toEqual({ message_id: MSG_ID, status: 'done', reply_id: REPLY_ID })
-    // INSERT values: reply type via REPLY_TYPE, from/to gespiegeld, in_reply_to = request-id.
+    // INSERT values: reply type via QUEUE_REPLY_TYPE, from/to gespiegeld, in_reply_to = request-id.
     const insertValues = txMock.$queryRaw.mock.calls[1].slice(1)
     expect(insertValues).toEqual(['result', 'mac', 'claude', 'max2', 'codex', 'klaar', MSG_ID])
     const insertSql = (txMock.$queryRaw.mock.calls[1][0] as readonly string[]).join(' ')
@@ -2142,7 +2110,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
-import { REPLY_TYPE, TERMINAL_STATUSES, isRequestType } from '../queue/types.js'
+import { QUEUE_REPLY_TYPE, QUEUE_TERMINAL_STATUSES, isQueueRequestType } from '@shared/queue-identity.js'
 import { releaseLease } from '../queue/lease-register.js'
 import { verifyLocalOwnership } from '../queue/ownership.js'
 import { QUEUE_CHANNEL, envelopeOf } from '../queue/notify.js'
@@ -2180,7 +2148,7 @@ export function registerQueueDoneTool(server: McpServer) {
           `
           const req = rows[0]
           if (!req) return { error: `QUEUE_NOT_FOUND: message ${message_id} does not exist` }
-          if ((TERMINAL_STATUSES as readonly string[]).includes(req.status)) {
+          if ((QUEUE_TERMINAL_STATUSES as readonly string[]).includes(req.status)) {
             return { error: `QUEUE_ALREADY_TERMINAL: message ${message_id} is already ${req.status}` }
           }
           const verdict = verifyLocalOwnership({
@@ -2197,14 +2165,14 @@ export function registerQueueDoneTool(server: McpServer) {
           }
 
           if (reply !== undefined) {
-            if (!isRequestType(req.type)) {
+            if (!isQueueRequestType(req.type)) {
               return {
                 error:
                   'VALIDATION_ERROR: reply is only possible on request messages ' +
                   `(task/info/review_request); message ${message_id} has type ${req.type}`,
               }
             }
-            const replyType = REPLY_TYPE[req.type]
+            const replyType = QUEUE_REPLY_TYPE[req.type]
             const ins = await tx.$queryRaw<AgentMessageRecord[]>`
               INSERT INTO agent_message
                 (type, from_server, from_model, to_server, to_model, body, in_reply_to, source)
@@ -2404,7 +2372,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
-import { TERMINAL_STATUSES } from '../queue/types.js'
+import { QUEUE_TERMINAL_STATUSES } from '@shared/queue-identity.js'
 import { releaseLease } from '../queue/lease-register.js'
 import { verifyLocalOwnership } from '../queue/ownership.js'
 import { QUEUE_CHANNEL, envelopeOf } from '../queue/notify.js'
@@ -2439,7 +2407,7 @@ export function registerQueueFailTool(server: McpServer) {
           `
           const req = rows[0]
           if (!req) return { error: `QUEUE_NOT_FOUND: message ${message_id} does not exist` }
-          if ((TERMINAL_STATUSES as readonly string[]).includes(req.status)) {
+          if ((QUEUE_TERMINAL_STATUSES as readonly string[]).includes(req.status)) {
             return { error: `QUEUE_ALREADY_TERMINAL: message ${message_id} is already ${req.status}` }
           }
           const verdict = verifyLocalOwnership({
@@ -2999,7 +2967,8 @@ import { registerLease, releaseLease } from '../queue/lease-register.js'
 import { openQueueListener, waitForQueueWakeup } from '../queue/listen.js'
 import { getInstanceId } from '../presence/instance.js'
 import { messageView } from '../queue/view.js'
-import { REQUEST_TYPES, type QueueAddress } from '../queue/types.js'
+import { QUEUE_REQUEST_TYPES } from '@shared/queue-identity.js'
+import type { QueueAddress } from '../queue/types.js'
 
 const INSTRUCTIONS_TEXT =
   'Execute within meta.task.cwd. If required context is missing → queue_fail, do not guess. ' +
@@ -3069,7 +3038,7 @@ export function registerQueueNextTool(server: McpServer) {
                 payload.to_server === self.server &&
                 payload.to_model === self.model &&
                 typeof payload.type === 'string' &&
-                (REQUEST_TYPES as readonly string[]).includes(payload.type),
+                (QUEUE_REQUEST_TYPES as readonly string[]).includes(payload.type),
               )
               if (signal.aborted) break
               claimed = await tryClaim(self)
