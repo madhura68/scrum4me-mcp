@@ -74,6 +74,15 @@ import { registerVerifySprintTaskTool } from './tools/verify-sprint-task.js'
 import { registerCleanupMyWorktreesTool } from './tools/cleanup-my-worktrees.js'
 import { registerImplementNextStoryPrompt } from './prompts/implement-next-story.js'
 
+// s4m-queue kernset (fase 2) — stdio-only, zie registerQueueTools hieronder.
+import { registerQueuePushTool } from './tools/queue-push.js'
+import { registerQueueWaitReplyTool } from './tools/queue-wait-reply.js'
+import { registerQueueNextTool } from './tools/queue-next.js'
+import { registerQueueDoneTool } from './tools/queue-done.js'
+import { registerQueueFailTool } from './tools/queue-fail.js'
+import { registerQueueStatusTool } from './tools/queue-status.js'
+import { registerQueueListTool } from './tools/queue-list.js'
+
 /**
  * DB/network-only tools — safe for the centralized HTTP server (and also
  * registered in stdio mode). Identity is resolved per request via auth.ts.
@@ -150,4 +159,22 @@ export function registerWorktreeTools(server: McpServer): void {
   registerVerifySprintTaskTool(server)
   registerCleanupMyWorktreesTool(server)
   registerImplementNextStoryPrompt(server)
+}
+
+/**
+ * s4m-queue core tools (phase 2) — stdio-only, for a different reason than the
+ * worktree tools: not filesystem binding but CALLER IDENTITY. The stdio process
+ * runs on the caller's host, carries their S4M_SERVER/S4M_MODEL and holds the
+ * in-memory lease register of the claims it issued; the central HTTP server has
+ * none of those and would attach claims to the wrong identity (spec §5-intro/§9).
+ * http.ts must therefore never call this function.
+ */
+export function registerQueueTools(server: McpServer): void {
+  registerQueuePushTool(server)
+  registerQueueWaitReplyTool(server)
+  registerQueueNextTool(server)
+  registerQueueDoneTool(server)
+  registerQueueFailTool(server)
+  registerQueueStatusTool(server)
+  registerQueueListTool(server)
 }

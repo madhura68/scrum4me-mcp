@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import { registerSharedTools, registerWorktreeTools } from './register.js'
+import { registerQueueTools, registerSharedTools, registerWorktreeTools } from './register.js'
 import { getAuth } from './auth.js'
 import { INSTRUCTIONS } from './instructions.js'
 import { registerWorker } from './presence/worker.js'
@@ -38,6 +38,9 @@ async function main() {
   // tools (this process runs co-located with the agent's git worktree).
   registerSharedTools(server)
   registerWorktreeTools(server)
+  // s4m-queue core tools — stdio-only: this process carries the caller's
+  // queue identity (S4M_SERVER/S4M_MODEL) and the lease register (spec §5).
+  registerQueueTools(server)
 
   // Presence bootstrap MUST run before server.connect — the stdio transport
   // can stall the await on incoming messages, so anything after server.connect
