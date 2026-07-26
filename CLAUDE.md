@@ -25,11 +25,38 @@ codes do not change and do not encode execution order.
 
 MCP authoring is parent-scoped append-only: `create_pbi`, `create_story`, and `create_task`
 accept no `sort_order` and append within their direct parent. The sibling max-read and create
-share one Serializable transaction; only Prisma `P2034` is retried, at most three times.
+share one Serializable transaction; only a serialization failure is retried, at most three times.
 An outer bounded retry reruns that complete transaction only for the tool's expected
-`(product_id, code)` `P2002`; unrelated `P2002` errors are not retried.
+`(product_id, code)` unique violation; unrelated unique violations are not retried.
 All three still require `priority` as team-importance metadata, but changing priority never
 moves an item.
+
+Both loops back off with full jitter between attempts (`src/lib/retry-backoff.ts`). Without it
+the losers of a contended create retry in the same tick and re-collide: measured on Postgres
+17.9, six concurrent `create_pbi` calls left 16 of 60 handlers failing after exhausting all
+four attempts, versus 1 of 60 with jitter.
+
+### Matching Prisma errors: use the SQLSTATE, not `meta.target`
+
+Under Prisma 7 + `@prisma/adapter-pg` the engine-era error fields are gone, and matching on
+them fails **silently** — a retry loop that recognises nothing degrades to a single attempt
+and still looks correct in review:
+
+| Postgres | Arrives as | Where the detail lives |
+|---|---|---|
+| `23505` | `PrismaClientKnownRequestError` `P2002`, **`meta.target` absent** | `meta.driverAdapterError.cause.constraint.fields` |
+| `40001` in the callback | `PrismaClientKnownRequestError` `P2034` | `meta.driverAdapterError.cause` |
+| `40001` at COMMIT | bare `DriverAdapterError`, **no `code`, no `meta`** | `cause` |
+
+`src/lib/prisma-driver-error.ts` pulls the driver-adapter cause out of either wrapping;
+predicates key on `cause.originalCode` (the SQLSTATE) and keep the legacy `meta.target` branch
+for other adapters. Note `constraint.fields` is derived from the Postgres DETAIL line and is
+absent when that line is — hence the constraint-name fallback.
+
+Mocked unit tests cannot catch a regression here, because a hand-built error object asserts the
+shape it was built from. The guards that matter are in
+`__tests__/create-concurrency.integration.test.ts`, which replays errors Postgres actually
+raised; they need `TEST_DATABASE_URL` and skip without it.
 
 ### Frozen sprint execution and claims
 
