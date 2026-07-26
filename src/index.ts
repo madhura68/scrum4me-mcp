@@ -8,6 +8,8 @@ import { registerWorker } from './presence/worker.js'
 import { startHeartbeat } from './presence/heartbeat.js'
 import { registerShutdownHandlers } from './presence/shutdown.js'
 import { getInstanceId } from './presence/instance.js'
+import { startQueueLeaseRefresh } from './queue/lease-refresh.js'
+import { startQueueStaleSweep } from './queue/sweep.js'
 import { getWorkerRuntimeFromEnv } from './worker-runtime.js'
 import { hostname as osHostname } from 'node:os'
 
@@ -72,11 +74,20 @@ async function main() {
     hostname,
     pid: process.pid,
   })
+  // Fase 3: queue-maintenance — lease-refresh (10 s) + stale-sweep (8–10 min).
+  // Stdio-only: dit proces draagt de caller-identiteit en het lease-register;
+  // http.ts start dit bewust NIET.
+  const { stop: stopLeaseRefresh } = startQueueLeaseRefresh()
+  const { stop: stopStaleSweep } = startQueueStaleSweep()
   const { shutdown } = registerShutdownHandlers({
     userId: auth.userId,
     tokenId: auth.tokenId,
     instanceId,
     stopHeartbeat,
+    stopQueueMaintenance: () => {
+      stopLeaseRefresh()
+      stopStaleSweep()
+    },
   })
 
   const transport = new StdioServerTransport()
