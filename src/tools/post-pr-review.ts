@@ -53,6 +53,17 @@ export async function handlePostPrReview(
     if (pr_url !== job.pr_url) {
       return toolError(`pr_url mismatch: job is bound to ${job.pr_url}`)
     }
+    // Forgejo valideert commit_id niet: op een misvormde sha antwoordt het met
+    // een lege HTTP 500 in plaats van een 4xx. Dat kostte op 2026-07-26 een
+    // hele review-job (PR scrum4me-docker#69, een sha waarin een fragment van
+    // 14 tekens verdubbeld was) plus een diagnose op de andere host, met als
+    // enige signaal `post_pr_review_failed`. Fail-closed op de vorm — alle 134
+    // pr_commit_id's in review_logs zijn 40 lowercase hex-tekens.
+    if (commit_id !== undefined && !/^[0-9a-f]{40}$/.test(commit_id)) {
+      return toolError(
+        `commit_id is geen volledige SHA-1: verwacht 40 hex-tekens, kreeg ${commit_id.length} (${commit_id})`,
+      )
+    }
 
     const posted = await postPullRequestReview({ prUrl: job.pr_url, event, body, commitId: commit_id })
     if ('error' in posted) {

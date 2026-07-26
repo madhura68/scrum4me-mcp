@@ -18,6 +18,10 @@ const p = prisma as unknown as {
 const mockAuth = requireWriteAccess as ReturnType<typeof vi.fn>
 const mockPost = postPullRequestReview as ReturnType<typeof vi.fn>
 
+// Echte sha-vorm: de tool weigert alles wat geen 40 lowercase hex-tekens is.
+const SHA_A = 'aa11bb22cc33dd44ee55ff6677889900aabbccdd'
+const SHA_B = 'def4561122334455667788990011223344556677'
+
 beforeEach(() => {
   vi.clearAllMocks()
   mockAuth.mockResolvedValue({ userId: 'u1', tokenId: 't', username: 'a', isDemo: false })
@@ -32,7 +36,7 @@ describe('post_pr_review → ReviewLog', () => {
   it('APPROVED schrijft ReviewLog met verdict APPROVED + pr_commit_id', async () => {
     await handlePostPrReview({
       job_id: 'job-1', pr_url: 'https://git/x/y/pulls/1', event: 'APPROVED',
-      body: 'looks good', commit_id: 'abc123', review_log: { findings: [{ severity: 'info', message: 'ok' }] },
+      body: 'looks good', commit_id: SHA_A, review_log: { findings: [{ severity: 'info', message: 'ok' }] },
     })
     expect(p.reviewLog.upsert).toHaveBeenCalledTimes(1)
     const arg = p.reviewLog.upsert.mock.calls[0][0]
@@ -40,7 +44,7 @@ describe('post_pr_review → ReviewLog', () => {
     expect(arg.create.verdict).toBe('APPROVED')
     expect(arg.create.kind).toBe('PR_REVIEW')
     expect(arg.create.product_id).toBe('prod-1')
-    expect(arg.create.pr_commit_id).toBe('abc123')
+    expect(arg.create.pr_commit_id).toBe(SHA_A)
     expect(arg.create.findings).toEqual([{ severity: 'info', message: 'ok' }])
   })
 
@@ -52,7 +56,7 @@ describe('post_pr_review → ReviewLog', () => {
   it('COMMENT → verdict COMMENT, mét findings en pin (was: sloeg de rij over)', async () => {
     await handlePostPrReview({
       job_id: 'job-1', pr_url: 'https://git/x/y/pulls/1', event: 'COMMENT',
-      body: 'note', commit_id: 'def456',
+      body: 'note', commit_id: SHA_B,
       review_log: { findings: [{ severity: 'warning', ref: 'a.ts:1', message: 'let op' }] },
     })
     expect(p.reviewLog.upsert).toHaveBeenCalledTimes(1)
@@ -60,7 +64,7 @@ describe('post_pr_review → ReviewLog', () => {
     expect(arg.where).toEqual({ review_job_id: 'job-1' })
     expect(arg.create.verdict).toBe('COMMENT')
     expect(arg.create.kind).toBe('PR_REVIEW')
-    expect(arg.create.pr_commit_id).toBe('def456')
+    expect(arg.create.pr_commit_id).toBe(SHA_B)
     expect(arg.create.findings).toEqual([{ severity: 'warning', ref: 'a.ts:1', message: 'let op' }])
   })
 
