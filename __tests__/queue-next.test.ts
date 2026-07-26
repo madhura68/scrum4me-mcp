@@ -44,10 +44,11 @@ function makeServer() {
 }
 
 const MSG_ID = 'aaaaaaaa-0000-4000-8000-000000000050'
+const MSG_ID_2 = 'aaaaaaaa-0000-4000-8000-000000000051'
 
-function claimedRow(claimedBy: string) {
+function claimedRow(claimedBy: string, id: string = MSG_ID) {
   return {
-    id: MSG_ID,
+    id,
     type: 'task',
     from_server: 'max2',
     from_model: 'codex',
@@ -164,5 +165,66 @@ describe('queue_next — §5.3', () => {
     const result = await server.call({ wait_seconds: 0 })
     expect(result.isError).toBe(true)
     expect(result.content[0].text).toContain('QUEUE_IDENTITY_REQUIRED')
+  })
+
+  it('geeft elke claim een eigen, onvoorspelbaar token', async () => {
+    // Niet cosmetisch. verifyLocalOwnership vergelijkt het meegegeven
+    // claim_token met getLease(messageId).claimToken -- gesleuteld op bericht-id,
+    // niet op token. Is het token een constante, dan kan elke aanroeper binnen
+    // dit proces die een geclaimd bericht-id kent (zichtbaar via queue_list en
+    // queue_status) dat token meegeven aan queue_done of queue_fail voor een
+    // bericht dat hij nooit claimde -- en stap (b) laat hem door.
+    // Twee opeenvolgende claims op verschillende berichten: de twee
+    // claim_tokens moeten verschillen, en elk token moet voorkomen in de
+    // claimed_by die bij díe claim is meegegeven, zodat een gedeeld token niet
+    // via een omweg alsnog passeert.
+    mockClaim
+      .mockImplementationOnce(async ({ claimedBy }: { claimedBy: string }) => claimedRow(claimedBy, MSG_ID))
+      .mockImplementationOnce(async ({ claimedBy }: { claimedBy: string }) => claimedRow(claimedBy, MSG_ID_2))
+    const server = makeServer()
+    const result1 = await server.call({ wait_seconds: 0 })
+    const result2 = await server.call({ wait_seconds: 0 })
+    const body1 = JSON.parse(result1.content[0].text)
+    const body2 = JSON.parse(result2.content[0].text)
+    expect(body1.claim_token).not.toBe(body2.claim_token)
+    const claimedBy1 = mockClaim.mock.calls[0][0].claimedBy as string
+    const claimedBy2 = mockClaim.mock.calls[1][0].claimedBy as string
+    expect(claimedBy1).toBe(`mcp:inst-1:${body1.claim_token}`)
+    expect(claimedBy2).toBe(`mcp:inst-1:${body2.claim_token}`)
+    // Twee verschillende bericht-ids: anders overschrijft de tweede
+    // registerLease de eerste en toetst dit niets over onderlinge verschillen.
+    expect(getLease(MSG_ID)).toEqual({ claimToken: body1.claim_token, claimedBy: claimedBy1 })
+    expect(getLease(MSG_ID_2)).toEqual({ claimToken: body2.claim_token, claimedBy: claimedBy2 })
+  })
+
+  it('wekt op verzoek-types, niet op antwoord-types', async () => {
+    // De predicaat die aan waitForQueueWakeup wordt meegegeven werd nooit
+    // uitgevoerd, want die functie is gemockt. Vang hem uit de mock en roep hem
+    // zelf aan -- dan is het predicaat wél getoetst zonder een echte NOTIFY.
+    // mockWakeup breekt de wait-loop meteen na de eerste aanroep (zelfde
+    // patroon als 'cancel tijdens de wait'), zodat mock.calls[0] het predicaat
+    // van de allereerste waitForQueueWakeup-aanroep bevat.
+    const ac = new AbortController()
+    mockWakeup.mockImplementation(async () => {
+      ac.abort()
+    })
+    const server = makeServer()
+    await server.call({ wait_seconds: 30 }, { signal: ac.signal })
+    const isRelevant = mockWakeup.mock.calls[0][2] as (payload: Record<string, unknown>) => boolean
+    expect(isRelevant({ type: 'task', to_server: 'mac', to_model: 'claude', status: 'pending' })).toBe(true)
+    expect(isRelevant({ type: 'result', to_server: 'mac', to_model: 'claude', status: 'pending' })).toBe(false)
+  })
+
+  it('geeft de meta van het bericht mee in de respons', async () => {
+    // messageView is gedeeld, dus een regressie zou elders ook opvallen -- maar
+    // dit bestand bewaakte het niet, en meta.task.cwd is precies wat de
+    // ontvanger nodig heeft om het werk op de juiste plek uit te voeren.
+    mockClaim.mockImplementation(async ({ claimedBy }: { claimedBy: string }) => claimedRow(claimedBy))
+    const server = makeServer()
+    const result = await server.call({ wait_seconds: 0 })
+    const body = JSON.parse(result.content[0].text)
+    expect(body.message.meta).toEqual({
+      task: { cwd: '/w', repo: 'r', objective: 'o', verification: 'v', response_format: 'rf' },
+    })
   })
 })
