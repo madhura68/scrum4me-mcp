@@ -211,8 +211,9 @@ Server-startup registers a `ClaudeWorker` record + starts a 10 s heartbeat; shut
 ## Testing
 
 ```bash
-npm test          # vitest run
-npm run typecheck # tsc --noEmit
+npm test                # vitest run — pretest typechecks __tests__ first
+npm run typecheck       # tsc --noEmit — src/**/* only
+npm run typecheck:tests # tsc -p tsconfig.type-tests.json — all of __tests__
 ```
 
 ### Integration tests need a database — and must not run in parallel
@@ -235,3 +236,34 @@ Point `TEST_DATABASE_URL` at a throwaway database, never at `scrum4me`. The
 sweep mutates whatever it finds.
 
 All worktree helpers have unit tests under `__tests__/git/worktree.test.ts`, `__tests__/wait-for-job-worktree.test.ts`, and `__tests__/update-job-status-worktree.test.ts`.
+
+### Test files are typechecked by a second config
+
+| Config | Scope | Runs via |
+|---|---|---|
+| `tsconfig.json` | `src/**/*` | `npm run typecheck` |
+| `tsconfig.type-tests.json` | `__tests__/**/*` | `npm run typecheck:tests`, wired to `pretest` |
+
+Because it hangs off `pretest`, `npm test` — and therefore the CI step `npm run test` —
+always typechecks the tests first; `.forgejo/workflows/ci.yml` needs nothing extra. `src/`
+comes along transitively through the tests' imports.
+
+This exists because **vitest transpiles without typechecking**, so a type error in a test file
+runs green. Until 2026-07-26 the base config only included `src/**/*` and the test config was
+scoped to one file: 54 type errors sat unnoticed in main, and a signature change that broke
+its tests passed CI. Keep the `include` a glob, never a file list — new test files must be
+covered automatically.
+
+Two consequences worth knowing before writing tests:
+
+- `result.content[0].text` does not typecheck for handlers returning the SDK's
+  `CallToolResult` (its `content` is a union). Use `toolText()` from
+  `__tests__/helpers/tool-result.ts`.
+- `ReturnType<typeof vi.fn>` resolves to the non-callable `Mock<Procedure | Constructable>`
+  under vitest 4. Use `AnyMock` from `__tests__/helpers/mocks.ts` where a test calls the mock
+  or reads `.mock.calls`.
+
+Relative imports need explicit `.js` extensions (`moduleResolution: NodeNext`). Vitest resolves
+them without, so such an import only fails in `tsc` — and a missing extension yields TS2307,
+meaning the module was never typechecked at all. Details: product doc
+`PATTERNS/typecheck-scope-src-en-tests`.
