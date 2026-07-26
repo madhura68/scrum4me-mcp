@@ -34,6 +34,7 @@ vi.mock('../src/prisma.js', () => ({ prisma: root }))
 import { registerCreatePbiTool } from '../src/tools/create-pbi.js'
 import { handleCreateStory } from '../src/tools/create-story.js'
 import { handleCreateTask } from '../src/tools/create-task.js'
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 
 function p2034() {
   return new Prisma.PrismaClientKnownRequestError('write conflict', {
@@ -86,7 +87,10 @@ function adapterWriteConflict() {
 }
 
 function capturePbiHandler() {
-  let handler: ((input: Record<string, unknown>) => Promise<unknown>) | undefined
+  // Promise<CallToolResult>, niet Promise<unknown>: in de it.each-tupels staat deze
+  // handler naast handleCreateStory/handleCreateTask, en één unknown-tak maakt de
+  // hele unie unknown — waardoor result.isError niet meer leesbaar is.
+  let handler: ((input: Record<string, unknown>) => Promise<CallToolResult>) | undefined
   registerCreatePbiTool({
     registerTool: vi.fn((_name, _definition, callback) => { handler = callback }),
   } as never)

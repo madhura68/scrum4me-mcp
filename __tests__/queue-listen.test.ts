@@ -86,7 +86,10 @@ describe('waitForQueueWakeup — NOTIFY is wake-up-only (§5 LISTEN-mechaniek)',
   it('ruimt ook de abort-listener op, niet alleen die op de client', async () => {
     // Een bounded wait roept deze functie in een lus aan met hetzelfde signal,
     // dus een lek hier stapelt binnen één tool-call op.
-    const { getEventListeners } = await import('node:events')
+    // Via de statische EventEmitter-methode: @types/node v22 declareert
+    // getEventListeners alleen daar, niet als module-level export.
+    const { EventEmitter } = await import('node:events')
+    const getEventListeners = EventEmitter.getEventListeners
     const client = fakeClient()
     const ac = new AbortController()
     const p = waitForQueueWakeup(client, ac.signal, (payload) => payload.in_reply_to === 'msg-1')

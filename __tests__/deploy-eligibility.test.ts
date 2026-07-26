@@ -3,7 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // vi.hoisted voor álle mock-fns (geen buitenliggende const in vi.mock-factories).
 // $transaction geeft de gedeelde tx-handle terug.
 const txMocks = vi.hoisted(() => ({
-  $executeRaw: vi.fn(() => Promise.resolve(0)),
+  // Getypeerd als tagged template ($executeRaw`SELECT pg_advisory_xact_lock(...)`),
+  // zodat mock.calls[0][0] de strings-array is waarop de test .join('') doet.
+  $executeRaw: vi.fn((_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve(0)),
   product: { findUnique: vi.fn() },
   claudeJob: { findFirst: vi.fn() },
 }))

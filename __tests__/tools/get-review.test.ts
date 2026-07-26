@@ -10,6 +10,7 @@ import { prisma } from '../../src/prisma.js'
 import { getAuth } from '../../src/auth.js'
 import { userCanAccessProduct } from '../../src/access.js'
 import { handleGetReview } from '../../src/tools/get-review.js'
+import { toolText } from '../helpers/tool-result.js'
 
 const p = prisma as unknown as {
   claudeJob: { findUnique: ReturnType<typeof vi.fn> }
@@ -60,6 +61,6 @@ describe('get_review', () => {
     p.claudeJob.findUnique.mockResolvedValue({ id: 'j1', kind: 'SPEC_REVIEW', status: 'DONE', product_id: 'p1', pr_url: null, summary: null })
     mockAccess.mockResolvedValue(false)
     const res = await handleGetReview({ job_id: 'j1' })
-    expect(res.content[0].text).toBe('Job j1 not found')
+    expect(toolText(res)).toBe('Job j1 not found')
   })
 })

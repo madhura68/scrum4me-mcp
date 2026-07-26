@@ -44,15 +44,16 @@ import {
   rollbackClaim,
   resetStaleClaimedJobs,
 } from '../src/tools/wait-for-job.js'
+import type { AnyMock } from './helpers/mocks.js'
 
 const mockPrisma = prisma as unknown as {
   claudeWorker: {
-    upsert: ReturnType<typeof vi.fn>
-    findMany: ReturnType<typeof vi.fn>
+    upsert: AnyMock
+    findMany: AnyMock
   }
-  $queryRaw: ReturnType<typeof vi.fn>
-  $executeRaw: ReturnType<typeof vi.fn>
-  $transaction: ReturnType<typeof vi.fn>
+  $queryRaw: AnyMock
+  $executeRaw: AnyMock
+  $transaction: AnyMock
 }
 
 beforeEach(() => {

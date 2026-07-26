@@ -31,6 +31,7 @@ vi.mock('../src/lib/dispatch/docs-audit-dispatch.js', () => ({
 import { requireWriteAccess } from '../src/auth.js'
 import { userCanAccessProduct } from '../src/access.js'
 import { handleDispatchJob } from '../src/tools/dispatch-job.js'
+import { toolText } from './helpers/tool-result.js'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -41,7 +42,7 @@ beforeEach(() => {
 it('IDEA_GRILL vereist idea_id (matrix)', async () => {
   const res = await handleDispatchJob({ kind: 'IDEA_GRILL', product_id: 'p1' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toMatch(/idea_id/)
+  expect(toolText(res)).toMatch(/idea_id/)
 })
 
 it('weigert overtollige refs (matrix is exact)', async () => {
@@ -49,7 +50,7 @@ it('weigert overtollige refs (matrix is exact)', async () => {
     kind: 'IDEA_GRILL', product_id: 'p1', idea_id: 'i1', task_id: 't1',
   })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toMatch(/task_id/)
+  expect(toolText(res)).toMatch(/task_id/)
 })
 
 it('PLAN_CHAT is geen geldig kind', async () => {
@@ -65,32 +66,32 @@ it('IDEA_CHAT is geen geldig kind (interactief kanaal, niet dispatchbaar)', asyn
 it('DEPLOY vereist geen refs (matrix: required = [])', async () => {
   const res = await handleDispatchJob({ kind: 'DEPLOY', product_id: 'p1' })
   expect(res.isError).toBeFalsy()
-  expect(JSON.parse(res.content[0].text as string)).toMatchObject({ job_id: 'job-6' })
+  expect(JSON.parse(toolText(res))).toMatchObject({ job_id: 'job-6' })
 })
 
 it('DEPLOY weigert refs zoals pr_url (matrix is exact, géén refs toegestaan)', async () => {
   const res = await handleDispatchJob({ kind: 'DEPLOY', product_id: 'p1', pr_url: 'https://x/y/pulls/1' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toMatch(/pr_url/)
+  expect(toolText(res)).toMatch(/pr_url/)
 })
 
 it('DOCS_AUDIT vereist geen refs (matrix: required = [])', async () => {
   const res = await handleDispatchJob({ kind: 'DOCS_AUDIT', product_id: 'p1' })
   expect(res.isError).toBeFalsy()
-  expect(JSON.parse(res.content[0].text as string)).toMatchObject({ job_id: 'job-7' })
+  expect(JSON.parse(toolText(res))).toMatchObject({ job_id: 'job-7' })
 })
 
 it('DOCS_AUDIT weigert een task_id (matrix is exact, géén refs toegestaan)', async () => {
   const res = await handleDispatchJob({ kind: 'DOCS_AUDIT', product_id: 'p1', task_id: 't1' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toMatch(/task_id/)
+  expect(toolText(res)).toMatch(/task_id/)
 })
 
 it('product buiten scope → 404-stijl, dispatcher niet aangeroepen', async () => {
   ;(userCanAccessProduct as ReturnType<typeof vi.fn>).mockResolvedValue(false)
   const res = await handleDispatchJob({ kind: 'IDEA_GRILL', product_id: 'p1', idea_id: 'i1' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toMatch(/not found or not accessible/)
+  expect(toolText(res)).toMatch(/not found or not accessible/)
 })
 
 it('SPEC_REVIEW accepteert doc_slug óf doc_id, niet beide', async () => {
@@ -102,14 +103,14 @@ it('SPEC_REVIEW accepteert doc_slug óf doc_id, niet beide', async () => {
   expect(ok.isError).toBeFalsy()
   const neither = await handleDispatchJob({ kind: 'SPEC_REVIEW', product_id: 'p1' })
   expect(neither.isError).toBe(true)
-  expect(neither.content[0].text).toMatch(/precies één/)
+  expect(toolText(neither)).toMatch(/precies één/)
 })
 
 it('happy paths leveren job-ids', async () => {
   const grill = await handleDispatchJob({ kind: 'IDEA_GRILL', product_id: 'p1', idea_id: 'i1' })
-  expect(JSON.parse(grill.content[0].text as string)).toMatchObject({ job_id: 'job-1' })
+  expect(JSON.parse(toolText(grill))).toMatchObject({ job_id: 'job-1' })
   const sprint = await handleDispatchJob({ kind: 'SPRINT_IMPLEMENTATION', product_id: 'p1', sprint_id: 's1' })
-  expect(JSON.parse(sprint.content[0].text as string)).toMatchObject({ sprint_run_id: 'run-1' })
+  expect(JSON.parse(toolText(sprint))).toMatchObject({ sprint_run_id: 'run-1' })
 })
 
 it('DispatchError uit een dispatcher wordt een nette toolError', async () => {
@@ -118,5 +119,5 @@ it('DispatchError uit een dispatcher wordt een nette toolError', async () => {
   ;(dispatchIdeaJob as ReturnType<typeof vi.fn>).mockRejectedValue(new DispatchError('Idea x not found in this product'))
   const res = await handleDispatchJob({ kind: 'IDEA_GRILL', product_id: 'p1', idea_id: 'x' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toMatch(/not found in this product/)
+  expect(toolText(res)).toMatch(/not found in this product/)
 })
