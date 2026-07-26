@@ -200,4 +200,81 @@ describe('queue_push — §5.1', () => {
     expect(result.isError).toBe(true)
     expect(result.content[0].text).toContain('VALIDATION_ERROR: invalid target')
   })
+
+  it('laat een expliciete meta.task.cwd winnen van de cwd-parameter', async () => {
+    // Load-bearing precedentie die nergens gedekt was: geeft de agent beide,
+    // dan hoort de expliciete meta.task.cwd te winnen. Andersom voert de
+    // ontvanger het werk in de verkeerde map uit.
+    const server = makeServer()
+    await server.call({
+      to: 'scrum4me-server:claude',
+      type: 'task',
+      body: 'doe iets',
+      cwd: '/param/dir',
+      meta: {
+        task: {
+          cwd: '/expliciet/dir', objective: 'o', verification: 'v', response_format: 'rf',
+        },
+      },
+    })
+    expect(mockDerive).toHaveBeenCalledWith('/expliciet/dir')
+    expect(mockPrisma.agentMessage.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        meta: {
+          task: {
+            cwd: '/expliciet/dir',
+            repo: 'https://git.jp-visser.nl/janpeter/x.git',
+            objective: 'o',
+            verification: 'v',
+            response_format: 'rf',
+          },
+        },
+      }),
+    })
+  })
+
+  it('vult from_server en from_model uit de resolved identity, niet hardgecodeerd', async () => {
+    // Elke andere test stubt S4M_SERVER=mac, dus een hardgecodeerd 'mac' in de
+    // insert bleef onzichtbaar. Stub hier een andere geldige server.
+    vi.stubEnv('S4M_SERVER', 'max2')
+    vi.stubEnv('S4M_MODEL', 'codex')
+    const server = makeServer()
+    await server.call({ to: 'scrum4me-server:claude', type: 'info', body: 'x' })
+    expect(mockPrisma.agentMessage.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ from_server: 'max2', from_model: 'codex' }),
+    })
+  })
+
+  it('bewaart meegegeven meta bij een info-bericht', async () => {
+    // info heeft geen meta.task nodig, maar meta mag daarom niet verdwijnen.
+    const server = makeServer()
+    await server.call({ to: 'scrum4me-server:claude', type: 'info', body: 'x', meta: { foo: 'bar' } })
+    expect(mockPrisma.agentMessage.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ meta: { foo: 'bar' } }),
+    })
+  })
+
+  it('notificeert pas ná de insert, met een envelope uit de opgeslagen rij', async () => {
+    // Mutatie A liet een optimistische NOTIFY vóór de insert overleven, met
+    // een verzonnen id. invocationCallOrder is een monotone teller over alle
+    // mocks heen, dus de volgorde is direct te asserteren; de id-vergelijking
+    // met de opgeslagen rij sluit een verzonnen envelope uit.
+    const server = makeServer()
+    await server.call({ to: 'scrum4me-server:claude', type: 'info', body: 'vraag' })
+    expect(mockPrisma.agentMessage.create.mock.invocationCallOrder[0])
+      .toBeLessThan(mockPrisma.$executeRaw.mock.invocationCallOrder[0])
+    const payload = mockPrisma.$executeRaw.mock.calls[0][2] as string
+    expect(JSON.parse(payload).id).toBe(createdRow.id)
+  })
+
+  it('laat de tool slagen als de NOTIFY faalt', async () => {
+    // Best-effort: de rij is al gecommit, dus een mislukte notify mag geen
+    // tool-fout worden — inclusief het message_id in de succesvolle respons.
+    mockPrisma.$executeRaw.mockRejectedValueOnce(new Error('notify down'))
+    const server = makeServer()
+    const result = await server.call({ to: 'scrum4me-server:claude', type: 'info', body: 'vraag' })
+    expect(result.isError).toBeUndefined()
+    const body = JSON.parse(result.content[0].text)
+    expect(body.message_id).toBe(createdRow.id)
+  })
 })
