@@ -123,6 +123,20 @@ describe('queue_done — validaties (§5.4/§7)', () => {
     expect(result.content[0].text).toContain('QUEUE_NOT_CLAIMER')
   })
 
+  it('weigert een claimed_by die de verwachte waarde als prefix heeft (stap c, strikte gelijkheid)', async () => {
+    // startsWith in plaats van strikte gelijkheid liet alle tests groen, omdat
+    // geen fixture een claimed_by gebruikte die een prefix deelt met de
+    // verwachte waarde. Juist die botsing is waar de strikte vergelijking voor
+    // bestaat: 'mcp:inst:tok2' begint met 'mcp:inst:tok' maar is een ándere
+    // claim — van een herclaim of een parallelle incarnatie.
+    registerLease(MSG_ID, { claimToken: 'tok', claimedBy: 'mcp:inst:tok' })
+    txMock.$queryRaw.mockResolvedValueOnce([requestRow({ claimed_by: 'mcp:inst:tok2' })])
+    const server = makeServer()
+    const result = await server.call({ message_id: MSG_ID, claim_token: 'tok' })
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('QUEUE_NOT_CLAIMER')
+  })
+
   it('reply op een response-type bericht → VALIDATION_ERROR (CLI-pariteit)', async () => {
     txMock.$queryRaw.mockResolvedValueOnce([
       requestRow({ type: 'data', in_reply_to: 'ander-id', status: 'pending', claimed_by: null }),
@@ -195,5 +209,65 @@ describe('queue_done — happy paths (§5.4)', () => {
     const result = await server.call({ message_id: MSG_ID, reply: 'bypass' })
     expect(result.isError).toBeUndefined()
     expect(txMock.$executeRaw).toHaveBeenCalledTimes(2)
+  })
+
+  it('spiegelt from/to uit de request-rij, niet uit de eigen identiteit', async () => {
+    // Elke andere fixture gebruikte to_server 'mac' / to_model 'claude', gelijk
+    // aan wat een hardgecodeerde waarde ook zou opleveren — een hardcoded from/to
+    // bleef daardoor onzichtbaar. Gebruik hier een request gericht aan een ánder
+    // adres om mirroring aantoonbaar te onderscheiden van hardcoding.
+    registerLease(MSG_ID, { claimToken: 'tok', claimedBy: 'mcp:inst:tok' })
+    const req = requestRow({
+      from_server: 'max2', from_model: 'codex',
+      to_server: 'scrum4me-server', to_model: 'claude',
+    })
+    const replyRow = {
+      ...req, id: REPLY_ID, type: 'result',
+      from_server: 'scrum4me-server', from_model: 'claude',
+      to_server: 'max2', to_model: 'codex',
+      body: 'klaar', in_reply_to: MSG_ID, status: 'pending', claimed_by: null, source: 'mcp',
+    }
+    txMock.$queryRaw
+      .mockResolvedValueOnce([req])
+      .mockResolvedValueOnce([replyRow])
+      .mockResolvedValueOnce([{ ...req, status: 'done', finished_at: new Date() }])
+    const server = makeServer()
+    const result = await server.call({ message_id: MSG_ID, reply: 'klaar', claim_token: 'tok' })
+    expect(result.isError).toBeUndefined()
+    const insertValues = txMock.$queryRaw.mock.calls[1].slice(1)
+    expect(insertValues).toEqual(['result', 'scrum4me-server', 'claude', 'max2', 'codex', 'klaar', MSG_ID])
+  })
+
+  it('leidt het reply-type af uit QUEUE_REPLY_TYPE, niet hardgecodeerd', async () => {
+    // Alleen task→result werd door de andere happy-paths uitgeprobeerd, dus een
+    // hardgecodeerde 'result' bleef onzichtbaar. Toets de andere twee paren.
+    registerLease(MSG_ID, { claimToken: 'tok', claimedBy: 'mcp:inst:tok' })
+    const infoReq = requestRow({ type: 'info' })
+    const infoReply = {
+      ...infoReq, id: REPLY_ID, type: 'data',
+      in_reply_to: MSG_ID, status: 'pending', claimed_by: null, source: 'mcp',
+    }
+    txMock.$queryRaw
+      .mockResolvedValueOnce([infoReq])
+      .mockResolvedValueOnce([infoReply])
+      .mockResolvedValueOnce([{ ...infoReq, status: 'done', finished_at: new Date() }])
+    const server = makeServer()
+    const infoResult = await server.call({ message_id: MSG_ID, reply: 'antwoord', claim_token: 'tok' })
+    expect(infoResult.isError).toBeUndefined()
+    expect(txMock.$queryRaw.mock.calls[1].slice(1)[0]).toBe('data')
+
+    registerLease(MSG_ID, { claimToken: 'tok', claimedBy: 'mcp:inst:tok' })
+    const reviewReq = requestRow({ type: 'review_request' })
+    const reviewReply = {
+      ...reviewReq, id: REPLY_ID, type: 'reviewed',
+      in_reply_to: MSG_ID, status: 'pending', claimed_by: null, source: 'mcp',
+    }
+    txMock.$queryRaw
+      .mockResolvedValueOnce([reviewReq])
+      .mockResolvedValueOnce([reviewReply])
+      .mockResolvedValueOnce([{ ...reviewReq, status: 'done', finished_at: new Date() }])
+    const reviewResult = await server.call({ message_id: MSG_ID, reply: 'goedgekeurd', claim_token: 'tok' })
+    expect(reviewResult.isError).toBeUndefined()
+    expect(txMock.$queryRaw.mock.calls[4].slice(1)[0]).toBe('reviewed')
   })
 })
