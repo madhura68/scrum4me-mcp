@@ -1,27 +1,55 @@
-# Voorstel: nieuwe `~/.claude/rules/s4m-queue.md` (fase 3, taak 7)
+# De nieuwe `~/.claude/rules/s4m-queue.md` (fase 3, taak 7)
 
-> **STATUS: NIET ACTIEF — wacht op deploy.** Dit is een voorstel, geen weergave van
-> de huidige situatie. Het bestand `~/.claude/rules/s4m-queue.md` is bewust
-> ongewijzigd gelaten.
+> **STATUS: ACTIEF op mac sinds 2026-07-26.** De inhoud hieronder staat sinds die
+> datum in `~/.claude/rules/s4m-queue.md` op deze machine (back-up van de vorige
+> versie: `~/.claude/rules/s4m-queue.md.bak-voor-fase3`). Dit document blijft staan
+> als bron voor de rules-sync naar de andere hosts.
+>
+> **Nog niet gesynct naar `scrum4me-server` en `max2`.** Daar draait de oude CLI
+> (zonder `inbox --in-reply-to`) en een MCP-installatie die de `queue_*`-tools
+> vermoedelijk nog niet aanbiedt. Synct JP dit bestand daarheen vóór die deploy,
+> dan wijzen de triggers daar naar tools die niet bestaan; de CLI-fallback in
+> hetzelfde bestand houdt `push`/`next`/`done` wel werkend.
 
-## Waarom het wacht
+## Waarom het wachtte, en wat de activering blokkeerde
 
-De inhoud hieronder verwijst agents primair naar de MCP-tools `queue_push`,
-`queue_wait_reply`, `queue_next`, `queue_done`, `queue_fail`, `queue_status` en
-`queue_list`. Op 2026-07-26 is gemeten dat de draaiende `scrum4me` MCP-server
-géén enkele `queue_*`-tool aanbiedt: die server dateert van vóór fase 2.
+De inhoud verwijst agents primair naar de MCP-tools `queue_push`, `queue_wait_reply`,
+`queue_next`, `queue_done`, `queue_fail`, `queue_status` en `queue_list`. Zolang de
+draaiende MCP-server die niet aanbood, wees elke trigger naar een niet-bestaande tool.
 
-Activeren vóór de deploy laat elke trigger naar een niet-bestaande tool wijzen.
+Het activeren kostte drie stappen die elk apart misgingen, en dat is het bewaren waard:
 
-## Voorwaarden om dit alsnog weg te schrijven
+1. **De MCP draait niet uit deze repo** maar uit een aparte checkout,
+   `~/Development/scrum4me-mcp-stable` (zie `~/.claude.json` → `mcpServers.scrum4me`).
+   Die stond 100 commits achter; herstarten alleen veranderde niets.
+2. **Identiteit ontbrak.** De queue-tools lezen `S4M_SERVER` én `S4M_MODEL`. De eerste
+   stond in `~/.zshenv`, de tweede bestond nergens. Beide horen in het `env`-blok van
+   de MCP-config, niet in de shell — het gespawnde proces erft die niet betrouwbaar.
+3. **De gegenereerde Prisma-schema was stil kapot.** `npm install` draaide zijn
+   postinstall (`gen-schema.sh`) terwijl de submodule `vendor/scrum4me-shared` nog op
+   een verkeerde commit stond. Resultaat: 37 in plaats van 39 modellen, precies
+   `AgentMessage` en `AgentMessageArchive` weg. De server zou schoon starten, alle
+   zeven tools registreren, en pas bij de eerste aanroep crashen op een undefined
+   `prisma.agentMessage`. De submodule achteraf goedzetten repareert dat niet — de
+   generatie moet daarna opnieuw. Controle die dit vangt:
+   `git diff --stat prisma/schema.prisma` moet leeg zijn.
 
-1. Fase 2 restant gemerged (PR #98 — `queue_done` t/m de integratietests).
-2. Fase 3 gemerged (lease-refresh, sweep, bootstrap-wiring, CLI-pariteit).
-3. De MCP-server op de host herstart, zodat `registerQueueTools` de tools
-   daadwerkelijk registreert. Verifieer met een tool-listing vóór je dit activeert.
-4. Voor `inbox --in-reply-to` uit de CLI-fallback-sectie: `npm run build` in
-   `s4m-queue` plus herinstallatie van de globale bin op mac, scrum4me-server en
-   max2 (fase-1-draaiboek §4.4 stap 5).
+Geverifieerd is niet de tool-lijst maar een echte aanroep: `queue_status` met een
+onbekend id gaf `QUEUE_NOT_FOUND`, wat registratie, identiteit, Prisma-delegate en
+DB-verbinding in één klap aantoont. Een tool-lijst had er bij alle drie de defecten
+hierboven gezond uitgezien.
+
+## De voorwaarden die golden
+
+1. ✅ Fase 2 restant gemerged (PR #98 — `queue_done` t/m de integratietests).
+2. ✅ Fase 3 gemerged (lease-refresh, sweep, bootstrap-wiring, CLI-pariteit).
+3. ✅ (mac) De MCP-server op de host herstart, zodat `registerQueueTools` de tools
+   daadwerkelijk registreert. **Verifieer met een echte tool-aanroep, niet met een
+   tool-listing** — zie hierboven waarom die laatste niets bewijst.
+4. ⬜ Voor `inbox --in-reply-to` uit de CLI-fallback-sectie: `npm run build` in
+   `s4m-queue` plus herinstallatie van de globale bin. Op mac gedaan (dat is een
+   `npm link` naar de dev-checkout, dus: `dist/` bouwen en `chmod +x dist/cli.js`);
+   scrum4me-server en max2 staan nog open (fase-1-draaiboek §4.4 stap 5).
 
 Distributie naar scrum4me-server en max2 gaat daarna via de bestaande
 rules-sync-flow (`s4m-rules-apply`); JP kiest het moment.
