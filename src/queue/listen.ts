@@ -48,5 +48,6 @@ export function waitForQueueWakeup(
     }
     client.on('notification', onNotification)
     signal.addEventListener('abort', onAbort, { once: true })
+    if (signal.aborted) finish()
   })
 }
