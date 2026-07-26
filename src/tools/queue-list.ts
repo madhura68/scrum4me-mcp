@@ -5,7 +5,16 @@ import { requireWriteAccess } from '../auth.js'
 import { toolJson, withToolErrors } from '../errors.js'
 import { resolveQueueIdentity } from '../queue/identity.js'
 import { messageView } from '../queue/view.js'
-import { QUEUE_MODELS } from '@shared/queue-identity.js'
+import { QUEUE_MODELS, QUEUE_STATUSES, QUEUE_TERMINAL_STATUSES } from '@shared/queue-identity.js'
+
+// 'Niet-terminaal' is het complement van QUEUE_TERMINAL_STATUSES, dus afgeleid
+// in plaats van overgetypt. Vandaag exact ['pending', 'claimed']; komt er ooit
+// een zesde, niet-terminale status bij, dan valt die niet stil buiten de
+// default-lijst. `direction` hieronder blijft wél een eigen literal-lijst: dat
+// is MCP-eigen tool-vocabulaire, het staat niet in de gedeelde module.
+const NON_TERMINAL_STATUSES: readonly string[] = QUEUE_STATUSES.filter(
+  (status) => !(QUEUE_TERMINAL_STATUSES as readonly string[]).includes(status),
+)
 
 const inputSchema = z.object({
   direction: z.enum(['sent', 'received', 'both']).default('both'),
@@ -37,7 +46,7 @@ export function registerQueueListTool(server: McpServer) {
         const received = { to_server: self.server, to_model: self.model }
         const where: Record<string, unknown> =
           dir === 'sent' ? { ...sent } : dir === 'received' ? { ...received } : { OR: [sent, received] }
-        if (!includeTerminal) where.status = { in: ['pending', 'claimed'] }
+        if (!includeTerminal) where.status = { in: [...NON_TERMINAL_STATUSES] }
         const rows = await prisma.agentMessage.findMany({
           where,
           orderBy: { created_at: 'desc' },
