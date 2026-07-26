@@ -180,4 +180,85 @@ describe('queue_wait_reply — §5.2', () => {
     expect(result.isError).toBe(true)
     expect(result.content[0].text).toContain('QUEUE_IDENTITY_REQUIRED')
   })
+
+  it('gebruikt de standaard wachttijd wanneer wait_seconds ontbreekt', async () => {
+    // Schema-niveau: bewijst de exacte default (300) die de MCP SDK's eigen
+    // parsing in productie toepast — zelfde precedent als queue-list.test.ts.
+    const server = makeServer()
+    const meta = server.registerTool.mock.calls[0][1] as {
+      inputSchema: { parse: (value: unknown) => { wait_seconds: number } }
+    }
+    expect(meta.inputSchema.parse({ message_ids: [REQ_A] }).wait_seconds).toBe(300)
+
+    // Code-niveau: de harnas roept de handler direct aan en omzeilt Zod, dus
+    // `wait_seconds ?? DEFAULT_WAIT_SECONDS` in de handler is een apart pad met
+    // een eigen waarde. "Er werd een keer wakeup aangeroepen" bewijst alleen
+    // dát er een werkende, niet-NaN wachttijd was — niet dat die exact 300 is;
+    // elk ander getal (bijv. 999999) zou dezelfde losse waarneming opleveren.
+    // Om de EXACTE waarde te dwingen: Date.now() gecontroleerd voor precies de
+    // twee aanroepen die er hier toe doen — de deadline-berekening en de
+    // eerste while-conditie. Bij waitSeconds===300 valt die conditie er meteen
+    // uit (0 iteraties, géén wake-up). Een afwijkende fallback laat de
+    // conditie waar, dus één extra iteratie. Na die twee gecontroleerde
+    // aanroepen valt de spy terug op de echte klok (~1,7 biljoen ms sinds
+    // epoch) — die overschrijdt sowieso elke deadline die uit base 0 plus een
+    // paar honderdduizend seconden volgt, dus de lus kan hier nooit vastlopen,
+    // ongeacht welke waarde een kapotte fallback zou opleveren (in
+    // tegenstelling tot mutatie 1's OOM, waar niets de klok liet vorderen).
+    const nowSpy = vi.spyOn(Date, 'now')
+    try {
+      nowSpy.mockReturnValueOnce(0) // deadline = 0 + waitSeconds*1000
+      nowSpy.mockReturnValueOnce(300_001) // eerste while-conditie
+      const result = await server.call({ message_ids: [REQ_A] })
+      const body = JSON.parse(result.content[0].text)
+      expect(body).toEqual({ status: 'timeout', replies: [] })
+      expect(mockOpen).toHaveBeenCalledTimes(1)
+      expect(mockWakeup).not.toHaveBeenCalled()
+    } finally {
+      nowSpy.mockRestore()
+    }
+  })
+
+  it('geeft de volledige id-set door aan claimNextReply, niet een deelverzameling', async () => {
+    // De enige bestaande test die de aanroep-argumenten exact controleert
+    // (audit-claimedBy) gebruikt één id. Bij meerdere ids zou een mutatie die
+    // er stilletjes eentje laat vallen (of de volgorde omdraait) daar niet
+    // door gedekt zijn — en dat maakt precies dat ene verzoek onbeantwoordbaar,
+    // wat de mis-routing is die deze tool moet oplossen.
+    const server = makeServer()
+    await server.call({ message_ids: [REQ_A, REQ_B], wait_seconds: 0 })
+    expect(mockClaim).toHaveBeenCalledWith({
+      server: 'mac',
+      model: 'claude',
+      messageIds: [REQ_A, REQ_B],
+      claimedBy: 'mcp:inst-1',
+    })
+  })
+
+  it('geeft bij een verstreken deadline de timeout-vorm terug', async () => {
+    // De vroege timeout-tak (wait_seconds===0 / aborted) is al gedekt; de
+    // fallback ná het betreden van de bounded wait niet. De deadline echt
+    // laten verstrijken via een reële wait_seconds zou de mocked (instant-
+    // resolvende) waitForQueueWakeup in een ongebreidelde lus laten draaien —
+    // precies het OOM-patroon van mutatie 1, alleen dan in productiecode die
+    // wél klopt. Fake timers dus: de klok verspringt als bijwerking van de
+    // EERSTE wake-up-aanroep ver voorbij de deadline, zodat de while-conditie
+    // na precies één iteratie deterministisch faalt, zonder dat er echte tijd
+    // verstrijkt of de lus ook maar één extra keer draait.
+    vi.useFakeTimers()
+    try {
+      const base = new Date('2026-01-01T00:00:00.000Z')
+      vi.setSystemTime(base)
+      mockWakeup.mockImplementationOnce(async () => {
+        vi.setSystemTime(new Date(base.getTime() + 10 * 60_000))
+      })
+      const server = makeServer()
+      const result = await server.call({ message_ids: [REQ_A], wait_seconds: 30 })
+      const body = JSON.parse(result.content[0].text)
+      expect(body).toEqual({ status: 'timeout', replies: [] })
+      expect(mockWakeup).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
