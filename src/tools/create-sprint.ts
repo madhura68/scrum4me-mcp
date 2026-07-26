@@ -12,6 +12,7 @@ import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
+import { driverAdapterCause, UNIQUE_VIOLATION } from '../lib/prisma-driver-error.js'
 
 const SPRINT_AUTO_RE = /^S-(\d{4}-\d{2}-\d{2})-(\d+)$/
 const MAX_CODE_ATTEMPTS = 3
@@ -40,11 +41,14 @@ async function generateNextSprintCode(productId: string): Promise<string> {
 }
 
 function isCodeUniqueConflict(error: unknown): boolean {
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false
-  if (error.code !== 'P2002') return false
-  const target = (error.meta as { target?: string[] | string } | undefined)?.target
-  if (!target) return false
-  return Array.isArray(target) ? target.includes('code') : target.includes('code')
+  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+    const target = (error.meta as { target?: string[] | string } | undefined)?.target
+    if (target) return Array.isArray(target) ? target.includes('code') : target.includes('code')
+  }
+  // Driver-adapter shape: no meta.target, constraint under the adapter cause.
+  const cause = driverAdapterCause(error)
+  if (cause?.originalCode !== UNIQUE_VIOLATION) return false
+  return cause.constraint?.fields?.includes('code') ?? false
 }
 
 export const inputSchema = z.object({

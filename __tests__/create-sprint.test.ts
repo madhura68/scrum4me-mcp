@@ -138,6 +138,33 @@ describe('handleCreateSprint', () => {
     expect(parseResult(result).id).toBe('spr-r')
   })
 
+  // Shape measured on Prisma 7.8 + @prisma/adapter-pg: P2002 without
+  // meta.target, constraint under the driver-adapter cause.
+  it('retries on the unique conflict the driver adapter reports without meta.target', async () => {
+    const adapterError = new Error('UniqueConstraintViolation')
+    adapterError.name = 'DriverAdapterError'
+    ;(adapterError as Error & { cause: unknown }).cause = {
+      originalCode: '23505',
+      originalMessage: 'duplicate key value violates unique constraint "sprints_product_id_code_key"',
+      kind: 'UniqueConstraintViolation',
+      constraint: { fields: ['product_id', 'code'] },
+    }
+    const conflict = new Prisma.PrismaClientKnownRequestError('unique', {
+      code: 'P2002', clientVersion: 'x', meta: { driverAdapterError: adapterError },
+    })
+    mockPrisma.sprint.create
+      .mockRejectedValueOnce(conflict)
+      .mockResolvedValueOnce({
+        id: 'spr-a', code: 'S-2026-05-11-2', sprint_goal: 'g', status: 'OPEN',
+        start_date: new Date(), created_at: new Date(),
+      })
+
+    const result = await handleCreateSprint({ product_id: PRODUCT_ID, sprint_goal: 'g' })
+
+    expect(mockPrisma.sprint.create).toHaveBeenCalledTimes(2)
+    expect(parseResult(result).id).toBe('spr-a')
+  })
+
   it('returns error when user cannot access product', async () => {
     mockUserCanAccessProduct.mockResolvedValue(false)
     const result = await handleCreateSprint({ product_id: PRODUCT_ID, sprint_goal: 'g' })

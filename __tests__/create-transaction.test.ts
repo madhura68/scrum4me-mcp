@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Prisma } from '@prisma/client'
+import { BASE_BACKOFF_MS } from '../src/lib/retry-backoff.js'
 
 vi.mock('../src/auth.js', () => ({
   requireWriteAccess: vi.fn().mockResolvedValue({ userId: 'user-1', tokenId: 'token-1' }),
@@ -46,6 +47,41 @@ function p2002(target: string[] | string) {
     code: 'P2002',
     clientVersion: 'test',
     meta: { target },
+  })
+}
+
+// Shapes below are copied verbatim from a live Postgres 17.9 run on
+// Prisma 7.8 + @prisma/adapter-pg. The driver adapter does NOT populate
+// `meta.target`; the constraint lands under meta.driverAdapterError.cause,
+// and a commit-time 40001 never becomes P2034 at all — it escapes raw.
+function driverAdapterError(cause: Record<string, unknown>) {
+  const error = new Error(String(cause.kind))
+  error.name = 'DriverAdapterError'
+  ;(error as Error & { cause: unknown }).cause = cause
+  return error
+}
+
+function adapterP2002(fields: string[], constraintName: string) {
+  return new Prisma.PrismaClientKnownRequestError('unique', {
+    code: 'P2002',
+    clientVersion: 'test',
+    meta: {
+      modelName: 'Task',
+      driverAdapterError: driverAdapterError({
+        originalCode: '23505',
+        originalMessage: `duplicate key value violates unique constraint "${constraintName}"`,
+        kind: 'UniqueConstraintViolation',
+        constraint: { fields },
+      }),
+    },
+  })
+}
+
+function adapterWriteConflict() {
+  return driverAdapterError({
+    originalCode: '40001',
+    originalMessage: 'could not serialize access due to read/write dependencies among transactions',
+    kind: 'TransactionWriteConflict',
   })
 }
 
@@ -154,5 +190,84 @@ describe('create tools serialize parent-scoped append', () => {
 
     expect(result.isError).toBe(true)
     expect(root.$transaction).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('create tools recognise driver-adapter error shapes', () => {
+  it.each([
+    ['pbi', () => capturePbiHandler()({ product_id: 'product-1', title: 'PBI', priority: 2 })],
+    ['story', () => handleCreateStory({ pbi_id: 'pbi-1', title: 'Story', priority: 2 })],
+    ['task', () => handleCreateTask({ story_id: 'story-1', title: 'Task', priority: 2 })],
+  ] as const)('%s retries the code conflict the driver adapter reports without meta.target', async (_name, create) => {
+    root.$transaction
+      .mockRejectedValueOnce(adapterP2002(['product_id', 'code'], 'tasks_product_id_code_key'))
+      .mockImplementationOnce(async (callback) => callback(tx))
+
+    const result = await create()
+
+    expect(result.isError).not.toBe(true)
+    expect(root.$transaction).toHaveBeenCalledTimes(2)
+  })
+
+  it('propagates an unrelated driver-adapter unique conflict without outer retry', async () => {
+    root.$transaction.mockRejectedValueOnce(
+      adapterP2002(['story_id', 'sort_order'], 'tasks_story_id_sort_order_key'),
+    )
+
+    const result = await handleCreateTask({ story_id: 'story-1', title: 'Task', priority: 2 })
+
+    expect(result.isError).toBe(true)
+    expect(root.$transaction).toHaveBeenCalledTimes(1)
+  })
+
+  // adapter-pg derives `constraint.fields` from the Postgres DETAIL line and
+  // leaves `constraint` undefined when that line is absent — then the index
+  // name in the original message is all we have to go on.
+  it('retries on the constraint name when the adapter reports no fields', async () => {
+    const noFields = new Prisma.PrismaClientKnownRequestError('unique', {
+      code: 'P2002',
+      clientVersion: 'test',
+      meta: {
+        driverAdapterError: driverAdapterError({
+          originalCode: '23505',
+          originalMessage:
+            'duplicate key value violates unique constraint "tasks_product_id_code_key"',
+          kind: 'UniqueConstraintViolation',
+        }),
+      },
+    })
+    root.$transaction
+      .mockRejectedValueOnce(noFields)
+      .mockImplementationOnce(async (callback) => callback(tx))
+
+    const result = await handleCreateTask({ story_id: 'story-1', title: 'Task', priority: 2 })
+
+    expect(result.isError).not.toBe(true)
+    expect(root.$transaction).toHaveBeenCalledTimes(2)
+  })
+
+  it('waits before retrying so contending losers do not re-collide in lockstep', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(1)
+    root.$transaction
+      .mockRejectedValueOnce(adapterWriteConflict())
+      .mockImplementationOnce(async (callback) => callback(tx))
+
+    const started = performance.now()
+    await handleCreateTask({ story_id: 'story-1', title: 'Task', priority: 2 })
+    const elapsed = performance.now() - started
+
+    expect(root.$transaction).toHaveBeenCalledTimes(2)
+    expect(elapsed).toBeGreaterThanOrEqual(BASE_BACKOFF_MS)
+  })
+
+  it('retries a commit-time write conflict that never becomes P2034', async () => {
+    root.$transaction
+      .mockRejectedValueOnce(adapterWriteConflict())
+      .mockImplementationOnce(async (callback) => callback(tx))
+
+    const result = await handleCreateTask({ story_id: 'story-1', title: 'Task', priority: 2 })
+
+    expect(result.isError).not.toBe(true)
+    expect(root.$transaction).toHaveBeenCalledTimes(2)
   })
 })
