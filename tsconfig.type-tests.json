@@ -6,12 +6,5 @@
     "rootDir": "."
   },
   "include": ["__tests__/**/*"],
-
-  "// exclude": "realtime-payload-contract.test.ts is de enige test die vendor/scrum4me-shared/lib/realtime-payload.ts importeert, en dát bestand gebruikt extensieloze relatieve imports ('./agent-runtime' i.p.v. './agent-runtime.js'). Onder moduleResolution NodeNext levert dat 4× TS2835 op in de submodule zelf, niet in de test. Vitest draait hem wel (bundler-resolutie), en src/ importeert het bestand nergens — daarom bleef dit onzichtbaar. De echte fix hoort in de scrum4me-shared-repo: extensies toevoegen, submodule-pointer bumpen, dan deze regel weghalen.",
-  "exclude": [
-    "node_modules",
-    "dist",
-    "vendor",
-    "__tests__/realtime-payload-contract.test.ts"
-  ]
+  "exclude": ["node_modules", "dist", "vendor"]
 }
