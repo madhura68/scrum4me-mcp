@@ -124,4 +124,39 @@ describe('queue_fail — §5.5', () => {
     const result = await server.call({ message_id: MSG_ID, error: 'kapot' })
     expect(result.isError).toBeUndefined()
   })
+
+  it('routeert door de gedeelde eigenaarscheck: prefix-botsing wordt geweigerd', async () => {
+    // Dit bestand test de matrix bewust niet opnieuw -- die staat in taak 10.
+    // Maar daardoor slaagt het nu dánkzij de deling van ownership.ts, zonder
+    // die te bewijzen. Eén step-(c)-geval pint vast dat queue_fail er echt
+    // doorheen loopt: forkt of inlinet iemand die logica later, dan valt dit om.
+    //
+    // Prefix-botsing, want dat is het geval dat een verzwakte vergelijking
+    // (startsWith in plaats van !==) zou doorlaten: 'mcp:inst:tok2' begint met
+    // 'mcp:inst:tok' maar is een andere claim.
+    registerLease(MSG_ID, { claimToken: 'tok', claimedBy: 'mcp:inst:tok' })
+    txMock.$queryRaw.mockResolvedValueOnce([requestRow({ claimed_by: 'mcp:inst:tok2' })])
+    const server = makeServer()
+    const result = await server.call({ message_id: MSG_ID, error: 'ging mis', claim_token: 'tok' })
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('QUEUE_NOT_CLAIMER')
+  })
+
+  it('weigert een lege error-tekst', async () => {
+    // z.string().min(1) was volledig ongedekt -- verwijderen bleef onzichtbaar.
+    // Een mislukking zonder reden vastleggen is erger dan geen mislukking: de
+    // ontvanger ziet 'failed' zonder enige aanwijzing waarom.
+    //
+    // server.call() roept de handler rechtstreeks aan en omzeilt daarmee de
+    // inputSchema-validatie die de échte SDK's registerTool vóór de handler
+    // uitvoert -- gemeten: server.call({ error: '' }) slaagt in deze harness
+    // gewoon (geen isError). Daarom hier, zoals de include_terminal-default
+    // -check in queue-list.test.ts, de zod-schema zelf pakken via de meta die
+    // aan registerTool wordt doorgegeven, en die direct parsen.
+    const server = makeServer()
+    const meta = server.registerTool.mock.calls[0][1] as {
+      inputSchema: { safeParse: (value: unknown) => { success: boolean } }
+    }
+    expect(meta.inputSchema.safeParse({ message_id: MSG_ID, error: '' }).success).toBe(false)
+  })
 })
