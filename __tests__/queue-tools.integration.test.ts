@@ -4,6 +4,12 @@
 // (agent_message-tabel met source='mcp' in de CHECK). Tests draaien serieel
 // binnen dit bestand; FIFO-gevoelige stappen asserteren daarom expliciet
 // wélke rij geclaimd werd.
+//
+// Serieel bínnen dit bestand is niet genoeg: queue-sweep-lease.integration.test.ts
+// roept sweepStaleQueueClaims() aan, die élke stale rij in de tabel requeue't —
+// ook de rijen die de eigenaarstests hieronder net op 'claimed' hebben gezet.
+// Parallel draaien laat hier 3–4 tests wisselend omvallen. Draai integratietests
+// daarom met `npm run test:integration` (--no-file-parallelism).
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 
