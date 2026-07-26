@@ -66,7 +66,7 @@ function extractBearer(req: Request): string | null {
   return match ? match[1].trim() : null
 }
 
-function createMcpServer(): McpServer {
+export function createMcpServer(): McpServer {
   const server = new McpServer({ name: 'scrum4me-mcp', version: VERSION }, { instructions: INSTRUCTIONS })
   registerSharedTools(server)
   return server
