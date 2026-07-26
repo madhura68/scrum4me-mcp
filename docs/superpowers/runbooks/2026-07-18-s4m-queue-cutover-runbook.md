@@ -223,9 +223,24 @@ Vastgelegd zodat de redenen vindbaar blijven, niet alleen de uitkomst.
 
 ## 6. Ná de cutover (aparte acties)
 
-- Oude `ops_dashboard.agent_message` blijft **onaangeroerd** als vangnet. Opruimen (tabel droppen
-  + `model AgentMessage` uit het Ops-schema mét drop-migratie) is een aparte taak na ≥1 week
-  stabiel draaien.
+- **Het vangnet is niet meer compleet — waargenomen op 2026-07-26.** De opzet was dat
+  `ops_dashboard.agent_message` onaangeroerd zou blijven. In de praktijk is die tabel van 330 naar
+  51 rijen gegaan en de nieuwe `scrum4me.agent_message` van 332 naar 8, doordat JP de
+  retentie-purge uit het Messages-dashboard draaide. Dat is de purge die zijn werk doet — geen
+  incident — maar reken er niet op dat de oude tabel een volledige kopie van vóór de cutover
+  bevat. Het archief is leeg (0 rijen): de purge verwijdert zonder te archiveren, anders dan
+  `cleanup`.
+
+  Leerpunt voor een volgende cutover: **de env-wijziging en de container-herstart zijn twee
+  momenten.** Dát `ops_dashboard` óók gekrompen is, betekent dat één purge draaide toen de
+  workers-container zijn nieuwe `OPS_DATABASE_URL` nog niet had ingelezen — het dashboard wees
+  toen nog naar de oude database terwijl de CLI's al om waren. Hier onschadelijk, want het was een
+  delete en geen write, maar in dat venster is het dashboard aantoonbaar op de oude DB actief.
+  Herstart de container dus direct na de bestandswijziging, en verifieer de omschakeling aan de
+  data in plaats van aan het env-bestand.
+
+- Opruimen van de oude tabel (droppen + `model AgentMessage` uit het Ops-schema mét
+  drop-migratie) is een aparte taak na ≥1 week stabiel draaien.
 - `scrum4me-workers/__tests__/lib/queue/fixtures/agent_message.sql` is een letterlijke kopie van
   de **Ops-dashboard**-migratie. Na de cutover draait workers op de Scrum4Me-tabel en moet die
   fixture opnieuw gekopieerd worden — vanaf `Scrum4Me/prisma/migrations/20260716113110_*`.
