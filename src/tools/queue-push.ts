@@ -8,6 +8,7 @@ import { parseQueueTarget, resolveQueueIdentity } from '../queue/identity.js'
 import { requiresTaskMeta, validateTaskMeta } from '../queue/types.js'
 import { deriveRepoFromCwd } from '../queue/git-origin.js'
 import { emitQueueNotifyBestEffort, envelopeOf } from '../queue/notify.js'
+import { QUEUE_MODELS, QUEUE_SERVERS } from '@shared/queue-identity.js'
 
 const inputSchema = z.object({
   to: z.string().min(1),
@@ -15,7 +16,10 @@ const inputSchema = z.object({
   body: z.string().min(1),
   meta: z.record(z.string(), z.unknown()).optional(),
   cwd: z.string().min(1).optional(),
-  as: z.enum(['claude', 'codex', 'jp']).optional(),
+  // Afgeleid van het gedeelde vocabulaire, niet overgetypt: een hardgecodeerde
+  // lijst weigerde 'kimi' in Zod vóórdat identity.ts (die wél tegen
+  // QUEUE_MODELS toetst) ooit draaide, en niets maakte die drift rood.
+  as: z.enum(QUEUE_MODELS).optional(),
 })
 
 export function registerQueuePushTool(server: McpServer) {
@@ -25,7 +29,8 @@ export function registerQueuePushTool(server: McpServer) {
       title: 'Queue push',
       description:
         'Send a message to another agent or human via the s4m-queue. ' +
-        "Target: '<server>:<model>' (servers: mac, scrum4me-server, max2; models: claude, codex, jp). " +
+        `Target: '<server>:<model>' (servers: ${QUEUE_SERVERS.join(', ')}; ` +
+        `models: ${QUEUE_MODELS.join(', ')}). ` +
         'Types: task (do something + report result), info (question/data — also for yes/no to jp), ' +
         'review_request (review a document). For task/review_request supply cwd plus meta.task ' +
         '{objective, verification, response_format}; the tool derives meta.task.repo via ' +

@@ -5,11 +5,13 @@ import { requireWriteAccess } from '../auth.js'
 import { toolJson, withToolErrors } from '../errors.js'
 import { resolveQueueIdentity } from '../queue/identity.js'
 import { messageView } from '../queue/view.js'
+import { QUEUE_MODELS } from '@shared/queue-identity.js'
 
 const inputSchema = z.object({
   direction: z.enum(['sent', 'received', 'both']).default('both'),
   include_terminal: z.boolean().default(false),
-  as: z.enum(['claude', 'codex', 'jp']).optional(),
+  // Zie queue-push.ts: afgeleid van QUEUE_MODELS, nooit overgetypt.
+  as: z.enum(QUEUE_MODELS).optional(),
 })
 
 export function registerQueueListTool(server: McpServer) {

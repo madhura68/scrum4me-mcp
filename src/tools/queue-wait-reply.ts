@@ -8,6 +8,7 @@ import { claimNextReply } from '../queue/claim.js'
 import { openQueueListener, waitForQueueWakeup } from '../queue/listen.js'
 import { getInstanceId } from '../presence/instance.js'
 import { messageView, type QueueMessageLike } from '../queue/view.js'
+import { QUEUE_MODELS } from '@shared/queue-identity.js'
 import type { QueueAddress } from '../queue/types.js'
 
 const CALLER_PROTOCOL =
@@ -18,7 +19,8 @@ const DEFAULT_WAIT_SECONDS = 300
 const inputSchema = z.object({
   message_ids: z.array(z.string().uuid()).min(1).max(100),
   wait_seconds: z.number().int().min(0).max(600).default(DEFAULT_WAIT_SECONDS),
-  as: z.enum(['claude', 'codex', 'jp']).optional(),
+  // Zie queue-push.ts: afgeleid van QUEUE_MODELS, nooit overgetypt.
+  as: z.enum(QUEUE_MODELS).optional(),
 })
 
 interface ToolExtra {
