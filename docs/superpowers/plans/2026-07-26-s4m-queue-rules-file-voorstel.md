@@ -5,11 +5,15 @@
 > versie: `~/.claude/rules/s4m-queue.md.bak-voor-fase3`). Dit document blijft staan
 > als bron voor de rules-sync naar de andere hosts.
 >
-> **Nog niet gesynct naar `scrum4me-server` en `max2`.** Daar draait de oude CLI
-> (zonder `inbox --in-reply-to`) en een MCP-installatie die de `queue_*`-tools
-> vermoedelijk nog niet aanbiedt. Synct JP dit bestand daarheen vóór die deploy,
-> dan wijzen de triggers daar naar tools die niet bestaan; de CLI-fallback in
-> hetzelfde bestand houdt `push`/`next`/`done` wel werkend.
+> **Gesynct naar `scrum4me-server` en `max2` op 2026-07-26**, nadat beide hosts hun
+> MCP hadden bijgewerkt. Beide bevestigden byte-identiek (sha256 + bytes + regels).
+> Op `max2` bleek het een **eerste installatie**: `~/.claude/rules/` bestond daar niet.
+>
+> **Er is geen `s4m-rules-apply`.** Dat commando staat wel in het oorspronkelijke plan,
+> maar bestaat op deze mac niet en er is geen sync-script gevonden. De distributie is
+> gedaan door de bestandsinhoud plus de sha256 als queue-taak naar beide hosts te sturen;
+> zij schreven en verifieerden zelf. Werkt goed, maar het is handwerk per keer — een
+> echte sync-flow ontbreekt nog.
 
 ## Waarom het wachtte, en wat de activering blokkeerde
 
@@ -51,8 +55,20 @@ hierboven gezond uitgezien.
    `npm link` naar de dev-checkout, dus: `dist/` bouwen en `chmod +x dist/cli.js`);
    scrum4me-server en max2 staan nog open (fase-1-draaiboek §4.4 stap 5).
 
-Distributie naar scrum4me-server en max2 gaat daarna via de bestaande
-rules-sync-flow (`s4m-rules-apply`); JP kiest het moment.
+## Waarom een rules-file alleen niet genoeg is
+
+`max2` gebruikte bij de rollout-check de CLI in plaats van de MCP-tools. De voor de hand
+liggende verklaring — "de oude rules-file schreef de CLI voor" — bleek **onjuist**: op die
+host bestond helemaal geen rules-file. De reflex kwam uit een Claude Code-**memory-bestand**
+onder `~/.claude/projects/<project>/memory/`, dat een eerdere sessie daar had achtergelaten.
+
+Dat is een derde distributiekanaal naast de rules-file en de tool-descriptions, en het is
+per project én per host. Reken er dus niet op dat één gesyncte rules-file het gedrag op een
+host bepaalt; controleer bij onverwacht routegedrag ook de memory-bestanden daar.
+
+Ter illustratie van de drift die dit oplevert: de oude rules-file was op `scrum4me-server`
+2459 bytes / 33 regels (29 mei), op mac 3709 bytes / 45 regels, en op `max2` afwezig — drie
+verschillende toestanden van hetzelfde document.
 
 ## Voorgestelde inhoud
 
@@ -86,7 +102,7 @@ Die blokkeert tot er een reply op jóuw requests binnenkomt (correlatie-veilig).
 
 **CLI-fallback** (jp, of als de MCP onbereikbaar is): `push · next · inbox · done · fail · peek · list · status · requeue · cancel`; `--as` verplicht bij push/next/inbox/peek; `inbox --in-reply-to <id,...>` filtert op je eigen requests. Env vereist (`S4M_QUEUE_URL` + `S4M_SERVER`): mac = `~/.zshenv`, scrum4me-server = `~/.config/s4m-queue.env` — source in hetzelfde commando. `s4m-queue --help` werkt zonder env.
 
-**Bestemmingen:** agents `scrum4me-server:claude`, `max2:claude`, `mac:claude`, `mac:codex`; mens `mac:jp` — JP claimt via terminal (`s4m-queue next --as jp`) of het Messages-dashboard in **scrum4me-workers** (`/queue/messages`). Stuur aan JP wat review/akkoord vereist dat je niet zelf kunt beslissen.
+**Bestemmingen:** agents `scrum4me-server:claude`, `scrum4me-server:codex`, `max2:claude`, `mac:claude`, `mac:codex`; mens `mac:jp` — JP claimt via terminal (`s4m-queue next --as jp`) of het Messages-dashboard in **scrum4me-workers** (`/queue/messages`). Stuur aan JP wat review/akkoord vereist dat je niet zelf kunt beslissen.
 
 **Realtime:** elke statuswisseling emit een NotifyEnvelope (`{id, type, from_*, to_*, in_reply_to, status, previous_status}`) op kanaal `agent_queue`. Wait-tools, CLI `--wait` en het dashboard gebruiken dit — niet pollen.
 ~~~
