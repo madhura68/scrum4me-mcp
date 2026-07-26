@@ -22,7 +22,8 @@
     "pretest": "npm run typecheck:tests",
     "usage:canary": "tsx scripts/check-worker-usage-capture.ts",
     "sync-schema": "bash scripts/sync-schema.sh",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "vitest run --no-file-parallelism integration.test"
   },
   "keywords": [
     "mcp",

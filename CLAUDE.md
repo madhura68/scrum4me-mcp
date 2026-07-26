@@ -215,4 +215,23 @@ npm test          # vitest run
 npm run typecheck # tsc --noEmit
 ```
 
+### Integration tests need a database — and must not run in parallel
+
+The `*.integration.test.ts` files run against a real Postgres and skip silently
+without `TEST_DATABASE_URL`, so `npm test` never covers them. Run them with:
+
+```bash
+TEST_DATABASE_URL=<test-db-url> npm run test:integration
+```
+
+That script passes `--no-file-parallelism`, which is **required**, not a
+preference. The queue integration files share one database, and
+`sweepStaleQueueClaims()` has no sender filter — it requeues every stale row in
+`agent_message`, including rows another test file just set to `claimed`. Run
+them with vitest's default file parallelism and 3–4 of the phase-2 ownership
+tests fail with a shifting cast; serialized, all 26 pass.
+
+Point `TEST_DATABASE_URL` at a throwaway database, never at `scrum4me`. The
+sweep mutates whatever it finds.
+
 All worktree helpers have unit tests under `__tests__/git/worktree.test.ts`, `__tests__/wait-for-job-worktree.test.ts`, and `__tests__/update-job-status-worktree.test.ts`.

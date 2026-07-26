@@ -7,6 +7,13 @@
 // maar de sweep zelf muteert alles wat hij tegenkomt. Draai dit daarom niet
 // gelijktijdig met een andere run tegen dezelfde database, en niet tegen een
 // database waar rijen in staan die iemand anders nodig heeft.
+//
+// Concreet gemeten: draai je dit bestand parallel met
+// queue-tools.integration.test.ts (vitest doet dat standaard), dan requeue't de
+// sweep hier de rijen die de fase-2-eigenaarstests net claimed hebben gezet, en
+// vallen daar 3–4 tests om met een wisselende samenstelling. Serieel draaien
+// lost het volledig op — gebruik `npm run test:integration`, dat
+// --no-file-parallelism meegeeft.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Client } from 'pg'
 
