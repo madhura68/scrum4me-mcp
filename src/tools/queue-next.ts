@@ -9,7 +9,7 @@ import { registerLease, releaseLease } from '../queue/lease-register.js'
 import { openQueueListener, waitForQueueWakeup } from '../queue/listen.js'
 import { getInstanceId } from '../presence/instance.js'
 import { messageView } from '../queue/view.js'
-import { QUEUE_REQUEST_TYPES } from '@shared/queue-identity.js'
+import { QUEUE_MODELS, QUEUE_REQUEST_TYPES } from '@shared/queue-identity.js'
 import type { QueueAddress } from '../queue/types.js'
 
 const INSTRUCTIONS_TEXT =
@@ -19,7 +19,8 @@ const INSTRUCTIONS_TEXT =
 
 const inputSchema = z.object({
   wait_seconds: z.number().int().min(0).max(600).default(0),
-  as: z.enum(['claude', 'codex', 'jp']).optional(),
+  // Zie queue-push.ts: afgeleid van QUEUE_MODELS, nooit overgetypt.
+  as: z.enum(QUEUE_MODELS).optional(),
 })
 
 interface ToolExtra {

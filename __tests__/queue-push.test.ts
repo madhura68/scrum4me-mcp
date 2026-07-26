@@ -186,6 +186,27 @@ describe('queue_push — §5.1', () => {
     })
   })
 
+  it("accepteert as: 'kimi' — schema én afzender-identiteit", async () => {
+    // De enum was overgetypt ('claude','codex','jp'): Zod weigerde 'kimi'
+    // vóórdat resolveQueueIdentity — dat wél tegen QUEUE_MODELS toetst — draaide.
+    // Twee lagen, want het harnas roept de handler rechtstreeks aan en slaat
+    // Zod over: alleen de assertie op het geregistreerde inputSchema dekt de
+    // schema-kant, alleen de handler-aanroep dekt de identiteit.
+    const server = makeServer()
+    const meta = server.registerTool.mock.calls[0][1] as {
+      inputSchema: { parse: (value: unknown) => { as?: string } }
+    }
+    const base = { to: 'scrum4me-server:claude', type: 'info', body: 'x' }
+    expect(meta.inputSchema.parse({ ...base, as: 'kimi' }).as).toBe('kimi')
+    // Geen z.string(): een model buiten het vocabulaire blijft geweigerd.
+    expect(() => meta.inputSchema.parse({ ...base, as: 'gpt' })).toThrow()
+
+    await server.call({ ...base, as: 'kimi' })
+    expect(mockPrisma.agentMessage.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ from_model: 'kimi' }),
+    })
+  })
+
   it('QUEUE_IDENTITY_REQUIRED zonder S4M_SERVER', async () => {
     vi.stubEnv('S4M_SERVER', '')
     const server = makeServer()

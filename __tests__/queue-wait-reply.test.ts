@@ -173,6 +173,29 @@ describe('queue_wait_reply — §5.2', () => {
     expect(mockOpen).not.toHaveBeenCalled()
   })
 
+  it("accepteert as: 'kimi' — schema én eigen adres in de reply-query", async () => {
+    // Zie queue-push.test.ts: de overgetypte enum weigerde 'kimi' vóór
+    // resolveQueueIdentity. Schema-laag + handler-laag, want het harnas
+    // roept de handler rechtstreeks aan en slaat Zod over.
+    const server = makeServer()
+    const meta = server.registerTool.mock.calls[0][1] as {
+      inputSchema: { parse: (value: unknown) => { as?: string } }
+    }
+    const base = { message_ids: [REQ_A] }
+    expect(meta.inputSchema.parse({ ...base, as: 'kimi' }).as).toBe('kimi')
+    expect(() => meta.inputSchema.parse({ ...base, as: 'gpt' })).toThrow()
+
+    await server.call({ ...base, wait_seconds: 0, as: 'kimi' })
+    expect(mockPrisma.agentMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ to_server: 'mac', to_model: 'kimi' }),
+      }),
+    )
+    expect(mockClaim).toHaveBeenCalledWith(
+      expect.objectContaining({ server: 'mac', model: 'kimi' }),
+    )
+  })
+
   it('QUEUE_IDENTITY_REQUIRED zonder identiteit', async () => {
     vi.stubEnv('S4M_SERVER', '')
     const server = makeServer()

@@ -159,6 +159,23 @@ describe('queue_next — §5.3', () => {
     expect(getLease(MSG_ID)).toBeUndefined()
   })
 
+  it("accepteert as: 'kimi' — schema én claim-adres", async () => {
+    // Zie queue-push.test.ts: de overgetypte enum weigerde 'kimi' vóór
+    // resolveQueueIdentity. Schema-laag + handler-laag, want het harnas
+    // roept de handler rechtstreeks aan en slaat Zod over.
+    const server = makeServer()
+    const meta = server.registerTool.mock.calls[0][1] as {
+      inputSchema: { parse: (value: unknown) => { as?: string } }
+    }
+    expect(meta.inputSchema.parse({ as: 'kimi' }).as).toBe('kimi')
+    expect(() => meta.inputSchema.parse({ as: 'gpt' })).toThrow()
+
+    await server.call({ wait_seconds: 0, as: 'kimi' })
+    expect(mockClaim).toHaveBeenCalledWith(
+      expect.objectContaining({ server: 'mac', model: 'kimi' }),
+    )
+  })
+
   it('QUEUE_IDENTITY_REQUIRED zonder identiteit', async () => {
     vi.stubEnv('S4M_MODEL', '')
     const server = makeServer()
