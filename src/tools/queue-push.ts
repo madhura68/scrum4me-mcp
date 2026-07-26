@@ -8,11 +8,14 @@ import { parseQueueTarget, resolveQueueIdentity } from '../queue/identity.js'
 import { requiresTaskMeta, validateTaskMeta } from '../queue/types.js'
 import { deriveRepoFromCwd } from '../queue/git-origin.js'
 import { emitQueueNotifyBestEffort, envelopeOf } from '../queue/notify.js'
-import { QUEUE_MODELS, QUEUE_SERVERS } from '@shared/queue-identity.js'
+import { QUEUE_MODELS, QUEUE_REQUEST_TYPES, QUEUE_SERVERS } from '@shared/queue-identity.js'
 
 const inputSchema = z.object({
   to: z.string().min(1),
-  type: z.enum(['task', 'info', 'review_request']),
+  // Afgeleid, net als `as` hieronder: dit is exact QUEUE_REQUEST_TYPES. De
+  // overgetypte variant zou een nieuw verzoek-type stil weigeren terwijl de
+  // handler (requiresTaskMeta/queueReplyTypeFor) er wél op gebouwd is.
+  type: z.enum(QUEUE_REQUEST_TYPES),
   body: z.string().min(1),
   meta: z.record(z.string(), z.unknown()).optional(),
   cwd: z.string().min(1).optional(),

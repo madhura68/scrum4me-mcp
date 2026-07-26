@@ -11,6 +11,7 @@ vi.mock('../src/auth.js', async (importOriginal) => {
 import { prisma } from '../src/prisma.js'
 import { requireWriteAccess } from '../src/auth.js'
 import { registerQueueListTool } from '../src/tools/queue-list.js'
+import { QUEUE_STATUSES, QUEUE_TERMINAL_STATUSES } from '@shared/queue-identity.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 const mockPrisma = prisma as unknown as {
@@ -83,6 +84,24 @@ describe('queue_list — §5.7', () => {
     await server.call({ direction: 'both', include_terminal: true })
     const arg = mockPrisma.agentMessage.findMany.mock.calls[0][0] as { where: Record<string, unknown> }
     expect(arg.where.status).toBeUndefined()
+  })
+
+  it('leidt het niet-terminale filter af uit het gedeelde vocabulaire', async () => {
+    // Zelfde klasse als de overgetypte 'as'-enum, maar buiten het schema: de
+    // lijst stond hardgecodeerd als ['pending','claimed']. Nu het complement
+    // van QUEUE_TERMINAL_STATUSES, zodat een zesde niet-terminale status niet
+    // stil buiten de default valt. De pariteitsgate leest inputSchema's en kan
+    // dit niet zien; daarom hier, tegen het gedrag van de handler.
+    const expected = QUEUE_STATUSES.filter(
+      (status) => !(QUEUE_TERMINAL_STATUSES as readonly string[]).includes(status),
+    )
+    expect(expected).not.toHaveLength(0)
+    const server = makeServer()
+    await server.call({ direction: 'both', include_terminal: false })
+    const arg = mockPrisma.agentMessage.findMany.mock.calls[0][0] as {
+      where: { status?: { in: string[] } }
+    }
+    expect(new Set(arg.where.status?.in)).toEqual(new Set(expected))
   })
 
   it('sluit terminale berichten uit wanneer include_terminal wordt weggelaten', async () => {
