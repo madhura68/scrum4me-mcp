@@ -89,6 +89,37 @@ describe('post_pr_review', () => {
     expect(postPullRequestReview).not.toHaveBeenCalled()
   })
 
+  it('misvormde commit_id → error vóór de post (Forgejo geeft er een lege 500 op)', async () => {
+    // De echte waarde uit PR scrum4me-docker#69 op 2026-07-26: de head-sha met
+    // een verdubbeld fragment van 14 tekens, 54 in totaal.
+    const res = await handlePostPrReview({
+      job_id: 'job1', pr_url: PR, event: 'REQUEST_CHANGES', body: 'x',
+      commit_id: 'f72071f74174b8d67666caa652b8d67666caa652b8e6f613841dba',
+    })
+    expect(res.isError).toBe(true)
+    expect(JSON.stringify(res)).toContain('40 hex-tekens')
+    expect(postPullRequestReview).not.toHaveBeenCalled()
+  })
+
+  it('volledige 40-hex sha → wordt gewoon doorgegeven', async () => {
+    vi.mocked(postPullRequestReview).mockResolvedValue({ ok: true, reviewId: 4 })
+    const res = await handlePostPrReview({
+      job_id: 'job1', pr_url: PR, event: 'APPROVED', body: 'x',
+      commit_id: 'f72071f74174b8d67666caa652b8e6f613841dba',
+    })
+    expect(res.isError).toBeFalsy()
+    expect(postPullRequestReview).toHaveBeenCalledWith(
+      expect.objectContaining({ commitId: 'f72071f74174b8d67666caa652b8e6f613841dba' }),
+    )
+  })
+
+  it('commit_id weglaten blijft toegestaan (optioneel veld)', async () => {
+    vi.mocked(postPullRequestReview).mockResolvedValue({ ok: true, reviewId: 5 })
+    const res = await handlePostPrReview({ job_id: 'job1', pr_url: PR, event: 'APPROVED', body: 'x' })
+    expect(res.isError).toBeFalsy()
+    expect(postPullRequestReview).toHaveBeenCalled()
+  })
+
   it('job van andere user → error', async () => {
     vi.mocked(prisma.claudeJob.findUnique).mockResolvedValue({
       id: 'job1',
