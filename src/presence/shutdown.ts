@@ -15,6 +15,8 @@ export function registerShutdownHandlers(opts: {
   tokenId: string
   instanceId: string
   stopHeartbeat: () => void
+  /** Fase 3: stopt de queue-lease-refresh + stale-sweep (stdio-only). */
+  stopQueueMaintenance?: () => void
 }): { shutdown: () => Promise<void> } {
   let exiting = false
 
@@ -22,6 +24,7 @@ export function registerShutdownHandlers(opts: {
     if (exiting) return
     exiting = true
     opts.stopHeartbeat()
+    opts.stopQueueMaintenance?.()
     await unregisterWorker({
       userId: opts.userId,
       tokenId: opts.tokenId,
