@@ -1,7 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('../src/prisma.js', () => ({
-  prisma: { agentMessage: { findUnique: vi.fn(), findMany: vi.fn() } },
+  prisma: {
+    agentMessage: {
+      findUnique: vi.fn(),
+      findMany: vi.fn(),
+      // Bewust wél gedefinieerd: zonder deze zou een schrijfmutatie een
+      // TypeError geven en "toevallig" rood worden. Met deze mocks is de
+      // read-only-garantie een assertie in plaats van een artefact van de
+      // mock-vorm -- en blijft hij overeind als er later een rijkere gedeelde
+      // Prisma-mock komt.
+      update: vi.fn(),
+      updateMany: vi.fn(),
+      delete: vi.fn(),
+      deleteMany: vi.fn(),
+      create: vi.fn(),
+    },
+  },
 }))
 vi.mock('../src/auth.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('../src/auth.js')>()
@@ -14,7 +29,15 @@ import { registerQueueStatusTool } from '../src/tools/queue-status.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 const mockPrisma = prisma as unknown as {
-  agentMessage: { findUnique: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn> }
+  agentMessage: {
+    findUnique: ReturnType<typeof vi.fn>
+    findMany: ReturnType<typeof vi.fn>
+    update: ReturnType<typeof vi.fn>
+    updateMany: ReturnType<typeof vi.fn>
+    delete: ReturnType<typeof vi.fn>
+    deleteMany: ReturnType<typeof vi.fn>
+    create: ReturnType<typeof vi.fn>
+  }
 }
 const mockAuth = requireWriteAccess as ReturnType<typeof vi.fn>
 
@@ -94,5 +117,19 @@ describe('queue_status — §5.6', () => {
     expect(result.isError).toBe(true)
     expect(result.content[0].text).toContain('QUEUE_NOT_FOUND')
     expect(mockPrisma.agentMessage.findMany).not.toHaveBeenCalled()
+  })
+
+  it('muteert niets — queue_status is read-only (§5.6)', async () => {
+    // Het definiërende kenmerk van deze tool: een agent die pollt of er al
+    // antwoord is, mag dat antwoord niet consumeren.
+    mockPrisma.agentMessage.findUnique.mockResolvedValue(requestRow)
+    mockPrisma.agentMessage.findMany.mockResolvedValue([replyRow])
+    const server = makeServer()
+    await server.call({ message_id: MSG_ID })
+    expect(mockPrisma.agentMessage.update).not.toHaveBeenCalled()
+    expect(mockPrisma.agentMessage.updateMany).not.toHaveBeenCalled()
+    expect(mockPrisma.agentMessage.delete).not.toHaveBeenCalled()
+    expect(mockPrisma.agentMessage.deleteMany).not.toHaveBeenCalled()
+    expect(mockPrisma.agentMessage.create).not.toHaveBeenCalled()
   })
 })

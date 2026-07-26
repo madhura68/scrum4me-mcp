@@ -85,6 +85,35 @@ describe('queue_list — §5.7', () => {
     expect(arg.where.status).toBeUndefined()
   })
 
+  it('sluit terminale berichten uit wanneer include_terminal wordt weggelaten', async () => {
+    // De default was op geen van beide niveaus gedekt: elke aanroep gaf de
+    // parameter expliciet mee, en de harnas roept de handler direct aan dus
+    // Zod's .default(false) wordt nooit doorlopen. Deze test dekt de
+    // code-fallback (?? false) door de parameter weg te laten.
+    const server = makeServer()
+    await server.call({ direction: 'both' })
+    expect(mockPrisma.agentMessage.findMany).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          { from_server: 'mac', from_model: 'claude' },
+          { to_server: 'mac', to_model: 'claude' },
+        ],
+        status: { in: ['pending', 'claimed'] },
+      },
+      orderBy: { created_at: 'desc' },
+      take: 50,
+    })
+
+    // Tweede, onafhankelijke laag: bewijst de default ook op schema-niveau
+    // (voor de MCP SDK's eigen argument-parsing in productie), zonder de
+    // tool te wijzigen — de fake server capteert `inputSchema` als
+    // onderdeel van de meta die aan registerTool wordt doorgegeven.
+    const meta = server.registerTool.mock.calls[0][1] as {
+      inputSchema: { parse: (value: unknown) => { include_terminal: boolean } }
+    }
+    expect(meta.inputSchema.parse({}).include_terminal).toBe(false)
+  })
+
   it('retourneert messageView-rijen + count', async () => {
     mockPrisma.agentMessage.findMany.mockResolvedValue([
       {
