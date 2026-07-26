@@ -17,15 +17,20 @@ const { callOrder, mockTransaction, mockTxExecuteRaw, mockFindUnique, mockFindFi
         callOrder.push('lock')
         return 0
       }),
-      mockFindUnique: vi.fn(async () => {
+      // Retourtypes staan expliciet: zonder annotatie leidt vitest ze af uit de
+      // fabrieks-default, waarna een mockImplementation-override per test (null
+      // deploy_flow, een actieve job) niet meer toewijsbaar is.
+      mockFindUnique: vi.fn(async (): Promise<{ deploy_flow: string | null } | null> => {
         callOrder.push('findProduct')
         return { deploy_flow: 'update_scrum4me_web' }
       }),
-      mockFindFirst: vi.fn(async () => {
+      mockFindFirst: vi.fn(async (): Promise<{ id: string } | null> => {
         callOrder.push('findJob')
         return null
       }),
-      mockCreate: vi.fn(async () => {
+      // Argument getypeerd zodat mock.calls[0][0] leesbaar is; een arg-loze
+      // vi.fn levert een lege tuple op waarop [0] niet bestaat.
+      mockCreate: vi.fn(async (_args: { data: Record<string, unknown> }) => {
         callOrder.push('create')
         return { id: 'job-1' }
       }),

@@ -9,6 +9,7 @@ import { prisma } from '../src/prisma.js'
 import { getAuth } from '../src/auth.js'
 import { userCanAccessProduct } from '../src/access.js'
 import { handleGetJobStatus } from '../src/tools/get-job-status.js'
+import { toolText } from './helpers/tool-result.js'
 
 const mockJob = prisma.claudeJob.findUnique as ReturnType<typeof vi.fn>
 
@@ -24,7 +25,7 @@ it('geeft status-samenvatting voor een job binnen scope', async () => {
     summary: null, error: null, pr_url: null, created_at: new Date(), finished_at: null,
   })
   const res = await handleGetJobStatus({ job_id: 'job-1' })
-  expect(JSON.parse(res.content[0].text as string)).toMatchObject({ id: 'job-1', status: 'RUNNING' })
+  expect(JSON.parse(toolText(res))).toMatchObject({ id: 'job-1', status: 'RUNNING' })
 })
 
 it('foreign job → zelfde 404 als onbestaande job (geen oracle)', async () => {
@@ -32,8 +33,8 @@ it('foreign job → zelfde 404 als onbestaande job (geen oracle)', async () => {
   ;(userCanAccessProduct as ReturnType<typeof vi.fn>).mockResolvedValue(false)
   const res = await handleGetJobStatus({ job_id: 'job-1' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toBe('Job job-1 not found')
+  expect(toolText(res)).toBe('Job job-1 not found')
   mockJob.mockResolvedValue(null)
   const res2 = await handleGetJobStatus({ job_id: 'job-1' })
-  expect(res2.content[0].text).toBe('Job job-1 not found')
+  expect(toolText(res2)).toBe('Job job-1 not found')
 })

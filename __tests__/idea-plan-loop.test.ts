@@ -2,6 +2,23 @@ import { describe, it, expect } from 'vitest'
 
 import { parseLoopRound, loopKey, specLoopKey, appendPlanReviewRound } from '../src/lib/idea-plan-loop.js'
 
+// PlanReviewLog.rounds is `unknown[]` in src/lib/idea-plan-loop.ts, dus de vorm
+// van een ronde wordt hier vastgelegd — een spiegel van wat appendPlanReviewRound
+// aanhangt. Wijkt de productiecode af, dan valt dat op als een typefout hier.
+type ReviewRound = {
+  round: number
+  model: string
+  role: string
+  focus: string
+  issues: Array<{ category: string; severity: 'error' | 'warning' | 'info'; suggestion: string }>
+  score: number
+  plan_diff_lines: number
+  converged: boolean
+  timestamp: string
+}
+
+const roundsOf = (log: { rounds: unknown[] }): ReviewRound[] => log.rounds as ReviewRound[]
+
 describe('parseLoopRound', () => {
   it('null/undefined → 0', () => {
     expect(parseLoopRound(null)).toBe(0)
@@ -38,9 +55,9 @@ describe('appendPlanReviewRound', () => {
     })
     expect(log.rounds).toHaveLength(1)
     expect(log.approval.status).toBe('pending')
-    expect(log.rounds[0].issues[0].severity).toBe('error')
-    expect(log.rounds[0].score).toBe(50)
-    expect(log.rounds[0].model).toBe('codex')
+    expect(roundsOf(log)[0].issues[0].severity).toBe('error')
+    expect(roundsOf(log)[0].score).toBe(50)
+    expect(roundsOf(log)[0].model).toBe('codex')
   })
 
   it('mapt APPROVED → approved + score 100 + converged', () => {
@@ -53,8 +70,8 @@ describe('appendPlanReviewRound', () => {
       timestamp: '2026-07-07T00:00:00Z',
     })
     expect(log.approval.status).toBe('approved')
-    expect(log.rounds[0].score).toBe(100)
-    expect(log.rounds[0].converged).toBe(true)
+    expect(roundsOf(log)[0].score).toBe(100)
+    expect(roundsOf(log)[0].converged).toBe(true)
   })
 
   it('mapt REJECTED → rejected + score 0', () => {
@@ -67,8 +84,8 @@ describe('appendPlanReviewRound', () => {
       timestamp: '2026-07-07T00:00:00Z',
     })
     expect(log.approval.status).toBe('rejected')
-    expect(log.rounds[0].score).toBe(0)
-    expect(log.rounds[0].issues[0].severity).toBe('error')
+    expect(roundsOf(log)[0].score).toBe(0)
+    expect(roundsOf(log)[0].issues[0].severity).toBe('error')
   })
 
   it('appendt aan bestaande rondes', () => {
@@ -81,7 +98,7 @@ describe('appendPlanReviewRound', () => {
       timestamp: '2026-07-07T01:00:00Z',
     })
     expect(second.rounds).toHaveLength(2)
-    expect(second.rounds[1].round).toBe(2)
+    expect(roundsOf(second)[1].round).toBe(2)
     expect(second.approval.status).toBe('approved')
   })
 
@@ -91,8 +108,8 @@ describe('appendPlanReviewRound', () => {
       findings: [{ severity: 'minor', message: 'nit' }, { severity: 'note', message: 'fyi' }],
       summary: 's', timestamp: '2026-07-07T00:00:00Z',
     })
-    expect(log.rounds[0].issues[0].severity).toBe('warning')
-    expect(log.rounds[0].issues[1].severity).toBe('info')
+    expect(roundsOf(log)[0].issues[0].severity).toBe('warning')
+    expect(roundsOf(log)[0].issues[1].severity).toBe('info')
   })
 })
 

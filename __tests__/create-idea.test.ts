@@ -18,6 +18,7 @@ import { requireWriteAccess } from '../src/auth.js'
 import { userCanAccessProduct } from '../src/access.js'
 import { handleCreateIdea } from '../src/tools/create-idea.js'
 import { nextIdeaCode } from '../src/lib/idea-code.js'
+import { toolText } from './helpers/tool-result.js'
 
 const mockTx = prisma.$transaction as ReturnType<typeof vi.fn>
 const mockAuth = requireWriteAccess as ReturnType<typeof vi.fn>
@@ -38,7 +39,7 @@ beforeEach(() => {
 it('maakt een DRAFT-idea met gegenereerde code', async () => {
   const res = await handleCreateIdea({ product_id: 'prod-1', title: 'T', description: 'D' })
   expect(res.isError).toBeFalsy()
-  expect(JSON.parse(res.content[0].text as string)).toMatchObject({ code: 'IDEA-042' })
+  expect(JSON.parse(toolText(res))).toMatchObject({ code: 'IDEA-042' })
   // tx-doorgifte: code-generatie moet binnen dezelfde transactie lopen
   expect(nextIdeaCode).toHaveBeenCalledWith('user-1', expect.objectContaining({ idea: expect.anything() }))
 })
@@ -47,7 +48,7 @@ it('weigert een product buiten toegang/scope (404-stijl)', async () => {
   mockAccess.mockResolvedValue(false)
   const res = await handleCreateIdea({ product_id: 'prod-x', title: 'T' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toMatch(/not found or not accessible/)
+  expect(toolText(res)).toMatch(/not found or not accessible/)
 })
 
 it('weigert een verboden veld tegen de product content_policy (AVG)', async () => {
@@ -56,7 +57,7 @@ it('weigert een verboden veld tegen de product content_policy (AVG)', async () =
   })
   const res = await handleCreateIdea({ product_id: 'prod-1', title: 'Voeg een bsn-veld toe' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toMatch(/AVG.*bsn/)
+  expect(toolText(res)).toMatch(/AVG.*bsn/)
 })
 
 it('staat toe wanneer het product geen content_policy heeft', async () => {
@@ -69,5 +70,5 @@ it('faalt closed bij een malformed content_policy', async () => {
   mockProduct.mockResolvedValue({ content_policy: { forbiddenFields: 'bsn' } })
   const res = await handleCreateIdea({ product_id: 'prod-1', title: 'Iets onschuldigs' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toMatch(/content_policy|configuratie/i)
+  expect(toolText(res)).toMatch(/content_policy|configuratie/i)
 })

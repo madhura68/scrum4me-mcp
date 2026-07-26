@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   buildClaimableJobWhereClause,
   buildClaimableJobWhereFragment,
-} from '../src/tools/wait-for-job'
-import { parseWorkerRuntime } from '../src/worker-runtime'
+} from '../src/tools/wait-for-job.js'
+import { parseWorkerRuntime } from '../src/worker-runtime.js'
 
 function sqlText(fragment: { strings: readonly string[] }): string {
   return fragment.strings.join('')

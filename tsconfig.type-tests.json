@@ -1,13 +1,17 @@
 {
-  "//": "CI-enforces the type-only guards in the product-doc parity test (assignability + enum mutual-assignability) that the base tsconfig never checks (it excludes __tests__). Scoped to the product-doc closure so the unrelated pre-existing src/presence/worker.ts errors stay out. Run via `npm run typecheck:tests` (also wired into `pretest`).",
+  "//": "Typecheckt de testbestanden. De basis-tsconfig include't alleen src/**/*, dus zonder deze config wordt géén enkel testbestand getypecheckt — en vitest transpileert zonder typecheck, waardoor een typefout in een test ongemerkt groen bleef. Draait via `npm run typecheck:tests`, wired op `pretest`, dus zowel `npm test` lokaal als de CI-stap `npm run test` gaan hier doorheen. src/ komt transitief mee via de imports van de tests; `npm run typecheck` dekt src/ volledig.",
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
     "rootDir": "."
   },
-  "include": [
-    "__tests__/product-doc-shared-parity.test.ts",
-    "src/lib/product-doc-*.ts"
-  ],
-  "exclude": ["node_modules", "dist", "vendor"]
+  "include": ["__tests__/**/*"],
+
+  "// exclude": "realtime-payload-contract.test.ts is de enige test die vendor/scrum4me-shared/lib/realtime-payload.ts importeert, en dát bestand gebruikt extensieloze relatieve imports ('./agent-runtime' i.p.v. './agent-runtime.js'). Onder moduleResolution NodeNext levert dat 4× TS2835 op in de submodule zelf, niet in de test. Vitest draait hem wel (bundler-resolutie), en src/ importeert het bestand nergens — daarom bleef dit onzichtbaar. De echte fix hoort in de scrum4me-shared-repo: extensies toevoegen, submodule-pointer bumpen, dan deze regel weghalen.",
+  "exclude": [
+    "node_modules",
+    "dist",
+    "vendor",
+    "__tests__/realtime-payload-contract.test.ts"
+  ]
 }

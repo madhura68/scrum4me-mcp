@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isRealtimePayload } from '@shared/realtime-payload'
+import { isRealtimePayload } from '@shared/realtime-payload.js'
 
 describe('MCP realtime payload contract', () => {
   it('accepts job status changed payload with runtime and source', () => {

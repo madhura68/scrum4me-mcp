@@ -43,7 +43,12 @@ beforeEach(() => {
   vi.mocked(userCanAccessProduct).mockResolvedValue(true)
   vi.mocked(prisma.idea.findUnique).mockResolvedValue({ user_id: 'u1', product_id: 'p1' } as never)
   vi.mocked(prisma.product.findUnique).mockResolvedValue({ content_policy: null } as never)
-  vi.mocked(prisma.$transaction).mockImplementation(async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx))
+  // `as never` zoals bij de mockResolvedValue-regels hierboven: de tx-stub dekt
+  // alleen de modellen die deze tool aanraakt, niet de volledige PrismaClient
+  // die $transaction's signatuur eist.
+  vi.mocked(prisma.$transaction).mockImplementation(
+    (async (fn: (t: typeof tx) => Promise<unknown>) => fn(tx)) as never,
+  )
   tx.$queryRaw.mockResolvedValue([{ id: 'i1', product_id: 'p1' }])
   tx.ideaChatMessage.create.mockResolvedValue({ id: 'm1' })
   tx.claudeJob.findFirst.mockResolvedValue(null)

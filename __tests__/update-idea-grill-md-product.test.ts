@@ -39,6 +39,7 @@ import { prisma } from '../src/prisma.js'
 import { requireWriteAccess } from '../src/auth.js'
 import { userOwnsIdea } from '../src/access.js'
 import { registerUpdateIdeaGrillMdTool } from '../src/tools/update-idea-grill-md.js'
+import { toolText } from './helpers/tool-result.js'
 
 const mockAuth = requireWriteAccess as ReturnType<typeof vi.fn>
 const mockOwns = userOwnsIdea as ReturnType<typeof vi.fn>
@@ -77,7 +78,7 @@ it('weigert wanneer het meegegeven product_id niet bij het idee hoort (cross-pro
   const handler = captureHandler()
   const res = await handler({ idea_id: 'idea-1', markdown: '# grill', product_id: 'prod-OTHER' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toMatch(/not found/i)
+  expect(toolText(res)).toMatch(/not found/i)
 })
 
 it('schrijft het grill-resultaat als ASSISTANT/GRILL_RESULT-kanaalbericht, niet meer als IdeaLog (M17)', async () => {
@@ -109,7 +110,7 @@ it('M23 chat-gate: weigert grill-write vanuit SPEC_REVIEWING (pipeline actief)',
   const handler = captureHandler()
   const res = await handler({ idea_id: 'idea-1', markdown: '# grill' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toContain('Grill-write niet toegestaan')
+  expect(toolText(res)).toContain('Grill-write niet toegestaan')
 })
 
 it('M23 chat-gate: staat grill-write toe vanuit GRILLED (voorbereidingsfase)', async () => {

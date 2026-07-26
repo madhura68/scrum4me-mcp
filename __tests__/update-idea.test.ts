@@ -20,6 +20,7 @@ vi.mock('../src/auth.js', () => ({
 import { prisma } from '../src/prisma.js'
 import { requireWriteAccess, PermissionDeniedError } from '../src/auth.js'
 import { handleUpdateIdea } from '../src/tools/update-idea.js'
+import { toolText } from './helpers/tool-result.js'
 
 const mockAuth = requireWriteAccess as ReturnType<typeof vi.fn>
 const mockProduct = (prisma as unknown as { product: { findUnique: ReturnType<typeof vi.fn> } })
@@ -49,7 +50,7 @@ it('werkt titel/beschrijving bij (happy path)', async () => {
     description: 'Nieuwe omschrijving',
   })
   expect(res.isError).toBeFalsy()
-  expect(JSON.parse(res.content[0].text as string)).toMatchObject({ id: 'idea-1', code: 'IDEA-042' })
+  expect(JSON.parse(toolText(res))).toMatchObject({ id: 'idea-1', code: 'IDEA-042' })
   expect(mockUpdate).toHaveBeenCalledWith({
     where: { id: 'idea-1' },
     data: { title: 'Nieuwe titel', description: 'Nieuwe omschrijving' },
@@ -81,7 +82,7 @@ it('een falende kanaalbericht-write laat de idea-update slagen (best-effort)', a
 it('eist minstens één van title/description', async () => {
   const res = await handleUpdateIdea({ idea_id: 'idea-1', product_id: 'prod-1' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toMatch(/VALIDATION_ERROR/)
+  expect(toolText(res)).toMatch(/VALIDATION_ERROR/)
   expect(mockUpdate).not.toHaveBeenCalled()
 })
 
@@ -91,7 +92,7 @@ it('weigert een verboden veld tegen de product content_policy (AVG)', async () =
   })
   const res = await handleUpdateIdea({ idea_id: 'idea-1', product_id: 'prod-1', title: 'Voeg een bsn-veld toe' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toMatch(/AVG.*bsn/)
+  expect(toolText(res)).toMatch(/AVG.*bsn/)
   expect(mockUpdate).not.toHaveBeenCalled()
 })
 
@@ -99,7 +100,7 @@ it('faalt closed bij een malformed content_policy', async () => {
   mockProduct.mockResolvedValue({ content_policy: { forbiddenFields: 'bsn' } })
   const res = await handleUpdateIdea({ idea_id: 'idea-1', product_id: 'prod-1', title: 'Iets onschuldigs' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toMatch(/content_policy|configuratie/i)
+  expect(toolText(res)).toMatch(/content_policy|configuratie/i)
   expect(mockUpdate).not.toHaveBeenCalled()
 })
 
@@ -107,7 +108,7 @@ it('weigert een idee buiten product/pool (cross-product/ownership, 404-stijl)', 
   mockFind.mockResolvedValue(null)
   const res = await handleUpdateIdea({ idea_id: 'idea-x', product_id: 'prod-2', title: 'T' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toMatch(/not found/i)
+  expect(toolText(res)).toMatch(/not found/i)
   expect(mockFind).toHaveBeenCalledWith({
     where: { id: 'idea-x', user_id: 'user-1', product_id: 'prod-2' },
     select: { id: true, status: true },
@@ -119,7 +120,7 @@ it('weigert bewerken bij een niet-editable status', async () => {
   mockFind.mockResolvedValue({ id: 'idea-1', status: 'GRILLING' })
   const res = await handleUpdateIdea({ idea_id: 'idea-1', product_id: 'prod-1', title: 'T' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toMatch(/GRILLING/)
+  expect(toolText(res)).toMatch(/GRILLING/)
   expect(mockUpdate).not.toHaveBeenCalled()
 })
 
@@ -127,5 +128,5 @@ it('weigert demo-accounts (PERMISSION_DENIED)', async () => {
   mockAuth.mockRejectedValue(new PermissionDeniedError())
   const res = await handleUpdateIdea({ idea_id: 'idea-1', product_id: 'prod-1', title: 'T' })
   expect(res.isError).toBe(true)
-  expect(res.content[0].text).toMatch(/PERMISSION_DENIED/)
+  expect(toolText(res)).toMatch(/PERMISSION_DENIED/)
 })

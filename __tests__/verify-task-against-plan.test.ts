@@ -13,13 +13,14 @@ vi.mock('../src/verify/classify.js', () => ({
 
 import { prisma } from '../src/prisma.js'
 import { classifyDiffAgainstPlan } from '../src/verify/classify.js'
+import type { AnyMock } from './helpers/mocks.js'
 import { getDiffInWorktree, saveVerifyResult } from '../src/tools/verify-task-against-plan.js'
 
 const mockPrisma = prisma as unknown as {
   task: { findUnique: ReturnType<typeof vi.fn> }
   claudeJob: { update: ReturnType<typeof vi.fn> }
 }
-const mockClassify = classifyDiffAgainstPlan as ReturnType<typeof vi.fn>
+const mockClassify = classifyDiffAgainstPlan as AnyMock
 
 // Mock node:child_process so getDiffInWorktree doesn't need a real git repo
 vi.mock('node:child_process', () => ({
