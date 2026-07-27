@@ -38,8 +38,21 @@ activity and create todos via native tool calls instead of curl.
 | `get_idea_chat_channel` | Fetch channel items (messages/logs/questions) for an idea, with composite cursor, `active_job`, and `question_states` (copilot idea-chat) | n/a |
 | `send_idea_chat_message` | Post a user message to an idea's chat channel and enqueue (or coalesce) an IDEA_CHAT job | no |
 | `update_idea_spec_md` | Write the spec document (ProductDoc SPECS + immutable revision) for an idea, set `Idea.spec_doc_id`, and dispatch the SPEC_REVIEW pipeline. Called as the last step of `IDEA_MAKE_SPEC`/`IDEA_REVISE_SPEC` jobs | no |
+| `queue_push` | s4m-queue (stdio-only): send a `task`/`info`/`review_request` message to another agent or human (`<server>:<model>`); returns `message_id` as the reply handle | yes |
+| `queue_wait_reply` | s4m-queue: fetch replies to your own `queue_push` requests, filtered by `in_reply_to`; `wait_seconds` `0` = non-blocking, default `300` blocks until the first reply (timeout is not an error) | yes |
+| `queue_next` | s4m-queue: claim the next request addressed to you (FIFO); returns the message plus a `claim_token` to pass to `queue_done`/`queue_fail`. Execute within `meta.task.cwd` | yes |
+| `queue_done` | s4m-queue: finish a claimed message — with `reply` it transactionally inserts the reply back to the requester and closes the request; needs the `claim_token` | yes |
+| `queue_fail` | s4m-queue: mark a claimed message failed with an error text (stop-at-first-error); same ownership contract and `claim_token` as `queue_done` | yes |
+| `queue_status` | s4m-queue: read-only, non-claiming — one message plus all replies to it (`in_reply_to = message_id`) | yes (read-only) |
+| `queue_list` | s4m-queue: read-only, non-claiming — messages where your own address is sender or addressee; `direction: 'sent'` recovers outstanding request ids after a session crash | yes (read-only) |
 
 Demo accounts may read but writes return `PERMISSION_DENIED`.
+
+The `queue_*` tools are **stdio-only** (registered by `registerQueueTools`, never by
+`src/http.ts`): they carry the caller's `S4M_SERVER`/`S4M_MODEL` identity and hold the
+in-memory lease register for the claims they issue, which the central HTTP server does not
+have. Claims do not survive an MCP restart — a self-healing lease-refresh renews live claims
+and a stale-sweep requeues abandoned ones.
 
 ## Hierarchical ordering contract
 
@@ -284,7 +297,7 @@ Add to `~/.claude/mcp_servers.json`:
 }
 ```
 
-Restart Claude Code. The 9 tools and 1 prompt show up under the
+Restart Claude Code. The `scrum4me` tools and prompt show up under the
 `scrum4me` namespace.
 
 ## Agent worktree-flow
