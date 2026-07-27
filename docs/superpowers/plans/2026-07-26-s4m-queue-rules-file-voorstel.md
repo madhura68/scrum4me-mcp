@@ -62,10 +62,18 @@ hierboven gezond uitgezien.
 3. ✅ (mac) De MCP-server op de host herstart, zodat `registerQueueTools` de tools
    daadwerkelijk registreert. **Verifieer met een echte tool-aanroep, niet met een
    tool-listing** — zie hierboven waarom die laatste niets bewijst.
-4. ⬜ Voor `inbox --in-reply-to` uit de CLI-fallback-sectie: `npm run build` in
-   `s4m-queue` plus herinstallatie van de globale bin. Op mac gedaan (dat is een
-   `npm link` naar de dev-checkout, dus: `dist/` bouwen en `chmod +x dist/cli.js`);
-   scrum4me-server en max2 staan nog open (fase-1-draaiboek §4.4 stap 5).
+4. ✅ Voor `inbox --in-reply-to` uit de CLI-fallback-sectie: `npm run build` in
+   `s4m-queue` plus herinstallatie van de globale bin. Op alle drie de hosts gedaan
+   op 2026-07-26/27. De topologie verschilt per host en dat is de moeite van het
+   onthouden waard: mac en scrum4me-server draaien een **npm link** naar een
+   dev-checkout (`~/Development/s4m-queue` resp. `/home/janpeter/s4m-queue`), max2
+   een **echte globale installatie** onder `/usr/local`. Bij npm link volstaat
+   bouwen in de checkout; bij een echte installatie is `sudo npm i -g .` nodig.
+   **Deploy je op mac door `dist/` te kopiëren, zet dan de executable-bit van álle
+   drie de binaries terug** — `tsc` schrijft ze als 0644 en `npm i -g` is wat die
+   bit normaal zet. Loop de `bin`-map uit `package.json` af in plaats van te
+   vertrouwen op je geheugen; op 2026-07-26 bleven `s4m-queue-cleanup` en
+   `s4m-rules-apply` daardoor uren op exit 126 staan omdat alleen `cli.js` getest was.
 
 ## Waarom een rules-file alleen niet genoeg is
 
