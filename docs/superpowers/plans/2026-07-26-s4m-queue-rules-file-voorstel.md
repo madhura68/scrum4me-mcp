@@ -1,19 +1,31 @@
 # De nieuwe `~/.claude/rules/s4m-queue.md` (fase 3, taak 7)
 
-> **STATUS: ACTIEF op mac sinds 2026-07-26.** De inhoud hieronder staat sinds die
-> datum in `~/.claude/rules/s4m-queue.md` op deze machine (back-up van de vorige
-> versie: `~/.claude/rules/s4m-queue.md.bak-voor-fase3`). Dit document blijft staan
-> als bron voor de rules-sync naar de andere hosts.
+> **STATUS: revisie 3, actief op mac sinds 2026-07-27** — sha256 `277b6354…`,
+> 5469 bytes, 34 regels. Back-up van de oorspronkelijke versie staat op mac en
+> scrum4me-server als `~/.claude/rules/s4m-queue.md.bak-voor-fase3`; **max2 heeft
+> er geen**, want daar bestond vóór 2026-07-26 geen rules-file en geen
+> `~/.claude/rules/`-map. Dit document is de bron voor de sync en hoort
+> byte-identiek te zijn aan het actieve bestand.
 >
-> **Gesynct naar `scrum4me-server` en `max2` op 2026-07-26**, nadat beide hosts hun
-> MCP hadden bijgewerkt. Beide bevestigden byte-identiek (sha256 + bytes + regels).
-> Op `max2` bleek het een **eerste installatie**: `~/.claude/rules/` bestond daar niet.
+> Revisiegeschiedenis: `4843c637` (26-07, eerste uitrol) → `2b5862d1` (26-07,
+> `scrum4me-server:codex` toegevoegd) → `277b6354` (27-07, revisie 3).
 >
-> **Er is geen `s4m-rules-apply`.** Dat commando staat wel in het oorspronkelijke plan,
-> maar bestaat op deze mac niet en er is geen sync-script gevonden. De distributie is
-> gedaan door de bestandsinhoud plus de sha256 als queue-taak naar beide hosts te sturen;
-> zij schreven en verifieerden zelf. Werkt goed, maar het is handwerk per keer — een
-> echte sync-flow ontbreekt nog.
+> **Correctie: `s4m-rules-apply` bestaat wél.** Een eerdere versie van dit blok
+> beweerde van niet, op grond van `command -v` dat niets vond. Dat was fout, en de
+> reden dat hij onvindbaar was is veelzeggend: de bin was kapot. Bron staat in
+> `s4m-queue/src/rules-apply.ts`, met een bin-entry in `package.json` en een symlink
+> in `/opt/homebrew/bin`; hij consumeert rules-sync-berichten uit de queue (PBI-9).
+> Op 2026-07-26 wiste een `cp -R` van `dist/` de executable-bit van alle drie de
+> binaries, en alleen `cli.js` werd toen gerepareerd — de enige die getest was.
+> Sindsdien hersteld.
+>
+> **Hij kent kimi niet, en dat is een openstaande beslissing.** `s4m-rules-apply`
+> heeft een eigen allowlist die níét van `MODELS` is afgeleid: hij weigert letterlijk
+> met `vereist --as claude|codex`. Bovendien routeert `targetPath()` alles-behalve-codex
+> naar `~/.claude/rules`, dus kimi er blind aan toevoegen zou zijn regelbestanden in
+> Claude's map laten belanden; een `~/.kimi/rules`-conventie bestaat niet. Zolang die
+> vraag openstaat gaat de distributie handmatig: inhoud plus sha256 als queue-taak naar
+> elke host, die zelf schrijft en verifieert.
 
 ## Waarom het wachtte, en wat de activering blokkeerde
 
@@ -92,17 +104,19 @@ Berichten-queue tussen hosts `mac`, `scrum4me-server`, `max2` en participants `c
 - `queue_next` geeft een `claim_token`; geef dat mee aan `queue_done`/`queue_fail`. De lease wordt automatisch ververst zolang dít MCP-proces leeft — geen agent-actie nodig, geen handmatige verlenging.
 - **Verlopen-claim-protocol:** bij `QUEUE_CLAIM_EXPIRED` of `QUEUE_NOT_CLAIMER` is je claim verlopen (MCP-herstart, sweep-requeue) of door een ander overgenomen. **Gooi lokaal werk weg** — dien nooit resultaten van een verlopen claim alsnog in — en begin desgewenst opnieuw met `queue_next`.
 - **Idempotentie-eis voor task-handlers:** schrijf taken zo dat dubbele uitvoering onschadelijk is (zelfde branch/PR hergebruiken, upserts, geen dubbele side-effects). Een requeue kan altijd tot een tweede uitvoering leiden; statusvalidatie voorkomt alleen dubbele *afronding*.
-- Vastzittende claims herstellen automatisch: MCP-claims ~5 min na procesdood, CLI-claims na 4 h (`S4M_RECLAIM_DEFAULT`). Levend proces maar gestrande sessie → handmatig `s4m-queue requeue <id>` (jp).
+- Vastzittende claims herstellen automatisch: MCP-claims ~5 min na procesdood, CLI-claims na 4 h (`S4M_RECLAIM_DEFAULT`). **Wil je direct verder in plaats van wachten** — bijvoorbeeld na een MCP-herstart, waarbij je eigen claim meteen `QUEUE_CLAIM_EXPIRED` geeft terwijl de rij nog op `claimed` staat — dan is `s4m-queue requeue <id>` (CLI) de enige weg; er is geen MCP-equivalent. Anders ~5 min op de sweep wachten. **Deel daarom nooit een taak uit die zélf de MCP herstart zonder dit recept erbij**: die claim overleeft de herstart per definitie niet.
 
-**Echt "seintje" nodig terwijl je doorwerkt?** Start de CLI als background-Bash-taak:
+**Echt "seintje" nodig terwijl je doorwerkt?** Start de CLI als background-Bash-taak (source de env-file van jóuw host, zie CLI-fallback hieronder):
 
-    source ~/.zshenv && s4m-queue inbox --as <model> --wait --in-reply-to <id,...> --json
+    source <env-file> && s4m-queue inbox --as <model> --wait --in-reply-to <id,...> --json
 
 Die blokkeert tot er een reply op jóuw requests binnenkomt (correlatie-veilig). Let op: deze CLI-claim moet je ook via de CLI ack-en (`s4m-queue done <id>`) — de MCP rondt CLI-claims bewust niet af.
 
-**CLI-fallback** (jp, of als de MCP onbereikbaar is): `push · next · inbox · done · fail · peek · list · status · requeue · cancel`; `--as` verplicht bij push/next/inbox/peek; `inbox --in-reply-to <id,...>` filtert op je eigen requests. Env vereist (`S4M_QUEUE_URL` + `S4M_SERVER`): mac = `~/.zshenv`, scrum4me-server = `~/.config/s4m-queue.env` — source in hetzelfde commando. `s4m-queue --help` werkt zonder env.
+**CLI-fallback** (jp, of als de MCP onbereikbaar is): `push · next · inbox · done · fail · peek · list · status · requeue · cancel`; `--as` verplicht bij push/next/inbox/peek; `inbox --in-reply-to <id,...>` filtert op je eigen requests. Env vereist (`S4M_QUEUE_URL` + `S4M_SERVER`): mac = `~/.zshenv`; scrum4me-server en max2 = `~/.config/s4m-queue.env` (die hosts hebben geen `~/.zshenv`) — source in hetzelfde commando. `s4m-queue --help` werkt zonder env.
 
 **Bestemmingen:** agents `scrum4me-server:claude`, `scrum4me-server:codex`, `max2:claude`, `mac:claude`, `mac:codex`; mens `mac:jp` — JP claimt via terminal (`s4m-queue next --as jp`) of het Messages-dashboard in **scrum4me-workers** (`/queue/messages`). Stuur aan JP wat review/akkoord vereist dat je niet zelf kunt beslissen.
+
+**`kimi` is géén bestemming.** Het model staat wél in het vocabulaire — `mac:kimi` wordt door de validatie geaccepteerd — maar Kimi claimt zijn eigen requests niet, dus een bericht daarheen wordt nooit opgehaald. Stuur werk dat voor Kimi bedoeld was naar `mac:codex`. Voeg `mac:kimi` niet aan de lijst hierboven toe zolang deze regel er staat.
 
 **Realtime:** elke statuswisseling emit een NotifyEnvelope (`{id, type, from_*, to_*, in_reply_to, status, previous_status}`) op kanaal `agent_queue`. Wait-tools, CLI `--wait` en het dashboard gebruiken dit — niet pollen.
 ~~~
