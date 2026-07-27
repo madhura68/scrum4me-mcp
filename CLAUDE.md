@@ -198,10 +198,44 @@ Server-startup registers a `ClaudeWorker` record + starts a 10 s heartbeat; shut
 | `src/presence/shutdown.ts` | `registerShutdownHandlers` — SIGTERM/SIGINT + stdin `end`/`close` → stop heartbeat + unregister; returns `shutdown()` so the caller can also trigger it (e.g. from `transport.onclose`) |
 | `src/index.ts` | Bootstrap: calls `getAuth` → `registerWorker` → `startHeartbeat` → `registerShutdownHandlers`, and wires `transport.onclose` → `shutdown()` |
 
+## Queue-leeskant: entiteit-transparantie
+
+De MCP escapet queue-bodies niet. `messageView` (`src/queue/view.ts`) geeft `body` door
+en `toolJson` (`src/errors.ts`) is een kale `JSON.stringify` — geen entiteit komt erbij,
+en al-geëscapete tekst wordt niet dubbel geëscaped. Dat is vastgelegd in
+`__tests__/queue-entity-transparency.test.ts`; die test gaat rood op elke escape-pass
+(gecontroleerd door de bug tijdelijk in `messageView` te injecteren: 5/5 rood, 5/5 groen
+na terugdraaien).
+
+**Bekend gedrag, niet reproduceerbaar (2026-07-27).** Eén keer kwam de body van bericht
+`8ceedd5d` bij de ontvanger (max2, via `queue_next`) binnen met `&lt;`, `&gt;` en `&amp;`
+in plaats van `<`, `>` en `&` — één blanket-laag over álle voorkomens, ongeacht markdown-
+context. De ontvanger vertaalde terug en de sha klopte op de eerste poging, dus het was
+echt precies één laag. Uitgesloten met meting, niet met redenering:
+
+| Laag | Meting |
+|---|---|
+| Postgres-kolom | schoon, identieke sha vanaf mac én max2 |
+| `queue_push` (schrijfpad) | byte-exact, ook bij 10 KB via `--file` |
+| `messageView` / `toolJson` | broncode + `git log -S` over de hele historie: nooit escaping-code bestaan |
+| `queue_status` / `queue_next` | byte-exact op beide hosts |
+| `s4m-queue` CLI | byte-exact op beide hosts |
+| NOTIFY-payload | draagt de body helemaal niet (`RETURNING *` levert 'm, niet de envelope) |
+
+Herhaald met de byte-exacte originele body (10 KB, zelfde grootteorde, zelfde tool, zelfde
+clientversie, geen compaction): niet gereproduceerd. Wat overblijft is de client-/agent-leg
+op die host tijdens díé sessie — **bij eliminatie vastgesteld, niet positief aangewezen**.
+
+**Praktische regel:** stuur bij bestandsinhoud altijd een sha256 (+ bytes/regels) mee in de
+`verification` van de taak. Bij `8ceedd5d` ving die check het af; zonder zo'n check schrijft
+een ontvanger stil `&lt;` naar schijf. Queue-berichten bevatten routinematig
+`<server>:<model>`, `&&` en shell-fragmenten, dus dit raakt de normale gevallen.
+
 ## Key source files
 
 | File | Purpose |
 |---|---|
+| `src/queue/view.ts` | `messageView` — gedeelde presentatievorm; entiteit-transparant (zie hierboven) |
 | `src/git/worktree.ts` | `createWorktreeForJob` + `removeWorktreeForJob` |
 | `src/git/on-demand-clone.ts` | `cloneRepoOnDemand` — on-demand clone fallback voor `resolveRepoRoot` |
 | `src/tools/wait-for-job.ts` | `resolveRepoRoot`, `rollbackClaim`, `attachWorktreeToJob` |
