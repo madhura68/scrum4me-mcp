@@ -28,6 +28,21 @@ const FOLDER_VALUES = [
   'API',
 ] as const
 
+// Moet gelijk blijven aan MAX_PRODUCT_DOC_CONTENT_LEN in de web-repo
+// (lib/schemas/product-doc.ts) — beide schrijven via dezelfde
+// writeProductDoc. De harde grens ligt hoger: product_docs.search_vec is
+// een GENERATED STORED tsvector en Postgres weigert er een van >= 1 MB.
+export const MAX_PRODUCT_DOC_CONTENT_LEN = 250_000
+
+// De remedie staat zowel in de `describe` (die belandt in het JSON Schema
+// dat een agent vóór de call leest) als in de `max`-melding (die hij ná een
+// mislukte call krijgt). Zonder de eerste ziet een agent alleen een kaal
+// `maxLength` en gaat hij inkorten in plaats van splitsen.
+const TOO_LARGE_REMEDY =
+  'Splits het document op in meerdere ProductDocs — bijvoorbeeld één per fase of ' +
+  'hoofdstuk — en maak een index-doc dat naar de delen linkt (één create_product_doc ' +
+  'per deel). Kort de inhoud niet in om binnen de limiet te passen.'
+
 const inputSchema = z.object({
   product_id: z.string().min(1),
   folder: z.enum(FOLDER_VALUES),
@@ -35,7 +50,17 @@ const inputSchema = z.object({
     .string()
     .regex(/^[a-z0-9][a-z0-9-]{0,79}$/, 'Slug mag alleen lowercase/cijfers/koppeltekens, 1-80 chars')
     .optional(),
-  content_md: z.string().min(1).max(100_000),
+  content_md: z
+    .string()
+    .min(1)
+    .max(
+      MAX_PRODUCT_DOC_CONTENT_LEN,
+      `Document te groot (max ${MAX_PRODUCT_DOC_CONTENT_LEN} tekens). ${TOO_LARGE_REMEDY}`,
+    )
+    .describe(
+      `Volledige markdown-body inclusief frontmatter. Max ${MAX_PRODUCT_DOC_CONTENT_LEN} tekens. ` +
+        `Is je document groter? ${TOO_LARGE_REMEDY}`,
+    ),
 })
 
 function slugify(title: string): string {
@@ -56,7 +81,7 @@ export function registerCreateProductDocTool(server: McpServer) {
     {
       title: 'Create or update a ProductDoc with a new immutable revision',
       description:
-        'Write a ProductDoc (or new revision of an existing doc). Slug auto-derived from frontmatter title if omitted. Returns doc_id + revision_id so the caller can link via create_pbi or link_pbi_doc. Identical content produces a noop:true response without a new revision. Forbidden for demo accounts.',
+        `Write a ProductDoc (or new revision of an existing doc). Slug auto-derived from frontmatter title if omitted. Returns doc_id + revision_id so the caller can link via create_pbi or link_pbi_doc. Identical content produces a noop:true response without a new revision. Forbidden for demo accounts. content_md is capped at ${MAX_PRODUCT_DOC_CONTENT_LEN} chars — a larger document must be SPLIT across several ProductDocs (one per phase/chapter) with an index doc linking to the parts, never truncated to fit.`,
       inputSchema,
     },
     async ({ product_id, folder, slug, content_md }) =>
