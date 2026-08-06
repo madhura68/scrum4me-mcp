@@ -325,3 +325,19 @@ describe('pariteitsgate — tool-schema ↔ @shared/queue-identity', () => {
     }
   })
 })
+
+// M30 P0.4: de pin-witness — de gevendorde module draagt het job-namespace.
+// Geen nieuwe entries in de pariteitstabel hierboven (de gesloten enums zijn
+// ongewijzigd; de discriminatie leeft in parseQueueAddress), maar wél één
+// acceptatieprobe zodat een terugval van de gitlink naar een pre-M30 SHA hier
+// rood wordt in plaats van pas bij een echte push.
+describe('M30 job-namespace via de pin', () => {
+  it('de gevendorde module accepteert een scrum4us-job-adres', async () => {
+    const shared = await import('@shared/queue-identity.js')
+    expect(shared.QUEUE_JOB_SERVER).toBe('scrum4us-job')
+    expect(shared.parseQueueAddress('scrum4us-job:cmxyzjobid1')).toEqual({
+      server: 'scrum4us-job',
+      jobId: 'cmxyzjobid1',
+    })
+  })
+})

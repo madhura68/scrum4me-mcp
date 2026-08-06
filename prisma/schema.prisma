@@ -1307,6 +1307,10 @@ model AgentMessage {
   started_at  DateTime? @db.Timestamptz(6)
   finished_at DateTime? @db.Timestamptz(6)
   created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  // M30 P0.3: push-idempotentie. De partiele unieke index en de watcher-index
+  // zijn SQL-only (PSL kent geen partiele indexen) en leven in de
+  // Scrum4Me-migratie + s4m-queue/migrations/001_init.sql.
+  idempotency_key String?
 
   replied_to AgentMessage?  @relation("AgentMessageReplies", fields: [in_reply_to], references: [id], onDelete: SetNull, onUpdate: NoAction)
   replies    AgentMessage[] @relation("AgentMessageReplies")
@@ -1347,6 +1351,8 @@ model AgentMessageArchive {
   started_at  DateTime? @db.Timestamptz(6)
   finished_at DateTime? @db.Timestamptz(6)
   created_at  DateTime  @db.Timestamptz(6)
+  // M30 P0.3: kolom-identiek aan agent_message (pariteitscontract).
+  idempotency_key String?
 
   @@map("agent_message_archive")
 }

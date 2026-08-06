@@ -81,4 +81,18 @@ describe('parseQueueTarget — CLI-pariteit (parseTarget)', () => {
     expect(() => parseQueueTarget('mac:')).toThrowError(/^VALIDATION_ERROR/)
     expect(() => parseQueueTarget('')).toThrowError(/^VALIDATION_ERROR/)
   })
+
+  // M30 job-namespace: bestemmingen routeren door de gediscrimineerde parse.
+  it('accepteert een scrum4us-job-adres', () => {
+    expect(parseQueueTarget('scrum4us-job:cmxyzjobid1')).toEqual({
+      server: 'scrum4us-job',
+      jobId: 'cmxyzjobid1',
+    })
+  })
+
+  it('weigert misvormde job-adressen met VALIDATION_ERROR', () => {
+    expect(() => parseQueueTarget('scrum4us-job:')).toThrowError(/^VALIDATION_ERROR/)
+    expect(() => parseQueueTarget('scrum4us-job:a:b')).toThrowError(/^VALIDATION_ERROR/)
+    expect(() => parseQueueTarget('mac:cmxyzjobid1')).toThrowError(/^VALIDATION_ERROR/)
+  })
 })
