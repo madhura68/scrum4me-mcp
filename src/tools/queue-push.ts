@@ -8,7 +8,13 @@ import { parseQueueTarget, resolveQueueIdentity } from '../queue/identity.js'
 import { requiresTaskMeta, validateTaskMeta } from '../queue/types.js'
 import { deriveRepoFromCwd } from '../queue/git-origin.js'
 import { emitQueueNotifyBestEffort, envelopeOf } from '../queue/notify.js'
-import { QUEUE_MODELS, QUEUE_REQUEST_TYPES, QUEUE_SERVERS } from '@shared/queue-identity.js'
+import {
+  QUEUE_JOB_SERVER,
+  QUEUE_MODELS,
+  QUEUE_REQUEST_TYPES,
+  QUEUE_SERVERS,
+  formatQueueAddress,
+} from '@shared/queue-identity.js'
 
 const inputSchema = z.object({
   to: z.string().min(1),
@@ -33,7 +39,8 @@ export function registerQueuePushTool(server: McpServer) {
       description:
         'Send a message to another agent or human via the s4m-queue. ' +
         `Target: '<server>:<model>' (servers: ${QUEUE_SERVERS.join(', ')}; ` +
-        `models: ${QUEUE_MODELS.join(', ')}). ` +
+        `models: ${QUEUE_MODELS.join(', ')}) or '${QUEUE_JOB_SERVER}:<jobid>' ` +
+        '(M30 job namespace — opaque job id on the model position). ' +
         'Types: task (do something + report result), info (question/data — also for yes/no to jp), ' +
         'review_request (review a document). For task/review_request supply cwd plus meta.task ' +
         '{objective, verification, response_format}; the tool derives meta.task.repo via ' +
@@ -46,6 +53,11 @@ export function registerQueuePushTool(server: McpServer) {
         await requireWriteAccess()
         const from = resolveQueueIdentity(as)
         const target = parseQueueTarget(to)
+        // The job id lives on the model position — the columns stay text (M30 §5).
+        const dest =
+          target.server === QUEUE_JOB_SERVER
+            ? { server: target.server as string, model: target.jobId }
+            : { server: target.server as string, model: target.model }
 
         const finalMeta: Record<string, unknown> = { ...(meta ?? {}) }
         if (requiresTaskMeta(type)) {
@@ -72,8 +84,8 @@ export function registerQueuePushTool(server: McpServer) {
             type,
             from_server: from.server,
             from_model: from.model,
-            to_server: target.server,
-            to_model: target.model,
+            to_server: dest.server,
+            to_model: dest.model,
             body,
             meta: finalMeta as Prisma.InputJsonValue,
             source: 'mcp',
@@ -85,7 +97,7 @@ export function registerQueuePushTool(server: McpServer) {
         await emitQueueNotifyBestEffort(envelopeOf(row, null))
         return toolJson({
           message_id: row.id,
-          to: `${target.server}:${target.model}`,
+          to: formatQueueAddress(target),
           type,
           hint: `Fetch the reply with queue_wait_reply({ message_ids: ["${row.id}"] })`,
         })

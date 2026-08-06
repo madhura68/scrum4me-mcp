@@ -1,4 +1,12 @@
-import { QUEUE_MODELS, QUEUE_SERVERS, type QueueModel, type QueueServer } from '@shared/queue-identity.js'
+import {
+  QUEUE_JOB_SERVER,
+  QUEUE_MODELS,
+  QUEUE_SERVERS,
+  parseQueueAddress,
+  type QueueAddress as QueueDestination,
+  type QueueModel,
+  type QueueServer,
+} from '@shared/queue-identity.js'
 import type { QueueAddress } from './types.js'
 
 /**
@@ -24,19 +32,20 @@ export function resolveQueueIdentity(asOverride?: string): QueueAddress {
   return { server: server as QueueServer, model: model as QueueModel }
 }
 
-/** Parses '<server>:<model>' targets — same vocabulary as the CLI's parseTarget. */
-export function parseQueueTarget(s: string): QueueAddress {
-  const parts = s.split(':')
-  const [server, model] = parts
-  if (
-    parts.length !== 2 ||
-    !(QUEUE_SERVERS as readonly string[]).includes(server) ||
-    !(QUEUE_MODELS as readonly string[]).includes(model)
-  ) {
+/**
+ * Parses '<server>:<model>' or 'scrum4us-job:<jobid>' destinations — the
+ * discriminated parse from the shared module (M30 §5), same vocabulary as the
+ * CLI's parseTarget. Identity (the sender) stays closed; only destinations
+ * admit the job namespace.
+ */
+export function parseQueueTarget(s: string): QueueDestination {
+  try {
+    return parseQueueAddress(s)
+  } catch {
     throw new Error(
       `VALIDATION_ERROR: invalid target '${s}', expected <server>:<model> with server in ` +
-        `[${QUEUE_SERVERS.join(', ')}], model in [${QUEUE_MODELS.join(', ')}]`,
+        `[${QUEUE_SERVERS.join(', ')}], model in [${QUEUE_MODELS.join(', ')}], ` +
+        `or ${QUEUE_JOB_SERVER}:<jobid>`,
     )
   }
-  return { server: server as QueueServer, model: model as QueueModel }
 }
