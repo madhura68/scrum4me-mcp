@@ -10,6 +10,7 @@ import { getInstanceId } from '../presence/instance.js'
 import { messageView, type QueueMessageLike } from '../queue/view.js'
 import { QUEUE_MODELS } from '@shared/queue-identity.js'
 import type { QueueAddress } from '../queue/types.js'
+import { legacyMarkerWhere } from '../queue/marked.js'
 
 const CALLER_PROTOCOL =
   'Remove answered request-ids from the next queue_wait_reply call; every reply carries its in_reply_to.'
@@ -43,6 +44,7 @@ async function collectAvailableReplies(
       to_server: self.server,
       to_model: self.model,
       status: 'done',
+      ...legacyMarkerWhere(),
     },
     orderBy: [{ created_at: 'asc' }, { id: 'asc' }],
   })) as QueueMessageLike[]

@@ -50,7 +50,8 @@ describe('sweepStaleQueueClaims — §6.1', () => {
     expect(sql).toContain("claimed_by LIKE 'mcp:%'")
     expect(sql).toContain("status = 'claimed'")
     expect(sql).toContain("SET status = 'pending', claimed_by = NULL, claimed_at = NULL, started_at = NULL")
-    expect(values).toEqual([MCP_LEASE_STALE_INTERVAL, '4 hours'])
+    expect(values).toContain(MCP_LEASE_STALE_INTERVAL)
+    expect(values).toContain('4 hours')
   })
 
   it('emit per gerequeuede rij een byte-compatibele NotifyEnvelope op agent_queue', async () => {

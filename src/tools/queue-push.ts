@@ -90,6 +90,15 @@ export function registerQueuePushTool(server: McpServer) {
             meta: finalMeta as Prisma.InputJsonValue,
             source: 'mcp',
             status: 'pending',
+            ppe_protocol: null,
+            ppe_run_id: null,
+            ppe_operation_key: null,
+            ppe_payload_sha256: null,
+            ppe_from_principal: null,
+            ppe_to_principal: null,
+            ppe_to_consumer_id: null,
+            ppe_consumer_generation: null,
+            ppe_lease_generation: null,
           },
         })
         // NOTIFY after commit, best-effort (§5.1) — CLI --wait and the

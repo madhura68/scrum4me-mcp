@@ -10,6 +10,7 @@
 // snoeien mag alléén op een geslaagde update met count === 0.
 import { prisma } from '../prisma.js'
 import { leaseEntries, releaseLease } from './lease-register.js'
+import { legacyMarkerWhere } from './marked.js'
 
 export const LEASE_REFRESH_INTERVAL_MS = 10_000
 
@@ -17,7 +18,10 @@ export async function refreshQueueLeases(): Promise<void> {
   for (const { messageId, claimedBy } of leaseEntries()) {
     try {
       const result = await prisma.agentMessage.updateMany({
-        where: { id: messageId, status: 'claimed', claimed_by: claimedBy },
+        where: {
+          id: messageId, status: 'claimed', claimed_by: claimedBy,
+          ...legacyMarkerWhere(),
+        },
         data: { claimed_at: new Date() },
       })
       if (result.count === 0) {

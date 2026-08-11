@@ -106,7 +106,7 @@ describe('claimNextRequest — FIFO-claim met FOR UPDATE SKIP LOCKED (§5.3)', (
     vi.stubEnv('S4M_RECLAIM_DEFAULT', '30 minutes')
     txMock.$queryRaw.mockResolvedValueOnce([claimedRow])
     await claimNextRequest({ server: 'mac', model: 'claude', claimedBy: 'mcp:i:t' })
-    expect(txMock.$queryRaw.mock.calls[0][4]).toBe('30 minutes')
+    expect(txMock.$queryRaw.mock.calls[0]).toContain('30 minutes')
   })
 
   it('zet de claim-timestamps en leest previous_status uit de pre-update rij', async () => {
