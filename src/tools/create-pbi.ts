@@ -18,6 +18,7 @@ import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { withSerializableRetry } from '../lib/serializable-transaction.js'
 import { withCodeUniqueRetry } from '../lib/code-unique-retry.js'
+import { assertCeremonyOperationKey, executePpeMutation, ppeInputSchema } from '../lib/ppe-operation.js'
 
 const PBI_AUTO_RE = /^PBI-(\d+)$/
 async function generateNextPbiCode(
@@ -51,23 +52,24 @@ const inputSchema = z.object({
   description: z.string().max(4000).optional(),
   priority: z.number().int().min(1).max(4),
   source_docs: z.array(sourceDocSchema).max(10).optional(),
+  ceremony_object_key: z.string().min(1).optional(),
+  ppe: ppeInputSchema.optional(),
 })
 
-export function registerCreatePbiTool(server: McpServer) {
-  server.registerTool(
-    'create_pbi',
-    {
-      title: 'Create PBI',
-      description:
-        'Add a Product Backlog Item to a product. Priority is team importance only; execution order appends within the parent and can be changed through backlog reorder. PBI-102: optional source_docs link the PBI to ProductDoc revisions (PLAN/GRILL); revision_id is frozen at link-time. Forbidden for demo accounts.',
-      inputSchema,
-    },
-    async ({ product_id, title, description, priority, source_docs }) =>
-      withToolErrors(async () => {
-        const auth = await requireWriteAccess()
-        if (!(await userCanAccessProduct(product_id, auth.userId))) {
-          return toolError(`Product ${product_id} not found or not accessible`)
-        }
+export async function handleCreatePbi({
+  product_id, title, description, priority, source_docs, ceremony_object_key, ppe,
+}: z.infer<typeof inputSchema>) {
+  return withToolErrors(async () => {
+    const auth = await requireWriteAccess()
+    if (!(await userCanAccessProduct(product_id, auth.userId))) {
+      return toolError(`Product ${product_id} not found or not accessible`)
+    }
+    if ((ppe === undefined) !== (ceremony_object_key === undefined)) throw new Error('PPE_INPUT_INCOMPLETE')
+    if (ppe) assertCeremonyOperationKey(ppe, 'pbi', ceremony_object_key!)
+    const request = {
+      product_id, title, description: description ?? null, priority,
+      source_docs: source_docs ?? null, ceremony_object_key: ceremony_object_key ?? null,
+    }
 
         // PBI-102: resolve source_docs vooraf zodat we voor de tx-start weten
         // welke revision_id per link bevroren moet worden.
@@ -109,6 +111,13 @@ export function registerCreatePbiTool(server: McpServer) {
           }
         }
 
+        return executePpeMutation({
+          ppe,
+          operationKind: 'CEREMONY_PBI',
+          targetScope: `product:${product_id}`,
+          request,
+          authority: 'ceremony',
+          mutate: async () => {
         const createPbi = () => withSerializableRetry(async (tx) => {
           const last = await tx.pbi.findFirst({
             where: { product_id },
@@ -176,6 +185,20 @@ export function registerCreatePbiTool(server: McpServer) {
         })
         const created = await withCodeUniqueRetry('pbis_product_id_code_key', createPbi)
         return toolJson(created)
-      }),
+          },
+        })
+  })
+}
+
+export function registerCreatePbiTool(server: McpServer) {
+  server.registerTool(
+    'create_pbi',
+    {
+      title: 'Create PBI',
+      description:
+        'Add a Product Backlog Item to a product. Priority is team importance only; execution order appends within the parent and can be changed through backlog reorder. PBI-102: optional source_docs link the PBI to ProductDoc revisions (PLAN/GRILL); revision_id is frozen at link-time. Forbidden for demo accounts.',
+      inputSchema,
+    },
+    handleCreatePbi,
   )
 }

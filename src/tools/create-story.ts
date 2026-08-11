@@ -14,6 +14,7 @@ import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { withSerializableRetry } from '../lib/serializable-transaction.js'
 import { withCodeUniqueRetry } from '../lib/code-unique-retry.js'
+import { assertCeremonyOperationKey, executePpeMutation, ppeInputSchema } from '../lib/ppe-operation.js'
 
 const STORY_AUTO_RE = /^ST-(\d+)$/
 async function generateNextStoryCode(
@@ -44,6 +45,8 @@ const inputSchema = z.object({
   // Optionele sprint-koppeling: bij creatie de story direct aan een sprint
   // hangen (status=IN_SPRINT). De sprint moet bij hetzelfde product horen.
   sprint_id: z.string().min(1).optional(),
+  ceremony_object_key: z.string().min(1).optional(),
+  ppe: ppeInputSchema.optional(),
 })
 
 export async function handleCreateStory(
@@ -54,6 +57,8 @@ export async function handleCreateStory(
     acceptance_criteria,
     priority,
     sprint_id,
+    ceremony_object_key,
+    ppe,
   }: z.infer<typeof inputSchema>,
 ) {
   return withToolErrors(async () => {
@@ -67,6 +72,8 @@ export async function handleCreateStory(
     if (!(await userCanAccessProduct(pbi.product_id, auth.userId))) {
       return toolError(`PBI ${pbi_id} not accessible`)
     }
+    if ((ppe === undefined) !== (ceremony_object_key === undefined)) throw new Error('PPE_INPUT_INCOMPLETE')
+    if (ppe) assertCeremonyOperationKey(ppe, 'story', ceremony_object_key!)
 
     // Optionele sprint-koppeling: valideer dat de sprint bestaat én bij
     // hetzelfde product hoort — voorkomt een cross-product koppeling.
@@ -83,43 +90,57 @@ export async function handleCreateStory(
       }
     }
 
-    const createStory = () => withSerializableRetry(async (tx) => {
-      const last = await tx.story.findFirst({
-        where: { pbi_id },
-        orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
-        select: { sort_order: true },
-      })
-      const resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
-      const code = await generateNextStoryCode(tx, pbi.product_id)
-      return tx.story.create({
-        data: {
-          pbi_id,
-          product_id: pbi.product_id, // denormalized uit DB-parent, niet uit input
-          sprint_id: sprint_id ?? null,
-          code,
-          title,
-          description: description ?? null,
-          acceptance_criteria: acceptance_criteria ?? null,
-          priority,
-          sort_order: resolvedSortOrder,
-          status: sprint_id ? 'IN_SPRINT' : 'OPEN',
-        },
-        select: {
-          id: true,
-          code: true,
-          title: true,
-          description: true,
-          acceptance_criteria: true,
-          priority: true,
-          sort_order: true,
-          status: true,
-          sprint_id: true,
-          created_at: true,
-        },
-      })
+    const request = {
+      pbi_id, title, description: description ?? null,
+      acceptance_criteria: acceptance_criteria ?? null, priority,
+      sprint_id: sprint_id ?? null, ceremony_object_key: ceremony_object_key ?? null,
+    }
+    return executePpeMutation({
+      ppe,
+      operationKind: 'CEREMONY_STORY',
+      targetScope: `product:${pbi.product_id}`,
+      request,
+      authority: 'ceremony',
+      mutate: async () => {
+        const createStory = () => withSerializableRetry(async (tx) => {
+          const last = await tx.story.findFirst({
+            where: { pbi_id },
+            orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
+            select: { sort_order: true },
+          })
+          const resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
+          const code = await generateNextStoryCode(tx, pbi.product_id)
+          return tx.story.create({
+            data: {
+              pbi_id,
+              product_id: pbi.product_id,
+              sprint_id: sprint_id ?? null,
+              code,
+              title,
+              description: description ?? null,
+              acceptance_criteria: acceptance_criteria ?? null,
+              priority,
+              sort_order: resolvedSortOrder,
+              status: sprint_id ? 'IN_SPRINT' : 'OPEN',
+            },
+            select: {
+              id: true,
+              code: true,
+              title: true,
+              description: true,
+              acceptance_criteria: true,
+              priority: true,
+              sort_order: true,
+              status: true,
+              sprint_id: true,
+              created_at: true,
+            },
+          })
+        })
+        const story = await withCodeUniqueRetry('stories_product_id_code_key', createStory)
+        return toolJson(story)
+      },
     })
-    const story = await withCodeUniqueRetry('stories_product_id_code_key', createStory)
-    return toolJson(story)
   })
 }
 
