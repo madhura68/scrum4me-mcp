@@ -15,6 +15,7 @@ export interface QueueMessageLike {
   in_reply_to: string | null
   error: string | null
   claimed_by: string | null
+  archived_at: Date | null
   created_at: Date
   finished_at: Date | null
 }
@@ -31,6 +32,7 @@ export function messageView(row: QueueMessageLike) {
     in_reply_to: row.in_reply_to,
     error: row.error,
     claimed_by: row.claimed_by,
+    archived_at: row.archived_at,
     created_at: row.created_at,
     finished_at: row.finished_at,
   }

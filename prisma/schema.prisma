@@ -291,6 +291,8 @@ model User {
   push_subscriptions  PushSubscription[]
   idea_notifications  IdeaNotification[]
   copilot_app_users         CopilotAppUser[]
+  hub_devices               HubDevice[]
+  hub_approvals             HubApproval[]
 
   @@index([active_product_id])
   @@map("users")
@@ -629,6 +631,9 @@ model ClaudeJob {
   chat_messages             IdeaChatMessage[]
   created_at                DateTime              @default(now())
   updated_at                DateTime              @updatedAt
+  /// M32 inbox-archivering (hub); NULL = actief. Alleen terminale jobs
+  /// (DONE/FAILED/CANCELLED/SKIPPED); afgedwongen in code.
+  archived_at               DateTime?             @db.Timestamptz(6)
 
   @@index([user_id, status])
   @@index([task_id, status])
@@ -1159,10 +1164,17 @@ model PushSubscription {
   p256dh       String
   auth         String
   user_agent   String?
+  /// Welke app dit abonnement heeft aangemaakt. Een subscription hoort bij de
+  /// service worker van één origin, dus zonder deze discriminator stuurt de ene
+  /// app zijn notificaties naar de service worker van de andere. Elke sender
+  /// filtert op zijn eigen scope; default 'scrum4me' houdt bestaande rijen bij
+  /// de hoofdapp.
+  app_scope    String   @default("scrum4me")
   created_at   DateTime @default(now())
   last_used_at DateTime @default(now())
 
   @@index([user_id])
+  @@index([app_scope, user_id])
   @@map("push_subscriptions")
 }
 
@@ -1311,6 +1323,10 @@ model AgentMessage {
   // zijn SQL-only (PSL kent geen partiele indexen) en leven in de
   // Scrum4Me-migratie + s4m-queue/migrations/001_init.sql.
   idempotency_key String?
+  /// M32 inbox-archivering: moment van archiveren; NULL = actief. Alleen
+  /// terminale rijen (done/failed/cancelled) mogen een waarde krijgen —
+  /// afgedwongen in code (CLI/MCP/hub/workers), bewust niet met een CHECK.
+  archived_at DateTime? @db.Timestamptz(6)
 
   replied_to AgentMessage?  @relation("AgentMessageReplies", fields: [in_reply_to], references: [id], onDelete: SetNull, onUpdate: NoAction)
   replies    AgentMessage[] @relation("AgentMessageReplies")
@@ -1321,8 +1337,10 @@ model AgentMessage {
 }
 
 /// Archief voor s4m-queue-retention: kolommen identiek aan agent_message,
-/// bewust zonder FK, zonder CHECK-constraints en zonder indexen
-/// (zie s4m-queue/migrations/002_archive.sql).
+/// bewust zonder FK en zonder CHECK-constraints
+/// (zie s4m-queue/migrations/002_archive.sql). Sinds M32 wél één index —
+/// (created_at DESC, id DESC) — voor het read-only cold-store-leespad
+/// (s4m-queue `list --cold-store`); verder blijft de tabel indexarm.
 ///
 /// Let op voor de SQL-migratie: dit archief krijgt in het geheel géén
 /// CHECK-constraints — dus óók niet op type, source en status, anders dan
@@ -1353,6 +1371,122 @@ model AgentMessageArchive {
   created_at  DateTime  @db.Timestamptz(6)
   // M30 P0.3: kolom-identiek aan agent_message (pariteitscontract).
   idempotency_key String?
+  archived_at DateTime? @db.Timestamptz(6)
 
+  @@index([created_at(sort: Desc), id(sort: Desc)], map: "agent_message_archive_created_idx")
   @@map("agent_message_archive")
+}
+
+// M31 — Communicatiecentrum slice B (IDEA-179). Spec:
+// Scrum4Me docs/specs/2026-08-11-communicatie-centrum-slice-b-design.md §6.
+
+enum HubApprovalSource {
+  QUESTION
+  QUEUE_INFO
+  PERMISSION
+}
+
+enum HubApprovalStatus {
+  PENDING
+  ANSWERED
+  EXPIRED
+  CANCELLED
+}
+
+enum HubNotificationOutcome {
+  DELIVERED // daadwerkelijk afgeleverd — enige outcome die sent_at draagt
+  NO_CHANNEL // geen actief device én geen web-push-sub; geen retrylus
+  EXHAUSTED // max-attempts bereikt; last_error gevuld
+  SUPERSEDED // nieuwer event (hogere state_version) nam de bezorging over
+}
+
+enum HubDeviceEnvironment {
+  SANDBOX
+  PRODUCTION
+}
+
+enum HubNotificationKind {
+  INITIAL
+  ANSWERED
+  EXPIRED
+  CANCELLED
+}
+
+enum HubAnsweredVia {
+  APP
+  SOURCE
+}
+
+model HubDevice {
+  id           String        @id @default(cuid())
+  user_id      String
+  user         User          @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  name         String
+  public_key   String // P-256 SPKI (DER), base64
+  apns_token   String?
+  environment  HubDeviceEnvironment
+  active       Boolean       @default(true)
+  created_at   DateTime      @default(now())
+  last_seen_at DateTime?
+  approvals    HubApproval[]
+
+  @@map("hub_devices")
+}
+
+model HubApproval {
+  id                   String                    @id @default(cuid())
+  user_id              String
+  user                 User                      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  source               HubApprovalSource
+  source_ref           String // question-id | queue message-id | permission-uuid
+  title                String // kort en letterlijk, ≤80 tekens
+  body                 String // detail, ≤1000 tekens
+  context_json         Json?
+  options              Json? // string[]; null = free-text (alleen Open-actie)
+  status               HubApprovalStatus         @default(PENDING)
+  answer               String?
+  answered_via         HubAnsweredVia?
+  device_id            String?
+  device               HubDevice?                @relation(fields: [device_id], references: [id])
+  expires_at           DateTime
+  answered_at          DateTime?
+  notification_version Int                       @default(1)
+  notifications        HubApprovalNotification[]
+  created_at           DateTime                  @default(now())
+
+  @@unique([source, source_ref])
+  @@index([status, expires_at])
+  @@index([user_id, status])
+  @@map("hub_approvals")
+}
+
+model HubApprovalNotification {
+  id              String                  @id @default(cuid())
+  approval_id     String
+  approval        HubApproval             @relation(fields: [approval_id], references: [id], onDelete: Cascade)
+  state_version   Int // = HubApproval.notification_version bij aanmaak
+  kind            HubNotificationKind
+  claimed_at      DateTime?
+  sent_at         DateTime? // uitsluitend bij outcome DELIVERED
+  attempts        Int                     @default(0)
+  next_attempt_at DateTime?
+  outcome         HubNotificationOutcome?
+  completed_at    DateTime?
+  last_error      String? // gesaniteerd + getrunceerd, max 500 tekens
+  created_at      DateTime                @default(now())
+
+  @@unique([approval_id, state_version])
+  @@index([completed_at, next_attempt_at])
+  @@map("hub_approval_notifications")
+}
+
+model HubPairing {
+  id         String    @id @default(cuid())
+  token_hash String    @unique // sha256 van het QR-token (lib/auth/pairing.ts-conventie)
+  created_by String // user-id van de admin die de QR toonde
+  expires_at DateTime // aanmaak + 5 min
+  used_at    DateTime?
+  created_at DateTime  @default(now())
+
+  @@map("hub_pairings")
 }

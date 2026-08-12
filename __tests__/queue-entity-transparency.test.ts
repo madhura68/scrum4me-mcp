@@ -47,6 +47,7 @@ function row(body: string): QueueMessageLike {
     in_reply_to: null,
     error: null,
     claimed_by: null,
+    archived_at: null,
     created_at: new Date('2026-07-27T00:00:00.000Z'),
     finished_at: null,
   }

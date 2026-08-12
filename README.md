@@ -44,7 +44,9 @@ activity and create todos via native tool calls instead of curl.
 | `queue_done` | s4m-queue: finish a claimed message — with `reply` it transactionally inserts the reply back to the requester and closes the request; needs the `claim_token` | yes |
 | `queue_fail` | s4m-queue: mark a claimed message failed with an error text (stop-at-first-error); same ownership contract and `claim_token` as `queue_done` | yes |
 | `queue_status` | s4m-queue: read-only, non-claiming — one message plus all replies to it (`in_reply_to = message_id`) | yes (read-only) |
-| `queue_list` | s4m-queue: read-only, non-claiming — messages where your own address is sender or addressee; `direction: 'sent'` recovers outstanding request ids after a session crash | yes (read-only) |
+| `queue_list` | s4m-queue: read-only, non-claiming — messages where your own address is sender or addressee; `direction: 'sent'` recovers outstanding request ids after a session crash; archived messages are hidden unless `include_archived: true` | yes (read-only) |
+| `queue_archive` | s4m-queue: archive a terminal message plus its full reply subtree (sets `archived_at`); refuses when any row in the subtree is not terminal; row-level idempotent | yes |
+| `queue_unarchive` | s4m-queue: clear `archived_at` on a message plus its full reply subtree, also when the root itself is active (mixed trees); row-level idempotent | yes |
 
 Demo accounts may read but writes return `PERMISSION_DENIED`.
 
