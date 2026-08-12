@@ -53,6 +53,7 @@ describe('queue_list — §5.7', () => {
           { to_server: 'mac', to_model: 'claude' },
         ],
         status: { in: ['pending', 'claimed'] },
+        archived_at: null,
       },
       orderBy: { created_at: 'desc' },
       take: 50,
@@ -118,6 +119,7 @@ describe('queue_list — §5.7', () => {
           { to_server: 'mac', to_model: 'claude' },
         ],
         status: { in: ['pending', 'claimed'] },
+        archived_at: null,
       },
       orderBy: { created_at: 'desc' },
       take: 50,
@@ -178,5 +180,20 @@ describe('queue_list — §5.7', () => {
     const result = await server.call({ direction: 'both', include_terminal: false })
     expect(result.isError).toBe(true)
     expect(result.content[0].text).toContain('QUEUE_IDENTITY_REQUIRED')
+  })
+
+  it('default include_archived=false: filtert archived_at = null mee', async () => {
+    const server = makeServer()
+    await server.call({ direction: 'both', include_terminal: false })
+    expect(mockPrisma.agentMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ archived_at: null }) }),
+    )
+  })
+
+  it('include_archived=true: geen archived_at-filter', async () => {
+    const server = makeServer()
+    await server.call({ direction: 'both', include_terminal: true, include_archived: true })
+    const arg = mockPrisma.agentMessage.findMany.mock.calls[0][0]
+    expect(arg.where).not.toHaveProperty('archived_at')
   })
 })

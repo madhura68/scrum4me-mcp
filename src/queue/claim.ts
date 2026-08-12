@@ -34,6 +34,7 @@ export interface AgentMessageRecord {
   started_at: Date | null
   finished_at: Date | null
   created_at: Date
+  archived_at: Date | null
 }
 
 export interface ClaimedAgentMessage extends AgentMessageRecord {
