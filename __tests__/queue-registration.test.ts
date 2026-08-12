@@ -8,6 +8,8 @@ import { createMcpServer } from '../src/http.js'
 const QUEUE_TOOL_NAMES = [
   'queue_push', 'queue_wait_reply', 'queue_next', 'queue_done',
   'queue_fail', 'queue_status', 'queue_list',
+  'queue_register_consumer', 'queue_claim_marked', 'queue_renew_marked',
+  'queue_cancel_marked',
 ] as const
 
 function captureNames() {
@@ -22,7 +24,7 @@ function captureNames() {
 }
 
 describe('queue-tools registratie — stdio-only (spec §5-intro/§9)', () => {
-  it('registerQueueTools registreert exact de 7 kernset-tools', () => {
+  it('registerQueueTools registreert exact de 7 legacy- en 4 marked-tools', () => {
     const { server, names } = captureNames()
     registerQueueTools(server as never)
     expect([...names].sort()).toEqual([...QUEUE_TOOL_NAMES].sort())
