@@ -236,6 +236,7 @@ een ontvanger stil `&lt;` naar schijf. Queue-berichten bevatten routinematig
 | File | Purpose |
 |---|---|
 | `src/queue/view.ts` | `messageView` — gedeelde presentatievorm; entiteit-transparant (zie hierboven) |
+| `src/tools/queue-archive.ts` | `queue_archive` / `queue_unarchive` — M32-archivering: transitieve reply-subtree in één `$transaction` (`FOR UPDATE`), alleen terminale rijen archiveerbaar (`QUEUE_NOT_TERMINAL`), per rij idempotent, géén NOTIFY. Zelfde semantiek als de s4m-queue-CLI |
 | `src/git/worktree.ts` | `createWorktreeForJob` + `removeWorktreeForJob` |
 | `src/git/on-demand-clone.ts` | `cloneRepoOnDemand` — on-demand clone fallback voor `resolveRepoRoot` |
 | `src/tools/wait-for-job.ts` | `resolveRepoRoot`, `rollbackClaim`, `attachWorktreeToJob` |

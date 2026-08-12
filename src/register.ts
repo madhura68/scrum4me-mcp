@@ -82,6 +82,7 @@ import { registerQueueDoneTool } from './tools/queue-done.js'
 import { registerQueueFailTool } from './tools/queue-fail.js'
 import { registerQueueStatusTool } from './tools/queue-status.js'
 import { registerQueueListTool } from './tools/queue-list.js'
+import { registerQueueArchiveTools } from './tools/queue-archive.js'
 
 /**
  * DB/network-only tools — safe for the centralized HTTP server (and also
@@ -177,4 +178,5 @@ export function registerQueueTools(server: McpServer): void {
   registerQueueFailTool(server)
   registerQueueStatusTool(server)
   registerQueueListTool(server)
+  registerQueueArchiveTools(server)
 }
