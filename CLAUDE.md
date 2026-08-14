@@ -1,4 +1,4 @@
-# CLAUDE.md — scrum4me-mcp
+# CLAUDE.md / AGENTS.md — scrum4me-mcp
 
 ## Scrum4Me-product
 - **Naam:** scrum4me-mcp
@@ -7,7 +7,7 @@
 
 Volgt de globale Scrum4Me-methodiek (`~/.claude/rules/scrum4me-methodiek.md` voor Claude; de "Scrum4Me-methodiek"-sectie in `~/.codex/AGENTS.md` voor Codex). Niet-triviaal werk: plan → Sprint/PBI/Story/Taak via de `scrum4me` MCP → `update_task_status` per laag → docs in de DB.
 
-MCP server that exposes the Scrum4Me dev-flow as native tools for Claude Code.
+MCP server that exposes the Scrum4Me dev-flow as native tools for Claude Code and Codex.
 
 ## Hierarchical ordering contract
 
