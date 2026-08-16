@@ -5,11 +5,12 @@
 // openQueueListener is covered by the integration test (needs a real DB).
 import { Client } from 'pg'
 import { QUEUE_CHANNEL } from './notify.js'
+import { dbClientConfig } from '../db-connection.js'
 
 export const QUEUE_POLL_INTERVAL_MS = 5_000
 
 export async function openQueueListener(): Promise<Client> {
-  const client = new Client({ connectionString: process.env.DATABASE_URL })
+  const client = new Client(dbClientConfig())
   await client.connect()
   // QUEUE_CHANNEL is a module constant ('agent_queue'), safe as identifier.
   await client.query(`LISTEN ${QUEUE_CHANNEL}`)

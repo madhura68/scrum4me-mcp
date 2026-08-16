@@ -38,6 +38,7 @@ import { claimLog } from '../lib/claim-log.js'
 import { getInstanceId } from '../presence/instance.js'
 import { getWorkerRuntimeFromEnv, type WorkerRuntime } from '../worker-runtime.js'
 import { MAX_LOOP_ROUNDS, parseLoopRound } from '../lib/idea-plan-loop.js'
+import { dbClientConfig } from '../db-connection.js'
 
 /** Parse `https://github.com/<owner>/<name>(.git)?` → `<name>`. */
 export function repoNameFromUrl(repoUrl: string | null | undefined): string | null {
@@ -709,7 +710,7 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
 
   // Notify UI via SSE for each transition (best-effort)
   try {
-    const pg = new Client({ connectionString: process.env.DATABASE_URL })
+    const pg = new Client(dbClientConfig())
     await pg.connect()
     for (const j of failedRows) {
       await pg.query('SELECT pg_notify($1, $2)', [
@@ -2080,7 +2081,7 @@ export function registerWaitForJobTool(server: McpServer) {
 
         // 3. No job available — LISTEN and poll until timeout
         const deadline = Date.now() + wait_seconds * 1000
-        const listenClient = new Client({ connectionString: process.env.DATABASE_URL })
+        const listenClient = new Client(dbClientConfig())
         await listenClient.connect()
         await listenClient.query('LISTEN scrum4me_changes')
 

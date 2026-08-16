@@ -37,6 +37,7 @@ import { transition as sprintRunTransition } from '../flow/sprint-run.js'
 import { executeEffects } from '../flow/effects.js'
 import { maybeEnqueueDeployJob } from '../lib/dispatch/deploy-job.js'
 import { repoBucketKey, maybeAutoDeploySprintBatchPr } from '../lib/dispatch/sprint-batch-deploy.js'
+import { dbClientConfig } from '../db-connection.js'
 
 async function fetchConflictFiles(prUrl: string): Promise<string[]> {
   const result = await listPullRequestFiles({ prUrl })
@@ -1530,7 +1531,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
 
         // Notify UI via SSE
         try {
-          const pg = new Client({ connectionString: process.env.DATABASE_URL })
+          const pg = new Client(dbClientConfig())
           await pg.connect()
           const notifyPayload: Record<string, unknown> = {
             type: 'claude_job_status_changed',
