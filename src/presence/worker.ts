@@ -1,5 +1,6 @@
 import { Client } from 'pg'
 import { prisma } from '../prisma.js'
+import { dbClientConfig } from '../db-connection.js'
 
 export type WorkerCapability = 'HIGH_P' | 'MEDIUM_P' | 'LOW_P'
 
@@ -50,7 +51,7 @@ export async function registerWorker(opts: {
   })
 
   try {
-    const pg = new Client({ connectionString: process.env.DATABASE_URL })
+    const pg = new Client(dbClientConfig())
     await pg.connect()
     await pg.query('SELECT pg_notify($1, $2)', [
       'scrum4me_changes',
@@ -100,7 +101,7 @@ export async function unregisterWorker(opts: {
     .catch(() => {})
 
   try {
-    const pg = new Client({ connectionString: process.env.DATABASE_URL })
+    const pg = new Client(dbClientConfig())
     await pg.connect()
     await pg.query('SELECT pg_notify($1, $2)', [
       'scrum4me_changes',

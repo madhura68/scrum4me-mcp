@@ -17,6 +17,7 @@ import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { getInstanceId } from '../presence/instance.js'
+import { dbClientConfig } from '../db-connection.js'
 
 const inputSchema = z.object({
   last_quota_pct: z.number().int().min(0).max(100),
@@ -67,7 +68,7 @@ export function registerWorkerHeartbeatTool(server: McpServer) {
         // pg_notify zodat NavBar realtime kan updaten. Failure is non-fatal:
         // de DB-write is al gebeurd, alleen de live-update mist dan.
         try {
-          const pg = new Client({ connectionString: process.env.DATABASE_URL })
+          const pg = new Client(dbClientConfig())
           await pg.connect()
           await pg.query('SELECT pg_notify($1, $2)', [
             'scrum4me_changes',
