@@ -16,20 +16,38 @@
 // connection string on purpose: rewriting the URL risks re-encoding the
 // password.
 
+import { getInstanceId } from './presence/instance.js'
+
 const MAX_APPLICATION_NAME = 63 // Postgres truncates at NAMEDATALEN-1
 export const DEFAULT_POOL_MAX = 10
 
 /**
- * Identifies this process in `pg_stat_activity`. Falls back to explicit
- * `unknown` markers rather than omitting the field, so an unlabelled
- * connection is still distinguishable from a misconfigured one.
+ * Identifies this process in `pg_stat_activity`.
+ *
+ * Prefers the queue identity (S4M_SERVER/S4M_MODEL) because it is the name a
+ * human already reasons about. Not every process has one: the fleet workers
+ * deliberately carry no queue identity, since S4M_SERVER + S4M_MODEL is an
+ * *address* — giving the workers one would put them on a queue lane where they
+ * could claim messages meant for someone else.
+ *
+ * For those, fall back to the presence instance id (`mcp-<hostname>-<pid>`),
+ * which is already unique per process — in a container the hostname is the
+ * container id — and needs no new configuration. Note this reads
+ * SCRUM4ME_WORKER_INSTANCE_ID only if it is already set: it is the worker
+ * registry key that registerWorker() and the heartbeat match on, so pinning it
+ * per service would make scaled replicas register as one worker.
  */
 export function applicationName(): string {
-  const server = process.env.S4M_SERVER?.trim() || 'unknown-host'
-  const model = process.env.S4M_MODEL?.trim() || 'unknown-model'
-  const instance = process.env.SCRUM4ME_WORKER_INSTANCE_ID?.trim()
-  const base = `s4m-mcp:${server}:${model}`
-  return (instance ? `${base}:${instance}` : base).slice(0, MAX_APPLICATION_NAME)
+  const server = process.env.S4M_SERVER?.trim()
+  const model = process.env.S4M_MODEL?.trim()
+
+  if (server && model) {
+    const instance = process.env.SCRUM4ME_WORKER_INSTANCE_ID?.trim()
+    const base = `s4m-mcp:${server}:${model}`
+    return (instance ? `${base}:${instance}` : base).slice(0, MAX_APPLICATION_NAME)
+  }
+
+  return `s4m-mcp:${getInstanceId()}`.slice(0, MAX_APPLICATION_NAME)
 }
 
 /**
