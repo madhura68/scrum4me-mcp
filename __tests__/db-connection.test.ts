@@ -11,7 +11,7 @@ import {
 // without NAT forensics, so these tests care about identity being present and
 // well-formed even when the environment is incomplete.
 
-const ENV_KEYS = ['S4M_SERVER', 'S4M_MODEL', 'SCRUM4ME_WORKER_INSTANCE_ID', 'DATABASE_URL'] as const
+const ENV_KEYS = ['S4M_SERVER', 'S4M_MODEL', 'SCRUM4ME_WORKER_INSTANCE_ID', 'SCRUM4ME_INSTANCE_ID', 'DATABASE_URL'] as const
 const saved: Record<string, string | undefined> = {}
 
 beforeEach(() => {
@@ -42,14 +42,25 @@ describe('applicationName', () => {
     expect(applicationName()).toBe('s4m-mcp:scrum4me-server:codex:idea-51')
   })
 
-  it('marks missing identity explicitly instead of going blank', () => {
-    expect(applicationName()).toBe('s4m-mcp:unknown-host:unknown-model')
+  it('falls back to the unique presence instance id when there is no queue identity', () => {
+    // The fleet workers carry no queue identity on purpose; the label must
+    // still identify the process, and per process — not per service.
+    expect(applicationName()).toMatch(/^s4m-mcp:mcp-.+-\d+$/)
   })
 
-  it('treats whitespace-only identity as missing', () => {
+  it('treats whitespace-only identity as missing and still falls back', () => {
     process.env.S4M_SERVER = '   '
     process.env.S4M_MODEL = '\t'
-    expect(applicationName()).toBe('s4m-mcp:unknown-host:unknown-model')
+    expect(applicationName()).toMatch(/^s4m-mcp:mcp-.+-\d+$/)
+  })
+
+  it('gives two processes on one host distinct labels', () => {
+    // Guards the reason SCRUM4ME_WORKER_INSTANCE_ID must not be pinned per
+    // service: scaled replicas have to stay distinguishable.
+    process.env.SCRUM4ME_INSTANCE_ID = 'replica-a'
+    const a = applicationName()
+    process.env.SCRUM4ME_INSTANCE_ID = 'replica-b'
+    expect(applicationName()).not.toBe(a)
   })
 
   it('stays within the 63-byte limit Postgres truncates at', () => {
