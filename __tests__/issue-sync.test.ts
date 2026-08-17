@@ -22,6 +22,7 @@ import {
   listLabels, createLabel, searchIssueByMarker, createIssue, editIssue, setIssueLabels,
 } from '../src/git/forgejo-issues.js'
 import { syncIssueToForgejo, parseForgejoRepoPath } from '../src/lib/issue-sync.js'
+import { ForgejoError } from '../src/git/forgejo-rest.js'
 
 const mockFindUnique = (prisma as unknown as { issue: { findUnique: ReturnType<typeof vi.fn> } }).issue.findUnique
 const mockLogCreate = (prisma as unknown as { issueLog: { create: ReturnType<typeof vi.fn> } }).issueLog.create
@@ -142,6 +143,24 @@ it('Forgejo-fout bij create ⇒ failed met foutregistratie', async () => {
 
   await expect(syncIssueToForgejo(ISSUE_ID)).resolves.toMatchObject({ outcome: 'failed' })
   expect(queries.some((q) => q.sql.includes('left($1, 500)') && q.sql.includes('forgejo_attempted_at'))).toBe(true)
+})
+
+it('forgejo_error draagt géén upstream response-body — dat veld gaat over het NOTIFY-kanaal', async () => {
+  // Security-review §10: ForgejoError neemt de response-body mee in zijn
+  // message. forgejo_error wordt naar elke SSE-client met productoegang
+  // gestuurd en in de UI getoond, dus daar hoort alleen status + code in.
+  mockFindUnique.mockResolvedValueOnce(PRE_READ).mockResolvedValue(fullRow())
+  const queries = lockOk()
+  ;(createIssue as ReturnType<typeof vi.fn>).mockRejectedValue(
+    new ForgejoError('Forgejo POST /repos/x/y/issues failed: 403 {"message":"geheime interne details"}', {
+      code: 'API_ERROR', status: 403, body: '{"message":"geheime interne details"}',
+    }),
+  )
+
+  await expect(syncIssueToForgejo(ISSUE_ID)).resolves.toMatchObject({ outcome: 'failed' })
+  const write = queries.find((q) => q.sql.includes('left($1, 500)'))
+  expect(write?.params?.[0]).toBe('Forgejo 403 (API_ERROR)')
+  expect(String(write?.params?.[0])).not.toContain('geheime interne details')
 })
 
 it('repo-mismatch logt SYNC en maakt een nieuw mirror-issue', async () => {

@@ -14,6 +14,7 @@ import { withIssueSessionLock } from '../db/session-lock.js'
 import {
   listLabels, createLabel, searchIssueByMarker, createIssue, editIssue, setIssueLabels,
 } from '../git/forgejo-issues.js'
+import { ForgejoError } from '../git/forgejo-rest.js'
 import {
   renderIssueTitle, renderIssueBody, renderIssueLabels, renderIssueState,
   issueMarker, ISSUE_LABEL_COLORS, HOST_LABEL_COLOR, DEFAULT_APP_BASE_URL,
@@ -43,6 +44,20 @@ function toIsoString(v: Date | string): string {
   return v instanceof Date ? v.toISOString() : v
 }
 
+/**
+ * Fouttekst voor `forgejo_error`. Dat veld reist over het gedeelde
+ * NOTIFY-kanaal naar elke SSE-client met toegang tot het product en wordt in de
+ * UI getoond, dus het draagt bewust géén upstream response-body: ForgejoError
+ * neemt die wél mee in zijn message (nuttig in de MCP-log, niet iets om breed
+ * te verspreiden). Status en code zeggen genoeg om te weten wat er mis is.
+ */
+function describeSyncError(err: unknown): string {
+  if (err instanceof ForgejoError) {
+    return err.status ? `Forgejo ${err.status} (${err.code})` : `Forgejo ${err.code}`
+  }
+  return err instanceof Error ? err.message : String(err)
+}
+
 export async function syncIssueToForgejo(issueId: string): Promise<SyncOutcome> {
   try {
     if (process.env.ISSUE_FORGEJO_SYNC === 'off') {
@@ -67,7 +82,7 @@ export async function syncIssueToForgejo(issueId: string): Promise<SyncOutcome> 
     }
     return locked.value
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = describeSyncError(err)
     await writeFailure(issueId, message)
     return { outcome: 'failed', reason: message }
   }
@@ -177,7 +192,7 @@ async function syncUnderLock(issueId: string, client: Client): Promise<SyncOutco
     }
     return { outcome: 'synced' }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = describeSyncError(err)
     await writeFailureOn(client, issueId, message)
     return { outcome: 'failed', reason: message }
   }
