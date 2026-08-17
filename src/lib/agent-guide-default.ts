@@ -37,6 +37,24 @@ implementation plan.
   exact tool).
 - Ship through the configured automation; let the job-status flow open the PR.
 
+## Report infra problems
+- When you hit a problem on a host that does not belong to one task — a service that falls
+  over, a claim that disappears, a timer that stops running — register it with create_issue
+  on that host's product (max2 or scrum4me-server). Without this step nothing is ever
+  recorded and the next agent rediscovers it from scratch.
+- Always pass a fingerprint shaped as host:component:core, for example
+  max2:mcp:claim-lost or scrum4me-server:caddy:cert-renewal-failed. The same fingerprint on
+  a recurrence counts up on the existing issue instead of making a copy, and reopens it
+  automatically if it had been closed as resolved. Without a fingerprint you get a new
+  issue every single time.
+- Set reported_by to your own queue address: the host plus your model name, shaped as
+  host:model.
+- Write findings and the fix with update_issue (append_research / append_resolution, with
+  authored_by set to your own address). Those fields append, so you do not wipe a
+  predecessor's work. Closing is only possible together with a resolution.
+- No secrets in issues. The content is mirrored to Forgejo and is readable there by anyone
+  with repository access.
+
 ## When to ask
 - If a blocking decision genuinely needs the user, ask with ask_user_question and wait for
   the answer. Don't guess on ambiguous requirements — but don't ask for anything you can
