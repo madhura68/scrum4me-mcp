@@ -65,6 +65,10 @@ import { registerListIdeaQuestionsTool } from './tools/list-idea-questions.js'
 import { registerAnswerQuestionTool } from './tools/answer-question.js'
 import { registerGetIdeaChatChannelTool } from './tools/get-idea-chat-channel.js'
 import { registerSendIdeaChatMessageTool } from './tools/send-idea-chat-message.js'
+import { registerCreateIssueTool } from './tools/create-issue.js'
+import { registerUpdateIssueTool } from './tools/update-issue.js'
+import { registerListIssuesTool } from './tools/list-issues.js'
+import { registerGetIssueTool } from './tools/get-issue.js'
 
 // Worktree/local-filesystem-bound tools (stdio-only)
 import { registerWaitForJobTool } from './tools/wait-for-job.js'
@@ -146,6 +150,11 @@ export function registerSharedTools(server: McpServer): void {
   registerAnswerQuestionTool(server)
   registerGetIdeaChatChannelTool(server)
   registerSendIdeaChatMessageTool(server)
+  // issue-tracker (spec 2026-08-16)
+  registerCreateIssueTool(server)
+  registerUpdateIssueTool(server)
+  registerListIssuesTool(server)
+  registerGetIssueTool(server)
 }
 
 /**
