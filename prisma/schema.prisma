@@ -258,6 +258,43 @@ enum PbiDocRole {
   SPEC
 }
 
+enum ProductKind {
+  APP
+  SYSTEM
+}
+
+enum IssueStatus {
+  NEW
+  INVESTIGATING
+  PLANNED
+  CLOSED
+}
+
+enum IssueResolution {
+  FIXED
+  WONT_FIX
+  DUPLICATE
+  CANNOT_REPRODUCE
+  INVALID
+}
+
+enum IssueSeverity {
+  S1_BLOCKER
+  S2_CRITICAL
+  S3_MAJOR
+  S4_MINOR
+}
+
+enum IssueLogType {
+  STATUS_CHANGE
+  NOTE
+  RESEARCH
+  RESOLUTION
+  OCCURRENCE
+  REOPENED
+  SYNC
+}
+
 model User {
   id                  String             @id @default(cuid())
   username            String             @unique
@@ -279,6 +316,7 @@ model User {
   api_tokens          ApiToken[]
   products            Product[]
   ideas               Idea[]
+  issues              Issue[]
   product_members     ProductMember[]
   assigned_stories    Story[]            @relation("StoryAssignee")
   login_pairings      LoginPairing[]
@@ -339,6 +377,10 @@ model Product {
   code                      String?            @db.VarChar(30)
   description               String?
   repo_url                  String?
+  // Issue-tracker (spec 2026-08-16 §5): SYSTEM-producten (max2, scrum4me-server)
+  // krijgen dezelfde tracker; kind bepaalt titelformaat + host-label in de mirror.
+  kind                      ProductKind        @default(APP)
+  issue_code_counter        Int                @default(0)
   // IDEA-118 K6: deploy-paspoort van de gedeployde app (v2 deploy-by-worker
   // gebruikt deze velden; v1 alleen registratie).
   app_domain                String?
@@ -387,6 +429,7 @@ model Product {
   copilot_chat_sessions     CopilotChatSession[]
   copilot_app_users         CopilotAppUser[]
   review_logs               ReviewLog[]         @relation("ProductReviewLogs")
+  issues                    Issue[]
 
   @@unique([user_id, name])
   @@unique([user_id, code])
@@ -411,6 +454,7 @@ model Pbi {
   stories      Story[]
   idea         Idea?
   docs         PbiDoc[]
+  issues       Issue[]   @relation("IssueLinkedPbi")
 
   @@unique([product_id, code])
   @@index([product_id, sort_order])
@@ -1038,6 +1082,7 @@ model Idea {
   secondary_products IdeaProduct[]
   notifications      IdeaNotification[]
   review_logs        ReviewLog[]         @relation("IdeaReviewLogs")
+  issues             Issue[]             @relation("IssueLinkedIdea")
 
   @@unique([user_id, code])
   @@index([user_id, archived, status])
@@ -1384,6 +1429,7 @@ enum HubApprovalSource {
   QUESTION
   QUEUE_INFO
   PERMISSION
+  CUSTOM
 }
 
 enum HubApprovalStatus {
@@ -1445,6 +1491,7 @@ model HubApproval {
   options              Json? // string[]; null = free-text (alleen Open-actie)
   status               HubApprovalStatus         @default(PENDING)
   answer               String?
+  answer_note          String?
   answered_via         HubAnsweredVia?
   device_id            String?
   device               HubDevice?                @relation(fields: [device_id], references: [id])
@@ -1489,4 +1536,107 @@ model HubPairing {
   created_at DateTime  @default(now())
 
   @@map("hub_pairings")
+}
+
+enum HubPermissionRuleScope {
+  GLOBAL
+  PRODUCT
+}
+
+enum HubPermissionRuleList {
+  ALLOW
+  DENY
+  ASK
+}
+
+enum HubPermissionRuleOrigin {
+  IMPORT
+  APPROVE_ALWAYS
+  SYNC_UPLOAD
+  MANUAL
+}
+
+enum HubPermissionRuleStatus {
+  PENDING_CONFIRM
+  ACTIVE
+  DISABLED
+}
+
+model HubPermissionRule {
+  id          String                  @id @default(cuid())
+  scope       HubPermissionRuleScope
+  repo_key    String?
+  rule        String
+  list        HubPermissionRuleList   @default(ALLOW)
+  origin      HubPermissionRuleOrigin
+  origin_host String?
+  status      HubPermissionRuleStatus @default(ACTIVE)
+  note        String?
+  created_at  DateTime                @default(now())
+  updated_at  DateTime                @updatedAt
+
+  // repo_key is nullable (NULL = GLOBAL scope). Postgres treats NULLs as distinct in a
+  // plain UNIQUE, so this composite @@unique only dedups PRODUCT rows (repo_key NOT NULL).
+  // GLOBAL rows (repo_key IS NULL) are deduped by a partial unique index
+  // `(scope, rule, list) WHERE repo_key IS NULL`, created together with a CHECK
+  // ((scope = 'GLOBAL') = (repo_key IS NULL)) in each consumer's migration. Prisma's schema
+  // DSL can express neither a partial unique index nor a CHECK, so both live in migration
+  // SQL — a consumer that adopts this model MUST add them (see the consumer HubPermissionRule
+  // migration; Scrum4Me: 20260815090000_hub_permission_rules).
+  @@unique([scope, repo_key, rule, list])
+  @@map("hub_permission_rules")
+}
+
+model Issue {
+  id                   String           @id @default(cuid())
+  product              Product          @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id           String
+  user                 User             @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id              String
+  code                 String           @db.VarChar(30)
+  title                String           @db.VarChar(200)
+  description          String           @db.Text
+  research_md          String?          @db.Text
+  resolution_md        String?          @db.Text
+  status               IssueStatus      @default(NEW)
+  resolution           IssueResolution?
+  closed_at            DateTime?
+  severity             IssueSeverity    @default(S3_MAJOR)
+  reported_by          String?          @db.VarChar(60)
+  fingerprint          String?          @db.VarChar(200)
+  occurrence_count     Int              @default(1)
+  last_seen_at         DateTime         @default(now())
+  linked_pbi           Pbi?             @relation("IssueLinkedPbi", fields: [linked_pbi_id], references: [id], onDelete: SetNull)
+  linked_pbi_id        String?
+  linked_idea          Idea?            @relation("IssueLinkedIdea", fields: [linked_idea_id], references: [id], onDelete: SetNull)
+  linked_idea_id       String?
+  forgejo_repo         String?          @db.VarChar(200)
+  forgejo_number       Int?
+  forgejo_synced_at    DateTime?
+  forgejo_attempted_at DateTime?
+  forgejo_dirty        Boolean          @default(true)
+  forgejo_sync_seq     Int              @default(0)
+  forgejo_error        String?          @db.VarChar(500)
+  archived             Boolean          @default(false)
+  created_at           DateTime         @default(now())
+  updated_at           DateTime         @updatedAt
+  logs                 IssueLog[]
+
+  @@unique([product_id, code])
+  @@index([product_id, status])
+  @@index([product_id, fingerprint])
+  @@map("issues")
+}
+
+model IssueLog {
+  id         String       @id @default(cuid())
+  issue      Issue        @relation(fields: [issue_id], references: [id], onDelete: Cascade)
+  issue_id   String
+  type       IssueLogType
+  content    String       @db.Text
+  metadata   Json?
+  created_at DateTime     @default(now())
+
+  @@index([issue_id, created_at])
+  @@map("issue_logs")
 }
