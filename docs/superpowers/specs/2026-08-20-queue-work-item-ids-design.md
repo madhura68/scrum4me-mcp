@@ -160,3 +160,10 @@ Integratietests (echte Postgres) zijn optioneel; de bestaande
 - Work-item-ids op replies zetten (`queue_done`); de request-rij is de bron van
   waarheid en de find-tool voegt replies bij.
 - Tonen van queue-berichten in de Scrum4Me-UI.
+
+## Review record
+
+**Loop:** spec-fase, gestart 2026-08-20. Reviewers: `mac:claude` + `mac:codex`
+(JP-armed listeners). Max 10 rondes.
+
+### Ronde 1 — uitstaand
