@@ -459,6 +459,24 @@ describe('queue_push — meta.work_item (spec 2026-08-20)', () => {
       }),
     })
   })
+
+  it('registreert sprint_id/story_id/task_id in het inputSchema', () => {
+    // Het harnas roept de handler direct aan en slaat Zod over (zelfde reden
+    // als de as:'kimi'-test hierboven): alleen een assertie op het
+    // geregistreerde inputSchema bewijst dat een echte MCP-caller de
+    // parameters kan meegeven.
+    const server = makeServer()
+    const meta = server.registerTool.mock.calls[0][1] as {
+      inputSchema: {
+        parse: (value: unknown) => { sprint_id?: string; story_id?: string; task_id?: string }
+      }
+    }
+    const base = { to: 'scrum4me-server:claude', type: 'info', body: 'x' }
+    expect(meta.inputSchema.parse({ ...base, sprint_id: 'sp1' }).sprint_id).toBe('sp1')
+    expect(meta.inputSchema.parse({ ...base, story_id: 's1' }).story_id).toBe('s1')
+    expect(meta.inputSchema.parse({ ...base, task_id: 't1' }).task_id).toBe('t1')
+    expect(() => meta.inputSchema.parse({ ...base, task_id: '' })).toThrow()
+  })
 })
 ```
 
@@ -784,6 +802,11 @@ import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { messageView, type QueueMessageLike } from '../queue/view.js'
 
+// Bewuste afwijking van spec §5's "(refine-check)": .refine() levert een
+// ZodEffects op, terwijl elke tool in dit repo een kaal ZodObject als
+// inputSchema aan registerTool geeft (queue-push.ts:19). De minstens-één-eis
+// wordt daarom als guard in de handler afgedwongen; de caller krijgt dan een
+// VALIDATION_ERROR-toolresultaat in plaats van een schema-rejectie.
 const inputSchema = z.object({
   sprint_id: z.string().min(1).optional(),
   story_id: z.string().min(1).optional(),
@@ -901,7 +924,16 @@ en in `registerQueueTools` (na `registerQueueListTool(server)`):
   registerQueueFindByWorkItemTool(server)
 ```
 
-In `__tests__/queue-registration.test.ts`: voeg `'queue_find_by_work_item',` toe aan de `QUEUE_TOOL_NAMES`-array (regel 9-12).
+**Plaatsingsbesluit (bewust):** de tool staat in `registerQueueTools` (stdio-only)
+hoewel de daar gedocumenteerde reden — caller-identity + in-memory lease register
+(`src/register.ts:175-181`) — voor deze read-only tool niet geldt. De spec benoemt
+stdio-MCP-agents als énige consument en de queue-toolset blijft zo bij elkaar; dit
+is dus een keuze, geen vergissing. Wil iemand hem later over HTTP exposen, dan kan
+registratie naar `registerSharedTools` verhuizen zonder gedragswijziging.
+
+In `__tests__/queue-registration.test.ts`: voeg `'queue_find_by_work_item',` toe aan
+de `QUEUE_TOOL_NAMES`-array (regel 9-12) **en werk de testnaam op regel 27 bij**:
+`'registerQueueTools registreert exact de 9 kernset-tools'` → `… de 10 kernset-tools`.
 
 - [ ] **Step 5: Run — verwacht PASS**
 
@@ -927,4 +959,24 @@ git commit -m "feat(queue): queue_find_by_work_item — product-guarded cross-ad
 **Loop:** plan-fase, gestart 2026-08-20. Reviewers: `mac:claude` + `mac:codex`
 (JP-armed listeners). Max 10 rondes. Spec-fase: dubbel GO in ronde 3 (zie de spec).
 
-### Ronde 1 — uitstaand
+### Ronde 1 — plan r1 @ `92bdd5d` — GO / GO ✅
+
+- **mac:claude** (`08681884`): 0 BLOCKER / 0 MAJOR / 3 MINOR — **GO**. Splice-punten,
+  resolver-logica, canary en §5/§6-dekking allemaal tegen de tree geverifieerd en
+  houdbaar bevonden. MINORs: (1) registratieplaatsing in de stdio-only groep
+  motiveren of verhuizen; (2) testtitel "9 kernset-tools" wordt onwaar bij 10;
+  (3) de refine→handler-guard-afwijking van spec §5 expliciet documenteren.
+- **mac:codex** (`e33fa6a2`): 0 BLOCKER / 0 MAJOR / 1 MINOR — **GO**. Spec-dekking
+  §3–§8 per onderdeel afgelopen en compleet bevonden. MINOR: schema-zijdige
+  assertie ontbrak — de handler-tests omzeilen Zod, dus niets bewees dat het
+  geregistreerde inputSchema de drie nieuwe parameters accepteert (precedent:
+  de `as: 'kimi'`-regressietest).
+- **Triage:** alle vier MINORs tegen de tree geverifieerd (register.ts:91-96/
+  175-190, http.ts:71, queue-registration.test.ts:27) en bevestigd — 0 verworpen.
+- **Toegepast in de GO-afsluitcommit:** plaatsingsbesluit gedocumenteerd (tool
+  blijft bewust in `registerQueueTools`; spec noemt stdio-agents als enige
+  consument), testtitel-update naar "10 kernset-tools" in Task 4 Step 4
+  opgenomen, refine-afwijking als commentaar bij het inputSchema in Task 4
+  Step 3, schema-zijdige test toegevoegd aan Task 2 Step 1.
+- **Plan-fase afgerond:** dubbel GO in ronde 1. Volgende stap: JP-gate
+  (ceremonie pas na expliciet akkoord).
