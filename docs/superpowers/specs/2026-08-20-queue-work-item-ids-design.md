@@ -59,13 +59,17 @@ dat besluit stuurt de opslagkeuze in §2.
   geschreven — bestaand gedrag verandert dan met nul bytes.
 - Het blok staat **naast** `meta.task`, niet erin: het geldt voor álle request-types,
   ook `info`.
-- `queue_push` overschrijft een eventueel door de caller meegegeven `meta.work_item`
-  met de gevalideerde versie zodra één van de drie parameters gegeven is. Zónder de
-  parameters gaat een caller-geleverd `meta.work_item` ongevalideerd door — pass-through,
-  net als de rest van meta buiten `meta.task` (dat wordt door `validateTaskMeta` juist
-  tot bekende velden teruggebracht; onbekende sleutels daarbinnen vervallen). Het
-  MCP-pad met parameters is de geadviseerde route. Let op voor fase 2: een
-  handgemaakt blok zonder `product_id` wordt daar nooit teruggegeven (§5).
+- **Een caller-geleverd `meta.work_item` gaat nooit ongevalideerd door.** `queue_push`
+  haalt de sleutels `sprint_id`/`story_id`/`task_id` uit zo'n blok, voegt ze samen
+  met de top-level parameters en stuurt de vereniging door dezelfde resolver (§4);
+  spreken parameter en blok elkaar tegen, dan is dat een gewone inconsistentie →
+  `VALIDATION_ERROR`. Overige sleutels in het blok (incl. een meegegeven
+  `product_id`) vervallen — `product_id` wordt altijd afgeleid, nooit overgenomen.
+  Op het MCP-pad is elk opgeslagen `work_item`-blok dus resolver-output; er bestaat
+  geen tweede klasse "handgemaakte" blokken. (De rest van meta buiten `meta.task`
+  en `meta.work_item` blijft pass-through; `meta.task` wordt door `validateTaskMeta`
+  tot bekende velden teruggebracht.) Rijen die buiten de MCP om zijn geschreven
+  kunnen wel een niet-canoniek blok dragen — hoe fase 2 daarmee omgaat staat in §5.
 
 ## 4. Afleiding en validatie in `queue_push`
 
@@ -73,17 +77,20 @@ Vanuit het meest specifieke gegeven id wordt de hiërarchie omhoog aangevuld:
 
 | Input | Afgeleid |
 |---|---|
-| `task_id` | `story_id` (uit `Task.story_id`), `sprint_id` (uit **`Story.sprint_id`** — kan ontbreken), `product_id` |
+| `task_id` | `story_id` (uit `Task.story_id`), `sprint_id` (uit **`Story.sprint_id`** — kan ontbreken), `product_id` (uit **`Story.product_id`**) |
 | `story_id` | `sprint_id` (kan ontbreken — `Story.sprint_id` is nullable), `product_id` |
 | `sprint_id` | `product_id` |
 
-**Sprint komt bij een taak uit de Story, niet uit `Task.sprint_id`.** `Task.sprint_id`
-is een gedenormaliseerde kopie ("sprint_id wordt afgeleid uit de Story",
-`src/tools/create-task.ts:3`) zonder constraint die hem gelijk houdt aan
-`Story.sprint_id`; de sprintflow zelf selecteert op de story
-(`src/lib/dispatch/sprint-run.ts:40`, `src/tools/update-task-status.ts:63-67`). Een
-lege of stale `Task.sprint_id` mag een taakbericht dus niet zijn sprint-tag kosten.
-De hele afleiding voor `task_id` is één `findUnique` met `include: { story }`.
+**Sprint én product komen bij een taak uit de Story, niet uit de Task-kolommen.**
+`Task.sprint_id` én `Task.product_id` zijn gedenormaliseerde kopieën
+("denormalized — erf van story", `src/tools/create-task.ts:91-92`) zonder constraint
+die ze gelijk houdt aan de Story; de sprintflow selecteert op de story
+(`src/lib/dispatch/sprint-run.ts:40`, `src/tools/update-task-status.ts:63-67`) en de
+bestaande access-helper leest het product ook via de story
+(`userCanAccessTask`, `src/access.ts:20-26`). Een lege of stale Task-kolom mag een
+taakbericht dus niet zijn sprint-tag kosten of de productguard (§5) ondermijnen.
+De hele afleiding voor `task_id` is één `findUnique` met `include: { story }` —
+de story draagt `sprint_id` én `product_id`.
 
 Regels:
 
@@ -121,18 +128,27 @@ Gedrag:
 - **Directe replies komen mee:** rijen met `in_reply_to` ∈ gevonden ids worden
   toegevoegd, óók als ze zelf geen `work_item` dragen (replies via `queue_done`
   krijgen het blok niet; de request-rij is de bron van waarheid). Eén niveau diep —
-  reply-types zijn terminaal, kettingen bestaan niet.
+  reply-types zijn terminaal, kettingen bestaan niet. **De reply-query krijgt
+  hetzelfde `include_archived`-predicaat als de match-query:** `queue_archive`
+  werkt op subtrees vanaf een willekeurige rij (`src/tools/queue-archive.ts`), dus
+  een actieve request kan een gearchiveerde reply hebben; onder de default
+  (`include_archived: false`) wordt die reply dan niet bijgevoegd.
 - Geen validatie van de gezochte ids tegen de Scrum4Me-tabellen: een verwijderde
   story mag zijn berichtgeschiedenis blijven opleveren.
 - **Productguard (verplicht):** de tool is cross-adres maar niet cross-product.
   Na het matchen wordt per distinct `meta.work_item.product_id` in de resultaten
   `userCanAccessProduct` (`src/access.ts` — token-`scoped_products` + owner/
   membership) toegepast; rijen van een ontoegankelijk product vervallen. Rijen
-  waarvan het `work_item`-blok géén `product_id` draagt (alleen mogelijk bij
-  handgemaakte meta buiten de parameters om) worden nooit teruggegeven — toegang
-  is dan niet vast te stellen. Replies worden alleen bijgevoegd bij matches die de
-  guard overleven. Zo kan een tot product A gescopet token geen berichten over
-  product B's werkitems opvragen.
+  waarvan het `work_item`-blok géén `product_id` draagt worden nooit teruggegeven —
+  toegang is dan niet vast te stellen. Replies worden alleen bijgevoegd bij matches
+  die de guard overleven. Omdat het MCP-schrijfpad elk blok canonicaliseert (§3),
+  is het opgeslagen `product_id` op dat pad afgeleid en betrouwbaar; een tot
+  product A gescopet token kan zo geen berichten over product B's werkitems
+  opvragen. **Restrisico, bewust geaccepteerd:** rijen die buiten de MCP om zijn
+  geschreven (direct SQL; de CLI kán geen top-level `work_item` zetten, §8) worden
+  op hun opgeslagen `product_id` beoordeeld. Zo'n schrijver kan alleen de
+  zichtbaarheid van zijn éigen bericht verkeerd taggen — er lekt geen inhoud van
+  derden.
 - Sortering `created_at desc`. De limiet van 100 geldt voor de **request-matches**
   (`take: 100`); hun replies komen daar bovenop. Raakt de match-query de limiet, dan
   meldt de respons `truncated: true`.
@@ -159,8 +175,8 @@ want DDL hoort daar.
 | `src/queue/work-item.ts` (nieuw) | `resolveWorkItem({sprint_id?, story_id?, task_id?})` → gevalideerd blok of throw; alle afleid-/consistentielogica hier, los testbaar |
 | `src/tools/queue-find-by-work-item.ts` (nieuw, fase 2) | de find-tool uit §5 |
 | `src/register.ts` | fase-2-tool registreren |
-| `__tests__/queue-work-item.test.ts` (nieuw) | unit: afleiding per input-vorm, consistentie-fouten, onbestaande ids (gemockte Prisma); expliciet: `Task.sprint_id = null` met `Story.sprint_id` gevuld → sprint-tag uit de story, en mismatch tussen beide velden → story wint |
-| `__tests__/queue-find-by-work-item.test.ts` (nieuw, fase 2) | unit: AND-filter, reply-bijvoeging, archived-default, limiet/truncated, productguard (gescopet token ziet product B niet; blok zonder `product_id` valt af) |
+| `__tests__/queue-work-item.test.ts` (nieuw) | unit: afleiding per input-vorm, consistentie-fouten, onbestaande ids (gemockte Prisma); expliciet: `Task.sprint_id = null` met `Story.sprint_id` gevuld → sprint-tag uit de story; mismatch `Task.sprint_id`↔`Story.sprint_id` → story wint; mismatch `Task.product_id`↔`Story.product_id` → story wint; caller-blok-canonicalisatie (blok zonder parameters wordt canoniek herschreven, meegegeven `product_id` vervalt, conflict blok↔parameter → `VALIDATION_ERROR`) |
+| `__tests__/queue-find-by-work-item.test.ts` (nieuw, fase 2) | unit: AND-filter, reply-bijvoeging, archived-default, limiet/truncated, productguard (gescopet token ziet product B niet; blok zonder `product_id` valt af); actieve request met gearchiveerde directe reply → reply niet bijgevoegd onder de default |
 | `__tests__/queue-entity-transparency.test.ts` (uitbreiden) | meta-roundtrip-canary: een rij met `meta.work_item` + `meta.task` door `messageView` + `toolJson`, assert byte-gelijkheid van het geparste blok |
 
 Integratietests (echte Postgres) zijn optioneel. Maar de meta-transportgarantie
@@ -218,3 +234,25 @@ meta-projectie of -redactie in het leespad groen doorschieten.
   plaats van de onjuiste waiver; §7 afgezwakt tot toegang + retentievenster;
   §3 `meta.task`-whitelist correct benoemd; §8 `--meta-file`-workaround
   geschrapt (CLI wikkelt alles in `meta.task`, `s4m-queue/src/cli.ts:29-47`).
+
+### Ronde 2 — spec r2 @ `7710188` — GO / NO-GO
+
+- **mac:claude** (`5ff8e5a0`): 0 BLOCKER / 0 MAJOR / 1 MINOR — GO. Alle zes
+  r1-fixes **held**. MINOR: de slotzin van de productguard beloofde meer dan het
+  mechanisme — bij pass-through-blokken is `product_id` self-asserted.
+- **mac:codex** (`d8a3a2f5`): 0 BLOCKER / 1 MAJOR / 2 MINOR — NO-GO. Fix 2
+  partially held. MAJOR (convergent met claude-MINOR): de guard vertrouwt een
+  onvervalideerd caller-geleverd `product_id`. MINOR-1: task→product moet net als
+  task→sprint via de Story (`Task.product_id` is óók gedenormaliseerd,
+  `create-task.ts:91`; `userCanAccessTask` leest via de story, `access.ts:20-26`).
+  MINOR-2: `include_archived`-gedrag voor bijgevoegde replies ambigu in mixed
+  trees (`queue_archive` archiveert subtrees vanaf elke rij).
+- **Triage:** alle bevindingen geverifieerd en bevestigd — 0 verworpen.
+- **Fixes → r3:** §3 write-time-canonicalisatie: caller-geleverd `meta.work_item`
+  gaat nooit meer ongevalideerd door (ids verenigd met de parameters door de
+  resolver, `product_id` nooit overgenomen, conflict → `VALIDATION_ERROR`) —
+  sluit de MAJOR én claude's MINOR; §4 `product_id` bij task-afleiding uit
+  `Story.product_id`; §5 guard-tekst herzien + restrisico buiten-MCP-schrijvers
+  expliciet geaccepteerd; §5 reply-query krijgt hetzelfde
+  `include_archived`-predicaat; §6 testmatrix uitgebreid (product-mismatch,
+  canonicalisatie, gearchiveerde reply).
