@@ -919,3 +919,12 @@ Expected: exit 0 (pretest typecheckt `__tests__` al).
 git add src/tools/queue-find-by-work-item.ts src/register.ts __tests__/queue-find-by-work-item.test.ts __tests__/queue-registration.test.ts
 git commit -m "feat(queue): queue_find_by_work_item — product-guarded cross-adres-zoektool op meta.work_item"
 ```
+
+---
+
+## Review record
+
+**Loop:** plan-fase, gestart 2026-08-20. Reviewers: `mac:claude` + `mac:codex`
+(JP-armed listeners). Max 10 rondes. Spec-fase: dubbel GO in ronde 3 (zie de spec).
+
+### Ronde 1 — uitstaand
