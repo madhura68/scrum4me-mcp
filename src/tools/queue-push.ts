@@ -93,22 +93,14 @@ export function registerQueuePushTool(server: McpServer) {
         // Work-item-canonicalisatie (spec §3-§4): parameters ∪ caller-blok →
         // resolver. Een caller-geleverd meta.work_item gaat nooit ongevalideerd
         // door; product_id wordt altijd afgeleid, nooit overgenomen.
-        try {
-          const workItem = await resolveWorkItem(
-            mergeWorkItemInputs(
-              { sprint_id, story_id, task_id },
-              extractWorkItemIds(finalMeta.work_item),
-            ),
-          )
-          if (workItem) finalMeta.work_item = workItem as unknown as Record<string, unknown>
-          else delete finalMeta.work_item
-        } catch (err) {
-          return toolError(
-            err instanceof Error && err.message.startsWith('VALIDATION_ERROR')
-              ? err.message
-              : `VALIDATION_ERROR: ${err instanceof Error ? err.message : String(err)}`,
-          )
-        }
+        const workItem = await resolveWorkItem(
+          mergeWorkItemInputs(
+            { sprint_id, story_id, task_id },
+            extractWorkItemIds(finalMeta.work_item),
+          ),
+        )
+        if (workItem) finalMeta.work_item = workItem as unknown as Record<string, unknown>
+        else delete finalMeta.work_item
 
         const row = await prisma.agentMessage.create({
           data: {
