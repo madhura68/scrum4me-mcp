@@ -7,6 +7,11 @@ import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { parseQueueTarget, resolveQueueIdentity } from '../queue/identity.js'
 import { requiresTaskMeta, validateTaskMeta } from '../queue/types.js'
 import { deriveRepoFromCwd } from '../queue/git-origin.js'
+import {
+  extractWorkItemIds,
+  mergeWorkItemInputs,
+  resolveWorkItem,
+} from '../queue/work-item.js'
 import { emitQueueNotifyBestEffort, envelopeOf } from '../queue/notify.js'
 import {
   QUEUE_JOB_SERVER,
@@ -29,6 +34,11 @@ const inputSchema = z.object({
   // lijst weigerde 'kimi' in Zod vóórdat identity.ts (die wél tegen
   // QUEUE_MODELS toetst) ooit draaide, en niets maakte die drift rood.
   as: z.enum(QUEUE_MODELS).optional(),
+  // Spec 2026-08-20 (work-item-ids): optionele koppeling aan Scrum4Me-werk.
+  // De tool leidt de hiërarchie af en valideert; zie src/queue/work-item.ts.
+  sprint_id: z.string().min(1).optional(),
+  story_id: z.string().min(1).optional(),
+  task_id: z.string().min(1).optional(),
 })
 
 export function registerQueuePushTool(server: McpServer) {
@@ -45,10 +55,11 @@ export function registerQueuePushTool(server: McpServer) {
         'review_request (review a document). For task/review_request supply cwd plus meta.task ' +
         '{objective, verification, response_format}; the tool derives meta.task.repo via ' +
         '`git remote get-url origin` in that cwd (pass meta.task.repo explicitly when derivation fails). ' +
+        'Optional sprint_id/story_id/task_id link the message to Scrum4Me work items: the tool derives the full hierarchy via the story (product_id included) and stores it as meta.work_item; inconsistent or unknown ids are rejected. ' +
         'Returns message_id — fetch the answer later with queue_wait_reply({ message_ids: [message_id] }).',
       inputSchema,
     },
-    async ({ to, type, body, meta, cwd, as }) =>
+    async ({ to, type, body, meta, cwd, as, sprint_id, story_id, task_id }) =>
       withToolErrors(async () => {
         await requireWriteAccess()
         const from = resolveQueueIdentity(as)
@@ -78,6 +89,18 @@ export function registerQueuePushTool(server: McpServer) {
           }
           finalMeta.task = validateTaskMeta(task) as unknown as Record<string, unknown>
         }
+
+        // Work-item-canonicalisatie (spec §3-§4): parameters ∪ caller-blok →
+        // resolver. Een caller-geleverd meta.work_item gaat nooit ongevalideerd
+        // door; product_id wordt altijd afgeleid, nooit overgenomen.
+        const workItem = await resolveWorkItem(
+          mergeWorkItemInputs(
+            { sprint_id, story_id, task_id },
+            extractWorkItemIds(finalMeta.work_item),
+          ),
+        )
+        if (workItem) finalMeta.work_item = workItem as unknown as Record<string, unknown>
+        else delete finalMeta.work_item
 
         const row = await prisma.agentMessage.create({
           data: {

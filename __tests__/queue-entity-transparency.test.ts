@@ -31,6 +31,24 @@ const CANARY_BODY = [
   'F: quotes: "dq" \'sq\'',
 ].join('\n')
 
+// Spec 2026-08-20 (work-item-ids) §6: meta moet net zo byte-exact doorkomen
+// als body. work_item + task samen, met dezelfde ontsnappings-discriminanten.
+const CANARY_META = {
+  work_item: {
+    product_id: 'cmprod00000000000000000001',
+    sprint_id: 'cmsprint000000000000000001',
+    story_id: 'cmstory0000000000000000001',
+    task_id: 'cmtask00000000000000000001',
+  },
+  task: {
+    cwd: '/tmp/x',
+    repo: 'https://git.jp-visser.nl/janpeter/x.git',
+    objective: 'check <server>:<model> && requeue <id>',
+    verification: 'pre-escaped: &lt; &amp; &gt;',
+    response_format: 'markdown',
+  },
+} as const
+
 const HTML_ENTITIES = ['&lt;', '&gt;', '&amp;', '&quot;', '&#39;'] as const
 
 function row(body: string): QueueMessageLike {
@@ -103,5 +121,19 @@ describe('queue-leeskant: entiteit-transparantie (messageView + toolJson)', () =
     expect(body).toContain('&& s4m-queue inbox')
     expect(body).toContain('**Claims & leases:**')
     expect(body).toContain('requeue <id>')
+  })
+
+  it('meta (work_item + task) overleeft de round-trip byte-exact', () => {
+    const serialized = toolJson({
+      message: messageView({ ...row(CANARY_BODY), meta: CANARY_META }),
+    })
+    const text = (serialized.content[0] as { type: 'text'; text: string }).text
+    const parsed = JSON.parse(text) as { message: { meta: unknown } }
+    expect(parsed.message.meta).toEqual(CANARY_META)
+    // Byte-gelijkheid, niet alleen structurele: een herschreven maar
+    // equivalent blok zou toEqual overleven, dit niet.
+    expect(JSON.stringify(parsed.message.meta)).toBe(JSON.stringify(CANARY_META))
+    const structured = serialized.structuredContent as { message: { meta: unknown } }
+    expect(JSON.stringify(structured.message.meta)).toBe(JSON.stringify(CANARY_META))
   })
 })

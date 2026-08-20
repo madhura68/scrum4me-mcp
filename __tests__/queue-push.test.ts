@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 vi.mock('../src/prisma.js', () => ({
-  prisma: { agentMessage: { create: vi.fn() }, $executeRaw: vi.fn() },
+  prisma: {
+    agentMessage: { create: vi.fn() },
+    $executeRaw: vi.fn(),
+    task: { findUnique: vi.fn() },
+    story: { findUnique: vi.fn() },
+    sprint: { findUnique: vi.fn() },
+  },
 }))
 vi.mock('../src/auth.js', async (importOriginal) => {
   const original = await importOriginal<typeof import('../src/auth.js')>()
@@ -18,6 +24,9 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 const mockPrisma = prisma as unknown as {
   agentMessage: { create: ReturnType<typeof vi.fn> }
   $executeRaw: ReturnType<typeof vi.fn>
+  task: { findUnique: ReturnType<typeof vi.fn> }
+  story: { findUnique: ReturnType<typeof vi.fn> }
+  sprint: { findUnique: ReturnType<typeof vi.fn> }
 }
 const mockDerive = deriveRepoFromCwd as ReturnType<typeof vi.fn>
 const mockAuth = requireWriteAccess as ReturnType<typeof vi.fn>
@@ -297,5 +306,107 @@ describe('queue_push — §5.1', () => {
     expect(result.isError).toBeUndefined()
     const body = JSON.parse(result.content[0].text)
     expect(body.message_id).toBe(createdRow.id)
+  })
+})
+
+describe('queue_push — meta.work_item (spec 2026-08-20)', () => {
+  it('task_id-parameter → canoniek blok, sprint/product uit de story', async () => {
+    mockPrisma.task.findUnique.mockResolvedValue({
+      story_id: 's1', story: { sprint_id: 'sp1', product_id: 'p1' },
+    })
+    const server = makeServer()
+    await server.call({ to: 'scrum4me-server:claude', type: 'info', body: 'x', task_id: 't1' })
+    expect(mockPrisma.agentMessage.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        meta: { work_item: { product_id: 'p1', sprint_id: 'sp1', story_id: 's1', task_id: 't1' } },
+      }),
+    })
+  })
+
+  it('caller-blok zonder parameters wordt canoniek herschreven; meegegeven product_id vervalt', async () => {
+    mockPrisma.story.findUnique.mockResolvedValue({ sprint_id: null, product_id: 'p-echt' })
+    const server = makeServer()
+    await server.call({
+      to: 'scrum4me-server:claude', type: 'info', body: 'x',
+      meta: { work_item: { story_id: 's1', product_id: 'p-vervalst', rommel: true } },
+    })
+    expect(mockPrisma.agentMessage.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        meta: { work_item: { product_id: 'p-echt', story_id: 's1' } },
+      }),
+    })
+  })
+
+  it('conflict parameter↔blok → VALIDATION_ERROR, geen insert, geen NOTIFY', async () => {
+    const server = makeServer()
+    const result = await server.call({
+      to: 'scrum4me-server:claude', type: 'info', body: 'x',
+      task_id: 't1', meta: { work_item: { task_id: 't2' } },
+    })
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('VALIDATION_ERROR')
+    expect(mockPrisma.agentMessage.create).not.toHaveBeenCalled()
+    expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
+  })
+
+  it('onbestaand task_id → VALIDATION_ERROR, geen insert, geen NOTIFY', async () => {
+    mockPrisma.task.findUnique.mockResolvedValue(null)
+    const server = makeServer()
+    const result = await server.call({
+      to: 'scrum4me-server:claude', type: 'info', body: 'x', task_id: 'weg',
+    })
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toMatch(/VALIDATION_ERROR.*task_id/)
+    expect(mockPrisma.agentMessage.create).not.toHaveBeenCalled()
+    expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
+  })
+
+  it('zonder ids: geen work_item-sleutel en overige meta ongemoeid', async () => {
+    const server = makeServer()
+    await server.call({ to: 'scrum4me-server:claude', type: 'info', body: 'x', meta: { foo: 'bar' } })
+    const data = mockPrisma.agentMessage.create.mock.calls[0][0].data as { meta: Record<string, unknown> }
+    expect(data.meta).toEqual({ foo: 'bar' })
+    expect(data.meta).not.toHaveProperty('work_item')
+  })
+
+  it('werkt samen met meta.task bij type task (work_item staat ernaast, niet erin)', async () => {
+    mockPrisma.task.findUnique.mockResolvedValue({
+      story_id: 's1', story: { sprint_id: 'sp1', product_id: 'p1' },
+    })
+    const server = makeServer()
+    await server.call({
+      to: 'scrum4me-server:claude', type: 'task', body: 'doe iets', cwd: '/work/dir',
+      task_id: 't1',
+      meta: { task: { objective: 'o', verification: 'v', response_format: 'rf' } },
+    })
+    expect(mockPrisma.agentMessage.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        meta: {
+          task: {
+            cwd: '/work/dir', repo: 'https://git.jp-visser.nl/janpeter/x.git',
+            objective: 'o', verification: 'v', response_format: 'rf',
+          },
+          work_item: { product_id: 'p1', sprint_id: 'sp1', story_id: 's1', task_id: 't1' },
+        },
+      }),
+    })
+  })
+
+  it('registreert sprint_id/story_id/task_id in het inputSchema', () => {
+    // Het harnas roept de handler direct aan en slaat Zod over (zelfde reden
+    // als de as:'kimi'-test hierboven): alleen een assertie op het
+    // geregistreerde inputSchema bewijst dat een echte MCP-caller de
+    // parameters kan meegeven.
+    const server = makeServer()
+    const meta = server.registerTool.mock.calls[0][1] as {
+      inputSchema: {
+        parse: (value: unknown) => { sprint_id?: string; story_id?: string; task_id?: string }
+      }
+    }
+    const base = { to: 'scrum4me-server:claude', type: 'info', body: 'x' }
+    expect(meta.inputSchema.parse({ ...base, sprint_id: 'sp1' }).sprint_id).toBe('sp1')
+    expect(meta.inputSchema.parse({ ...base, story_id: 's1' }).story_id).toBe('s1')
+    expect(meta.inputSchema.parse({ ...base, task_id: 't1' }).task_id).toBe('t1')
+    expect(() => meta.inputSchema.parse({ ...base, task_id: '' })).toThrow()
   })
 })
