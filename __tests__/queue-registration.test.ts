@@ -7,7 +7,7 @@ import { createMcpServer } from '../src/http.js'
 
 const QUEUE_TOOL_NAMES = [
   'queue_push', 'queue_wait_reply', 'queue_next', 'queue_done',
-  'queue_fail', 'queue_status', 'queue_list',
+  'queue_fail', 'queue_status', 'queue_list', 'queue_find_by_work_item',
   // M32-archivering: muterend, maar even stdio-only als de rest.
   'queue_archive', 'queue_unarchive',
 ] as const
@@ -24,7 +24,7 @@ function captureNames() {
 }
 
 describe('queue-tools registratie — stdio-only (spec §5-intro/§9)', () => {
-  it('registerQueueTools registreert exact de 9 kernset-tools', () => {
+  it('registerQueueTools registreert exact de 10 kernset-tools', () => {
     const { server, names } = captureNames()
     registerQueueTools(server as never)
     expect([...names].sort()).toEqual([...QUEUE_TOOL_NAMES].sort())
