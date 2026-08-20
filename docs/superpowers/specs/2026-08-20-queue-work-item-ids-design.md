@@ -1,7 +1,9 @@
 # Work-item-ids op queue-berichten — design
 
 **Datum:** 2026-08-20
-**Status:** vastgesteld (JP akkoord 2026-08-20, brainstormsessie)
+**Status:** GO — adversarial spec-loop dubbel GO in ronde 3 (mac:claude + mac:codex,
+2026-08-20, r3 @ `58cd595`; zie Review record). Ontwerp JP-akkoord 2026-08-20
+(brainstormsessie).
 **Aanleiding:** Queue-berichten die over een sprint, story of taak gaan zijn daar nu niet
 aan te koppelen. JP wil optionele sprint-/story-/task-ids op s4m-queue-berichten, en in een
 tweede fase tools om berichten op die ids terug te vinden.
@@ -55,8 +57,10 @@ dat besluit stuurt de opslagkeuze in §2.
 - Ids zijn de bestaande cuid-strings uit de Scrum4Me-tabellen (zelfde Postgres-DB;
   de Prisma-client van dit repo kent `Sprint`, `Story` en `Task` al).
 - Alleen gegeven én afgeleide velden worden geschreven; er komen geen `null`-velden in
-  het blok. Zonder één van de drie parameters wordt het blok in het geheel niet
-  geschreven — bestaand gedrag verandert dan met nul bytes.
+  het blok. Levert noch een parameter noch een caller-geleverd `meta.work_item`-blok
+  (zie de canonicalisatie-bullet hieronder) een van de drie ids op, dan wordt het
+  blok in het geheel niet geschreven — bestaand gedrag verandert dan met nul bytes.
+  Een blok waarvan na canonicalisatie geen id overblijft wordt niet opgeslagen.
 - Het blok staat **naast** `meta.task`, niet erin: het geldt voor álle request-types,
   ook `info`.
 - **Een caller-geleverd `meta.work_item` gaat nooit ongevalideerd door.** `queue_push`
@@ -256,3 +260,18 @@ meta-projectie of -redactie in het leespad groen doorschieten.
   expliciet geaccepteerd; §5 reply-query krijgt hetzelfde
   `include_archived`-predicaat; §6 testmatrix uitgebreid (product-mismatch,
   canonicalisatie, gearchiveerde reply).
+
+### Ronde 3 — spec r3 @ `58cd595` — GO / GO ✅
+
+- **mac:claude** (`8ef0e4e3`): 0 BLOCKER / 0 MAJOR / 1 MINOR — **GO**. Alle vier
+  r2-fixes held; residual-risk-argument beoordeeld en houdbaar bevonden.
+- **mac:codex** (`6301dabe`): 0 BLOCKER / 0 MAJOR / 1 MINOR — **GO**. Alle vier
+  r2-punten opgelost; "de r3-spec is implementatiegereed".
+- **Convergente MINOR (beide reviewers, identiek):** §3-bullet 2 ("zonder één van
+  de drie parameters wordt het blok niet geschreven") was niet geharmoniseerd met
+  de r3-canonicalisatieregel en beschreef precies de shortcut die de ronde-2-MAJOR
+  zou heropenen. **Toegepast in de GO-afsluitcommit** met de door beide reviewers
+  voorgeschreven formulering: de niet-schrijven-conditie sleutelt nu op de
+  vereniging (parameters ∪ caller-blok), niet op de parameters alleen.
+- **Spec-fase afgerond:** dubbel GO na 3 rondes. Volgende fase: implementatieplan
+  (writing-plans) → plan-loop.
