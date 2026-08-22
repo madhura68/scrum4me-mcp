@@ -9,17 +9,14 @@
 //   - resultaat opgeslagen op execution-row, niet op ClaudeJob.verify_result
 //   - response geeft allowed_for_done direct mee
 
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
+import { getGitDiff } from '../git/diff.js'
 import { classifyDiffAgainstPlan } from '../verify/classify.js'
 import { checkVerifyGate } from './update-job-status.js'
-
-const exec = promisify(execFile)
 
 const inputSchema = z.object({
   execution_id: z.string().min(1),
@@ -108,10 +105,7 @@ export function registerVerifySprintTaskTool(server: McpServer) {
 
         let diff: string
         try {
-          const { stdout } = await exec('git', ['diff', `${baseSha}...HEAD`], {
-            cwd: worktree_path,
-          })
-          diff = stdout
+          diff = await getGitDiff(worktree_path, `${baseSha}...HEAD`)
         } catch (err) {
           return toolError(
             `git diff failed in worktree (${worktree_path}): ${(err as Error).message ?? 'unknown error'}`,
