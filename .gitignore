@@ -15,3 +15,11 @@ prisma/generated
 
 # Claude Code worktrees (per-session, never tracked)
 .claude/worktrees/
+
+# Disposable, digest-verified build toolchains (IDEA-187 companion release).
+# Never staged, never manifested, never copied into a release tree.
+.artifacts/
+
+# Release attestation output (IDEA-187): build metadata + gate evidence,
+# regenerated from the exact origin/main merge commit — never committed.
+.release/
