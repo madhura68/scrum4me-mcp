@@ -1,14 +1,11 @@
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
 import { getAuth } from '../auth.js'
+import { getGitDiff } from '../git/diff.js'
 import { resolveTaskRef } from '../lib/resolve-entity.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { classifyDiffAgainstPlan, type VerifyResultValue } from '../verify/classify.js'
-
-const exec = promisify(execFile)
 
 const inputSchema = z.object({
   task_id: z.string().min(1),
@@ -23,8 +20,7 @@ export async function getDiffInWorktree(
   // captured at claim-time so verify only sees the current task's changes.
   // Falls back to origin/main only for legacy callers without base_sha.
   const range = baseSha ? `${baseSha}...HEAD` : 'origin/main...HEAD'
-  const { stdout } = await exec('git', ['diff', range], { cwd: worktreePath })
-  return stdout
+  return getGitDiff(worktreePath, range)
 }
 
 export async function saveVerifyResult(jobId: string, result: VerifyResultValue): Promise<void> {

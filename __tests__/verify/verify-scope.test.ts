@@ -53,3 +53,34 @@ describe('verify scope per-job (PBI-47 P0)', () => {
     expect(diff).toContain('b.ts')
   })
 })
+
+describe('large verify diffs', () => {
+  it('reads diff output larger than the Node execFile default buffer', async () => {
+    const tmpRepo = await fs.mkdtemp(path.join(os.tmpdir(), 'verify-large-diff-'))
+
+    try {
+      await exec('git', ['init', '-b', 'main'], { cwd: tmpRepo })
+      await exec('git', ['config', 'user.email', 't@t.local'], { cwd: tmpRepo })
+      await exec('git', ['config', 'user.name', 'Test'], { cwd: tmpRepo })
+      await fs.writeFile(path.join(tmpRepo, 'README.md'), '# init\n')
+      await exec('git', ['add', '-A'], { cwd: tmpRepo })
+      await exec('git', ['commit', '-m', 'init'], { cwd: tmpRepo })
+      const baseRev = await exec('git', ['rev-parse', 'HEAD'], { cwd: tmpRepo })
+
+      const largeFile = Array.from(
+        { length: 90_000 },
+        (_, index) => `line-${index.toString().padStart(6, '0')}: verify buffer regression`,
+      ).join('\n')
+      await fs.writeFile(path.join(tmpRepo, 'large-diff.txt'), `${largeFile}\n`)
+      await exec('git', ['add', '-A'], { cwd: tmpRepo })
+      await exec('git', ['commit', '-m', 'large diff'], { cwd: tmpRepo })
+
+      const diff = await getDiffInWorktree(tmpRepo, baseRev.stdout.trim())
+
+      expect(Buffer.byteLength(diff)).toBeGreaterThan(1024 * 1024)
+      expect(diff).toContain('large-diff.txt')
+    } finally {
+      await fs.rm(tmpRepo, { recursive: true, force: true })
+    }
+  })
+})
