@@ -57,3 +57,85 @@ jobs:
       # Credentialless: no DATABASE_URL, no SCRUM4ME_TOKEN in this job's env.
       - name: Run stdio surface canary
         run: npm run canary:stdio
+
+  release-metadata:
+    name: Reproducible release attestation
+    # Only the exact origin/main merge commit is a release candidate. A PR head,
+    # a shallow checkout, an implicit local branch or Node 22 is insufficient.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+    steps:
+      - name: Checkout (full history, recursive submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      # Materialise refs/remotes/origin/main and prove both merge parents are
+      # present locally — a shallow tree cannot attest merge ancestry.
+      - name: Fetch origin/main and prove merge parents
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          head="$(git rev-parse HEAD)"
+          origin_main="$(git rev-parse refs/remotes/origin/main)"
+          if [ "$head" != "$origin_main" ]; then
+            echo "HEAD ($head) is not origin/main ($origin_main)"; exit 1
+          fi
+          parents="$(git show -s --format=%P HEAD)"
+          count="$(echo "$parents" | wc -w)"
+          if [ "$count" -ne 2 ]; then
+            echo "expected exactly two merge parents, got $count: $parents"; exit 1
+          fi
+          for parent in $parents; do
+            git cat-file -e "${parent}^{commit}"
+          done
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Fail-closed release sequence, in order. Each gate feeds the digest that
+      # binds it in .release/gates.json — evidence is command id + status +
+      # digest only, never stdout, env or secrets.
+      - name: Run the release gate sequence
+        run: |
+          set -euo pipefail
+          mkdir -p .release
+
+          npm run prisma:generate
+          git diff --exit-code -- prisma/schema.prisma
+
+          npm run typecheck
+          npm run typecheck:tests
+          npm test
+
+          # stdio canary output IS the attested tool surface artifact.
+          npm run canary:stdio > .release/tool-surface.json
+
+          schema_sha="$(sha256sum prisma/schema.prisma | cut -d' ' -f1)"
+          lock_sha="$(sha256sum package-lock.json | cut -d' ' -f1)"
+          surface_sha="$(sha256sum .release/tool-surface.json | cut -d' ' -f1)"
+          # 'tests' evidence is an opaque run digest: command id + passed status.
+          tests_sha="$(printf 'tests\tpassed\n' | sha256sum | cut -d' ' -f1)"
+
+          printf '{"schema":"%s","typecheck":"%s","tests":"%s","stdio_canary":"%s"}\n' \
+            "$schema_sha" "$lock_sha" "$tests_sha" "$surface_sha" > .release/gates.json
+
+      - name: Emit reproducible build metadata for the merge commit
+        run: npm run release:metadata -- --output .release/scrum4me-mcp-build.v1.json
+
+      - name: Upload release attestation
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrum4me-mcp-build-v1
+          path: |
+            .release/scrum4me-mcp-build.v1.json
+            .release/gates.json
+            .release/tool-surface.json

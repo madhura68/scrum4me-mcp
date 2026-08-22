@@ -285,6 +285,37 @@ tool_surface_sha256, ok }`). It exits non-zero on any other protocol traffic or
 failure. Forgejo CI runs it as a dedicated job on the pinned release Node so the
 published surface is attested on every change.
 
+## Reproducible release attestation
+
+`npm run release:metadata -- --output .release/scrum4me-mcp-build.v1.json`
+(`scripts/release-metadata.ts`) emits a `scrum4me-mcp-build/v1` object attesting
+one **exact `origin/main` merge commit**. `collectReleaseMetadata` is fail-closed
+and takes Git, filesystem, Node version and gate evidence as injected
+dependencies, so every rejection is deterministic and unit-tested
+(`__tests__/release-metadata.test.ts`). It rejects, with a typed error, when:
+
+| Check | Error |
+|---|---|
+| HEAD is not the exact two-parent `refs/remotes/origin/main` merge | `RELEASE_COMMIT_NOT_ORIGIN_MAIN_MERGE` |
+| Node is not the pinned `v24.19.0` | `NODE_VERSION_MISMATCH` |
+| A recursive submodule is uninitialised or dirty | `SUBMODULE_NOT_CLEAN` |
+| The generated Prisma schema is uncommitted | `GENERATED_SCHEMA_NOT_COMMITTED` |
+| A required gate is absent / has an unknown key / a malformed digest | `GATE_EVIDENCE_MISSING` · `GATE_EVIDENCE_UNKNOWN_KEY` · `GATE_EVIDENCE_MALFORMED` |
+| A content digest is not bound by its gate | `LOCK_HASH_MISMATCH` · `SCHEMA_HASH_MISMATCH` · `TOOL_SURFACE_HASH_MISMATCH` |
+
+Each of the four gates (`schema`, `typecheck`, `tests`, `stdio_canary`) records
+only a command identifier, a `passed` status and an evidence digest — never
+stdout, env or secrets. Three of those digests **bind** a content artifact:
+`schema` ↔ `prisma/schema.prisma`, `typecheck` ↔ `package-lock.json` (the exact
+dependency closure it ran against), `stdio_canary` ↔ the canary's tool surface;
+`tests` is an opaque run digest. The full fail-closed sequence
+(`git submodule update --init --recursive` → `npm ci` → `prisma:generate` →
+schema diff → `typecheck` → `test` → `canary:stdio` → `release:metadata`) runs in
+the Forgejo push-CI `release-metadata` job on `main`, on Node 24.19.0, after
+proving both merge parents are present in a full-history recursive checkout. The
+metadata is uploaded as the `scrum4me-mcp-build-v1` artifact. Output lives under
+`.release/` and is never committed.
+
 ## Setup
 
 ```bash
