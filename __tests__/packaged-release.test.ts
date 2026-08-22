@@ -370,6 +370,41 @@ describe('release archive preflight', () => {
 })
 
 describe('Forgejo release workflow contract', () => {
+  it('uploads only exact head-bound candidate evidence with Forgejo artifact v3', async () => {
+    const workflow = parse(
+      await readFile(join(REPO_ROOT, '.forgejo', 'workflows', 'ci.yml'), 'utf8'),
+    ) as {
+      jobs: Record<string, {
+        steps?: {
+          name?: string
+          uses?: string
+          with?: Record<string, unknown>
+        }[]
+      }>
+    }
+    const upload = workflow.jobs.candidate.steps?.find((step) =>
+      step.name?.includes('Upload candidate evidence'),
+    )
+
+    expect(upload?.uses).toBe(
+      'actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5',
+    )
+    expect(upload?.with?.name).toBe(
+      'scrum4me-mcp-candidate-${{ github.event.pull_request.head.sha }}',
+    )
+    expect(upload?.with?.['if-no-files-found']).toBe('error')
+    expect(upload?.with?.['include-hidden-files']).toBe(true)
+    expect(
+      String(upload?.with?.path ?? '')
+        .trim()
+        .split(/\s*\n\s*/),
+    ).toEqual([
+      '.release/scrum4me-mcp-candidate.v1.json',
+      '.release/gates.json',
+      '.release/tool-surface.json',
+    ])
+  })
+
   it.each(['candidate', 'final-release'])(
     '%s captures canary gate evidence as one JSON document',
     async (jobName) => {

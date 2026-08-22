@@ -78,9 +78,13 @@ jobs:
       # This upload is explicitly PR evidence. It excludes the package and is
       # never accepted by release consumers as final merge metadata.
       - name: Upload candidate evidence (non-release)
-        uses: actions/upload-artifact@v4
+        # Forgejo 15 supports artifact protocol v3; pin the exact upstream v3
+        # commit instead of the moving tag or GHES-incompatible upstream v4.
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5
         with:
           name: scrum4me-mcp-candidate-${{ github.event.pull_request.head.sha }}
+          if-no-files-found: error
+          include-hidden-files: true
           path: |
             .release/scrum4me-mcp-candidate.v1.json
             .release/gates.json
