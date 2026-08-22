@@ -33,3 +33,27 @@ jobs:
 
       - name: Run tests
         run: npm run test
+
+  canary:
+    name: Stdio release canary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Pinned to the exact companion-release toolchain (IDEA-187). The canary
+      # attests the published stdio surface, so it must run on the version the
+      # release is built and shipped with.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Credentialless: no DATABASE_URL, no SCRUM4ME_TOKEN in this job's env.
+      - name: Run stdio surface canary
+        run: npm run canary:stdio

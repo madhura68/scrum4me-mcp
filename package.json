@@ -21,6 +21,7 @@
     "typecheck:tests": "tsc --noEmit -p tsconfig.type-tests.json",
     "pretest": "npm run typecheck:tests",
     "usage:canary": "tsx scripts/check-worker-usage-capture.ts",
+    "canary:stdio": "tsx scripts/stdio-canary.ts",
     "sync-schema": "bash scripts/sync-schema.sh",
     "test": "vitest run",
     "test:integration": "vitest run --no-file-parallelism integration.test"

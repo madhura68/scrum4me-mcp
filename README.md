@@ -258,6 +258,33 @@ Synchronous, non-blocking poll that returns how many ClaudeJobs are still active
 - `implement_next_story` — full workflow: fetch context, log plan, walk
   tasks, run tests, commit. Takes `product_id`.
 
+## Stdio release canary
+
+The stdio process runs in one of two modes, selected by `SCRUM4ME_CANARY_MODE`:
+
+| Value | Mode | Behaviour |
+|---|---|---|
+| unset / empty | `runtime` | normal worker: full toolset, auth, presence, heartbeat, queue maintenance |
+| exactly `1` | `canary` | full tool **metadata** (same names, input schemas and annotations as runtime, incl. worktree + queue tools), but every handler throws `CANARY_MODE_TOOL_CALL_FORBIDDEN`; no prompts/resources; **never** touches auth, Prisma, presence, heartbeat, queue maintenance, Git or the network |
+
+Any other non-empty value is fatal (`INVALID_CANARY_MODE`) — the mode is never
+silently downgraded. Both modes construct through the same
+`createStdioServer()` in `src/stdio-server.ts`, so the canary and runtime
+surfaces cannot drift; the runtime lifecycle is the only place credentials and
+side effects run, and it is injectable for testing.
+
+```bash
+npm run canary:stdio     # credentialless: needs no DATABASE_URL or SCRUM4ME_TOKEN
+```
+
+The script (`scripts/stdio-canary.ts`) speaks only `initialize` + `tools/list`
+to a canary server over an in-memory transport, hashes the canonical tool
+surface and prints exactly one `scrum4me-mcp-canary/v1` result
+(`{ server_version, release_commit, protocol_version, tool_count,
+tool_surface_sha256, ok }`). It exits non-zero on any other protocol traffic or
+failure. Forgejo CI runs it as a dedicated job on the pinned release Node so the
+published surface is attested on every change.
+
 ## Setup
 
 ```bash
