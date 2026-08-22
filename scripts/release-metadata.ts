@@ -62,6 +62,23 @@ export interface Scrum4MeMcpBuildMetadataV1 {
   }[]
 }
 
+export interface Scrum4MeMcpCandidateMetadataV1 {
+  version: 'scrum4me-mcp-candidate/v1'
+  repository: 'https://git.jp-visser.nl/janpeter/scrum4me-mcp.git'
+  reviewed_head_sha: string
+  reviewed_head_tree_oid: string
+  submodules: Readonly<Record<string, string>>
+  package_lock_sha256: string
+  generated_schema_sha256: string
+  node_version: '24.19.0'
+  tool_surface_sha256: string
+  gates: readonly {
+    id: ReleaseGateId
+    result: 'passed'
+    evidence_sha256: string
+  }[]
+}
+
 export interface ReleaseMetadataDependencies {
   git(args: readonly string[]): Promise<string>
   readFile(path: string): Promise<Buffer>
@@ -70,6 +87,7 @@ export interface ReleaseMetadataDependencies {
 }
 
 const SHA256_HEX = /^[0-9a-f]{64}$/
+const GIT_OID_HEX = /^[0-9a-f]{40}$/
 
 function sha256(buf: Buffer): string {
   return createHash('sha256').update(buf).digest('hex')
@@ -93,6 +111,125 @@ function parseSubmodules(status: string): Record<string, string> {
   return submodules
 }
 
+export function parseCanarySurface(
+  canaryResult: unknown,
+): { releaseCommit: string; toolSurfaceSha256: string } {
+  if (
+    canaryResult === null ||
+    typeof canaryResult !== 'object' ||
+    (canaryResult as Record<string, unknown>).version !==
+      'scrum4me-mcp-canary/v1' ||
+    (canaryResult as Record<string, unknown>).ok !== true ||
+    !GIT_OID_HEX.test(
+      String((canaryResult as Record<string, unknown>).release_commit ?? ''),
+    ) ||
+    !SHA256_HEX.test(
+      String(
+        (canaryResult as Record<string, unknown>).tool_surface_sha256 ?? '',
+      ),
+    )
+  ) {
+    throw new Error('CANARY_RESULT_MALFORMED')
+  }
+  return {
+    releaseCommit: (canaryResult as { release_commit: string }).release_commit,
+    toolSurfaceSha256: (
+      canaryResult as { tool_surface_sha256: string }
+    ).tool_surface_sha256,
+  }
+}
+
+interface CollectedReleaseContent {
+  submodules: Readonly<Record<string, string>>
+  packageLockSha256: string
+  generatedSchemaSha256: string
+  toolSurfaceSha256: string
+  gates: Scrum4MeMcpBuildMetadataV1['gates']
+}
+
+async function collectReleaseContent(
+  deps: ReleaseMetadataDependencies,
+  expectedCommit: string,
+): Promise<CollectedReleaseContent> {
+  if (deps.nodeVersion() !== `v${RELEASE_NODE_VERSION}`) {
+    throw new Error('NODE_VERSION_MISMATCH')
+  }
+
+  const submodules = parseSubmodules(
+    await deps.git(['submodule', 'status', '--recursive']),
+  )
+  const submoduleWorktreeStatus = (
+    await deps.git([
+      'submodule',
+      'foreach',
+      '--quiet',
+      '--recursive',
+      'git status --porcelain --untracked-files=all',
+    ])
+  ).trim()
+  if (submoduleWorktreeStatus !== '') {
+    throw new Error('SUBMODULE_WORKTREE_NOT_CLEAN')
+  }
+
+  const schemaStatus = (
+    await deps.git(['status', '--porcelain', '--', 'prisma/schema.prisma'])
+  ).trim()
+  if (schemaStatus !== '') throw new Error('GENERATED_SCHEMA_NOT_COMMITTED')
+
+  const checkoutStatus = (
+    await deps.git(['status', '--porcelain', '--untracked-files=all'])
+  ).trim()
+  if (checkoutStatus !== '') throw new Error('RELEASE_CHECKOUT_NOT_CLEAN')
+
+  const evidence = await deps.gateEvidence()
+  for (const id of RELEASE_GATE_IDS) {
+    const digest = evidence.get(id)
+    if (digest === undefined) throw new Error(`GATE_EVIDENCE_MISSING:${id}`)
+    if (!SHA256_HEX.test(digest)) throw new Error(`GATE_EVIDENCE_MALFORMED:${id}`)
+  }
+  for (const key of evidence.keys()) {
+    if (!RELEASE_GATE_IDS.includes(key as ReleaseGateId)) {
+      throw new Error(`GATE_EVIDENCE_UNKNOWN_KEY:${key}`)
+    }
+  }
+
+  const packageLockSha256 = sha256(await deps.readFile('package-lock.json'))
+  const generatedSchemaSha256 = sha256(await deps.readFile('prisma/schema.prisma'))
+  const canaryBytes = await deps.readFile('.release/tool-surface.json')
+  let canaryResult: unknown
+  try {
+    canaryResult = JSON.parse(canaryBytes.toString('utf8')) as unknown
+  } catch {
+    throw new Error('CANARY_RESULT_MALFORMED')
+  }
+  const canary = parseCanarySurface(canaryResult)
+
+  if (packageLockSha256 !== evidence.get('typecheck')) {
+    throw new Error('LOCK_HASH_MISMATCH')
+  }
+  if (generatedSchemaSha256 !== evidence.get('schema')) {
+    throw new Error('SCHEMA_HASH_MISMATCH')
+  }
+  if (sha256(canaryBytes) !== evidence.get('stdio_canary')) {
+    throw new Error('TOOL_SURFACE_HASH_MISMATCH')
+  }
+  if (canary.releaseCommit !== expectedCommit) {
+    throw new Error('CANARY_RELEASE_COMMIT_MISMATCH')
+  }
+
+  return {
+    submodules,
+    packageLockSha256,
+    generatedSchemaSha256,
+    toolSurfaceSha256: canary.toolSurfaceSha256,
+    gates: RELEASE_GATE_IDS.map((id) => ({
+      id,
+      result: 'passed' as const,
+      evidence_sha256: evidence.get(id) as string,
+    })),
+  }
+}
+
 export async function collectReleaseMetadata(
   deps: ReleaseMetadataDependencies,
 ): Promise<Scrum4MeMcpBuildMetadataV1> {
@@ -107,49 +244,7 @@ export async function collectReleaseMetadata(
     throw new Error('RELEASE_COMMIT_NOT_ORIGIN_MAIN_MERGE')
   }
 
-  // 2. Pinned toolchain.
-  if (deps.nodeVersion() !== `v${RELEASE_NODE_VERSION}`) {
-    throw new Error('NODE_VERSION_MISMATCH')
-  }
-
-  // 3. Clean recursive submodules.
-  const submodules = parseSubmodules(
-    await deps.git(['submodule', 'status', '--recursive']),
-  )
-
-  // 4. The generated Prisma schema must be committed, not a dirty working copy.
-  const schemaStatus = (
-    await deps.git(['status', '--porcelain', '--', 'prisma/schema.prisma'])
-  ).trim()
-  if (schemaStatus !== '') throw new Error('GENERATED_SCHEMA_NOT_COMMITTED')
-
-  // 5. Gate evidence: exactly the required keys, each a well-formed sha256.
-  const evidence = await deps.gateEvidence()
-  for (const id of RELEASE_GATE_IDS) {
-    const digest = evidence.get(id)
-    if (digest === undefined) throw new Error(`GATE_EVIDENCE_MISSING:${id}`)
-    if (!SHA256_HEX.test(digest)) throw new Error(`GATE_EVIDENCE_MALFORMED:${id}`)
-  }
-  for (const key of evidence.keys()) {
-    if (!RELEASE_GATE_IDS.includes(key as ReleaseGateId)) {
-      throw new Error(`GATE_EVIDENCE_UNKNOWN_KEY:${key}`)
-    }
-  }
-
-  // 6. Content digests, each bound by the gate that attests it.
-  const packageLockSha256 = sha256(await deps.readFile('package-lock.json'))
-  const generatedSchemaSha256 = sha256(await deps.readFile('prisma/schema.prisma'))
-  const toolSurfaceSha256 = sha256(await deps.readFile('.release/tool-surface.json'))
-
-  if (packageLockSha256 !== evidence.get('typecheck')) {
-    throw new Error('LOCK_HASH_MISMATCH')
-  }
-  if (generatedSchemaSha256 !== evidence.get('schema')) {
-    throw new Error('SCHEMA_HASH_MISMATCH')
-  }
-  if (toolSurfaceSha256 !== evidence.get('stdio_canary')) {
-    throw new Error('TOOL_SURFACE_HASH_MISMATCH')
-  }
+  const content = await collectReleaseContent(deps, head)
 
   return {
     version: 'scrum4me-mcp-build/v1',
@@ -157,16 +252,39 @@ export async function collectReleaseMetadata(
     source_ref: RELEASE_SOURCE_REF,
     commit: head,
     attested_merge_parents: [parents[0], parents[1]],
-    submodules,
-    package_lock_sha256: packageLockSha256,
-    generated_schema_sha256: generatedSchemaSha256,
+    submodules: content.submodules,
+    package_lock_sha256: content.packageLockSha256,
+    generated_schema_sha256: content.generatedSchemaSha256,
     node_version: RELEASE_NODE_VERSION,
-    tool_surface_sha256: toolSurfaceSha256,
-    gates: RELEASE_GATE_IDS.map((id) => ({
-      id,
-      result: 'passed' as const,
-      evidence_sha256: evidence.get(id) as string,
-    })),
+    tool_surface_sha256: content.toolSurfaceSha256,
+    gates: content.gates,
+  }
+}
+
+export async function collectCandidateReleaseMetadata(
+  reviewedHeadSha: string,
+  deps: ReleaseMetadataDependencies = defaultReleaseMetadataDependencies(
+    join(dirname(fileURLToPath(import.meta.url)), '..'),
+  ),
+): Promise<Scrum4MeMcpCandidateMetadataV1> {
+  const head = (await deps.git(['rev-parse', 'HEAD'])).trim()
+  if (!GIT_OID_HEX.test(reviewedHeadSha) || head !== reviewedHeadSha) {
+    throw new Error('CANDIDATE_HEAD_MISMATCH')
+  }
+  const treeOid = (await deps.git(['rev-parse', 'HEAD^{tree}'])).trim()
+  if (!GIT_OID_HEX.test(treeOid)) throw new Error('CANDIDATE_TREE_MALFORMED')
+  const content = await collectReleaseContent(deps, reviewedHeadSha)
+  return {
+    version: 'scrum4me-mcp-candidate/v1',
+    repository: RELEASE_REPOSITORY,
+    reviewed_head_sha: reviewedHeadSha,
+    reviewed_head_tree_oid: treeOid,
+    submodules: content.submodules,
+    package_lock_sha256: content.packageLockSha256,
+    generated_schema_sha256: content.generatedSchemaSha256,
+    node_version: RELEASE_NODE_VERSION,
+    tool_surface_sha256: content.toolSurfaceSha256,
+    gates: content.gates,
   }
 }
 
@@ -204,6 +322,14 @@ function parseOutputFlag(argv: readonly string[]): string {
   return output
 }
 
+function parseCandidateFlag(argv: readonly string[]): string | undefined {
+  const index = argv.indexOf('--candidate')
+  if (index === -1) return undefined
+  const sha = argv[index + 1]
+  if (!sha) throw new Error('MISSING_CANDIDATE_SHA')
+  return sha
+}
+
 function isMainModule(): boolean {
   try {
     return (
@@ -217,13 +343,23 @@ function isMainModule(): boolean {
 
 if (isMainModule()) {
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-  const outputPath = parseOutputFlag(process.argv.slice(2))
-  collectReleaseMetadata(defaultReleaseMetadataDependencies(repoRoot))
+  const argv = process.argv.slice(2)
+  const outputPath = parseOutputFlag(argv)
+  const candidateSha = parseCandidateFlag(argv)
+  const metadataPromise = candidateSha
+    ? collectCandidateReleaseMetadata(
+        candidateSha,
+        defaultReleaseMetadataDependencies(repoRoot),
+      )
+    : collectReleaseMetadata(defaultReleaseMetadataDependencies(repoRoot))
+  metadataPromise
     .then(async (metadata) => {
       const absolute = join(repoRoot, outputPath)
       await mkdir(dirname(absolute), { recursive: true })
       await writeFile(absolute, `${JSON.stringify(metadata, null, 2)}\n`)
-      process.stdout.write(`${metadata.commit}\n`)
+      process.stdout.write(
+        `${'commit' in metadata ? metadata.commit : metadata.reviewed_head_sha}\n`,
+      )
       process.exit(0)
     })
     .catch((err) => {

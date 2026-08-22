@@ -282,24 +282,41 @@ to a canary server over an in-memory transport, hashes the canonical tool
 surface and prints exactly one `scrum4me-mcp-canary/v1` result
 (`{ server_version, release_commit, protocol_version, tool_count,
 tool_surface_sha256, ok }`). It exits non-zero on any other protocol traffic or
-failure. Forgejo CI runs it as a dedicated job on the pinned release Node so the
-published surface is attested on every change.
+failure. In a Git checkout the commit comes from the explicit
+`SCRUM4ME_RELEASE_COMMIT` binding or Git `HEAD`. In a `.git`-less release it
+comes only from `release/package-identity.v1.json`; a missing, malformed or
+contradictory identity fails closed instead of emitting `release_commit:
+"unknown"`. Forgejo CI runs the canary on exact Node 24.19.0.
 
 ## Reproducible release attestation
 
-`npm run release:metadata -- --output .release/scrum4me-mcp-build.v1.json`
-(`scripts/release-metadata.ts`) emits a `scrum4me-mcp-build/v1` object attesting
-one **exact `origin/main` merge commit**. `collectReleaseMetadata` is fail-closed
-and takes Git, filesystem, Node version and gate evidence as injected
-dependencies, so every rejection is deterministic and unit-tested
-(`__tests__/release-metadata.test.ts`). It rejects, with a typed error, when:
+There are deliberately two metadata contracts:
+
+- `npm run release:metadata -- --candidate <reviewed-head-sha> --output
+  .release/scrum4me-mcp-candidate.v1.json` emits
+  `scrum4me-mcp-candidate/v1`. It is PR-head evidence only: it records
+  `reviewed_head_sha` and its tree, never calls that SHA a merge, is never
+  published as a release and is not accepted by release consumers.
+- `npm run release:metadata -- --output
+  .release/scrum4me-mcp-build.v1.json` emits the existing
+  `scrum4me-mcp-build/v1` contract for one **exact two-parent `origin/main`
+  merge commit**. Only push CI on `main` may create and publish this final
+  metadata.
+
+Both collectors are fail-closed over exact Node 24.19.0, the complete clean
+checkout, every initialized recursive submodule and the committed generated
+schema. `collectReleaseMetadata` retains injected Git/filesystem/gate
+dependencies so rejection paths remain deterministic and unit-tested
+(`__tests__/release-metadata.test.ts`). They reject when:
 
 | Check | Error |
 |---|---|
 | HEAD is not the exact two-parent `refs/remotes/origin/main` merge | `RELEASE_COMMIT_NOT_ORIGIN_MAIN_MERGE` |
 | Node is not the pinned `v24.19.0` | `NODE_VERSION_MISMATCH` |
 | A recursive submodule is uninitialised or dirty | `SUBMODULE_NOT_CLEAN` |
+| A recursive submodule worktree contains tracked or untracked changes | `SUBMODULE_WORKTREE_NOT_CLEAN` |
 | The generated Prisma schema is uncommitted | `GENERATED_SCHEMA_NOT_COMMITTED` |
+| Any other tracked or untracked checkout input is dirty | `RELEASE_CHECKOUT_NOT_CLEAN` |
 | A required gate is absent / has an unknown key / a malformed digest | `GATE_EVIDENCE_MISSING` · `GATE_EVIDENCE_UNKNOWN_KEY` · `GATE_EVIDENCE_MALFORMED` |
 | A content digest is not bound by its gate | `LOCK_HASH_MISMATCH` · `SCHEMA_HASH_MISMATCH` · `TOOL_SURFACE_HASH_MISMATCH` |
 
@@ -307,14 +324,40 @@ Each of the four gates (`schema`, `typecheck`, `tests`, `stdio_canary`) records
 only a command identifier, a `passed` status and an evidence digest — never
 stdout, env or secrets. Three of those digests **bind** a content artifact:
 `schema` ↔ `prisma/schema.prisma`, `typecheck` ↔ `package-lock.json` (the exact
-dependency closure it ran against), `stdio_canary` ↔ the canary's tool surface;
-`tests` is an opaque run digest. The full fail-closed sequence
-(`git submodule update --init --recursive` → `npm ci` → `prisma:generate` →
-schema diff → `typecheck` → `test` → `canary:stdio` → `release:metadata`) runs in
-the Forgejo push-CI `release-metadata` job on `main`, on Node 24.19.0, after
-proving both merge parents are present in a full-history recursive checkout. The
-metadata is uploaded as the `scrum4me-mcp-build-v1` artifact. Output lives under
-`.release/` and is never committed.
+dependency closure it ran against), and `stdio_canary` ↔ the complete canary
+envelope. The metadata's `tool_surface_sha256` is copied unchanged from the
+validated inner `tool_surface_sha256`; it is never the outer-envelope digest.
+`tests` is an opaque run digest.
+
+### Closed release package
+
+```bash
+npm run release:package
+env -i HOME="$HOME" PATH="$PATH" SCRUM4ME_CANARY_MODE=1 npm run canary:packaged
+npm run release:verify-package
+```
+
+`release:package` stages the tracked recursive source under
+`.release/package/`, writes `release/content-manifest.v1.json` and the single
+authoritative `release/package-identity.v1.json`, verifies them, then creates
+`.release/artifacts/scrum4me-mcp-<commit>.tar.gz`. The identity binds repository,
+commit, tree OID, the canonical inner tool-surface hash and the content-manifest
+digest. The manifest binds every packaged byte plus the non-circular identity
+fields. `release:verify-package` extracts the actual archive and verifies that
+closed tree, rejecting missing, extra or changed files. All generated output
+remains ignored under `.release/`.
+
+PR CI checks out the exact PR head, runs schema generation, both typechecks,
+the full tests, stdio canary, package build, `.git`-less packaged canary,
+package verification and candidate metadata. It never uploads the package or
+publishes final metadata. Push CI first proves `GITHUB_SHA == HEAD ==
+origin/main`, exactly two parents and merge-tree equality with parent 2. Only
+then does it repeat every gate, create final metadata and publish the archive
+and final JSON at the fixed Forgejo generic-package version keyed by that merge
+SHA. Separate write and read-only credentials are used for publication and
+download-back; both downloaded files must be byte-identical and SHA-256 is
+recorded locally. No HTML endpoint is scraped and credential values are never
+printed.
 
 ## Setup
 
@@ -332,7 +375,10 @@ npm run dev              # starts the server via tsx (no build step required)
 > registry or `npm pack` tarball. The `tsx` runtime scripts (`dev`, `start`,
 > `start:http`) need `src/`, `vendor/`, `scripts/` and `tsconfig.json`, which
 > are intentionally kept out of the `files` allow-list — so the npm tarball is
-> deliberately minimal and not a supported install path.
+> deliberately minimal and not a supported install path. The separately
+> attested Forgejo generic-package archive described above is the supported
+> `.git`-less release artifact; after extraction, install its locked
+> dependencies with `npm ci` before starting it.
 
 `SCRUM4ME_TOKEN` comes from Scrum4Me → **Instellingen → Tokens**
 (`/settings/tokens`). The token is hashed with SHA-256 and looked up in
