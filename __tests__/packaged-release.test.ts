@@ -369,7 +369,47 @@ describe('release archive preflight', () => {
   })
 })
 
-describe('Forgejo final-release topology contract', () => {
+describe('Forgejo release workflow contract', () => {
+  it.each(['candidate', 'final-release'])(
+    '%s captures canary gate evidence as one JSON document',
+    async (jobName) => {
+      const workflow = parse(
+        await readFile(join(REPO_ROOT, '.forgejo', 'workflows', 'ci.yml'), 'utf8'),
+      ) as {
+        jobs: Record<string, {
+          steps?: { name?: string; run?: string }[]
+        }>
+      }
+      const gateScript = workflow.jobs[jobName].steps?.find((step) =>
+        step.name?.includes('gates and bind their evidence'),
+      )?.run
+      const captureCommand = gateScript
+        ?.split('\n')
+        .map((line) => line.trim())
+        .find((line) => line.includes('canary:stdio > .release/tool-surface.json'))
+      if (!captureCommand) throw new Error('CANARY_CAPTURE_COMMAND_MISSING')
+
+      const release = await makePackagedRelease({ removeGit: true })
+      const commit = 'a'.repeat(40)
+      await writeFile(join(release, '.git'), 'gitdir: unavailable\n')
+      await mkdir(join(release, '.release'), { recursive: true })
+      await execFileAsync('/bin/bash', ['-c', captureCommand], {
+        cwd: release,
+        env: { ...process.env, SCRUM4ME_RELEASE_COMMIT: commit },
+      })
+
+      const evidence = await readFile(
+        join(release, '.release', 'tool-surface.json'),
+        'utf8',
+      )
+      expect(JSON.parse(evidence)).toMatchObject({
+        version: 'scrum4me-mcp-canary/v1',
+        release_commit: commit,
+        ok: true,
+      })
+    },
+  )
+
   it('binds merge parent 1 to the validated pre-push target SHA', async () => {
     const workflow = parse(
       await readFile(join(REPO_ROOT, '.forgejo', 'workflows', 'ci.yml'), 'utf8'),

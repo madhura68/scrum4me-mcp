@@ -52,7 +52,7 @@ jobs:
           npm run typecheck:tests
           npm test
           SCRUM4ME_RELEASE_COMMIT="$REVIEWED_HEAD_SHA" \
-            npm run canary:stdio > .release/tool-surface.json
+            npm run --silent canary:stdio > .release/tool-surface.json
 
           schema_sha="$(sha256sum prisma/schema.prisma | cut -d' ' -f1)"
           lock_sha="$(sha256sum package-lock.json | cut -d' ' -f1)"
@@ -151,7 +151,7 @@ jobs:
           npm run typecheck:tests
           npm test
           SCRUM4ME_RELEASE_COMMIT="$RELEASE_COMMIT" \
-            npm run canary:stdio > .release/tool-surface.json
+            npm run --silent canary:stdio > .release/tool-surface.json
 
           schema_sha="$(sha256sum prisma/schema.prisma | cut -d' ' -f1)"
           lock_sha="$(sha256sum package-lock.json | cut -d' ' -f1)"
