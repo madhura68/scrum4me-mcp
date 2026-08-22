@@ -93,6 +93,7 @@ jobs:
     env:
       DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
       RELEASE_COMMIT: ${{ github.sha }}
+      PRE_PUSH_TARGET_SHA: ${{ github.event.before }}
     steps:
       - name: Checkout final main (full history, recursive submodules)
         uses: actions/checkout@v4
@@ -112,6 +113,13 @@ jobs:
           read -r -a parents <<<"$(git show -s --format=%P HEAD)"
           if [ "${#parents[@]}" -ne 2 ]; then
             echo "final release requires an exact two-parent merge"; exit 1
+          fi
+          if ! printf '%s\n' "$PRE_PUSH_TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$' || \
+             [ "$PRE_PUSH_TARGET_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "pre-push target SHA is absent or malformed"; exit 1
+          fi
+          if [ "${parents[0]}" != "$PRE_PUSH_TARGET_SHA" ]; then
+            echo "merge parent 1 does not equal the pre-push target"; exit 1
           fi
           for parent in "${parents[@]}"; do
             git cat-file -e "${parent}^{commit}"

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
+import { gunzipSync } from 'node:zlib'
 import {
   copyFile,
   lstat,
@@ -23,6 +24,8 @@ const IDENTITY_PATH = 'release/package-identity.v1.json'
 const MANIFEST_PATH = 'release/content-manifest.v1.json'
 const GIT_OID_HEX = /^[0-9a-f]{40}$/
 const SHA256_HEX = /^[0-9a-f]{64}$/
+const TAR_BLOCK_BYTES = 512
+const MAX_UNCOMPRESSED_ARCHIVE_BYTES = 512 * 1024 * 1024
 
 export interface PackagedReleaseIdentityV1 {
   version: 'scrum4me-mcp-package-identity/v1'
@@ -108,6 +111,154 @@ async function listRegularFiles(root: string, current = root): Promise<string[]>
   return paths.sort()
 }
 
+function tarString(header: Buffer, offset: number, length: number): string {
+  const field = header.subarray(offset, offset + length)
+  const nul = field.indexOf(0)
+  const value = nul === -1 ? field : field.subarray(0, nul)
+  if (nul !== -1 && field.subarray(nul).some((byte) => byte !== 0)) {
+    throw new Error('PACKAGE_ARCHIVE_ENCODING_UNSUPPORTED')
+  }
+  if ([...value].some((byte) => byte < 0x20 || byte > 0x7e)) {
+    throw new Error('PACKAGE_ARCHIVE_ENCODING_UNSUPPORTED')
+  }
+  return value.toString('ascii')
+}
+
+function tarOctal(header: Buffer, offset: number, length: number): number {
+  const field = header.subarray(offset, offset + length)
+  if ((field[0] & 0x80) !== 0) {
+    throw new Error('PACKAGE_ARCHIVE_ENCODING_UNSUPPORTED')
+  }
+  const value = field.toString('ascii').replace(/[\0 ]+$/g, '').trimStart()
+  if (!/^[0-7]+$/.test(value)) {
+    throw new Error('PACKAGE_ARCHIVE_HEADER_INVALID')
+  }
+  const parsed = Number.parseInt(value, 8)
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error('PACKAGE_ARCHIVE_HEADER_INVALID')
+  }
+  return parsed
+}
+
+function normalizedArchiveMemberPath(rawPath: string, isDirectory: boolean): string {
+  if (rawPath === '.' || rawPath === './') {
+    if (!isDirectory) throw new Error('PACKAGE_ARCHIVE_MEMBER_PATH_INVALID')
+    return '.'
+  }
+  let path = rawPath
+  while (path.startsWith('./')) path = path.slice(2)
+  if (isDirectory && path.endsWith('/')) path = path.slice(0, -1)
+  const segments = path.split('/')
+  if (
+    path === '' ||
+    path.startsWith('/') ||
+    path.includes('\\') ||
+    segments.some((segment) => segment === '' || segment === '.' || segment === '..')
+  ) {
+    throw new Error(`PACKAGE_ARCHIVE_MEMBER_PATH_INVALID:${rawPath}`)
+  }
+  return path
+}
+
+function isZeroTarBlock(block: Buffer): boolean {
+  return block.every((byte) => byte === 0)
+}
+
+export async function preflightReleaseArchive(archivePath: string): Promise<void> {
+  let archive: Buffer
+  try {
+    archive = gunzipSync(await readFile(archivePath), {
+      maxOutputLength: MAX_UNCOMPRESSED_ARCHIVE_BYTES,
+    })
+  } catch {
+    throw new Error('PACKAGE_ARCHIVE_ENCODING_UNSUPPORTED')
+  }
+  if (archive.length % TAR_BLOCK_BYTES !== 0) {
+    throw new Error('PACKAGE_ARCHIVE_TRUNCATED')
+  }
+
+  const members = new Set<string>()
+  let offset = 0
+  let sawEnd = false
+  while (offset < archive.length) {
+    const header = archive.subarray(offset, offset + TAR_BLOCK_BYTES)
+    if (isZeroTarBlock(header)) {
+      const secondEndBlock = archive.subarray(
+        offset + TAR_BLOCK_BYTES,
+        offset + TAR_BLOCK_BYTES * 2,
+      )
+      if (
+        secondEndBlock.length !== TAR_BLOCK_BYTES ||
+        !isZeroTarBlock(secondEndBlock) ||
+        !archive.subarray(offset + TAR_BLOCK_BYTES * 2).every((byte) => byte === 0)
+      ) {
+        throw new Error('PACKAGE_ARCHIVE_END_MARKER_INVALID')
+      }
+      sawEnd = true
+      break
+    }
+
+    if (
+      !header.subarray(257, 263).equals(Buffer.from('ustar\0')) ||
+      !header.subarray(263, 265).equals(Buffer.from('00'))
+    ) {
+      throw new Error('PACKAGE_ARCHIVE_ENCODING_UNSUPPORTED')
+    }
+    const expectedChecksum = tarOctal(header, 148, 8)
+    let actualChecksum = 0
+    for (let index = 0; index < header.length; index += 1) {
+      actualChecksum += index >= 148 && index < 156 ? 0x20 : header[index]
+    }
+    if (actualChecksum !== expectedChecksum) {
+      throw new Error('PACKAGE_ARCHIVE_CHECKSUM_MISMATCH')
+    }
+    tarOctal(header, 100, 8)
+    tarOctal(header, 108, 8)
+    tarOctal(header, 116, 8)
+    tarOctal(header, 136, 12)
+    tarString(header, 265, 32)
+    tarString(header, 297, 32)
+    tarOctal(header, 329, 8)
+    tarOctal(header, 337, 8)
+    if (header.subarray(500, 512).some((byte) => byte !== 0)) {
+      throw new Error('PACKAGE_ARCHIVE_ENCODING_UNSUPPORTED')
+    }
+
+    const typeByte = header[156]
+    const isRegular = typeByte === 0 || typeByte === 0x30
+    const isDirectory = typeByte === 0x35
+    if (!isRegular && !isDirectory) {
+      throw new Error(`PACKAGE_ARCHIVE_MEMBER_TYPE_INVALID:${String.fromCharCode(typeByte)}`)
+    }
+    if (tarString(header, 157, 100) !== '') {
+      throw new Error('PACKAGE_ARCHIVE_MEMBER_TYPE_INVALID:link-target')
+    }
+    const prefix = tarString(header, 345, 155)
+    const name = tarString(header, 0, 100)
+    const rawPath = prefix ? `${prefix}/${name}` : name
+    const memberPath = normalizedArchiveMemberPath(rawPath, isDirectory)
+    if (members.has(memberPath)) {
+      throw new Error(`PACKAGE_ARCHIVE_MEMBER_DUPLICATE:${memberPath}`)
+    }
+    members.add(memberPath)
+
+    const size = tarOctal(header, 124, 12)
+    if (isDirectory && size !== 0) {
+      throw new Error('PACKAGE_ARCHIVE_HEADER_INVALID')
+    }
+    const paddedSize = Math.ceil(size / TAR_BLOCK_BYTES) * TAR_BLOCK_BYTES
+    const dataStart = offset + TAR_BLOCK_BYTES
+    const dataEnd = dataStart + size
+    const nextHeader = dataStart + paddedSize
+    if (nextHeader > archive.length) throw new Error('PACKAGE_ARCHIVE_TRUNCATED')
+    if (archive.subarray(dataEnd, nextHeader).some((byte) => byte !== 0)) {
+      throw new Error('PACKAGE_ARCHIVE_ENCODING_UNSUPPORTED')
+    }
+    offset = nextHeader
+  }
+  if (!sawEnd) throw new Error('PACKAGE_ARCHIVE_END_MARKER_INVALID')
+}
+
 export async function verifyReleasePackage(
   releaseRoot: string,
   identity: PackagedReleaseIdentityV1,
@@ -171,7 +322,44 @@ export async function verifyReleasePackage(
   }
 }
 
-async function copyTrackedFiles(repoRoot: string, releaseRoot: string): Promise<void> {
+function isReleaseSourcePath(path: string): boolean {
+  return (
+    ['package.json', 'package-lock.json', 'README.md', 'tsconfig.json'].includes(
+      path,
+    ) ||
+    path.startsWith('prisma/') ||
+    path.startsWith('scripts/') ||
+    path.startsWith('src/') ||
+    /^vendor\/scrum4me-shared\/(lib|prisma|scripts)\//.test(path) ||
+    [
+      'vendor/scrum4me-shared/package.json',
+      'vendor/scrum4me-shared/package-lock.json',
+      'vendor/scrum4me-shared/tsconfig.json',
+    ].includes(path)
+  )
+}
+
+export async function copyReleaseSourceFiles(
+  sourceRoot: string,
+  releaseRoot: string,
+  paths: readonly string[],
+): Promise<void> {
+  for (const path of paths) {
+    const source = safeReleasePath(sourceRoot, path)
+    const destination = safeReleasePath(releaseRoot, path)
+    const sourceStat = await lstat(source)
+    if (!sourceStat.isFile()) {
+      throw new Error(`PACKAGE_SOURCE_NOT_REGULAR:${path}`)
+    }
+    await mkdir(dirname(destination), { recursive: true })
+    await copyFile(source, destination)
+  }
+}
+
+export async function copyTrackedFiles(
+  repoRoot: string,
+  releaseRoot: string,
+): Promise<void> {
   const { stdout } = await execFileAsync(
     'git',
     ['ls-files', '--cached', '--recurse-submodules', '-z'],
@@ -181,16 +369,9 @@ async function copyTrackedFiles(repoRoot: string, releaseRoot: string): Promise<
     .toString('utf8')
     .split('\0')
     .filter(Boolean)
-  for (const path of paths) {
-    const source = safeReleasePath(repoRoot, path)
-    const destination = safeReleasePath(releaseRoot, path)
-    const sourceStat = await lstat(source)
-    if (!sourceStat.isFile() && !sourceStat.isSymbolicLink()) {
-      throw new Error(`PACKAGE_SOURCE_NOT_FILE:${path}`)
-    }
-    await mkdir(dirname(destination), { recursive: true })
-    await copyFile(source, destination)
-  }
+    .filter(isReleaseSourcePath)
+    .sort()
+  await copyReleaseSourceFiles(repoRoot, releaseRoot, paths)
 }
 
 async function createReleasePackage(repoRoot: string): Promise<string> {
@@ -256,6 +437,7 @@ async function createReleasePackage(repoRoot: string): Promise<string> {
   const tarArgs =
     process.platform === 'linux'
       ? [
+          '--format=ustar',
           '--sort=name',
           '--mtime=@0',
           '--owner=0',
@@ -267,7 +449,7 @@ async function createReleasePackage(repoRoot: string): Promise<string> {
           releaseRoot,
           '.',
         ]
-      : ['-czf', artifact, '-C', releaseRoot, '.']
+      : ['--format=ustar', '-czf', artifact, '-C', releaseRoot, '.']
   await execFileAsync('tar', tarArgs, { cwd: repoRoot })
   return artifact
 }
@@ -287,6 +469,7 @@ async function verifyReleaseArchive(
     `scrum4me-mcp-${identity.commit}.tar.gz`,
   )
   const extractedRoot = join(repoRoot, '.release', 'verified-package')
+  await preflightReleaseArchive(artifact)
   await rm(extractedRoot, { recursive: true, force: true })
   await mkdir(extractedRoot, { recursive: true })
   await execFileAsync('tar', ['-xzf', artifact, '-C', extractedRoot], {

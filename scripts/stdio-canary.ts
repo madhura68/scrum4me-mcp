@@ -60,7 +60,24 @@ const PACKAGE_IDENTITY_VERSION = 'scrum4me-mcp-package-identity/v1'
 const SHA1_HEX = /^[0-9a-f]{40}$/
 const SHA256_HEX = /^[0-9a-f]{64}$/
 
-function packagedReleaseCommit(packageRoot: string, env: NodeJS.ProcessEnv): string {
+interface ValidatedPackagedIdentity {
+  version: typeof PACKAGE_IDENTITY_VERSION
+  repository: typeof RELEASE_REPOSITORY
+  commit: string
+  tree_oid: string
+  tool_surface_sha256: string
+  content_manifest_sha256: string
+}
+
+interface ResolvedReleaseIdentity {
+  commit: string
+  packagedIdentity?: ValidatedPackagedIdentity
+}
+
+function packagedReleaseIdentity(
+  packageRoot: string,
+  env: NodeJS.ProcessEnv,
+): ValidatedPackagedIdentity {
   const identityPath = join(packageRoot, 'release', 'package-identity.v1.json')
   let identity: unknown
   try {
@@ -84,26 +101,29 @@ function packagedReleaseCommit(packageRoot: string, env: NodeJS.ProcessEnv): str
   ) {
     throw new Error('PACKAGED_RELEASE_IDENTITY_INVALID')
   }
-  const commit = (identity as { commit: string }).commit
+  const validatedIdentity = identity as ValidatedPackagedIdentity
   const fromEnv = env.SCRUM4ME_RELEASE_COMMIT?.trim()
-  if (fromEnv && fromEnv !== commit) {
+  if (fromEnv && fromEnv !== validatedIdentity.commit) {
     throw new Error('PACKAGED_RELEASE_IDENTITY_MISMATCH')
   }
-  return commit
+  return validatedIdentity
 }
 
-function resolveReleaseCommit(env: NodeJS.ProcessEnv): string {
+function resolveReleaseIdentity(env: NodeJS.ProcessEnv): ResolvedReleaseIdentity {
   const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
   if (!existsSync(join(packageRoot, '.git'))) {
-    return packagedReleaseCommit(packageRoot, env)
+    const packagedIdentity = packagedReleaseIdentity(packageRoot, env)
+    return { commit: packagedIdentity.commit, packagedIdentity }
   }
   const fromEnv = env.SCRUM4ME_RELEASE_COMMIT?.trim()
-  if (fromEnv) return fromEnv
+  if (fromEnv) return { commit: fromEnv }
   try {
-    return execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: packageRoot,
-      encoding: 'utf8',
-    }).trim()
+    return {
+      commit: execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: packageRoot,
+        encoding: 'utf8',
+      }).trim(),
+    }
   } catch {
     throw new Error('RELEASE_COMMIT_UNAVAILABLE')
   }
@@ -128,14 +148,23 @@ export async function runStdioCanary(
   try {
     await client.connect(clientTransport) // sends `initialize`
     const { tools } = await client.listTools()
+    const releaseIdentity = resolveReleaseIdentity(env)
+    const liveToolSurfaceSha256 = toolSurfaceSha256(tools as ToolDescriptor[])
+    if (
+      releaseIdentity.packagedIdentity &&
+      releaseIdentity.packagedIdentity.tool_surface_sha256 !==
+        liveToolSurfaceSha256
+    ) {
+      throw new Error('PACKAGED_RELEASE_TOOL_SURFACE_MISMATCH')
+    }
     const result: StdioCanaryResultV1 = {
       version: 'scrum4me-mcp-canary/v1',
       server_name: SERVER_NAME,
       server_version: VERSION,
-      release_commit: resolveReleaseCommit(env),
+      release_commit: releaseIdentity.commit,
       protocol_version: protocolVersion,
       tool_count: tools.length,
-      tool_surface_sha256: toolSurfaceSha256(tools as ToolDescriptor[]),
+      tool_surface_sha256: liveToolSurfaceSha256,
       ok: true,
     }
     return result

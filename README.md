@@ -286,7 +286,9 @@ failure. In a Git checkout the commit comes from the explicit
 `SCRUM4ME_RELEASE_COMMIT` binding or Git `HEAD`. In a `.git`-less release it
 comes only from `release/package-identity.v1.json`; a missing, malformed or
 contradictory identity fails closed instead of emitting `release_commit:
-"unknown"`. Forgejo CI runs the canary on exact Node 24.19.0.
+"unknown"`. The `.git`-less canary also compares its freshly computed canonical
+tool-surface hash with the identity and rejects any mismatch. Forgejo CI runs
+the canary on exact Node 24.19.0.
 
 ## Reproducible release attestation
 
@@ -337,27 +339,34 @@ env -i HOME="$HOME" PATH="$PATH" SCRUM4ME_CANARY_MODE=1 npm run canary:packaged
 npm run release:verify-package
 ```
 
-`release:package` stages the tracked recursive source under
+`release:package` stages the tracked runtime source under
 `.release/package/`, writes `release/content-manifest.v1.json` and the single
 authoritative `release/package-identity.v1.json`, verifies them, then creates
 `.release/artifacts/scrum4me-mcp-<commit>.tar.gz`. The identity binds repository,
 commit, tree OID, the canonical inner tool-surface hash and the content-manifest
 digest. The manifest binds every packaged byte plus the non-circular identity
 fields. `release:verify-package` extracts the actual archive and verifies that
-closed tree, rejecting missing, extra or changed files. All generated output
-remains ignored under `.release/`.
+closed tree, rejecting missing, extra or changed files. Release inputs and the
+release tree are directories/regular files only: a selected tracked symlink or
+special file fails before copying. Archives are emitted as strict POSIX ustar;
+before any extraction, a dependency-free parser verifies gzip decoding, ustar
+magic/version, headers, checksums, bounds and end markers, and allows only safe
+relative directory/regular-file members. Traversal, links, devices/FIFOs and
+PAX/GNU/other extensions fail closed. All generated output remains ignored
+under `.release/`.
 
 PR CI checks out the exact PR head, runs schema generation, both typechecks,
 the full tests, stdio canary, package build, `.git`-less packaged canary,
 package verification and candidate metadata. It never uploads the package or
-publishes final metadata. Push CI first proves `GITHUB_SHA == HEAD ==
-origin/main`, exactly two parents and merge-tree equality with parent 2. Only
-then does it repeat every gate, create final metadata and publish the archive
-and final JSON at the fixed Forgejo generic-package version keyed by that merge
-SHA. Separate write and read-only credentials are used for publication and
-download-back; both downloaded files must be byte-identical and SHA-256 is
-recorded locally. No HTML endpoint is scraped and credential values are never
-printed.
+publishes final metadata. Push CI first validates Forgejo's pre-push
+`${{ github.event.before }}` SHA, proves it equals merge parent 1, proves
+`GITHUB_SHA == HEAD == origin/main`, requires exactly two parents and
+merge-tree equality with parent 2. Only then does it repeat every gate, create
+final metadata and publish the archive and final JSON at the fixed Forgejo
+generic-package version keyed by that merge SHA. Separate write and read-only
+credentials are used for publication and download-back; both downloaded files
+must be byte-identical and SHA-256 is recorded locally. No HTML endpoint is
+scraped and credential values are never printed.
 
 ## Setup
 
