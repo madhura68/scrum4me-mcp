@@ -140,6 +140,11 @@ function tarOctal(header: Buffer, offset: number, length: number): number {
   return parsed
 }
 
+function tarOptionalOctal(header: Buffer, offset: number, length: number): number {
+  const field = header.subarray(offset, offset + length)
+  return field.every((byte) => byte === 0) ? 0 : tarOctal(header, offset, length)
+}
+
 function normalizedArchiveMemberPath(rawPath: string, isDirectory: boolean): string {
   if (rawPath === '.' || rawPath === './') {
     if (!isDirectory) throw new Error('PACKAGE_ARCHIVE_MEMBER_PATH_INVALID')
@@ -218,8 +223,8 @@ export async function preflightReleaseArchive(archivePath: string): Promise<void
     tarOctal(header, 136, 12)
     tarString(header, 265, 32)
     tarString(header, 297, 32)
-    tarOctal(header, 329, 8)
-    tarOctal(header, 337, 8)
+    tarOptionalOctal(header, 329, 8)
+    tarOptionalOctal(header, 337, 8)
     if (header.subarray(500, 512).some((byte) => byte !== 0)) {
       throw new Error('PACKAGE_ARCHIVE_ENCODING_UNSUPPORTED')
     }

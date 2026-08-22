@@ -306,6 +306,25 @@ describe('release archive preflight', () => {
     await expect(preflightReleaseArchive(archive)).resolves.toBeUndefined()
   })
 
+  it('accepts GNU tar 1.35 empty device fields for non-device members', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'scrum4me-mcp-tar-'))
+    releases.push(root)
+    const archive = join(root, 'gnu-1.35.tar.gz')
+    await writeFile(
+      archive,
+      makeTarGzip(
+        [{ name: 'src/example.ts', type: '0', contents: 'ok\n' }],
+        (header) => {
+          header.fill(0, 329, 345)
+        },
+      ),
+    )
+    const preflightReleaseArchive = (await releasePackageModule())
+      .preflightReleaseArchive
+    if (!preflightReleaseArchive) throw new Error('PREFLIGHT_RELEASE_ARCHIVE_MISSING')
+    await expect(preflightReleaseArchive(archive)).resolves.toBeUndefined()
+  })
+
   it.each([
     ['traversal', '../escape', '0', '', 'PACKAGE_ARCHIVE_MEMBER_PATH_INVALID'],
     ['symlink', 'src/link', '2', '../../outside', 'PACKAGE_ARCHIVE_MEMBER_TYPE_INVALID'],
