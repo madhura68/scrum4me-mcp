@@ -191,7 +191,7 @@ jobs:
 
       - name: Publish immutable package and final metadata
         env:
-          FORGEJO_PACKAGE_WRITE_TOKEN: ${{ secrets.FORGEJO_PACKAGE_WRITE_TOKEN }}
+          FORGEJO_PACKAGE_WRITE_TOKEN: ${{ secrets.PACKAGE_WRITE_TOKEN }}
         run: |
           set -euo pipefail
           set +x
@@ -214,7 +214,7 @@ jobs:
 
       - name: Download back with read-only credentials and verify exact bytes
         env:
-          FORGEJO_PACKAGE_READ_TOKEN: ${{ secrets.FORGEJO_PACKAGE_READ_TOKEN }}
+          FORGEJO_PACKAGE_READ_TOKEN: ${{ secrets.PACKAGE_READ_TOKEN }}
         run: |
           set -euo pipefail
           set +x

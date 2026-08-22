@@ -480,6 +480,51 @@ describe('Forgejo release workflow contract', () => {
     ])
   })
 
+  it('binds legal Forgejo secret keys to unchanged package-token runtime variables', async () => {
+    const workflow = parse(
+      await readFile(join(REPO_ROOT, '.forgejo', 'workflows', 'ci.yml'), 'utf8'),
+    ) as {
+      jobs: Record<string, {
+        steps?: {
+          name?: string
+          env?: Record<string, string>
+        }[]
+      }>
+    }
+    const finalSteps = workflow.jobs['final-release'].steps ?? []
+    const publish = finalSteps.find((step) =>
+      step.name?.includes('Publish immutable package'),
+    )
+    const download = finalSteps.find((step) =>
+      step.name?.includes('Download back with read-only credentials'),
+    )
+    const bindings = [
+      [
+        'FORGEJO_PACKAGE_WRITE_TOKEN',
+        publish?.env?.FORGEJO_PACKAGE_WRITE_TOKEN,
+        'PACKAGE_WRITE_TOKEN',
+      ],
+      [
+        'FORGEJO_PACKAGE_READ_TOKEN',
+        download?.env?.FORGEJO_PACKAGE_READ_TOKEN,
+        'PACKAGE_READ_TOKEN',
+      ],
+    ] as const
+
+    for (const [runtimeName, expression, expectedSecretName] of bindings) {
+      expect(expression, `${runtimeName} binding`).toBe(
+        `\${{ secrets.${expectedSecretName} }}`,
+      )
+      const secretName = expression?.match(
+        /^\$\{\{\s*secrets\.([A-Z][A-Z0-9_]*)\s*\}\}$/,
+      )?.[1]
+      expect(secretName, `${runtimeName} legal secret name`).toBe(
+        expectedSecretName,
+      )
+      expect(secretName).not.toMatch(/^(?:FORGEJO|GITEA|GITHUB)_/)
+    }
+  })
+
   it.each(['candidate', 'final-release'])(
     '%s captures canary gate evidence as one JSON document',
     async (jobName) => {
