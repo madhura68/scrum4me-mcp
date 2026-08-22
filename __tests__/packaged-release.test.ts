@@ -370,6 +370,81 @@ describe('release archive preflight', () => {
 })
 
 describe('Forgejo release workflow contract', () => {
+  it.each([
+    '.release/scrum4me-mcp-candidate.v1.json',
+    '.release/gates.json',
+    '.release/tool-surface.json',
+  ])('fails before candidate upload when %s is absent', async (missingPath) => {
+    const workflow = parse(
+      await readFile(join(REPO_ROOT, '.forgejo', 'workflows', 'ci.yml'), 'utf8'),
+    ) as {
+      jobs: Record<string, {
+        steps?: { name?: string; run?: string; uses?: string }[]
+      }>
+    }
+    const candidateSteps = workflow.jobs.candidate.steps ?? []
+    const uploadIndex = candidateSteps.findIndex((step) =>
+      step.name?.includes('Upload candidate evidence'),
+    )
+    const preflightIndex = candidateSteps.findIndex((step) =>
+      step.name?.includes('Verify exact candidate evidence'),
+    )
+    const preflightScript = candidateSteps[preflightIndex]?.run ?? ':'
+    const fixture = await mkdtemp(join(tmpdir(), 'scrum4me-mcp-evidence-'))
+    releases.push(fixture)
+    const evidencePaths = [
+      '.release/scrum4me-mcp-candidate.v1.json',
+      '.release/gates.json',
+      '.release/tool-surface.json',
+    ]
+    for (const evidencePath of evidencePaths) {
+      if (evidencePath === missingPath) continue
+      await mkdir(dirname(join(fixture, evidencePath)), { recursive: true })
+      await writeFile(join(fixture, evidencePath), 'evidence\n')
+    }
+
+    expect(preflightIndex).toBeGreaterThanOrEqual(0)
+    expect(preflightIndex).toBeLessThan(uploadIndex)
+    await expect(
+      execFileAsync('/bin/bash', ['-c', preflightScript], { cwd: fixture }),
+    ).rejects.toThrow(missingPath)
+  })
+
+  it.each(['empty', 'symlink'] as const)(
+    'fails before candidate upload when exact evidence is %s',
+    async (invalidKind) => {
+      const workflow = parse(
+        await readFile(join(REPO_ROOT, '.forgejo', 'workflows', 'ci.yml'), 'utf8'),
+      ) as {
+        jobs: Record<string, {
+          steps?: { name?: string; run?: string; uses?: string }[]
+        }>
+      }
+      const preflightScript = workflow.jobs.candidate.steps?.find((step) =>
+        step.name?.includes('Verify exact candidate evidence'),
+      )?.run ?? ':'
+      const fixture = await mkdtemp(join(tmpdir(), 'scrum4me-mcp-evidence-'))
+      releases.push(fixture)
+      const releaseDir = join(fixture, '.release')
+      await mkdir(releaseDir, { recursive: true })
+      await writeFile(
+        join(releaseDir, 'scrum4me-mcp-candidate.v1.json'),
+        'candidate\n',
+      )
+      await writeFile(join(releaseDir, 'gates.json'), 'gates\n')
+      const surfacePath = join(releaseDir, 'tool-surface.json')
+      if (invalidKind === 'empty') {
+        await writeFile(surfacePath, '')
+      } else {
+        await symlink('gates.json', surfacePath)
+      }
+
+      await expect(
+        execFileAsync('/bin/bash', ['-c', preflightScript], { cwd: fixture }),
+      ).rejects.toThrow('.release/tool-surface.json')
+    },
+  )
+
   it('uploads only exact head-bound candidate evidence with Forgejo artifact v3', async () => {
     const workflow = parse(
       await readFile(join(REPO_ROOT, '.forgejo', 'workflows', 'ci.yml'), 'utf8'),

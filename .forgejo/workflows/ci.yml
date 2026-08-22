@@ -77,6 +77,20 @@ jobs:
 
       # This upload is explicitly PR evidence. It excludes the package and is
       # never accepted by release consumers as final merge metadata.
+      - name: Verify exact candidate evidence before upload
+        run: |
+          set -euo pipefail
+          for evidence in \
+            .release/scrum4me-mcp-candidate.v1.json \
+            .release/gates.json \
+            .release/tool-surface.json
+          do
+            if [ ! -f "$evidence" ] || [ -L "$evidence" ] || [ ! -s "$evidence" ]; then
+              echo "candidate evidence is absent, empty, or not a regular file: $evidence" >&2
+              exit 1
+            fi
+          done
+
       - name: Upload candidate evidence (non-release)
         # Forgejo 15 supports artifact protocol v3; pin the exact upstream v3
         # commit instead of the moving tag or GHES-incompatible upstream v4.
