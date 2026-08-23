@@ -58,6 +58,19 @@ describe('ensureProductDocFrontmatter', () => {
     expect(productDocFrontmatterSchema.safeParse(frontmatterOf(out)).success).toBe(true)
   })
 
+  it('keeps $-sequences in frontmatter values literal (no replace-pattern interpolation)', () => {
+    // Regression: `$1`/`$&`/`$'` are special in a String.replace replacement
+    // string — a plan with SQL text `to_server=$1` came back with the capture
+    // group spliced in, corrupting the YAML (IDEA-192, 2026-08-24).
+    const md = "---\npbi:\n  title: Build X\nimplementation_plan: to_server=$1 AND to_model=$2 plus $& and $'\n---\n\nbody"
+    const out = ensureProductDocFrontmatter(md, 'My Idea')
+    expect(out).toContain('to_server=$1 AND to_model=$2')
+    expect(out).toContain("plus $& and $'")
+    const fm = frontmatterOf(out) as Record<string, unknown>
+    expect(productDocFrontmatterSchema.safeParse(fm).success).toBe(true)
+    expect(fm.implementation_plan).toBe("to_server=$1 AND to_model=$2 plus $& and $'")
+  })
+
   it('is idempotent: feeding already-valid output back returns the same string', () => {
     const md = '# Plan body'
     const out1 = ensureProductDocFrontmatter(md, 'My Idea')
