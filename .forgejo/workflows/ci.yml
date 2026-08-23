@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
-      PPE_CONTROLLER_TEST_DATABASE_URL: postgresql://scrum4us_owner:owner_test_password@127.0.0.1:5432/scrum4me_mcp_ppe_test
+      PPE_CONTROLLER_TEST_DATABASE_URL: postgresql://scrum4us_owner:owner_test_password@postgres:5432/scrum4me_mcp_ppe_test
       REVIEWED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     services:
       postgres:
@@ -128,7 +128,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
-      PPE_CONTROLLER_TEST_DATABASE_URL: postgresql://scrum4us_owner:owner_test_password@127.0.0.1:5432/scrum4me_mcp_ppe_test
+      PPE_CONTROLLER_TEST_DATABASE_URL: postgresql://scrum4us_owner:owner_test_password@postgres:5432/scrum4me_mcp_ppe_test
       RELEASE_COMMIT: ${{ github.sha }}
       PRE_PUSH_TARGET_SHA: ${{ github.event.before }}
     services:
