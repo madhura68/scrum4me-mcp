@@ -36,6 +36,11 @@ import { registerQueuePushTool } from '../src/tools/queue-push.js'
 import { registerQueueWaitReplyTool } from '../src/tools/queue-wait-reply.js'
 import { registerQueueNextTool } from '../src/tools/queue-next.js'
 import { registerQueueDoneTool } from '../src/tools/queue-done.js'
+import { registerQueueFailTool } from '../src/tools/queue-fail.js'
+import { registerQueueListTool } from '../src/tools/queue-list.js'
+import { registerQueueStatusTool } from '../src/tools/queue-status.js'
+import { refreshQueueLeases } from '../src/queue/lease-refresh.js'
+import { sweepStaleQueueClaims } from '../src/queue/sweep.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 type ToolResult = { isError?: boolean; content: { text: string }[] }
@@ -56,6 +61,9 @@ const push = capture(registerQueuePushTool)
 const waitReply = capture(registerQueueWaitReplyTool)
 const next = capture(registerQueueNextTool)
 const done = capture(registerQueueDoneTool)
+const fail = capture(registerQueueFailTool)
+const list = capture(registerQueueListTool)
+const status = capture(registerQueueStatusTool)
 
 const MARKER = `queue-int-${randomUUID()}`
 const mark = (text: string) => `${MARKER} ${text}`
@@ -432,5 +440,130 @@ describeWithDatabase('fase 2 — queue-tools integratie (aanvullend: mutation-te
     expect(retry.reply_id).toBeTruthy()
     const survivor = await prisma.agentMessage.findUnique({ where: { id: retry.reply_id } })
     expect(survivor?.body).toContain('reply die nu wel mag overleven')
+  })
+})
+
+interface MarkedFixture {
+  familyId: string
+  runId: string
+  consumerId: string
+  requestId: string
+}
+
+async function seedMarkedRequest(label: string): Promise<MarkedFixture> {
+  const familyId = randomUUID()
+  const runId = randomUUID()
+  const consumerId = randomUUID()
+  const principal = `orchestrator:${runId}`
+  await prisma.$executeRawUnsafe(`INSERT INTO ppe_bootstrap_family
+    (id,family_key,current_ordinal,updated_at) VALUES
+    ('${familyId}'::uuid,'${familyId}',1,now())`)
+  await prisma.$executeRawUnsafe(`INSERT INTO ppe_run_registry
+    (run_id,family_id,ordinal,invocation_operation_key,invocation_payload_sha256,
+     principal,state,generation,registry_receipt_sha256,updated_at) VALUES
+    ('${runId}'::uuid,'${familyId}'::uuid,1,'bootstrap:${runId}','${'a'.repeat(64)}',
+     '${principal}','ACTIVE',1,'${'b'.repeat(64)}',now())`)
+  await prisma.$executeRawUnsafe(`INSERT INTO ppe_consumer
+    (consumer_id,run_id,lane,generation,operation_key,config_sha256,
+     attestation_sha256,status,updated_at) VALUES
+    ('${consumerId}'::uuid,'${runId}'::uuid,'lane-codex',1,'consumer:${consumerId}',
+     '${'c'.repeat(64)}','${'d'.repeat(64)}','READY',now())`)
+  const request = await prisma.agentMessage.create({
+    data: {
+      type: 'info', from_server: 'max2', from_model: 'codex',
+      to_server: 'mac', to_model: 'claude', body: mark(`marked ${label}`), meta: {},
+      source: 'cli', status: 'pending', ppe_protocol: 'parallel-plan-execution/v1',
+      ppe_run_id: runId, ppe_operation_key: `dispatch:${label}:${runId}`,
+      ppe_payload_sha256: 'e'.repeat(64), ppe_from_principal: principal,
+      ppe_to_principal: null, ppe_to_consumer_id: consumerId,
+      ppe_consumer_generation: 1, ppe_lease_generation: null,
+    },
+  })
+  return { familyId, runId, consumerId, requestId: request.id }
+}
+
+async function cleanupMarkedFixture(fixture: MarkedFixture): Promise<void> {
+  await prisma.agentMessage.deleteMany({ where: { ppe_run_id: fixture.runId } })
+  await prisma.$executeRawUnsafe(`DELETE FROM ppe_consumer WHERE consumer_id='${fixture.consumerId}'::uuid`)
+  await prisma.$executeRawUnsafe(`DELETE FROM ppe_run_registry WHERE run_id='${fixture.runId}'::uuid`)
+  await prisma.$executeRawUnsafe(`DELETE FROM ppe_bootstrap_family WHERE id='${fixture.familyId}'::uuid`)
+}
+
+describeWithDatabase('B2 — legacy routes never acquire marked lifecycle authority', () => {
+  beforeEach(() => clearLeases())
+
+  it('generic request claim skips the oldest marked row and claims the later legacy row', async () => {
+    const fixture = await seedMarkedRequest('claim')
+    try {
+      const legacy = await insertRequest('legacy after marked')
+      const claimed = await claimNextRequest({ server: 'mac', model: 'claude', claimedBy: 'mcp:b2:legacy' })
+      expect(claimed?.id).toBe(legacy.id)
+      const marked = await prisma.agentMessage.findUnique({ where: { id: fixture.requestId } })
+      expect(marked?.status).toBe('pending')
+    } finally {
+      await prisma.agentMessage.deleteMany({ where: { body: { contains: mark('legacy after marked') } } })
+      await cleanupMarkedFixture(fixture)
+    }
+  })
+
+  it('known-id, view, lease-refresh, rollback and stale-sweep routes reject a marked row', async () => {
+    const fixture = await seedMarkedRequest('mutations')
+    try {
+      const statusResult = await status({ message_id: fixture.requestId })
+      expect(statusResult.isError).toBe(true)
+      expect(statusResult.content[0].text).toContain('QUEUE_NOT_FOUND')
+      const listed = parse(await list({ direction: 'both', include_terminal: true }))
+      expect(listed.messages.map((message: { id: string }) => message.id)).not.toContain(fixture.requestId)
+
+      for (const result of [
+        await done({ message_id: fixture.requestId, reply: mark('forbidden reply') }),
+        await fail({ message_id: fixture.requestId, error: 'forbidden fail' }),
+      ]) {
+        expect(result.isError).toBe(true)
+        expect(result.content[0].text).toContain('PPE_LEGACY_ROUTE_REJECTED')
+      }
+
+      await prisma.agentMessage.update({
+        where: { id: fixture.requestId },
+        data: {
+          status: 'claimed', claimed_by: 'mcp:b2:marked',
+          claimed_at: new Date(Date.now() - 5 * 60 * 60_000), started_at: new Date(),
+          ppe_lease_generation: 1,
+        },
+      })
+      registerLease(fixture.requestId, { claimToken: 'marked-token', claimedBy: 'mcp:b2:marked' })
+      await refreshQueueLeases()
+      expect(getLease(fixture.requestId)).toBeUndefined()
+      await rollbackQueueClaim(fixture.requestId, 'mcp:b2:marked')
+      await sweepStaleQueueClaims()
+      const after = await prisma.agentMessage.findUnique({ where: { id: fixture.requestId } })
+      expect(after?.status).toBe('claimed')
+      expect(after?.claimed_by).toBe('mcp:b2:marked')
+    } finally {
+      await cleanupMarkedFixture(fixture)
+    }
+  })
+
+  it('generic wait ignores a marked reply even for an explicitly supplied request handle', async () => {
+    const fixture = await seedMarkedRequest('reply')
+    try {
+      await prisma.agentMessage.create({
+        data: {
+          type: 'data', from_server: 'mac', from_model: 'claude',
+          to_server: 'max2', to_model: 'codex', body: mark('marked reply'), meta: {},
+          source: 'cli', status: 'pending', in_reply_to: fixture.requestId,
+          ppe_protocol: 'parallel-plan-execution/v1', ppe_run_id: fixture.runId,
+          ppe_operation_key: `reply:${fixture.requestId}`, ppe_payload_sha256: 'f'.repeat(64),
+          ppe_from_principal: null, ppe_to_principal: `orchestrator:${fixture.runId}`,
+          ppe_to_consumer_id: null, ppe_consumer_generation: null, ppe_lease_generation: null,
+        },
+      })
+      const result = parse(await waitReply({
+        message_ids: [fixture.requestId], wait_seconds: 0, as: 'codex',
+      }))
+      expect(result).toEqual({ status: 'timeout', replies: [] })
+    } finally {
+      await cleanupMarkedFixture(fixture)
+    }
   })
 })

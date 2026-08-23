@@ -12,6 +12,7 @@ import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { withSerializableRetry } from '../lib/serializable-transaction.js'
 import { withCodeUniqueRetry } from '../lib/code-unique-retry.js'
+import { assertCeremonyOperationKey, executePpeMutation, ppeInputSchema } from '../lib/ppe-operation.js'
 
 const TASK_AUTO_RE = /^T-(\d+)$/
 async function generateNextTaskCode(
@@ -46,6 +47,8 @@ const inputSchema = z.object({
   // Format: full git URL (https://github.com/owner/repo). Null/omit = erf
   // van product.repo_url.
   repo_url: z.string().url().optional(),
+  ceremony_object_key: z.string().min(1).optional(),
+  ppe: ppeInputSchema.optional(),
 })
 
 type CreateTaskInput = z.infer<typeof inputSchema>
@@ -57,6 +60,8 @@ export async function handleCreateTask({
   implementation_plan,
   priority,
   repo_url,
+  ceremony_object_key,
+  ppe,
 }: CreateTaskInput) {
   return withToolErrors(async () => {
     const auth = await requireWriteAccess()
@@ -69,52 +74,68 @@ export async function handleCreateTask({
     if (!(await userCanAccessProduct(story.product_id, auth.userId))) {
       return toolError(`Story ${story_id} not accessible`)
     }
+    if ((ppe === undefined) !== (ceremony_object_key === undefined)) throw new Error('PPE_INPUT_INCOMPLETE')
+    if (ppe) assertCeremonyOperationKey(ppe, 'task', ceremony_object_key!)
 
-    const createTask = () => withSerializableRetry(async (tx) => {
-      const last = await tx.task.findFirst({
-        where: { story_id },
-        orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
-        select: { sort_order: true },
-      })
-      const resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
-      const code = await generateNextTaskCode(tx, story.product_id)
-      if (story.sprint_id && story.assignee_id === null) {
-        await tx.story.updateMany({
-          where: { id: story_id, assignee_id: null },
-          data: { assignee_id: auth.userId },
+    const request = {
+      story_id, title, description: description ?? null,
+      implementation_plan: implementation_plan ?? null, priority,
+      repo_url: repo_url ?? null, ceremony_object_key: ceremony_object_key ?? null,
+    }
+    return executePpeMutation({
+      ppe,
+      operationKind: 'CEREMONY_TASK',
+      targetScope: `product:${story.product_id}`,
+      request,
+      authority: 'ceremony',
+      mutate: async () => {
+        const createTask = () => withSerializableRetry(async (tx) => {
+          const last = await tx.task.findFirst({
+            where: { story_id },
+            orderBy: [{ sort_order: 'desc' }, { created_at: 'desc' }, { id: 'desc' }],
+            select: { sort_order: true },
+          })
+          const resolvedSortOrder = (last?.sort_order ?? 0) + 1.0
+          const code = await generateNextTaskCode(tx, story.product_id)
+          if (story.sprint_id && story.assignee_id === null) {
+            await tx.story.updateMany({
+              where: { id: story_id, assignee_id: null },
+              data: { assignee_id: auth.userId },
+            })
+          }
+
+          return tx.task.create({
+            data: {
+              story_id,
+              product_id: story.product_id,
+              sprint_id: story.sprint_id,
+              code,
+              title,
+              description: description ?? null,
+              implementation_plan: implementation_plan ?? null,
+              priority,
+              sort_order: resolvedSortOrder,
+              status: 'TO_DO',
+              repo_url: repo_url ?? null,
+            },
+            select: {
+              id: true,
+              code: true,
+              title: true,
+              description: true,
+              implementation_plan: true,
+              priority: true,
+              sort_order: true,
+              status: true,
+              repo_url: true,
+              created_at: true,
+            },
+          })
         })
-      }
-
-      return tx.task.create({
-        data: {
-          story_id,
-          product_id: story.product_id, // denormalized — erf van story
-          sprint_id: story.sprint_id,   // denormalized — erf van story
-          code,
-          title,
-          description: description ?? null,
-          implementation_plan: implementation_plan ?? null,
-          priority,
-          sort_order: resolvedSortOrder,
-          status: 'TO_DO',
-          repo_url: repo_url ?? null,
-        },
-        select: {
-          id: true,
-          code: true,
-          title: true,
-          description: true,
-          implementation_plan: true,
-          priority: true,
-          sort_order: true,
-          status: true,
-          repo_url: true,
-          created_at: true,
-        },
-      })
+        const task = await withCodeUniqueRetry('tasks_product_id_code_key', createTask)
+        return toolJson(task)
+      },
     })
-    const task = await withCodeUniqueRetry('tasks_product_id_code_key', createTask)
-    return toolJson(task)
   })
 }
 

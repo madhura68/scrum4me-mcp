@@ -6,6 +6,7 @@
 import { prisma } from '../prisma.js'
 import { QUEUE_CHANNEL, envelopeOf } from './notify.js'
 import { QUEUE_REQUEST_TYPES, QUEUE_RESPONSE_TYPES, type QueueModel, type QueueServer } from '@shared/queue-identity.js'
+import { LEGACY_MARKER_SQL } from './marked.js'
 
 export const DEFAULT_RECLAIM_AFTER = '4 hours'
 
@@ -35,6 +36,15 @@ export interface AgentMessageRecord {
   finished_at: Date | null
   created_at: Date
   archived_at: Date | null
+  ppe_protocol?: string | null
+  ppe_run_id?: string | null
+  ppe_operation_key?: string | null
+  ppe_payload_sha256?: string | null
+  ppe_from_principal?: string | null
+  ppe_to_principal?: string | null
+  ppe_to_consumer_id?: string | null
+  ppe_consumer_generation?: number | null
+  ppe_lease_generation?: bigint | number | null
 }
 
 export interface ClaimedAgentMessage extends AgentMessageRecord {
@@ -54,6 +64,7 @@ export async function claimNextRequest(opts: {
         SELECT id, status FROM agent_message
          WHERE to_server = ${opts.server} AND to_model = ${opts.model}
            AND type = ANY(${types}::text[])
+           AND ${LEGACY_MARKER_SQL}
            AND (status = 'pending'
                 OR (status = 'claimed' AND claimed_at < now() - ${reclaim}::interval))
          ORDER BY created_at, id
@@ -97,6 +108,7 @@ export async function claimNextReply(opts: {
          WHERE to_server = ${opts.server} AND to_model = ${opts.model}
            AND type = ANY(${types}::text[])
            AND in_reply_to = ANY(${opts.messageIds}::uuid[])
+           AND ${LEGACY_MARKER_SQL}
            AND (status = 'pending'
                 OR (status = 'claimed' AND claimed_at < now() - ${reclaim}::interval))
          ORDER BY created_at, id
@@ -129,6 +141,7 @@ export async function rollbackQueueClaim(messageId: string, claimedBy: string): 
          SET status = 'pending', claimed_by = NULL, claimed_at = NULL, started_at = NULL
        WHERE id = ${messageId}::uuid
          AND status = 'claimed' AND claimed_by = ${claimedBy}
+         AND ${LEGACY_MARKER_SQL}
        RETURNING *
     `
     const row = rows[0]

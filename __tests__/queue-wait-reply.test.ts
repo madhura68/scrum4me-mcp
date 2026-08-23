@@ -20,6 +20,7 @@ import { requireWriteAccess } from '../src/auth.js'
 import { claimNextReply } from '../src/queue/claim.js'
 import { openQueueListener, waitForQueueWakeup } from '../src/queue/listen.js'
 import { registerQueueWaitReplyTool } from '../src/tools/queue-wait-reply.js'
+import { legacyMarkerWhere } from '../src/queue/marked.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 const mockPrisma = prisma as unknown as { agentMessage: { findMany: ReturnType<typeof vi.fn> } }
@@ -98,6 +99,7 @@ describe('queue_wait_reply — §5.2', () => {
         to_server: 'mac',
         to_model: 'claude',
         status: 'done',
+        ...legacyMarkerWhere(),
       },
       orderBy: [{ created_at: 'asc' }, { id: 'asc' }],
     })

@@ -8,6 +8,7 @@ import { releaseLease } from '../queue/lease-register.js'
 import { verifyLocalOwnership } from '../queue/ownership.js'
 import { QUEUE_CHANNEL, envelopeOf } from '../queue/notify.js'
 import type { AgentMessageRecord } from '../queue/claim.js'
+import { assertLegacyQueueRow, LEGACY_MARKER_SQL } from '../queue/marked.js'
 
 const inputSchema = z.object({
   message_id: z.string().uuid(),
@@ -38,6 +39,8 @@ export function registerQueueFailTool(server: McpServer) {
           `
           const req = rows[0]
           if (!req) return { error: `QUEUE_NOT_FOUND: message ${message_id} does not exist` }
+          try { assertLegacyQueueRow(req as unknown as Record<string, unknown>) }
+          catch { return { error: 'PPE_LEGACY_ROUTE_REJECTED' } }
           if ((QUEUE_TERMINAL_STATUSES as readonly string[]).includes(req.status)) {
             return { error: `QUEUE_ALREADY_TERMINAL: message ${message_id} is already ${req.status}` }
           }
@@ -53,7 +56,7 @@ export function registerQueueFailTool(server: McpServer) {
 
           const upd = await tx.$queryRaw<AgentMessageRecord[]>`
             UPDATE agent_message SET status = 'failed', error = ${error}, finished_at = now()
-             WHERE id = ${req.id}::uuid RETURNING *
+             WHERE id = ${req.id}::uuid AND ${LEGACY_MARKER_SQL} RETURNING *
           `
           const payload = JSON.stringify(envelopeOf(upd[0], req.status))
           await tx.$executeRaw`SELECT pg_notify(${QUEUE_CHANNEL}, ${payload})`

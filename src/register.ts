@@ -89,6 +89,10 @@ import { registerQueueStatusTool } from './tools/queue-status.js'
 import { registerQueueListTool } from './tools/queue-list.js'
 import { registerQueueFindByWorkItemTool } from './tools/queue-find-by-work-item.js'
 import { registerQueueArchiveTools } from './tools/queue-archive.js'
+import { registerQueueRegisterConsumerTool } from './tools/queue-register-consumer.js'
+import { registerQueueClaimMarkedTool } from './tools/queue-claim-marked.js'
+import { registerQueueRenewMarkedTool } from './tools/queue-renew-marked.js'
+import { registerQueueCancelMarkedTool } from './tools/queue-cancel-marked.js'
 
 /**
  * DB/network-only tools — safe for the centralized HTTP server (and also
@@ -191,6 +195,10 @@ export function registerQueueTools(server: McpServer): void {
   registerQueueListTool(server)
   registerQueueFindByWorkItemTool(server)
   registerQueueArchiveTools(server)
+  registerQueueRegisterConsumerTool(server)
+  registerQueueClaimMarkedTool(server)
+  registerQueueRenewMarkedTool(server)
+  registerQueueCancelMarkedTool(server)
 }
 
 /**

@@ -13,8 +13,23 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     env:
-      DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+      DATABASE_URL: postgresql://scrum4us_owner:owner_test_password@127.0.0.1:5432/scrum4me_mcp_ppe_test
+      PPE_CONTROLLER_TEST_DATABASE_URL: postgresql://scrum4us_owner:owner_test_password@127.0.0.1:5432/scrum4me_mcp_ppe_test
       REVIEWED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: scrum4us_owner
+          POSTGRES_PASSWORD: owner_test_password
+          POSTGRES_DB: scrum4me_mcp_ppe_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U scrum4us_owner -d scrum4me_mcp_ppe_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout the exact PR head (full history, recursive submodules)
         uses: actions/checkout@v4
@@ -41,6 +56,9 @@ jobs:
 
       - name: Install dependencies deterministically
         run: npm ci
+
+      - name: Bootstrap disposable PPE controller schema
+        run: npx prisma db push --url "$DATABASE_URL"
 
       - name: Run candidate gates and bind their evidence
         run: |
@@ -109,9 +127,24 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
-      DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+      DATABASE_URL: postgresql://scrum4us_owner:owner_test_password@127.0.0.1:5432/scrum4me_mcp_ppe_test
+      PPE_CONTROLLER_TEST_DATABASE_URL: postgresql://scrum4us_owner:owner_test_password@127.0.0.1:5432/scrum4me_mcp_ppe_test
       RELEASE_COMMIT: ${{ github.sha }}
       PRE_PUSH_TARGET_SHA: ${{ github.event.before }}
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: scrum4us_owner
+          POSTGRES_PASSWORD: owner_test_password
+          POSTGRES_DB: scrum4me_mcp_ppe_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U scrum4us_owner -d scrum4me_mcp_ppe_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Checkout final main (full history, recursive submodules)
         uses: actions/checkout@v4
@@ -158,6 +191,9 @@ jobs:
 
       - name: Install dependencies deterministically
         run: npm ci
+
+      - name: Bootstrap disposable PPE controller schema
+        run: npx prisma db push --url "$DATABASE_URL"
 
       - name: Run final gates and bind their evidence
         run: |

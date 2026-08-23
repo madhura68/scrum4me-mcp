@@ -18,9 +18,21 @@ export interface QueueMessageLike {
   archived_at: Date | null
   created_at: Date
   finished_at: Date | null
+  ppe_protocol?: string | null
+  ppe_run_id?: string | null
+  ppe_operation_key?: string | null
+  ppe_payload_sha256?: string | null
+  ppe_from_principal?: string | null
+  ppe_to_principal?: string | null
+  ppe_to_consumer_id?: string | null
+  ppe_consumer_generation?: number | null
+  ppe_lease_generation?: bigint | number | null
 }
 
+import { assertLegacyQueueRow } from './marked.js'
+
 export function messageView(row: QueueMessageLike) {
+  assertLegacyQueueRow(row as unknown as Record<string, unknown>)
   return {
     id: row.id,
     type: row.type,

@@ -6,6 +6,7 @@ import { toolJson, withToolErrors } from '../errors.js'
 import { resolveQueueIdentity } from '../queue/identity.js'
 import { messageView } from '../queue/view.js'
 import { QUEUE_MODELS, QUEUE_STATUSES, QUEUE_TERMINAL_STATUSES } from '@shared/queue-identity.js'
+import { legacyMarkerWhere } from '../queue/marked.js'
 
 // 'Niet-terminaal' is het complement van QUEUE_TERMINAL_STATUSES, dus afgeleid
 // in plaats van overgetypt. Vandaag exact ['pending', 'claimed']; komt er ooit
@@ -46,8 +47,10 @@ export function registerQueueListTool(server: McpServer) {
         const includeTerminal = include_terminal ?? false
         const sent = { from_server: self.server, from_model: self.model }
         const received = { to_server: self.server, to_model: self.model }
-        const where: Record<string, unknown> =
-          dir === 'sent' ? { ...sent } : dir === 'received' ? { ...received } : { OR: [sent, received] }
+        const where: Record<string, unknown> = {
+          ...(dir === 'sent' ? sent : dir === 'received' ? received : { OR: [sent, received] }),
+          ...legacyMarkerWhere(),
+        }
         if (!includeTerminal) where.status = { in: [...NON_TERMINAL_STATUSES] }
         if (!(include_archived ?? false)) where.archived_at = null
         const rows = await prisma.agentMessage.findMany({

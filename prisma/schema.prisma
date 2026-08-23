@@ -1372,9 +1372,32 @@ model AgentMessage {
   /// terminale rijen (done/failed/cancelled) mogen een waarde krijgen —
   /// afgedwongen in code (CLI/MCP/hub/workers), bewust niet met een CHECK.
   archived_at DateTime? @db.Timestamptz(6)
+  ppe_protocol            String?
+  ppe_run_id              String? @db.Uuid
+  ppe_operation_key       String?
+  ppe_payload_sha256      String? @db.Char(64)
+  ppe_from_principal      String?
+  ppe_to_principal        String?
+  ppe_to_consumer_id      String? @db.Uuid
+  ppe_consumer_generation Int?
+  ppe_lease_generation    BigInt?
 
-  replied_to AgentMessage?  @relation("AgentMessageReplies", fields: [in_reply_to], references: [id], onDelete: SetNull, onUpdate: NoAction)
-  replies    AgentMessage[] @relation("AgentMessageReplies")
+  replied_to       AgentMessage?   @relation("AgentMessageReplies", fields: [in_reply_to], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  replies          AgentMessage[]  @relation("AgentMessageReplies")
+  ppe_run          PpeRunRegistry? @relation(fields: [ppe_run_id], references: [run_id], onDelete: Restrict, onUpdate: NoAction)
+  ppe_consumer     PpeConsumer?    @relation(fields: [ppe_to_consumer_id], references: [consumer_id], onDelete: Restrict, onUpdate: NoAction)
+  ppe_claim_leases PpeClaimLease[]
+
+  // SQL-only in the Scrum4Me migration (Prisma PSL cannot express CHECKs or
+  // partial indexes):
+  // agent_message_ppe_marker_tuple_check
+  // agent_message_ppe_lease_generation_check
+  // agent_message_ppe_request_identity_key UNIQUE
+  //   (ppe_protocol, ppe_run_id, ppe_operation_key)
+  //   WHERE ppe_from_principal IS NOT NULL
+  // agent_message_ppe_reply_identity_key UNIQUE
+  //   (ppe_protocol, in_reply_to)
+  //   WHERE ppe_to_principal IS NOT NULL
 
   @@index([to_server, to_model, status, created_at], map: "agent_message_claim_idx")
   @@index([in_reply_to], map: "agent_message_in_reply_to_idx")
@@ -1417,6 +1440,15 @@ model AgentMessageArchive {
   // M30 P0.3: kolom-identiek aan agent_message (pariteitscontract).
   idempotency_key String?
   archived_at DateTime? @db.Timestamptz(6)
+  ppe_protocol            String?
+  ppe_run_id              String? @db.Uuid
+  ppe_operation_key       String?
+  ppe_payload_sha256      String? @db.Char(64)
+  ppe_from_principal      String?
+  ppe_to_principal        String?
+  ppe_to_consumer_id      String? @db.Uuid
+  ppe_consumer_generation Int?
+  ppe_lease_generation    BigInt?
 
   @@index([created_at(sort: Desc), id(sort: Desc)], map: "agent_message_archive_created_idx")
   @@map("agent_message_archive")
@@ -1639,4 +1671,223 @@ model IssueLog {
 
   @@index([issue_id, created_at])
   @@map("issue_logs")
+}
+
+/// Durable allocation of monotonically ordered run identities for one
+/// invocation family. CHECK enforcement remains SQL-only in Scrum4Me.
+model PpeBootstrapFamily {
+  id                  String  @id @db.Uuid
+  family_key          String  @unique(map: "ppe_bootstrap_family_family_key_key")
+  current_ordinal     Int
+  terminal_tip_sha256 String? @db.Char(64)
+  created_at          DateTime @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime @updatedAt @db.Timestamptz(6)
+
+  runs PpeRunRegistry[]
+
+  // SQL-only: ppe_bootstrap_family_current_ordinal_check
+  // current_ordinal >= 0
+
+  @@map("ppe_bootstrap_family")
+}
+
+model PpeRunRegistry {
+  run_id                    String  @id @db.Uuid
+  family_id                 String  @db.Uuid
+  ordinal                   Int
+  invocation_operation_key String  @unique(map: "ppe_run_registry_invocation_operation_key_key")
+  invocation_payload_sha256 String  @db.Char(64)
+  principal                 String
+  state                     String
+  generation                Int
+  ledger_tip_sha256         String? @db.Char(64)
+  registry_receipt_sha256   String  @db.Char(64)
+  created_at                DateTime @default(now()) @db.Timestamptz(6)
+  updated_at                DateTime @updatedAt @db.Timestamptz(6)
+
+  family              PpeBootstrapFamily     @relation(fields: [family_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  agent_messages      AgentMessage[]
+  orchestrator_leases PpeOrchestratorLease[]
+  consumers           PpeConsumer[]
+  claim_leases        PpeClaimLease[]
+  operation_receipts  PpeOperationReceipt[]
+  ledger_events       PpeRunLedgerEvent[]
+  resources           PpeResource[]
+  local_children      PpeLocalChild[]
+  state_heads         PpeStateHead[]
+
+  // SQL-only partial unique index:
+  // ppe_run_registry_one_nonterminal_per_family_key UNIQUE (family_id)
+  // WHERE state NOT IN ('TERMINAL','ABANDONED')
+
+  @@unique([family_id, ordinal], map: "ppe_run_registry_family_id_ordinal_key")
+  @@map("ppe_run_registry")
+}
+
+model PpeOrchestratorLease {
+  run_id           String   @db.Uuid
+  generation       Int
+  owner_principal  String
+  lease_expires_at DateTime @db.Timestamptz(6)
+  fence_sha256     String   @db.Char(64)
+  status           String
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime @updatedAt @db.Timestamptz(6)
+
+  run PpeRunRegistry @relation(fields: [run_id], references: [run_id], onDelete: Restrict, onUpdate: NoAction)
+
+  // SQL-only partial unique index:
+  // ppe_orchestrator_lease_one_current_per_run_key UNIQUE (run_id)
+  // WHERE status = 'CURRENT'
+
+  @@unique([run_id, generation], map: "ppe_orchestrator_lease_run_id_generation_key")
+  @@map("ppe_orchestrator_lease")
+}
+
+model PpeConsumer {
+  consumer_id       String    @id @db.Uuid
+  run_id            String    @db.Uuid
+  lane              String
+  generation        Int
+  operation_key     String    @unique(map: "ppe_consumer_operation_key_key")
+  config_sha256     String    @db.Char(64)
+  attestation_sha256 String   @db.Char(64)
+  status            String
+  heartbeat_at      DateTime? @db.Timestamptz(6)
+  created_at        DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime  @updatedAt @db.Timestamptz(6)
+
+  run            PpeRunRegistry @relation(fields: [run_id], references: [run_id], onDelete: Restrict, onUpdate: NoAction)
+  agent_messages AgentMessage[]
+  claim_leases   PpeClaimLease[]
+
+  // SQL-only: ppe_consumer_lane_check
+  // lane IN ('lane-claude','lane-codex')
+
+  @@unique([run_id, lane, generation], map: "ppe_consumer_run_id_lane_generation_key")
+  @@map("ppe_consumer")
+}
+
+model PpeClaimLease {
+  message_id          String    @db.Uuid
+  run_id              String    @db.Uuid
+  consumer_id         String    @db.Uuid
+  consumer_generation Int
+  lease_generation    BigInt
+  token_sha256        String    @db.Char(64)
+  status              String
+  claimed_at          DateTime  @db.Timestamptz(6)
+  renewed_at          DateTime? @db.Timestamptz(6)
+  finished_at         DateTime? @db.Timestamptz(6)
+  created_at          DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime  @updatedAt @db.Timestamptz(6)
+
+  message  AgentMessage  @relation(fields: [message_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  run      PpeRunRegistry @relation(fields: [run_id], references: [run_id], onDelete: Restrict, onUpdate: NoAction)
+  consumer PpeConsumer    @relation(fields: [consumer_id], references: [consumer_id], onDelete: Restrict, onUpdate: NoAction)
+
+  // SQL-only partial unique index:
+  // ppe_claim_lease_one_current_per_message_key UNIQUE (message_id)
+  // WHERE status = 'CURRENT'
+
+  @@unique([message_id, lease_generation], map: "ppe_claim_lease_message_id_lease_generation_key")
+  @@map("ppe_claim_lease")
+}
+
+model PpeOperationReceipt {
+  run_id         String @db.Uuid
+  operation_key  String
+  payload_sha256 String @db.Char(64)
+  kind           String
+  status         String
+  receipt_json   Json
+  receipt_sha256 String @db.Char(64)
+  created_at     DateTime @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime @updatedAt @db.Timestamptz(6)
+
+  run PpeRunRegistry @relation(fields: [run_id], references: [run_id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([run_id, operation_key], map: "ppe_operation_receipt_run_id_operation_key_key")
+  @@map("ppe_operation_receipt")
+}
+
+model PpeRunLedgerEvent {
+  run_id                String  @db.Uuid
+  sequence              BigInt
+  previous_event_sha256 String? @db.Char(64)
+  event_kind            String
+  event_json            Json
+  event_sha256          String  @db.Char(64)
+  created_at            DateTime @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime @updatedAt @db.Timestamptz(6)
+
+  run PpeRunRegistry @relation(fields: [run_id], references: [run_id], onDelete: Restrict, onUpdate: NoAction)
+
+  // SQL-only: ppe_run_ledger_event_chain_check
+  // sequence starts at 0 and previous_event_sha256 chains exactly
+
+  @@unique([run_id, sequence], map: "ppe_run_ledger_event_run_id_sequence_key")
+  @@unique([event_sha256], map: "ppe_run_ledger_event_event_sha256_key")
+  @@map("ppe_run_ledger_event")
+}
+
+model PpeResource {
+  resource_id       String @id @db.Uuid
+  run_id            String @db.Uuid
+  kind              String
+  scope_key         String
+  generation        Int
+  root_path         String
+  owner_principal   String
+  status            String
+  evidence_sha256   String @db.Char(64)
+  created_at        DateTime @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime @updatedAt @db.Timestamptz(6)
+
+  run         PpeRunRegistry @relation(fields: [run_id], references: [run_id], onDelete: Restrict, onUpdate: NoAction)
+  local_child PpeLocalChild?
+
+  @@unique([resource_id], map: "ppe_resource_resource_id_key")
+  @@unique([run_id, kind, scope_key, generation], map: "ppe_resource_run_id_kind_scope_key_generation_key")
+  @@map("ppe_resource")
+}
+
+model PpeLocalChild {
+  resource_id           String  @id @db.Uuid
+  run_id                String  @db.Uuid
+  mode                  String
+  pid_identity_sha256   String  @db.Char(64)
+  executable_sha256     String  @db.Char(64)
+  profile_sha256        String  @db.Char(64)
+  status                String
+  quiescence_sha256     String? @db.Char(64)
+  created_at            DateTime @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime @updatedAt @db.Timestamptz(6)
+
+  resource PpeResource    @relation(fields: [resource_id], references: [resource_id], onDelete: Restrict, onUpdate: NoAction)
+  run      PpeRunRegistry @relation(fields: [run_id], references: [run_id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@unique([resource_id], map: "ppe_local_child_resource_id_key")
+  @@map("ppe_local_child")
+}
+
+model PpeStateHead {
+  run_id             String  @db.Uuid
+  scope_kind         String
+  scope_key          String
+  generation         Int
+  state              String
+  value_json         Json
+  value_sha256       String  @db.Char(64)
+  predecessor_sha256 String? @db.Char(64)
+  created_at         DateTime @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime @updatedAt @db.Timestamptz(6)
+
+  run PpeRunRegistry @relation(fields: [run_id], references: [run_id], onDelete: Restrict, onUpdate: NoAction)
+
+  // SQL-only: ppe_state_head_scope_kind_check
+  // scope_kind IN ('graph','family','authority','admission','cursor','cleanup')
+
+  @@unique([run_id, scope_kind, scope_key], map: "ppe_state_head_run_id_scope_kind_scope_key_key")
+  @@map("ppe_state_head")
 }
