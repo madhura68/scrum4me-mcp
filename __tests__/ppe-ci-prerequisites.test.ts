@@ -40,13 +40,15 @@ describe('PPE controller CI prerequisites', () => {
     expect(workflow).not.toMatch(/\n\s+TEST_DATABASE_URL:/)
   })
 
-  it('addresses the disposable database through its service name in every container job', () => {
+  it('addresses the disposable database through service DNS in every Forgejo runner job', () => {
     for (const jobName of ['candidate', 'final-release'] as const) {
       const job = workflowConfig.jobs[jobName]
       const databaseUrl = new URL(job.env.PPE_CONTROLLER_TEST_DATABASE_URL)
 
       expect(job.services[databaseUrl.hostname], jobName).toBeDefined()
       expect(databaseUrl.port, jobName).toBe('5432')
+      expect(databaseUrl.username, jobName).toBe('scrum4us_owner')
+      expect(databaseUrl.pathname, jobName).toBe('/scrum4me_mcp_ppe_test')
     }
   })
 })
