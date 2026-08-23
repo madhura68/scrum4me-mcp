@@ -81,6 +81,15 @@ export async function lockConsumerAuthority(tx: MarkedTx, input: ConsumerAuthori
 export async function registerMarkedConsumer(input: RegisterInput): Promise<ConsumerRow> {
   if (input.generation === 4) throw new Error('PPE_CONSUMER_GENERATION_EXHAUSTED')
   return prisma.$transaction(async (tx) => {
+    const authority = await tx.$queryRawUnsafe<AuthorityRow[]>(
+      `SELECT r.generation AS run_generation,r.state AS run_state,r.principal,
+              o.generation AS orchestrator_generation,o.owner_principal,
+              o.lease_expires_at,o.fence_sha256
+         FROM ppe_run_registry r
+         JOIN ppe_orchestrator_lease o ON o.run_id=r.run_id AND o.status='CURRENT'
+        WHERE r.run_id=$1 FOR UPDATE OF r,o`, input.run_id,
+    )
+    assertRunAuthority(authority[0], input)
     const replay = await tx.$queryRawUnsafe<ConsumerRow[]>(
       'SELECT * FROM ppe_consumer WHERE operation_key=$1 FOR UPDATE', input.operation_key,
     )
@@ -93,15 +102,6 @@ export async function registerMarkedConsumer(input: RegisterInput): Promise<Cons
       }
       return row
     }
-    const authority = await tx.$queryRawUnsafe<AuthorityRow[]>(
-      `SELECT r.generation AS run_generation,r.state AS run_state,r.principal,
-              o.generation AS orchestrator_generation,o.owner_principal,
-              o.lease_expires_at,o.fence_sha256
-         FROM ppe_run_registry r
-         JOIN ppe_orchestrator_lease o ON o.run_id=r.run_id AND o.status='CURRENT'
-        WHERE r.run_id=$1 FOR UPDATE OF r,o`, input.run_id,
-    )
-    assertRunAuthority(authority[0], input)
     const prior = await tx.$queryRawUnsafe<Array<{ generation: number; status: string }>>(
       `SELECT generation,status FROM ppe_consumer WHERE run_id=$1 AND lane=$2
         ORDER BY generation DESC LIMIT 1 FOR UPDATE`, input.run_id, input.lane,

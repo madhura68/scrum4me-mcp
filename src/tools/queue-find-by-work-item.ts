@@ -4,6 +4,7 @@ import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
+import { legacyMarkerWhere } from '../queue/marked.js'
 import { messageView, type QueueMessageLike } from '../queue/view.js'
 
 // Bewuste afwijking van spec §5's "(refine-check)": .refine() levert een
@@ -63,7 +64,10 @@ export function registerQueueFindByWorkItemTool(server: McpServer) {
         if (story_id) idFilters.push({ meta: { path: ['work_item', 'story_id'], equals: story_id } })
         if (task_id) idFilters.push({ meta: { path: ['work_item', 'task_id'], equals: task_id } })
 
-        const matchWhere: Record<string, unknown> = { AND: idFilters }
+        const matchWhere: Record<string, unknown> = {
+          AND: idFilters,
+          ...legacyMarkerWhere(),
+        }
         if (!includeArchived) matchWhere.archived_at = null
         const matches = (await prisma.agentMessage.findMany({
           where: matchWhere as never,
@@ -93,6 +97,7 @@ export function registerQueueFindByWorkItemTool(server: McpServer) {
         if (kept.length > 0) {
           const replyWhere: Record<string, unknown> = {
             in_reply_to: { in: kept.map((match) => match.id) },
+            ...legacyMarkerWhere(),
           }
           if (!includeArchived) replyWhere.archived_at = null
           replies = (await prisma.agentMessage.findMany({
