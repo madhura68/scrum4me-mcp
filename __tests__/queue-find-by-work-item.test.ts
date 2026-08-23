@@ -13,6 +13,7 @@ import { prisma } from '../src/prisma.js'
 import { requireWriteAccess } from '../src/auth.js'
 import { userCanAccessProduct } from '../src/access.js'
 import { registerQueueFindByWorkItemTool } from '../src/tools/queue-find-by-work-item.js'
+import { legacyMarkerWhere } from '../src/queue/marked.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { AnyMock } from './helpers/mocks.js'
 
@@ -113,6 +114,31 @@ describe('queue_find_by_work_item', () => {
     // Sortering created_at desc over matches + replies samen:
     expect(body.messages.map((m: { id: string }) => m.id)).toEqual(['rep1', 'req1'])
     expect(mockFindMany.mock.calls[1][0].where.archived_at).toBeNull()
+  })
+
+  it('houdt marked matches en replies buiten de legacy work-item route', async () => {
+    const legacyMatch = msg(
+      'legacy', wi('p1', { task_id: 't1' }), '2026-08-20T10:00:00Z',
+    )
+    const markedMatch = {
+      ...msg('marked', wi('p1', { task_id: 't1' }), '2026-08-20T11:00:00Z'),
+      ppe_protocol: 's4m-ppe/v1',
+    }
+    mockFindMany.mockImplementationOnce(async ({ where }: { where: Record<string, unknown> }) =>
+      where.ppe_protocol === null ? [legacyMatch] : [markedMatch, legacyMatch])
+    mockFindMany.mockImplementationOnce(async ({ where }: { where: Record<string, unknown> }) =>
+      where.ppe_protocol === null ? [] : [
+        { ...msg('marked-reply', {}, '2026-08-20T12:00:00Z', 'legacy'), ppe_protocol: 's4m-ppe/v1' },
+      ])
+
+    const server = makeServer()
+    const result = await server.call({ task_id: 't1' })
+
+    expect(JSON.parse(result.content[0].text).messages).toEqual([
+      expect.objectContaining({ id: 'legacy' }),
+    ])
+    expect(mockFindMany.mock.calls[0][0].where).toMatchObject(legacyMarkerWhere())
+    expect(mockFindMany.mock.calls[1][0].where).toMatchObject(legacyMarkerWhere())
   })
 
   it('geen replies-query wanneer geen match overleeft', async () => {

@@ -9,6 +9,7 @@ vi.mock('../src/prisma.js', () => ({
 import { prisma } from '../src/prisma.js'
 import { refreshQueueLeases, startQueueLeaseRefresh } from '../src/queue/lease-refresh.js'
 import { registerLease, leaseEntries, clearLeases } from '../src/queue/lease-register.js'
+import { legacyMarkerWhere } from '../src/queue/marked.js'
 
 const mockPrisma = prisma as unknown as {
   agentMessage: { updateMany: ReturnType<typeof vi.fn> }
@@ -25,7 +26,10 @@ describe('refreshQueueLeases — §6.1 lease-verversing', () => {
     registerLease('msg-1', { claimToken: 'tok-1', claimedBy: 'mcp:inst:tok-1' })
     await refreshQueueLeases()
     expect(mockPrisma.agentMessage.updateMany).toHaveBeenCalledWith({
-      where: { id: 'msg-1', status: 'claimed', claimed_by: 'mcp:inst:tok-1' },
+      where: {
+        id: 'msg-1', status: 'claimed', claimed_by: 'mcp:inst:tok-1',
+        ...legacyMarkerWhere(),
+      },
       data: { claimed_at: expect.any(Date) },
     })
   })

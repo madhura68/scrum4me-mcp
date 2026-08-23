@@ -10,6 +10,8 @@ const QUEUE_TOOL_NAMES = [
   'queue_fail', 'queue_status', 'queue_list', 'queue_find_by_work_item',
   // M32-archivering: muterend, maar even stdio-only als de rest.
   'queue_archive', 'queue_unarchive',
+  'queue_register_consumer', 'queue_claim_marked', 'queue_renew_marked',
+  'queue_cancel_marked',
 ] as const
 
 function captureNames() {
@@ -24,7 +26,7 @@ function captureNames() {
 }
 
 describe('queue-tools registratie — stdio-only (spec §5-intro/§9)', () => {
-  it('registerQueueTools registreert exact de 10 kernset-tools', () => {
+  it('registerQueueTools registreert exact de 10 current-main- en 4 marked-tools', () => {
     const { server, names } = captureNames()
     registerQueueTools(server as never)
     expect([...names].sort()).toEqual([...QUEUE_TOOL_NAMES].sort())

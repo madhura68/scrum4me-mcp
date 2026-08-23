@@ -96,7 +96,22 @@ const TOOL_LOCAL_ENUM_FIELDS: readonly string[] = [
   // queue_list.direction ('sent'/'received'/'both') is een presentatiefilter van
   // deze tool; de queue kent het begrip niet.
   'queue_list.direction',
+  // De marked transportlaag heeft drie gesloten, tool-eigen vocabularia. De
+  // claim-types hebben dezelfde waarden als QUEUE_REQUEST_TYPES, maar zijn een
+  // gesloten protocolveld van de marked consumer en geen caller-modelveld.
+  'queue_register_consumer.lane',
+  'queue_claim_marked.types[]',
+  'queue_cancel_marked.expected_status',
 ]
+
+const MARKED_CLOSED_FIELDS = [
+  { tool: 'queue_register_consumer', field: 'lane',
+    values: ['lane-claude', 'lane-codex'] },
+  { tool: 'queue_claim_marked', field: 'types[]',
+    values: [...QUEUE_REQUEST_TYPES] },
+  { tool: 'queue_cancel_marked', field: 'expected_status',
+    values: ['pending', 'claimed'] },
+] as const
 
 // ---------------------------------------------------------------------------
 // Schema-uitlezing
@@ -136,17 +151,14 @@ function metaOf(tool: string): { inputSchema?: unknown; description?: string } {
  * accepteert beide vormen (AnySchema óf een kale ZodRawShape); deze repo geeft
  * een z.object() mee, maar de gate mag niet omvallen als dat ooit wijzigt.
  */
-function objectSchemaOf(tool: string): z.ZodObject<z.ZodRawShape> {
+function schemaOf(tool: string): z.ZodType {
   const raw = metaOf(tool).inputSchema
   if (raw === undefined || raw === null) {
     throw new Error(`${tool}: geen inputSchema geregistreerd`)
   }
-  const candidate = raw as { parse?: unknown; shape?: unknown }
+  const candidate = raw as { parse?: unknown }
   if (typeof candidate.parse === 'function') {
-    if (!candidate.shape) {
-      throw new Error(`${tool}: inputSchema is een Zod-schema maar geen object-schema`)
-    }
-    return raw as z.ZodObject<z.ZodRawShape>
+    return raw as z.ZodType
   }
   return z.object(raw as z.ZodRawShape)
 }
@@ -154,6 +166,18 @@ function objectSchemaOf(tool: string): z.ZodObject<z.ZodRawShape> {
 interface JsonSchemaProperty {
   enum?: unknown[]
   const?: unknown
+  properties?: Record<string, JsonSchemaProperty>
+  items?: JsonSchemaProperty
+  oneOf?: JsonSchemaProperty[]
+  anyOf?: JsonSchemaProperty[]
+  allOf?: JsonSchemaProperty[]
+}
+
+function jsonSchemaOf(tool: string): JsonSchemaProperty {
+  return z.toJSONSchema(schemaOf(tool), {
+    target: 'draft-7',
+    io: 'input',
+  }) as JsonSchemaProperty
 }
 
 /**
@@ -163,11 +187,7 @@ interface JsonSchemaProperty {
  * ze te zien krijgt, niet een Zod-intern veld.
  */
 function jsonPropertiesOf(tool: string): Record<string, JsonSchemaProperty> {
-  const json = z.toJSONSchema(objectSchemaOf(tool), {
-    target: 'draft-7',
-    io: 'input',
-  }) as { properties?: Record<string, JsonSchemaProperty> }
-  return json.properties ?? {}
+  return jsonSchemaOf(tool).properties ?? {}
 }
 
 /** De toegestane literalen van één veld; gooit als het veld geen enum ís. */
@@ -191,14 +211,34 @@ function allowedValuesOf(tool: string, field: string): string[] {
 
 /** Alle enum-velden van een tool — voert de sweep onderaan. */
 function enumFieldsOf(tool: string): string[] {
-  return Object.entries(jsonPropertiesOf(tool))
-    .filter(([, property]) => Array.isArray(property.enum))
-    .map(([field]) => field)
+  return [...closedFieldsOf(tool).keys()]
 }
 
 function parserOf(tool: string): (value: unknown) => unknown {
-  const schema = objectSchemaOf(tool)
+  const schema = schemaOf(tool)
   return (value: unknown) => schema.parse(value)
+}
+
+function closedFieldsOf(tool: string): Map<string, Set<string>> {
+  const fields = new Map<string, Set<string>>()
+  const add = (field: string, values: unknown[]) => {
+    const found = fields.get(field) ?? new Set<string>()
+    for (const value of values) found.add(String(value))
+    fields.set(field, found)
+  }
+  const visit = (schema: JsonSchemaProperty): void => {
+    for (const branch of [...(schema.oneOf ?? []), ...(schema.anyOf ?? []),
+      ...(schema.allOf ?? [])]) visit(branch)
+    for (const [field, property] of Object.entries(schema.properties ?? {})) {
+      const values = property.enum ?? (property.const === undefined ? [] : [property.const])
+      if (values.length > 0) add(field, values)
+      const itemValues = property.items?.enum
+        ?? (property.items?.const === undefined ? [] : [property.items.const])
+      if (itemValues.length > 0) add(`${field}[]`, itemValues)
+    }
+  }
+  visit(jsonSchemaOf(tool))
+  return fields
 }
 
 /**
@@ -314,6 +354,13 @@ describe('pariteitsgate — tool-schema ↔ @shared/queue-identity', () => {
       for (const field of enumFieldsOf(tool)) found.add(`${tool}.${field}`)
     }
     expect(found).toEqual(new Set([...bound, ...local]))
+  })
+
+  it('pint de gesloten marked-toolvocabularia exact', () => {
+    for (const expected of MARKED_CLOSED_FIELDS) {
+      expect(closedFieldsOf(expected.tool).get(expected.field),
+        `${expected.tool}.${expected.field} wijkt af`).toEqual(new Set(expected.values))
+    }
   })
 
   it('somt in de queue_push-omschrijving het echte modelvocabulaire op', () => {

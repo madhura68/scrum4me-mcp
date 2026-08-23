@@ -2,6 +2,7 @@
 // s4m-queue/src/db.ts envelopeOf(): same fields, same order.
 // CLI --wait and the Messages-dashboard parse this payload unchanged.
 import { prisma } from '../prisma.js'
+import { assertLegacyQueueRow } from './marked.js'
 
 // Het kanaal ligt hier vast op de CLI-default. De CLI leest het uit
 // S4M_QUEUE_CHANNEL (s4m-queue/src/config.ts) en kán dus afwijken; dat wordt
@@ -19,6 +20,15 @@ export interface QueueMessageRow {
   to_model: string
   in_reply_to: string | null
   status: string
+  ppe_protocol?: string | null
+  ppe_run_id?: string | null
+  ppe_operation_key?: string | null
+  ppe_payload_sha256?: string | null
+  ppe_from_principal?: string | null
+  ppe_to_principal?: string | null
+  ppe_to_consumer_id?: string | null
+  ppe_consumer_generation?: number | null
+  ppe_lease_generation?: bigint | number | null
 }
 
 export interface QueueNotifyEnvelope {
@@ -37,6 +47,7 @@ export function envelopeOf(
   m: QueueMessageRow,
   previousStatus: string | null,
 ): QueueNotifyEnvelope {
+  assertLegacyQueueRow(m as unknown as Record<string, unknown>)
   return {
     id: m.id,
     type: m.type,

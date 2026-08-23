@@ -12,6 +12,7 @@ import { prisma } from '../src/prisma.js'
 import { requireWriteAccess } from '../src/auth.js'
 import { registerQueueListTool } from '../src/tools/queue-list.js'
 import { QUEUE_STATUSES, QUEUE_TERMINAL_STATUSES } from '@shared/queue-identity.js'
+import { legacyMarkerWhere } from '../src/queue/marked.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 const mockPrisma = prisma as unknown as {
@@ -52,6 +53,7 @@ describe('queue_list — §5.7', () => {
           { from_server: 'mac', from_model: 'claude' },
           { to_server: 'mac', to_model: 'claude' },
         ],
+        ...legacyMarkerWhere(),
         status: { in: ['pending', 'claimed'] },
         archived_at: null,
       },
@@ -118,6 +120,7 @@ describe('queue_list — §5.7', () => {
           { from_server: 'mac', from_model: 'claude' },
           { to_server: 'mac', to_model: 'claude' },
         ],
+        ...legacyMarkerWhere(),
         status: { in: ['pending', 'claimed'] },
         archived_at: null,
       },

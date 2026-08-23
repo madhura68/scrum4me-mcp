@@ -16,6 +16,7 @@
 // --no-file-parallelism meegeeft.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Client } from 'pg'
+import { randomUUID } from 'node:crypto'
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL
 const describeWithDatabase = testDatabaseUrl ? describe : describe.skip
@@ -36,6 +37,10 @@ import { sweepStaleQueueClaims } from '../src/queue/sweep.js'
 import { refreshQueueLeases } from '../src/queue/lease-refresh.js'
 import { getLease, registerLease, clearLeases } from '../src/queue/lease-register.js'
 import { registerQueueDoneTool } from '../src/tools/queue-done.js'
+import { registerMarkedConsumer } from '../src/tools/queue-register-consumer.js'
+import { claimMarkedMessage } from '../src/tools/queue-claim-marked.js'
+import { renewMarkedMessage } from '../src/tools/queue-renew-marked.js'
+import { cancelMarkedMessage } from '../src/tools/queue-cancel-marked.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 type ToolResult = { isError?: boolean; content: { text: string }[] }
@@ -189,6 +194,171 @@ describeWithDatabase('fase 3 — sweep/lease (§8, TEST_DATABASE_URL)', () => {
     const swept = await sweepStaleQueueClaims()
     expect(swept.requeued).not.toContain(jong.id)
     expect(swept.requeued).toContain(oud.id)
+  })
+
+  it('complete marked claims overleven zowel de 5-minuten- als 4-uurs-sweep', async () => {
+    const familyId = randomUUID()
+    const runId = randomUUID()
+    const consumerId = randomUUID()
+    const fence = '9'.repeat(64)
+    const messageIds = [randomUUID(), randomUUID()]
+    try {
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO ppe_bootstrap_family (id,family_key,current_ordinal,updated_at)
+         VALUES ($1,$2,1,now())`, familyId, `b3-sweep-${familyId}`,
+      )
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO ppe_run_registry
+          (run_id,family_id,ordinal,invocation_operation_key,invocation_payload_sha256,
+           principal,state,generation,registry_receipt_sha256,updated_at)
+         VALUES ($1,$2,1,$3,$4,$5,'ACTIVE',1,$6,now())`,
+        runId, familyId, `bootstrap:${runId}`, 'a'.repeat(64),
+        `orchestrator:${runId}`, 'b'.repeat(64),
+      )
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO ppe_orchestrator_lease
+          (run_id,generation,owner_principal,lease_expires_at,fence_sha256,status,updated_at)
+         VALUES ($1,1,$2,now()+interval '1 hour',$3,'CURRENT',now())`,
+        runId, `orchestrator:${runId}`, fence,
+      )
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO ppe_consumer
+          (consumer_id,run_id,lane,generation,operation_key,config_sha256,
+           attestation_sha256,status,heartbeat_at,updated_at)
+         VALUES ($1,$2,'lane-codex',1,$3,$4,$5,'READY_ACK',now(),now())`,
+        consumerId, runId, `consumer:${runId}`, 'c'.repeat(64), 'd'.repeat(64),
+      )
+      for (const [index, messageId] of messageIds.entries()) {
+        const age = index === 0 ? '10 minutes' : '5 hours'
+        await prisma.$executeRawUnsafe(
+          `INSERT INTO agent_message
+            (id,type,from_server,from_model,to_server,to_model,body,meta,source,status,
+             claimed_by,claimed_at,started_at,ppe_protocol,ppe_run_id,ppe_operation_key,
+             ppe_payload_sha256,ppe_from_principal,ppe_to_consumer_id,
+             ppe_consumer_generation,ppe_lease_generation)
+           VALUES ($1,'task','mac','codex','scrum4me-server','codex',$2,'{}','mcp','claimed',
+             $3,now()-$4::interval,now()-$4::interval,'parallel-plan-execution/v1',$5,$6,
+             $7,$8,$9,1,1)`,
+          messageId, `marked sweep ${index}`, `marked:${consumerId}`, age, runId,
+          `marked-sweep:${messageId}`, 'e'.repeat(64), `orchestrator:${runId}`, consumerId,
+        )
+        await prisma.$executeRawUnsafe(
+          `INSERT INTO ppe_claim_lease
+            (message_id,run_id,consumer_id,consumer_generation,lease_generation,
+             token_sha256,status,claimed_at,updated_at)
+           VALUES ($1,$2,$3,1,1,$4,'CURRENT',now()-$5::interval,now())`,
+          messageId, runId, consumerId, 'f'.repeat(64), age,
+        )
+      }
+      const swept = await sweepStaleQueueClaims()
+      expect(swept.requeued).not.toContain(messageIds[0])
+      expect(swept.requeued).not.toContain(messageIds[1])
+      const rows = await prisma.agentMessage.findMany({ where: { id: { in: messageIds } } })
+      expect(rows.map((row) => row.status)).toEqual(['claimed', 'claimed'])
+    } finally {
+      await prisma.ppeClaimLease.deleteMany({ where: { message_id: { in: messageIds } } })
+      await prisma.agentMessage.deleteMany({ where: { id: { in: messageIds } } })
+      await prisma.ppeConsumer.deleteMany({ where: { consumer_id: consumerId } })
+      await prisma.ppeOrchestratorLease.deleteMany({ where: { run_id: runId } })
+      await prisma.ppeRunRegistry.deleteMany({ where: { run_id: runId } })
+      await prisma.ppeBootstrapFamily.deleteMany({ where: { id: familyId } })
+    }
+  })
+
+  it('marked MCP-tools vergelijken alle fences en slaan alleen de tokenhash op', async () => {
+    const familyId = randomUUID()
+    const runId = randomUUID()
+    const fence = '7'.repeat(64)
+    const messageIds = [randomUUID(), randomUUID()]
+    let consumerId = ''
+    try {
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO ppe_bootstrap_family (id,family_key,current_ordinal,updated_at)
+         VALUES ($1,$2,1,now())`, familyId, `b3-tools-${familyId}`,
+      )
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO ppe_run_registry
+          (run_id,family_id,ordinal,invocation_operation_key,invocation_payload_sha256,
+           principal,state,generation,registry_receipt_sha256,updated_at)
+         VALUES ($1,$2,1,$3,$4,$5,'ACTIVE',1,$6,now())`,
+        runId, familyId, `bootstrap:${runId}`, 'a'.repeat(64),
+        `orchestrator:${runId}`, 'b'.repeat(64),
+      )
+      await prisma.$executeRawUnsafe(
+        `INSERT INTO ppe_orchestrator_lease
+          (run_id,generation,owner_principal,lease_expires_at,fence_sha256,status,updated_at)
+         VALUES ($1,1,$2,now()+interval '1 hour',$3,'CURRENT',now())`,
+        runId, `orchestrator:${runId}`, fence,
+      )
+      const consumer = await registerMarkedConsumer({
+        run_id: runId, run_generation: 1, orchestrator_generation: 1,
+        fence_sha256: fence, lane: 'lane-codex', generation: 1,
+        operation_key: `register:${runId}`, config_sha256: 'c'.repeat(64),
+        attestation_sha256: 'd'.repeat(64),
+      })
+      consumerId = consumer.consumer_id
+      expect((await registerMarkedConsumer({
+        run_id: runId, run_generation: 1, orchestrator_generation: 1,
+        fence_sha256: fence, lane: 'lane-codex', generation: 1,
+        operation_key: `register:${runId}`, config_sha256: 'c'.repeat(64),
+        attestation_sha256: 'd'.repeat(64),
+      })).consumer_id).toBe(consumerId)
+      await expect(registerMarkedConsumer({
+        run_id: runId, run_generation: 1, orchestrator_generation: 1,
+        fence_sha256: fence, lane: 'lane-codex', generation: 1,
+        operation_key: `register:${runId}`, config_sha256: 'f'.repeat(64),
+        attestation_sha256: 'd'.repeat(64),
+      })).rejects.toThrow('PPE_OPERATION_KEY_REUSE')
+      for (const [index, messageId] of messageIds.entries()) {
+        await prisma.$executeRawUnsafe(
+          `INSERT INTO agent_message
+            (id,type,from_server,from_model,to_server,to_model,body,meta,source,status,
+             ppe_protocol,ppe_run_id,ppe_operation_key,ppe_payload_sha256,
+             ppe_from_principal,ppe_to_consumer_id,ppe_consumer_generation)
+           VALUES ($1,'task','mac','codex','scrum4me-server','codex',$2,'{}','mcp','pending',
+             'parallel-plan-execution/v1',$3,$4,$5,$6,$7,1)`,
+          messageId, `marked tool ${index}`, runId, `tool:${messageId}`,
+          'e'.repeat(64), `orchestrator:${runId}`, consumerId,
+        )
+      }
+      const auth = {
+        run_id: runId, run_generation: 1, orchestrator_generation: 1,
+        fence_sha256: fence, consumer_id: consumerId, consumer_generation: 1,
+      }
+      await expect(claimMarkedMessage({
+        ...auth, fence_sha256: '8'.repeat(64), types: ['task'],
+      })).rejects.toThrow('PPE_FENCE_MISMATCH')
+      const claim = (await claimMarkedMessage({ ...auth, types: ['task'] }))!
+      expect(claim.message.id).toBe(messageIds[0])
+      const stored = await prisma.ppeClaimLease.findUnique({
+        where: { message_id_lease_generation: {
+          message_id: messageIds[0], lease_generation: BigInt(claim.lease_generation),
+        } },
+      })
+      expect(stored?.token_sha256).not.toBe(claim.claim_token)
+      await expect(renewMarkedMessage({
+        ...auth, message_id: messageIds[0], lease_generation: claim.lease_generation,
+        claim_token: 'wrong',
+      })).rejects.toThrow('PPE_CLAIM_FENCE')
+      expect(await renewMarkedMessage({
+        ...auth, message_id: messageIds[0], lease_generation: claim.lease_generation,
+        claim_token: claim.claim_token,
+      })).toBe(true)
+      expect(await cancelMarkedMessage({
+        ...auth, message_id: messageIds[0], expected_status: 'claimed',
+        lease_generation: claim.lease_generation, claim_token: claim.claim_token,
+      })).toBe(true)
+      expect(await cancelMarkedMessage({
+        ...auth, message_id: messageIds[1], expected_status: 'pending',
+      })).toBe(true)
+    } finally {
+      await prisma.ppeClaimLease.deleteMany({ where: { message_id: { in: messageIds } } })
+      await prisma.agentMessage.deleteMany({ where: { id: { in: messageIds } } })
+      if (consumerId) await prisma.ppeConsumer.deleteMany({ where: { consumer_id: consumerId } })
+      await prisma.ppeOrchestratorLease.deleteMany({ where: { run_id: runId } })
+      await prisma.ppeRunRegistry.deleteMany({ where: { run_id: runId } })
+      await prisma.ppeBootstrapFamily.deleteMany({ where: { id: familyId } })
+    }
   })
 
   it('emit een byte-compatibele NotifyEnvelope op agent_queue bij requeue', async () => {

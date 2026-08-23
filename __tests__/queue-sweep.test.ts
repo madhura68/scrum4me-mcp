@@ -20,6 +20,7 @@ import {
   SWEEP_MIN_INTERVAL_MS,
   SWEEP_JITTER_MS,
 } from '../src/queue/sweep.js'
+import { LEGACY_MARKER_SQL } from '../src/queue/marked.js'
 
 const mockTransaction = prisma.$transaction as unknown as ReturnType<typeof vi.fn>
 
@@ -49,8 +50,10 @@ describe('sweepStaleQueueClaims — §6.1', () => {
     expect(sql).toContain('FOR UPDATE SKIP LOCKED')
     expect(sql).toContain("claimed_by LIKE 'mcp:%'")
     expect(sql).toContain("status = 'claimed'")
+    expect(values).toContain(LEGACY_MARKER_SQL)
     expect(sql).toContain("SET status = 'pending', claimed_by = NULL, claimed_at = NULL, started_at = NULL")
-    expect(values).toEqual([MCP_LEASE_STALE_INTERVAL, '4 hours'])
+    expect(values).toContain(MCP_LEASE_STALE_INTERVAL)
+    expect(values).toContain('4 hours')
   })
 
   it('emit per gerequeuede rij een byte-compatibele NotifyEnvelope op agent_queue', async () => {
