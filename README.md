@@ -52,6 +52,10 @@ activity and create todos via native tool calls instead of curl.
 | `queue_find_by_work_item` | s4m-queue: read-only, non-claiming — find messages linked to a Scrum4Me work item via `meta.work_item`, across all addresses (not scoped to your own); pass at least one of `sprint_id`/`story_id`/`task_id` (multiple ids filter as AND), product-guarded, capped at 100 with `truncated`; rows past `S4M_RETENTION_DAYS` (default 60) are archived and not searched | yes (read-only) |
 | `queue_archive` | s4m-queue: archive a terminal message plus its full reply subtree (sets `archived_at`); refuses when any row in the subtree is not terminal; row-level idempotent | yes |
 | `queue_unarchive` | s4m-queue: clear `archived_at` on a message plus its full reply subtree, also when the root itself is active (mixed trees); row-level idempotent | yes |
+| `queue_register_consumer` | s4m-queue (marked/PPE lane): register one fenced lane consumer generation and atomically acknowledge readiness under the run/orchestrator/consumer generation fences | yes |
+| `queue_claim_marked` | s4m-queue (marked/PPE lane): claim one complete marked request FIFO with all run/orchestrator/consumer fences; returns the marked lease token | yes |
+| `queue_renew_marked` | s4m-queue (marked/PPE lane): renew only the exact opaque-token marked lease under all generation fences | yes |
+| `queue_cancel_marked` | s4m-queue (marked/PPE lane): cancel a pending request without a token, or a claimed request with the exact marked lease token | yes |
 
 Demo accounts may read but writes return `PERMISSION_DENIED`.
 
