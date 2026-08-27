@@ -68,6 +68,62 @@ it('werkt titel/beschrijving bij (happy path)', async () => {
   })
 })
 
+it('accepteert een beschrijving van precies 64.000 tekens', async () => {
+  const description = 'x'.repeat(64_000)
+  const res = await handleUpdateIdea({
+    idea_id: 'idea-1',
+    product_id: 'prod-1',
+    description,
+  })
+
+  expect(res.isError).toBeFalsy()
+  expect(mockUpdate).toHaveBeenCalledWith(expect.objectContaining({
+    data: { description },
+  }))
+})
+
+it('weigert 64.001 tekens met een bruikbare grensmelding', async () => {
+  const res = await handleUpdateIdea({
+    idea_id: 'idea-1',
+    product_id: 'prod-1',
+    description: 'x'.repeat(64_001),
+  })
+
+  expect(res.isError).toBe(true)
+  expect(toolText(res)).toContain(
+    'Beschrijving bevat 64.001 tekens; verwijder 1 teken. Maximaal 64.000 toegestaan.',
+  )
+  expect(mockUpdate).not.toHaveBeenCalled()
+})
+
+it('telt een emoji als één teken op de grens van 64.000', async () => {
+  const description = `${'x'.repeat(63_999)}😀`
+  const res = await handleUpdateIdea({
+    idea_id: 'idea-1',
+    product_id: 'prod-1',
+    description,
+  })
+
+  expect(res.isError).toBeFalsy()
+  expect(mockUpdate).toHaveBeenCalledWith(expect.objectContaining({
+    data: { description },
+  }))
+})
+
+it('meldt Unicode-overloop in tekens in plaats van UTF-16-eenheden', async () => {
+  const res = await handleUpdateIdea({
+    idea_id: 'idea-1',
+    product_id: 'prod-1',
+    description: `${'x'.repeat(64_000)}😀`,
+  })
+
+  expect(res.isError).toBe(true)
+  expect(toolText(res)).toContain(
+    'Beschrijving bevat 64.001 tekens; verwijder 1 teken. Maximaal 64.000 toegestaan.',
+  )
+  expect(mockUpdate).not.toHaveBeenCalled()
+})
+
 it('een falende kanaalbericht-write laat de idea-update slagen (best-effort)', async () => {
   mockChatMessage.mockRejectedValue(new Error('db weg'))
   const res = await handleUpdateIdea({

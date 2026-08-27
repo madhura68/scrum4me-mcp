@@ -5,6 +5,7 @@ vi.mock('../src/prisma.js', () => ({
 }))
 vi.mock('../src/auth.js', () => ({
   requireWriteAccess: vi.fn(),
+  PermissionDeniedError: class PermissionDeniedError extends Error {},
 }))
 vi.mock('../src/access.js', () => ({
   userCanAccessProduct: vi.fn(),
@@ -42,6 +43,54 @@ it('maakt een DRAFT-idea met gegenereerde code', async () => {
   expect(JSON.parse(toolText(res))).toMatchObject({ code: 'IDEA-042' })
   // tx-doorgifte: code-generatie moet binnen dezelfde transactie lopen
   expect(nextIdeaCode).toHaveBeenCalledWith('user-1', expect.objectContaining({ idea: expect.anything() }))
+})
+
+it('accepteert een beschrijving van precies 64.000 tekens', async () => {
+  const res = await handleCreateIdea({
+    product_id: 'prod-1',
+    title: 'Groot idee',
+    description: 'x'.repeat(64_000),
+  })
+
+  expect(res.isError).toBeFalsy()
+})
+
+it('weigert 64.001 tekens met een bruikbare grensmelding', async () => {
+  const res = await handleCreateIdea({
+    product_id: 'prod-1',
+    title: 'Te groot idee',
+    description: 'x'.repeat(64_001),
+  })
+
+  expect(res.isError).toBe(true)
+  expect(toolText(res)).toContain(
+    'Beschrijving bevat 64.001 tekens; verwijder 1 teken. Maximaal 64.000 toegestaan.',
+  )
+  expect(mockTx).not.toHaveBeenCalled()
+})
+
+it('telt een emoji als één teken op de grens van 64.000', async () => {
+  const res = await handleCreateIdea({
+    product_id: 'prod-1',
+    title: 'Unicode-idee',
+    description: `${'x'.repeat(63_999)}😀`,
+  })
+
+  expect(res.isError).toBeFalsy()
+})
+
+it('meldt Unicode-overloop in tekens in plaats van UTF-16-eenheden', async () => {
+  const res = await handleCreateIdea({
+    product_id: 'prod-1',
+    title: 'Te groot Unicode-idee',
+    description: `${'x'.repeat(64_000)}😀`,
+  })
+
+  expect(res.isError).toBe(true)
+  expect(toolText(res)).toContain(
+    'Beschrijving bevat 64.001 tekens; verwijder 1 teken. Maximaal 64.000 toegestaan.',
+  )
+  expect(mockTx).not.toHaveBeenCalled()
 })
 
 it('weigert een product buiten toegang/scope (404-stijl)', async () => {
