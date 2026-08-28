@@ -16,6 +16,7 @@
 // (http.ts) registers only the shared set.
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
+import { CANARY_MODE_TOOL_CALL_FORBIDDEN } from './canary-mode.js'
 import { registerHealthTool } from './tools/health.js'
 import { registerListProductsTool } from './tools/list-products.js'
 import { registerGetClaudeContextTool } from './tools/get-claude-context.js'
@@ -88,6 +89,10 @@ import { registerQueueStatusTool } from './tools/queue-status.js'
 import { registerQueueListTool } from './tools/queue-list.js'
 import { registerQueueFindByWorkItemTool } from './tools/queue-find-by-work-item.js'
 import { registerQueueArchiveTools } from './tools/queue-archive.js'
+import { registerQueueRegisterConsumerTool } from './tools/queue-register-consumer.js'
+import { registerQueueClaimMarkedTool } from './tools/queue-claim-marked.js'
+import { registerQueueRenewMarkedTool } from './tools/queue-renew-marked.js'
+import { registerQueueCancelMarkedTool } from './tools/queue-cancel-marked.js'
 
 /**
  * DB/network-only tools — safe for the centralized HTTP server (and also
@@ -190,4 +195,60 @@ export function registerQueueTools(server: McpServer): void {
   registerQueueListTool(server)
   registerQueueFindByWorkItemTool(server)
   registerQueueArchiveTools(server)
+  registerQueueRegisterConsumerTool(server)
+  registerQueueClaimMarkedTool(server)
+  registerQueueRenewMarkedTool(server)
+  registerQueueCancelMarkedTool(server)
+}
+
+/**
+ * Registration facade for the full stdio surface (shared + worktree + queue).
+ *
+ * `execution: 'enabled'` registers the three sets exactly as index.ts always
+ * has — runtime behaviour is unchanged. `execution: 'forbidden'` (canary mode)
+ * routes every registration through a proxy that keeps each tool's metadata
+ * (name, title, description, input schema, annotations) byte-identical while
+ * swapping the callback for one that throws {@link CANARY_MODE_TOOL_CALL_FORBIDDEN},
+ * and drops prompt/resource registration entirely. There is deliberately no
+ * hand-maintained tool list here: canary and runtime walk the same
+ * `register*Tools` calls, so the surface can never drift between the two.
+ */
+export function registerFullStdioSurface(
+  server: McpServer,
+  options: { execution: 'enabled' | 'forbidden' },
+): void {
+  const target = options.execution === 'forbidden' ? forbidToolExecution(server) : server
+  registerSharedTools(target)
+  registerWorktreeTools(target)
+  registerQueueTools(target)
+}
+
+/**
+ * Wrap an McpServer so tool metadata is registered unchanged but every handler
+ * is replaced with one that throws {@link CANARY_MODE_TOOL_CALL_FORBIDDEN}, and
+ * prompt/resource registration becomes a no-op. Implemented as a Proxy so the
+ * real registration code path — not a duplicated descriptor list — produces the
+ * canary surface.
+ */
+function forbidToolExecution(server: McpServer): McpServer {
+  const forbidden = (): never => {
+    throw new Error(CANARY_MODE_TOOL_CALL_FORBIDDEN)
+  }
+  const noop = (): undefined => undefined
+  type RegisterTool = (name: string, config: unknown, cb: unknown) => unknown
+  return new Proxy(server, {
+    get(rawTarget, prop, receiver) {
+      const target = rawTarget as McpServer
+      if (prop === 'registerTool') {
+        return (name: string, config: unknown) =>
+          (target.registerTool as unknown as RegisterTool)(name, config, forbidden)
+      }
+      // The canary registers no prompts or resources (plan §Task 2).
+      if (prop === 'registerPrompt' || prop === 'prompt' || prop === 'registerResource' || prop === 'resource') {
+        return noop
+      }
+      const value = Reflect.get(target, prop, receiver)
+      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value
+    },
+  })
 }

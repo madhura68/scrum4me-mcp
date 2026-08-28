@@ -6,9 +6,12 @@
 //   - mcp:-claims  → stale zodra claimed_at > 5 min oud (lease-refresh dood);
 //   - CLI-claims   → alleen de reclaim-default van 4 h, zoals vandaag.
 // Per gerequeuede rij een byte-compatibele NotifyEnvelope op agent_queue,
-// binnen dezelfde transactie (pg_notify vuurt bij COMMIT).
+// binnen dezelfde transactie (pg_notify vuurt bij COMMIT). Complete én
+// gedeeltelijke PPE-markers vallen altijd buiten deze generieke sweeper;
+// uitsluitend de fenced marked-recoveryroute mag zo'n lease terminaliseren.
 import { prisma } from '../prisma.js'
 import { envelopeOf, QUEUE_CHANNEL } from './notify.js'
+import { LEGACY_MARKER_SQL } from './marked.js'
 
 export const MCP_LEASE_STALE_INTERVAL = '5 minutes'
 export const SWEEP_MIN_INTERVAL_MS = 8 * 60_000
@@ -39,6 +42,7 @@ export async function sweepStaleQueueClaims(): Promise<{ requeued: string[] }> {
       WITH target AS (
         SELECT id FROM agent_message
          WHERE status = 'claimed'
+           AND ${LEGACY_MARKER_SQL}
            AND (
              (claimed_by LIKE 'mcp:%' AND claimed_at < now() - ${MCP_LEASE_STALE_INTERVAL}::interval)
              OR ((claimed_by IS NULL OR claimed_by NOT LIKE 'mcp:%')

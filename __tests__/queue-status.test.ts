@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('../src/prisma.js', () => ({
   prisma: {
     agentMessage: {
-      findUnique: vi.fn(),
+      findFirst: vi.fn(),
       findMany: vi.fn(),
       // Bewust wél gedefinieerd: zonder deze zou een schrijfmutatie een
       // TypeError geven en "toevallig" rood worden. Met deze mocks is de
@@ -26,11 +26,12 @@ vi.mock('../src/auth.js', async (importOriginal) => {
 import { prisma } from '../src/prisma.js'
 import { requireWriteAccess } from '../src/auth.js'
 import { registerQueueStatusTool } from '../src/tools/queue-status.js'
+import { legacyMarkerWhere } from '../src/queue/marked.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
 const mockPrisma = prisma as unknown as {
   agentMessage: {
-    findUnique: ReturnType<typeof vi.fn>
+    findFirst: ReturnType<typeof vi.fn>
     findMany: ReturnType<typeof vi.fn>
     update: ReturnType<typeof vi.fn>
     updateMany: ReturnType<typeof vi.fn>
@@ -94,7 +95,7 @@ beforeEach(() => {
 
 describe('queue_status — §5.6', () => {
   it('retourneert bericht + replies in messageView-vorm (from/to samengesteld)', async () => {
-    mockPrisma.agentMessage.findUnique.mockResolvedValue(requestRow)
+    mockPrisma.agentMessage.findFirst.mockResolvedValue(requestRow)
     mockPrisma.agentMessage.findMany.mockResolvedValue([replyRow])
     const server = makeServer()
     const result = await server.call({ message_id: MSG_ID })
@@ -105,13 +106,13 @@ describe('queue_status — §5.6', () => {
     expect(body.replies).toHaveLength(1)
     expect(body.replies[0].in_reply_to).toBe(MSG_ID)
     expect(mockPrisma.agentMessage.findMany).toHaveBeenCalledWith({
-      where: { in_reply_to: MSG_ID },
+      where: { in_reply_to: MSG_ID, ...legacyMarkerWhere() },
       orderBy: [{ created_at: 'asc' }, { id: 'asc' }],
     })
   })
 
   it('QUEUE_NOT_FOUND voor een onbekend id', async () => {
-    mockPrisma.agentMessage.findUnique.mockResolvedValue(null)
+    mockPrisma.agentMessage.findFirst.mockResolvedValue(null)
     const server = makeServer()
     const result = await server.call({ message_id: MSG_ID })
     expect(result.isError).toBe(true)
@@ -122,7 +123,7 @@ describe('queue_status — §5.6', () => {
   it('muteert niets — queue_status is read-only (§5.6)', async () => {
     // Het definiërende kenmerk van deze tool: een agent die pollt of er al
     // antwoord is, mag dat antwoord niet consumeren.
-    mockPrisma.agentMessage.findUnique.mockResolvedValue(requestRow)
+    mockPrisma.agentMessage.findFirst.mockResolvedValue(requestRow)
     mockPrisma.agentMessage.findMany.mockResolvedValue([replyRow])
     const server = makeServer()
     await server.call({ message_id: MSG_ID })

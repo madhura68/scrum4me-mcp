@@ -6,30 +6,271 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
 
 jobs:
-  verify:
-    name: Verify
+  candidate:
+    name: PR candidate (never published)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+      PPE_CONTROLLER_TEST_DATABASE_URL: postgresql://scrum4us_owner:owner_test_password@postgres:5432/scrum4me_mcp_ppe_test
+      REVIEWED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: scrum4us_owner
+          POSTGRES_PASSWORD: owner_test_password
+          POSTGRES_DB: scrum4me_mcp_ppe_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U scrum4us_owner -d scrum4me_mcp_ppe_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
-      - name: Checkout
+      - name: Checkout the exact PR head (full history, recursive submodules)
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
           submodules: recursive
 
-      - name: Set up Node
+      - name: Prove candidate identity
+        run: |
+          set -euo pipefail
+          head="$(git rev-parse HEAD)"
+          if [ "$head" != "$REVIEWED_HEAD_SHA" ]; then
+            echo "checked-out HEAD does not equal the reviewed PR head"; exit 1
+          fi
+          git submodule status --recursive | awk 'substr($0,1,1) != " " { exit 1 }'
+          git submodule foreach --quiet --recursive \
+            'test -z "$(git status --porcelain --untracked-files=all)"'
+
+      - name: Set up exact release Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24.19.0
 
-      - name: Install dependencies
+      - name: Install dependencies deterministically
         run: npm ci
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Bootstrap disposable PPE controller schema
+        run: npx prisma db push --url "$PPE_CONTROLLER_TEST_DATABASE_URL"
 
-      - name: Run tests
-        run: npm run test
+      - name: Run candidate gates and bind their evidence
+        run: |
+          set -euo pipefail
+          mkdir -p .release
+          npm run prisma:generate
+          git diff --exit-code -- prisma/schema.prisma
+          npm run typecheck
+          npm run typecheck:tests
+          npm test
+          SCRUM4ME_RELEASE_COMMIT="$REVIEWED_HEAD_SHA" \
+            npm run --silent canary:stdio > .release/tool-surface.json
+
+          schema_sha="$(sha256sum prisma/schema.prisma | cut -d' ' -f1)"
+          lock_sha="$(sha256sum package-lock.json | cut -d' ' -f1)"
+          surface_sha="$(sha256sum .release/tool-surface.json | cut -d' ' -f1)"
+          tests_sha="$(printf 'tests\tpassed\n' | sha256sum | cut -d' ' -f1)"
+          printf '{"schema":"%s","typecheck":"%s","tests":"%s","stdio_canary":"%s"}\n' \
+            "$schema_sha" "$lock_sha" "$tests_sha" "$surface_sha" > .release/gates.json
+
+      - name: Build and verify the closed package locally
+        run: |
+          set -euo pipefail
+          SCRUM4ME_RELEASE_COMMIT="$REVIEWED_HEAD_SHA" npm run release:package
+          env -i HOME="$HOME" PATH="$PATH" SCRUM4ME_CANARY_MODE=1 \
+            npm run canary:packaged
+          npm run release:verify-package
+
+      - name: Emit head-bound candidate evidence
+        run: |
+          npm run release:metadata -- \
+            --candidate "$REVIEWED_HEAD_SHA" \
+            --output .release/scrum4me-mcp-candidate.v1.json
+
+      # This upload is explicitly PR evidence. It excludes the package and is
+      # never accepted by release consumers as final merge metadata.
+      - name: Verify exact candidate evidence before upload
+        run: |
+          set -euo pipefail
+          for evidence in \
+            .release/scrum4me-mcp-candidate.v1.json \
+            .release/gates.json \
+            .release/tool-surface.json
+          do
+            if [ ! -f "$evidence" ] || [ -L "$evidence" ] || [ ! -s "$evidence" ]; then
+              echo "candidate evidence is absent, empty, or not a regular file: $evidence" >&2
+              exit 1
+            fi
+          done
+
+      - name: Upload candidate evidence (non-release)
+        # Forgejo 15 supports artifact protocol v3; pin the exact upstream v3
+        # commit instead of the moving tag or GHES-incompatible upstream v4.
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5
+        with:
+          name: scrum4me-mcp-candidate-${{ github.event.pull_request.head.sha }}
+          if-no-files-found: error
+          include-hidden-files: true
+          path: |
+            .release/scrum4me-mcp-candidate.v1.json
+            .release/gates.json
+            .release/tool-surface.json
+
+  final-release:
+    name: Final merge attestation and immutable publication
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+      PPE_CONTROLLER_TEST_DATABASE_URL: postgresql://scrum4us_owner:owner_test_password@postgres:5432/scrum4me_mcp_ppe_test
+      RELEASE_COMMIT: ${{ github.sha }}
+      PRE_PUSH_TARGET_SHA: ${{ github.event.before }}
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: scrum4us_owner
+          POSTGRES_PASSWORD: owner_test_password
+          POSTGRES_DB: scrum4me_mcp_ppe_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U scrum4us_owner -d scrum4me_mcp_ppe_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout final main (full history, recursive submodules)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Prove exact two-parent merge and reviewed-head tree equality
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          head="$(git rev-parse HEAD)"
+          origin_main="$(git rev-parse refs/remotes/origin/main)"
+          if [ "$head" != "$RELEASE_COMMIT" ] || [ "$head" != "$origin_main" ]; then
+            echo "release commit is not exact checked-out origin/main"; exit 1
+          fi
+          read -r -a parents <<<"$(git show -s --format=%P HEAD)"
+          if [ "${#parents[@]}" -ne 2 ]; then
+            echo "final release requires an exact two-parent merge"; exit 1
+          fi
+          if ! printf '%s\n' "$PRE_PUSH_TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$' || \
+             [ "$PRE_PUSH_TARGET_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "pre-push target SHA is absent or malformed"; exit 1
+          fi
+          if [ "${parents[0]}" != "$PRE_PUSH_TARGET_SHA" ]; then
+            echo "merge parent 1 does not equal the pre-push target"; exit 1
+          fi
+          for parent in "${parents[@]}"; do
+            git cat-file -e "${parent}^{commit}"
+          done
+          merge_tree="$(git rev-parse 'HEAD^{tree}')"
+          reviewed_tree="$(git rev-parse "${parents[1]}^{tree}")"
+          if [ "$merge_tree" != "$reviewed_tree" ]; then
+            echo "merge tree differs from reviewed PR-head tree"; exit 1
+          fi
+          git submodule status --recursive | awk 'substr($0,1,1) != " " { exit 1 }'
+          git submodule foreach --quiet --recursive \
+            'test -z "$(git status --porcelain --untracked-files=all)"'
+
+      - name: Set up exact release Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.19.0
+
+      - name: Install dependencies deterministically
+        run: npm ci
+
+      - name: Bootstrap disposable PPE controller schema
+        run: npx prisma db push --url "$PPE_CONTROLLER_TEST_DATABASE_URL"
+
+      - name: Run final gates and bind their evidence
+        run: |
+          set -euo pipefail
+          mkdir -p .release
+          npm run prisma:generate
+          git diff --exit-code -- prisma/schema.prisma
+          npm run typecheck
+          npm run typecheck:tests
+          npm test
+          SCRUM4ME_RELEASE_COMMIT="$RELEASE_COMMIT" \
+            npm run --silent canary:stdio > .release/tool-surface.json
+
+          schema_sha="$(sha256sum prisma/schema.prisma | cut -d' ' -f1)"
+          lock_sha="$(sha256sum package-lock.json | cut -d' ' -f1)"
+          surface_sha="$(sha256sum .release/tool-surface.json | cut -d' ' -f1)"
+          tests_sha="$(printf 'tests\tpassed\n' | sha256sum | cut -d' ' -f1)"
+          printf '{"schema":"%s","typecheck":"%s","tests":"%s","stdio_canary":"%s"}\n' \
+            "$schema_sha" "$lock_sha" "$tests_sha" "$surface_sha" > .release/gates.json
+
+      - name: Build and verify the final closed package
+        run: |
+          set -euo pipefail
+          SCRUM4ME_RELEASE_COMMIT="$RELEASE_COMMIT" npm run release:package
+          env -i HOME="$HOME" PATH="$PATH" SCRUM4ME_CANARY_MODE=1 \
+            npm run canary:packaged
+          npm run release:verify-package
+
+      - name: Emit final merge-only metadata
+        run: npm run release:metadata -- --output .release/scrum4me-mcp-build.v1.json
+
+      - name: Publish immutable package and final metadata
+        env:
+          FORGEJO_PACKAGE_WRITE_TOKEN: ${{ secrets.PACKAGE_WRITE_TOKEN }}
+        run: |
+          set -euo pipefail
+          set +x
+          artifact=".release/artifacts/scrum4me-mcp-${RELEASE_COMMIT}.tar.gz"
+          metadata=".release/scrum4me-mcp-build.v1.json"
+          [ -f "$artifact" ] || { echo "release package is absent"; exit 1; }
+          [ -f "$metadata" ] || { echo "final metadata is absent"; exit 1; }
+          [ -n "${FORGEJO_PACKAGE_WRITE_TOKEN:-}" ] || { echo "write credential is absent"; exit 1; }
+
+          upload_config="$(mktemp)"
+          trap 'rm -f "$upload_config"' EXIT
+          chmod 600 "$upload_config"
+          printf 'header = "Authorization: token %s"\n' \
+            "$FORGEJO_PACKAGE_WRITE_TOKEN" > "$upload_config"
+          base="https://git.jp-visser.nl/api/packages/janpeter/generic/scrum4me-mcp/${RELEASE_COMMIT}"
+          curl --config "$upload_config" --fail-with-body --silent --show-error \
+            --upload-file "$artifact" "$base/scrum4me-mcp-${RELEASE_COMMIT}.tar.gz"
+          curl --config "$upload_config" --fail-with-body --silent --show-error \
+            --upload-file "$metadata" "$base/scrum4me-mcp-build.v1.json"
+
+      - name: Download back with read-only credentials and verify exact bytes
+        env:
+          FORGEJO_PACKAGE_READ_TOKEN: ${{ secrets.PACKAGE_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          set +x
+          [ -n "${FORGEJO_PACKAGE_READ_TOKEN:-}" ] || { echo "read credential is absent"; exit 1; }
+          mkdir -p .release/download-back
+          read_config="$(mktemp)"
+          trap 'rm -f "$read_config"' EXIT
+          chmod 600 "$read_config"
+          printf 'header = "Authorization: token %s"\n' \
+            "$FORGEJO_PACKAGE_READ_TOKEN" > "$read_config"
+          base="https://git.jp-visser.nl/api/packages/janpeter/generic/scrum4me-mcp/${RELEASE_COMMIT}"
+          artifact=".release/artifacts/scrum4me-mcp-${RELEASE_COMMIT}.tar.gz"
+          metadata=".release/scrum4me-mcp-build.v1.json"
+          downloaded_artifact=".release/download-back/scrum4me-mcp-${RELEASE_COMMIT}.tar.gz"
+          downloaded_metadata=".release/download-back/scrum4me-mcp-build.v1.json"
+          curl --config "$read_config" --fail-with-body --silent --show-error \
+            --output "$downloaded_artifact" "$base/scrum4me-mcp-${RELEASE_COMMIT}.tar.gz"
+          curl --config "$read_config" --fail-with-body --silent --show-error \
+            --output "$downloaded_metadata" "$base/scrum4me-mcp-build.v1.json"
+          cmp --silent "$artifact" "$downloaded_artifact"
+          cmp --silent "$metadata" "$downloaded_metadata"
+          sha256sum "$artifact" "$downloaded_artifact" "$metadata" "$downloaded_metadata" \
+            > .release/published-sha256.txt

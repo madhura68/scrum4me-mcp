@@ -45,5 +45,7 @@ export function ensureProductDocFrontmatter(md: string, title: string): string {
   }
   if (!changed) return md
   const fm = stringifyYaml(data).trimEnd()
-  return md.replace(FM_BLOCK_RE, `---\n${fm}\n---\n\n`)
+  // Function replacement: a string here would interpolate `$1`/`$&`/`$'`
+  // sequences occurring in agent-written frontmatter values (e.g. SQL `$1`).
+  return md.replace(FM_BLOCK_RE, () => `---\n${fm}\n---\n\n`)
 }

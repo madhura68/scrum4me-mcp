@@ -13,6 +13,11 @@ import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { driverAdapterCause, UNIQUE_VIOLATION } from '../lib/prisma-driver-error.js'
+import {
+  assertCeremonyOperationKey,
+  executePpeMutation,
+  ppeInputSchema,
+} from '../lib/ppe-operation.js'
 
 const SPRINT_AUTO_RE = /^S-(\d{4}-\d{2}-\d{2})-(\d+)$/
 const MAX_CODE_ATTEMPTS = 3
@@ -56,10 +61,12 @@ export const inputSchema = z.object({
   code: z.string().min(1).max(30).optional(),
   sprint_goal: z.string().min(1).max(500),
   start_date: z.string().date().optional(),
+  ceremony_object_key: z.string().min(1).optional(),
+  ppe: ppeInputSchema.optional(),
 })
 
 export async function handleCreateSprint(
-  { product_id, code, sprint_goal, start_date }: z.infer<typeof inputSchema>,
+  { product_id, code, sprint_goal, start_date, ceremony_object_key, ppe }: z.infer<typeof inputSchema>,
 ) {
   return withToolErrors(async () => {
     const auth = await requireWriteAccess()
@@ -67,39 +74,60 @@ export async function handleCreateSprint(
       return toolError(`Product ${product_id} not found or not accessible`)
     }
 
-    const resolvedStartDate = start_date ? new Date(start_date) : new Date()
-    const baseSelect = {
-      id: true,
-      code: true,
-      sprint_goal: true,
-      status: true,
-      start_date: true,
-      created_at: true,
-    } as const
-
-    if (code) {
-      const sprint = await prisma.sprint.create({
-        data: { product_id, code, sprint_goal, status: 'OPEN', start_date: resolvedStartDate },
-        select: baseSelect,
-      })
-      return toolJson(sprint)
+    if ((ppe === undefined) !== (ceremony_object_key === undefined)) {
+      throw new Error('PPE_INPUT_INCOMPLETE')
+    }
+    if (ppe) assertCeremonyOperationKey(ppe, 'sprint', ceremony_object_key!)
+    const request = {
+      product_id,
+      code: code ?? null,
+      sprint_goal,
+      start_date: start_date ?? null,
+      ceremony_object_key: ceremony_object_key ?? null,
     }
 
-    let lastError: unknown
-    for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
-      const generated = await generateNextSprintCode(product_id)
-      try {
-        const sprint = await prisma.sprint.create({
-          data: { product_id, code: generated, sprint_goal, status: 'OPEN', start_date: resolvedStartDate },
-          select: baseSelect,
-        })
-        return toolJson(sprint)
-      } catch (e) {
-        if (isCodeUniqueConflict(e)) { lastError = e; continue }
-        throw e
-      }
-    }
-    throw lastError ?? new Error('Kon geen unieke sprint-code genereren')
+    return executePpeMutation({
+      ppe,
+      operationKind: 'CEREMONY_SPRINT',
+      targetScope: `product:${product_id}`,
+      request,
+      authority: 'ceremony',
+      mutate: async () => {
+        const resolvedStartDate = start_date ? new Date(start_date) : new Date()
+        const baseSelect = {
+          id: true,
+          code: true,
+          sprint_goal: true,
+          status: true,
+          start_date: true,
+          created_at: true,
+        } as const
+
+        if (code) {
+          const sprint = await prisma.sprint.create({
+            data: { product_id, code, sprint_goal, status: 'OPEN', start_date: resolvedStartDate },
+            select: baseSelect,
+          })
+          return toolJson(sprint)
+        }
+
+        let lastError: unknown
+        for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
+          const generated = await generateNextSprintCode(product_id)
+          try {
+            const sprint = await prisma.sprint.create({
+              data: { product_id, code: generated, sprint_goal, status: 'OPEN', start_date: resolvedStartDate },
+              select: baseSelect,
+            })
+            return toolJson(sprint)
+          } catch (e) {
+            if (isCodeUniqueConflict(e)) { lastError = e; continue }
+            throw e
+          }
+        }
+        throw lastError ?? new Error('Kon geen unieke sprint-code genereren')
+      },
+    })
   })
 }
 

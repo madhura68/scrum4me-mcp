@@ -21,6 +21,11 @@
     "typecheck:tests": "tsc --noEmit -p tsconfig.type-tests.json",
     "pretest": "npm run typecheck:tests",
     "usage:canary": "tsx scripts/check-worker-usage-capture.ts",
+    "canary:stdio": "tsx scripts/stdio-canary.ts",
+    "canary:packaged": "tsx --tsconfig .release/package/tsconfig.json .release/package/scripts/stdio-canary.ts",
+    "release:package": "tsx scripts/verify-release-package.ts --package",
+    "release:verify-package": "tsx scripts/verify-release-package.ts --verify .release/package",
+    "release:metadata": "tsx scripts/release-metadata.ts",
     "sync-schema": "bash scripts/sync-schema.sh",
     "test": "vitest run",
     "test:integration": "vitest run --no-file-parallelism integration.test"
