@@ -1045,7 +1045,7 @@ model Idea {
   product_id      String?
   code            String      @db.VarChar(30)
   title           String
-  description     String?     @db.VarChar(4000)
+  description     String?     @db.VarChar(64000)
   grill_md        String?     @db.Text
   plan_md         String?     @db.Text
   plan_review_log Json? // ReviewLog from orchestrator (all rounds, convergence metrics, approval status)

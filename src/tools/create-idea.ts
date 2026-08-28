@@ -7,12 +7,13 @@ import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
 import { nextIdeaCode } from '../lib/idea-code.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
+import { ideaDescriptionSchema } from '../lib/idea-description.js'
 import { parseContentPolicy, checkContentPolicy, ContentPolicyError } from '@shared/content-policy.js'
 
 const inputSchema = z.object({
   product_id: z.string().min(1),
   title: z.string().trim().min(1).max(200),
-  description: z.string().max(4000).optional(),
+  description: ideaDescriptionSchema.optional(),
 })
 
 export async function handleCreateIdea(input: z.infer<typeof inputSchema>) {

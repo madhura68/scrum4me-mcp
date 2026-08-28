@@ -7,6 +7,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
+import { ideaDescriptionSchema } from '../lib/idea-description.js'
 import { parseContentPolicy, checkContentPolicy, ContentPolicyError } from '@shared/content-policy.js'
 
 // Mirror van web's isIdeaEditable: titel/desc mag alleen muteren in een
@@ -27,7 +28,7 @@ const inputSchema = z
     idea_id: z.string().min(1),
     product_id: z.string().min(1),
     title: z.string().trim().min(1).max(200).optional(),
-    description: z.string().max(4000).optional(),
+    description: ideaDescriptionSchema.optional(),
   })
   .refine((v) => v.title !== undefined || v.description !== undefined, {
     message: 'minstens één van title/description is vereist',
