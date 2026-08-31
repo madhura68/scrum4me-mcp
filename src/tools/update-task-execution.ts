@@ -5,11 +5,14 @@
 //   PENDING → RUNNING → DONE/FAILED/SKIPPED
 // Idempotent: dezelfde call kan veilig herhaald worden.
 
+import * as path from 'node:path'
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
+import { getWorktreeRoot } from '../git/worktree-paths.js'
+import { resolveWorktreeHead, maybeBackupPush } from '../git/branch-safety.js'
 
 const inputSchema = z.object({
   execution_id: z.string().min(1),
@@ -42,7 +45,7 @@ export function registerUpdateTaskExecutionTool(server: McpServer) {
             id: true,
             sprint_job_id: true,
             sprint_job: {
-              select: { claimed_by_token_id: true, status: true, kind: true },
+              select: { claimed_by_token_id: true, status: true, kind: true, branch: true },
             },
           },
         })
@@ -68,13 +71,23 @@ export function registerUpdateTaskExecutionTool(server: McpServer) {
           )
         }
 
+        // Spec §3.1 (load-bearing): bij DONE resolvet de server zelf HEAD in
+        // de job-worktree en persisteert head_sha — óók als de caller er geen
+        // meestuurt (de sprint-prompt doet dat niet) en óók wanneer de
+        // backup-push hieronder als up-to-date wordt overgeslagen.
+        const worktreePath = path.join(getWorktreeRoot(), execution.sprint_job_id)
+        let effectiveHeadSha = head_sha
+        if (status === 'DONE' && effectiveHeadSha === undefined) {
+          effectiveHeadSha = (await resolveWorktreeHead(worktreePath)) ?? undefined
+        }
+
         const now = new Date()
         const updated = await prisma.sprintTaskExecution.update({
           where: { id: execution_id },
           data: {
             status,
             ...(base_sha !== undefined ? { base_sha } : {}),
-            ...(head_sha !== undefined ? { head_sha } : {}),
+            ...(effectiveHeadSha !== undefined ? { head_sha: effectiveHeadSha } : {}),
             ...(skip_reason !== undefined ? { skip_reason } : {}),
             ...(status === 'RUNNING' ? { started_at: now } : {}),
             ...(status === 'DONE' || status === 'FAILED' || status === 'SKIPPED'
@@ -93,6 +106,22 @@ export function registerUpdateTaskExecutionTool(server: McpServer) {
             finished_at: true,
           },
         })
+
+        // Spec §3.1: taakgrens-push — best-effort, ff-only, raakt nooit
+        // pushed_at of de PR-keten.
+        if (status === 'DONE' && execution.sprint_job.branch) {
+          try {
+            await maybeBackupPush({
+              worktreePath,
+              branchName: execution.sprint_job.branch,
+              context: `task-boundary:${execution_id}`,
+            })
+          } catch (err) {
+            // maybeBackupPush hoort nooit te throwen; dit is de contractuele
+            // backstop — een pushprobleem mag de DONE-transitie nooit raken.
+            console.warn(`[update_task_execution] backup push failed:`, err)
+          }
+        }
 
         return toolJson({
           execution_id: updated.id,
