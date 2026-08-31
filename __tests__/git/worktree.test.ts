@@ -79,8 +79,13 @@ describe('createWorktreeForJob', () => {
     tmpDirs.push(repoDir, originDir)
     await makeWorktreeParent()
 
-    // Pre-create an orphan branch (no worktree attached)
+    // Pre-create an orphan branch (no worktree attached). M38 laag 3: de
+    // orphan-delete gebeurt alleen wanneer origin de tip bevat — hier dus
+    // eerst pushen. Het ongepushte geval (branch blijft staan, suffix-uitwijk)
+    // staat in __tests__/worktree-branch-safety.test.ts.
     await git(['branch', 'feat/job-002'], repoDir)
+    await git(['push', 'origin', 'feat/job-002'], repoDir)
+    await git(['fetch', 'origin', '--prune'], repoDir)
 
     const result = await createWorktreeForJob({
       repoRoot: repoDir,
@@ -273,7 +278,7 @@ describe('removeWorktreeForJob', () => {
     return dir
   }
 
-  it('removes worktree directory and deletes branch by default', async () => {
+  it('removes worktree directory and deletes the branch when origin has the tip', async () => {
     const { repoDir, originDir } = await setupRepo()
     tmpDirs.push(repoDir, originDir)
     const wtParent = await makeWorktreeParent()
@@ -284,6 +289,11 @@ describe('removeWorktreeForJob', () => {
       branchName: 'feat/job-rm-01',
       baseRef: 'origin/main',
     })
+
+    // M38 laag 3: de branch wordt alleen verwijderd wanneer origin de tip
+    // aantoonbaar bevat. Het ongepushte geval (branch blijft bewaard) staat
+    // in __tests__/worktree-branch-safety.test.ts.
+    await git(['push', 'origin', branchName], worktreePath)
 
     const result = await removeWorktreeForJob({ repoRoot: repoDir, jobId: 'job-rm-01' })
 

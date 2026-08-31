@@ -138,7 +138,7 @@ describe('getFullJobContext DEPLOY jobs', () => {
         source: 'SYSTEM',
         product: { ...BASE_PRODUCT, auto_deploy: false, deploy_flow: null },
       })
-      .mockResolvedValueOnce({ kind: 'DEPLOY', product_id: null, task: null })
+      .mockResolvedValueOnce({ kind: 'DEPLOY', product_id: null, branch: null, task: null })
 
     const context = await getFullJobContext('job-deploy-1234', 'CLAUDE')
 
@@ -150,6 +150,7 @@ describe('getFullJobContext DEPLOY jobs', () => {
       select: {
         kind: true,
         product_id: true,
+        branch: true,
         task: { select: { repo_url: true } },
       },
     })

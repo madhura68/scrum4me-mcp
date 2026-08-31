@@ -27,8 +27,12 @@ vi.mock('../src/prisma.js', () => ({
   prisma: {
     $queryRaw: vi.fn(),
     $transaction: vi.fn(),
+    sprintTaskExecution: { deleteMany: vi.fn(), findFirst: vi.fn() },
+    sprintRun: { update: vi.fn() },
   },
 }))
+
+vi.mock('../src/git/branch-safety.js', () => ({ maybeBackupPush: vi.fn() }))
 
 import { prisma } from '../src/prisma.js'
 import { resetStaleClaimedJobs, tryClaimJob } from '../src/tools/wait-for-job.js'
@@ -36,6 +40,8 @@ import { resetStaleClaimedJobs, tryClaimJob } from '../src/tools/wait-for-job.js
 const mockPrisma = prisma as unknown as {
   $queryRaw: ReturnType<typeof vi.fn>
   $transaction: ReturnType<typeof vi.fn>
+  sprintTaskExecution: { deleteMany: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> }
+  sprintRun: { update: ReturnType<typeof vi.fn> }
 }
 
 function flattenQueryValues(values: unknown[]): unknown[] {
@@ -56,6 +62,16 @@ beforeEach(() => {
   vi.clearAllMocks()
   // Default: no stale jobs returned from either query
   mockPrisma.$queryRaw.mockResolvedValue([])
+  // M38: de requeue-UPDATE + execution-cleanup draaien in één transactie.
+  // Default-impl voert de callback uit met dezelfde $queryRaw-mock, zodat de
+  // call-volgorde (0 = FAILED, 1 = QUEUED) blijft gelden.
+  mockPrisma.sprintTaskExecution.deleteMany.mockResolvedValue({ count: 0 })
+  mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
+    fn({
+      $queryRaw: mockPrisma.$queryRaw,
+      sprintTaskExecution: mockPrisma.sprintTaskExecution,
+    }),
+  )
   pgMocks.connect.mockResolvedValue(undefined)
   pgMocks.query.mockResolvedValue({ rows: [] })
   pgMocks.end.mockResolvedValue(undefined)
