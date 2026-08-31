@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { resolveOriginDefaultRef } from './default-branch.js'
 
 const exec = promisify(execFile)
 
@@ -18,13 +19,19 @@ export async function pushBranchForJob(opts: {
 }): Promise<PushResult> {
   const { worktreePath, branchName } = opts
 
-  // Detect no new commits vs origin/main
+  // Detect no new commits vs de default branch van origin.
+  // ISS-3: dit stond hardgecodeerd op `origin/main`. In een repo met een
+  // andere default (scrum4me-docker → master) gooit die rev-parse, belandden
+  // we in de catch met reason='unknown' en werd er dus NOOIT gepusht — ook
+  // niet door de M38-backup-pushes. Stille onveiligheid; nu resolven we de
+  // echte default en vallen alleen bij een onleesbare repo terug op 'unknown'.
   let headSha: string
   let baseSha: string
   try {
+    const defaultRef = await resolveOriginDefaultRef(worktreePath)
     const [headResult, baseResult] = await Promise.all([
       exec('git', ['rev-parse', 'HEAD'], { cwd: worktreePath }),
-      exec('git', ['rev-parse', 'origin/main'], { cwd: worktreePath }),
+      exec('git', ['rev-parse', defaultRef], { cwd: worktreePath }),
     ])
     headSha = headResult.stdout.trim()
     baseSha = baseResult.stdout.trim()

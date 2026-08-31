@@ -3,35 +3,10 @@ import { promisify } from 'node:util'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { getProductWorktreePath } from './worktree-paths.js'
+import { resolveOriginDefaultRef } from './default-branch.js'
 
 const exec = promisify(execFile)
 
-// Resolve de default branch van origin als een `origin/<branch>`-ref.
-// Hardcoded `origin/main` faalt fataal voor repo's met een andere default
-// (bv. scrum4me-docker → master): `git worktree add ... origin/main` geeft
-// `fatal: invalid reference: origin/main`, wat een hele worker-pool kan
-// platleggen. We laten origin/HEAD wijzen naar de echte default (set-head
-// --auto na fetch) en lezen die uit; valt terug op origin/main als
-// origin/HEAD onbekend is.
-async function resolveOriginDefaultRef(cwd: string): Promise<string> {
-  try {
-    await exec('git', ['remote', 'set-head', 'origin', '--auto'], { cwd })
-  } catch {
-    // origin/HEAD kon niet automatisch gezet worden — probeer toch te lezen
-  }
-  try {
-    const { stdout } = await exec(
-      'git',
-      ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'],
-      { cwd },
-    )
-    const ref = stdout.trim()
-    if (ref) return ref
-  } catch {
-    // origin/HEAD onbekend — val terug op de historische default
-  }
-  return 'origin/main'
-}
 
 export async function getOrCreateProductWorktree(opts: {
   repoRoot: string
