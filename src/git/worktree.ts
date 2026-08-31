@@ -4,6 +4,7 @@ import * as path from 'node:path'
 import * as fs from 'node:fs/promises'
 import { getWorktreeRoot } from './worktree-paths.js'
 import { withRetry, isTransientGitError } from './retry.js'
+import { localTipContainedInRemote, maybeBackupPushBranch } from './branch-safety.js'
 import { claimLog } from '../lib/claim-log.js'
 
 const exec = promisify(execFile)
@@ -218,10 +219,27 @@ export async function createWorktreeForJob(opts: {
       // `-B` create-or-resets <branch> to origin/<branch> and checks it out, so a
       // stale kept local ref can't make the worktree (and the base_sha captured next)
       // lag the real tip — which would otherwise cause a non-ff push.
-      // Safe under the sequential-sibling protocol: a reused branch was already pushed
-      // by an earlier sibling, so the local ref is at-or-behind origin — the reset
-      // discards no unpushed local commits.
-      await gitRetry(['worktree', 'add', '-B', branchName, worktreePath, `origin/${branchName}`])
+      //
+      // Preconditie (spec §3.4): alleen resetten wanneer de lokale branch
+      // ontbreekt óf origin de lokale tip bevat — anders zou `-B` precies het
+      // werk wissen dat laag 3 hierboven bewaarde. Ligt lokaal vóór origin:
+      // eerst best-effort pushen; lukt dat niet, dan de branch as-is
+      // uitchecken zonder reset.
+      let canReset = !(await branchExists(repoRoot, branchName))
+      if (!canReset) canReset = await localTipContainedInRemote(repoRoot, branchName)
+      if (!canReset) {
+        // Branch-ref-push: repoRoot staat doorgaans op main uitgecheckt, dus
+        // een cwd-HEAD-gebaseerde push/precheck zou hier de verkeerde ref
+        // vergelijken of de push overslaan.
+        await maybeBackupPushBranch({ repoRoot, branchName, context: 'reuse-precondition' })
+        canReset = await localTipContainedInRemote(repoRoot, branchName)
+      }
+      if (canReset) {
+        await gitRetry(['worktree', 'add', '-B', branchName, worktreePath, `origin/${branchName}`])
+      } else {
+        claimLog('worktree.reuseWithoutReset_localAhead', { jobId, branchName })
+        await gitRetry(['worktree', 'add', worktreePath, branchName])
+      }
     } else if (await branchExists(repoRoot, branchName)) {
       await gitRetry(['worktree', 'add', worktreePath, branchName])
     } else {
@@ -249,11 +267,18 @@ export async function createWorktreeForJob(opts: {
         // ignore — fall through to deletion below
       }
     }
-    try {
-      await exec('git', ['branch', '-D', branchName], { cwd: repoRoot })
-      claimLog('worktree.orphanBranchRemoved', { jobId, branchName })
-    } catch {
-      // last resort: timestamp-suffix to avoid collision rather than fail
+    if (await localTipContainedInRemote(repoRoot, branchName)) {
+      try {
+        await exec('git', ['branch', '-D', branchName], { cwd: repoRoot })
+        claimLog('worktree.orphanBranchRemoved', { jobId, branchName })
+      } catch {
+        // last resort: timestamp-suffix to avoid collision rather than fail
+        branchName = `${branchName}-${Date.now()}`
+      }
+    } else {
+      // Laag 3 houdt de orphan-delete tegen → neem de suffix-uitwijk zodat
+      // `worktree add -b` niet fataal faalt op de bestaande naam (spec §3.3).
+      claimLog('worktree.orphanBranchKept_unpushed', { jobId, branchName })
       branchName = `${branchName}-${Date.now()}`
     }
   }
@@ -306,8 +331,20 @@ export async function removeWorktreeForJob(opts: {
     await exec('git', ['worktree', 'prune'], { cwd: repoRoot }).catch(() => {})
   }
 
+  // Laag 3 (spec 2026-08-30-sprint-job-werkbackup-design.md §3.3): een lokale
+  // branch mag alleen verdwijnen wanneer origin de tip aantoonbaar bevat.
+  // De regel zit hier — ín de helper — zodat geen enkele callsite (failure,
+  // requeue, cancel-cascade, cleanup-tool) hem kan overslaan.
   if (!keepBranch && branchName && (await branchExists(repoRoot, branchName))) {
-    await exec('git', ['branch', '-D', branchName], { cwd: repoRoot })
+    if (await localTipContainedInRemote(repoRoot, branchName)) {
+      await exec('git', ['branch', '-D', branchName], { cwd: repoRoot })
+      claimLog('worktree.branchRemoved', { jobId, branchName })
+    } else {
+      claimLog('worktree.branchKept_unpushed', { jobId, branchName })
+      console.warn(
+        `[worktree] branch ${branchName} bewaard voor job ${jobId}: origin mist de lokale tip`,
+      )
+    }
   }
 
   return { removed: true }
