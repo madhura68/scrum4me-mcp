@@ -189,46 +189,78 @@ export async function markJobTerminallyFailed(jobId: string, reason: string): Pr
   }
 }
 
-export async function rollbackClaim(jobId: string): Promise<void> {
-  // Eerst de DB-row terugzetten naar QUEUED, dan best-effort cleanen wat de
-  // claim had aangemaakt zodat een volgende claim-attempt niet stuck loopt.
+// M38: de claim-identiteit waarmee rollbackClaim zich fencet. Alle callsites
+// in dit bestand draaien ná de claim en hebben `ownerCtx` in scope; ontbreekt
+// die (legacy-aanroep zonder context), dan valt de rollback terug op het oude,
+// ongeguarde gedrag.
+function ownerIdentity(
+  ownerCtx?: CloneOwnerCtx | null,
+): { tokenId: string; instanceId: string } | null {
+  return ownerCtx ? { tokenId: ownerCtx.tokenId, instanceId: ownerCtx.instanceId } : null
+}
+
+export async function rollbackClaim(
+  jobId: string,
+  owner: { tokenId: string; instanceId: string } | null,
+): Promise<void> {
+  // Rollback van een claim: de job terug naar QUEUED zetten en best-effort
+  // cleanen wat de claim had aangemaakt, zodat een volgende claim-attempt
+  // niet stuck loopt op `Worktree path already exists` of
+  // `Unique constraint failed (sprint_job_id, task_id)`.
   //
-  // Pre-2026-05-27 deed deze functie alleen de UPDATE. Gevolg: bij een
-  // transient claude-fout (Anthropic 529, network blip, OOM) bleven de
-  // worktree (`/home/agent/.scrum4me-agent-worktrees/<jobId>`) en — voor
-  // SPRINT_IMPLEMENTATION — de zojuist gecreëerde `sprint_task_executions`
-  // hangen. De retry-iteratie hit dan `Worktree path already exists` of
-  // `Unique constraint failed (sprint_job_id, task_id)` → permanent stuck.
+  // M38 (spec §3.4): publiceer QUEUED pas als slotstap. Volgorde: guarded
+  // lease-bump (niet-claimbaar-marker) → vangnet-push → cleanup → guarded
+  // QUEUED + owner-clear. Elke guard: 0 rijen = claim overgenomen = stoppen.
+  // Ownership-refresh: guarded lease-bump die vóór ELKE destructieve stap
+  // opnieuw draait. Eén bump aan het begin is niet genoeg — een trage push
+  // kan de marge overschrijden, de sweep requeuet, B claimt, en een
+  // ongeguarde cleanup zou dan B's verse staat raken.
   //
-  // Best-effort: cleanup-fouten mogen de rollback niet blokkeren. Een
-  // verloren worktree-cleanup blijft een handmatige cleanup-task, maar de
-  // rollback zelf moet altijd slagen.
+  // Best-effort: cleanup-fouten mogen de rollback niet blokkeren.
+  const refreshOwnership = async (moment: string): Promise<boolean> => {
+    if (!owner) return true
+    const n = await prisma.$executeRaw`
+      UPDATE claude_jobs
+      SET lease_until = NOW() + INTERVAL '2 minutes'
+      WHERE id = ${jobId}
+        AND claimed_by_token_id = ${owner.tokenId}
+        AND worker_instance_id = ${owner.instanceId}
+        AND status IN ('CLAIMED', 'RUNNING')
+    `
+    if (n === 0) claimLog('rollback.ownership_lost', { jobId, moment })
+    return n > 0
+  }
+
+  if (!(await refreshOwnership('start'))) return
+
   const job = (await prisma.claudeJob?.findUnique({
     where: { id: jobId },
     select: {
       kind: true,
       product_id: true,
+      branch: true,
       task: { select: { repo_url: true } },
     },
   })) ?? null
 
-  await prisma.$executeRaw`
-    UPDATE claude_jobs
-    SET status = 'QUEUED',
-        claimed_by_token_id = NULL,
-        claimed_at = NULL,
-        plan_snapshot = NULL,
-        worker_instance_id = NULL,
-        lease_until = NULL
-    WHERE id = ${jobId}
-  `
+  // Spec §3.2.2: vangnet-push terwijl de job nog van A is.
+  if (job?.branch) {
+    await maybeBackupPush({
+      worktreePath: path.join(getWorktreeRoot(), jobId),
+      branchName: job.branch,
+      context: `rollback:${jobId}`,
+    })
+  }
 
-  if (!job) return
-
+  // Destructieve stappen alleen met áctueel eigendom (spec §3.4: "uitsluitend
+  // zolang A eigenaar is" — dat is een eigenschap van het uitvoermoment, niet
+  // van de start van de rollback).
+  //
   // SPRINT-specifiek: getFullJobContext creëert sprint_task_executions rows
   // via createMany met UNIQUE(sprint_job_id, task_id). Zonder cleanup faalt
   // de tweede claim-attempt op die unique constraint.
-  if (job.kind === 'SPRINT_IMPLEMENTATION') {
+  if (job?.kind === 'SPRINT_IMPLEMENTATION') {
+    if (!(await refreshOwnership('before-executions-cleanup'))) return
     try {
       await prisma.sprintTaskExecution.deleteMany({ where: { sprint_job_id: jobId } })
     } catch (err) {
@@ -240,12 +272,13 @@ export async function rollbackClaim(jobId: string): Promise<void> {
   }
 
   // Worktree cleanup voor élke kind die er één had. `removeWorktreeForJob`
-  // doet `git worktree remove --force` (cleant bare-repo registratie) en
-  // verwijdert de branch indien op een rollback geen werk gepushed is.
+  // doet `git worktree remove --force` en verwijdert de branch alleen wanneer
+  // origin de tip aantoonbaar bevat (laag-3-regel, M38 T2).
   // Best-effort: als repoRoot niet resolved (b.v. quota-probe failure vóór
   // worktree-creation), is er ook geen worktree om te cleanen.
+  if (!(await refreshOwnership('before-worktree-cleanup'))) return
   try {
-    if (job.product_id) {
+    if (job?.product_id) {
       const repoRoot = await resolveRepoRoot(job.product_id, job.task?.repo_url ?? null)
       if (repoRoot) {
         await removeWorktreeForJob({ repoRoot, jobId })
@@ -257,6 +290,25 @@ export async function rollbackClaim(jobId: string): Promise<void> {
       error: (err as Error).message,
     })
   }
+
+  // Slotstap — pas nu wordt de job claimbaar.
+  const requeued = owner
+    ? await prisma.$executeRaw`
+        UPDATE claude_jobs
+        SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL,
+            plan_snapshot = NULL, worker_instance_id = NULL, lease_until = NULL
+        WHERE id = ${jobId}
+          AND claimed_by_token_id = ${owner.tokenId}
+          AND worker_instance_id = ${owner.instanceId}
+          AND status IN ('CLAIMED', 'RUNNING')
+      `
+    : await prisma.$executeRaw`
+        UPDATE claude_jobs
+        SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL,
+            plan_snapshot = NULL, worker_instance_id = NULL, lease_until = NULL
+        WHERE id = ${jobId}
+      `
+  if (requeued === 0) claimLog('rollback.final_update_lost_ownership', { jobId })
 }
 
 /**
@@ -326,7 +378,7 @@ export async function attachWorktreeToJob(
   claimLog('attach.start', { jobId, productId })
   const repoRoot = await resolveRepoRoot(productId, taskRepoUrl, { ownerCtx, allowOnDemandClone: true })
   if (!repoRoot) {
-    await rollbackClaim(jobId)
+    await rollbackClaim(jobId, ownerIdentity(ownerCtx))
     const repoHint = taskRepoUrl
       ? `task.repo_url=${taskRepoUrl}`
       : `product ${productId}`
@@ -377,7 +429,7 @@ export async function attachWorktreeToJob(
     return { worktree_path: worktreePath, branch_name: actualBranch, reused_branch: reused }
   } catch (err) {
     claimLog('attach.failed', { jobId, error: String((err as Error).message).slice(0, 200) })
-    await rollbackClaim(jobId)
+    await rollbackClaim(jobId, ownerIdentity(ownerCtx))
     return { error: `Worktree creation failed: ${(err as Error).message}` }
   }
 }
@@ -1169,14 +1221,14 @@ export async function getFullJobContext(
 
   if (job.kind === 'PR_REVIEW') {
     if (!job.pr_url) {
-      await rollbackClaim(job.id)
+      await rollbackClaim(job.id, ownerIdentity(ownerCtx))
       return null
     }
     let prRef
     try {
       prRef = parseForgejoPrUrl(job.pr_url)
     } catch {
-      await rollbackClaim(job.id)
+      await rollbackClaim(job.id, ownerIdentity(ownerCtx))
       return null
     }
     const draft = job.manual_drafts[0] ?? null
@@ -1225,7 +1277,7 @@ export async function getFullJobContext(
 
   if (job.kind === 'SPEC_REVIEW') {
     if (!job.doc_id) {
-      await rollbackClaim(job.id)
+      await rollbackClaim(job.id, ownerIdentity(ownerCtx))
       return null
     }
     const doc = await prisma.productDoc.findUnique({
@@ -1240,7 +1292,7 @@ export async function getFullJobContext(
       },
     })
     if (!doc || doc.folder !== 'SPECS' || !doc.current_revision?.content_md) {
-      await rollbackClaim(job.id)
+      await rollbackClaim(job.id, ownerIdentity(ownerCtx))
       return null
     }
     // M23: pipeline-reviews pinnen de revisie op dispatch-moment — serveer díe
@@ -1385,7 +1437,7 @@ export async function getFullJobContext(
       console.error(
         `getFullJobContext: TASK_REVIEW ${job.id} diff-fetch mislukt, requeue — ${fetchErrors.join('; ')}`,
       )
-      await rollbackClaim(job.id)
+      await rollbackClaim(job.id, ownerIdentity(ownerCtx))
       return null
     }
 
@@ -1432,7 +1484,7 @@ export async function getFullJobContext(
     // deploy_flow verplicht (invariant, spec §4) — mis-config maakt de job
     // zichtbaar QUEUED (rollback) i.p.v. de agent stil te laten falen.
     if (!job.product.deploy_flow) {
-      await rollbackClaim(job.id)
+      await rollbackClaim(job.id, ownerIdentity(ownerCtx))
       return null
     }
     return {
@@ -1512,7 +1564,7 @@ export async function getFullJobContext(
   if (job.source === 'MANUAL') {
     const draft = job.manual_drafts[0] ?? null
     if (!draft) {
-      await rollbackClaim(job.id)
+      await rollbackClaim(job.id, ownerIdentity(ownerCtx))
       return null
     }
 
@@ -1765,7 +1817,7 @@ export async function getFullJobContext(
           err,
         )
         await releaseLocksOnTerminal(job.id)
-        await rollbackClaim(job.id)
+        await rollbackClaim(job.id, ownerIdentity(ownerCtx))
         return null
       }
     }
@@ -1832,7 +1884,7 @@ export async function getFullJobContext(
   // capture base_sha. Worker werkt uitsluitend op deze frozen snapshot.
   if (job.kind === 'SPRINT_IMPLEMENTATION') {
     if (!job.sprint_run_id) {
-      await rollbackClaim(job.id)
+      await rollbackClaim(job.id, ownerIdentity(ownerCtx))
       return null
     }
     const sprintRun = await prisma.sprintRun.findUnique({
@@ -1840,7 +1892,7 @@ export async function getFullJobContext(
       include: buildSprintScopeInclude(),
     })
     if (!sprintRun) {
-      await rollbackClaim(job.id)
+      await rollbackClaim(job.id, ownerIdentity(ownerCtx))
       return null
     }
 
@@ -1849,7 +1901,7 @@ export async function getFullJobContext(
       allowOnDemandClone: true,
     })
     if (!repoRoot) {
-      await rollbackClaim(job.id)
+      await rollbackClaim(job.id, ownerIdentity(ownerCtx))
       return null
     }
 
@@ -1876,7 +1928,7 @@ export async function getFullJobContext(
       baseSha = headSha.trim()
     } catch (err) {
       console.warn(`[wait-for-job] sprint-worktree setup failed for ${job.id}:`, err)
-      await rollbackClaim(job.id)
+      await rollbackClaim(job.id, ownerIdentity(ownerCtx))
       return null
     }
 

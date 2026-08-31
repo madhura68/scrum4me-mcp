@@ -8,6 +8,7 @@ vi.mock('../src/prisma.js', () => ({
     $executeRaw: vi.fn(),
     claudeJob: { findFirst: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
     product: { findUnique: vi.fn() },
+    sprintTaskExecution: { deleteMany: vi.fn() },
   },
 }))
 
@@ -16,22 +17,29 @@ vi.mock('../src/git/worktree.js', () => ({
   removeWorktreeForJob: vi.fn(),
 }))
 
+vi.mock('../src/git/branch-safety.js', () => ({ maybeBackupPush: vi.fn() }))
+
 import { prisma } from '../src/prisma.js'
 import { createWorktreeForJob, removeWorktreeForJob } from '../src/git/worktree.js'
+import { maybeBackupPush } from '../src/git/branch-safety.js'
 import { resolveRepoRoot, rollbackClaim, attachWorktreeToJob } from '../src/tools/wait-for-job.js'
 
 const mockPrisma = prisma as unknown as {
   $executeRaw: ReturnType<typeof vi.fn>
   claudeJob: { findFirst: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> }
   product: { findUnique: ReturnType<typeof vi.fn> }
+  sprintTaskExecution: { deleteMany: ReturnType<typeof vi.fn> }
 }
 const mockCreateWorktree = createWorktreeForJob as ReturnType<typeof vi.fn>
 const mockRemoveWorktree = removeWorktreeForJob as ReturnType<typeof vi.fn>
+const mockBackupPush = maybeBackupPush as unknown as ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   vi.clearAllMocks()
   // Default: legacy job zonder sprint_run (oude flow).
   mockPrisma.claudeJob.findUnique.mockResolvedValue({ sprint_run_id: null, sprint_run: null })
+  mockPrisma.sprintTaskExecution.deleteMany.mockResolvedValue({ count: 0 })
+  mockBackupPush.mockResolvedValue('pushed')
 })
 
 describe('resolveRepoRoot', () => {
@@ -187,11 +195,95 @@ describe('rollbackClaim', () => {
     mockPrisma.$executeRaw.mockResolvedValue(0)
     mockRemoveWorktree.mockResolvedValue({ removed: true })
 
-    await rollbackClaim('job-cross-repo')
+    await rollbackClaim('job-cross-repo', null)
 
     expect(mockRemoveWorktree).toHaveBeenCalledWith({
       repoRoot: '/repos/scrum4me-mcp',
       jobId: 'job-cross-repo',
     })
+  })
+
+  // M38 T6 — spec §3.4: ownership-gefenced en atomisch geordend
+  it('rollback is een volledige no-op wanneer de lease-bump 0 rijen raakt', async () => {
+    mockPrisma.$executeRaw.mockResolvedValueOnce(0) // bump
+
+    await rollbackClaim('j1', { tokenId: 'tA', instanceId: 'iA' })
+
+    expect(mockPrisma.claudeJob.findUnique).not.toHaveBeenCalled()
+    expect(mockRemoveWorktree).not.toHaveBeenCalled()
+    // slechts één $executeRaw: de bump zelf
+    expect(mockPrisma.$executeRaw).toHaveBeenCalledTimes(1)
+  })
+
+  it('rollback-volgorde: bump → push → refresh → executions → refresh → cleanup → QUEUED-slotstap', async () => {
+    const calls: string[] = []
+    mockPrisma.$executeRaw.mockImplementation(async () => {
+      calls.push('raw')
+      return 1
+    })
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      kind: 'SPRINT_IMPLEMENTATION',
+      product_id: 'p',
+      branch: 'feat/x',
+      task: { repo_url: null },
+    })
+    mockBackupPush.mockImplementation(async () => {
+      calls.push('push')
+      return 'pushed'
+    })
+    mockPrisma.sprintTaskExecution.deleteMany.mockImplementation(async () => {
+      calls.push('del')
+      return { count: 1 }
+    })
+    mockRemoveWorktree.mockImplementation(async () => {
+      calls.push('cleanup')
+      return { removed: true }
+    })
+    process.env['SCRUM4ME_REPO_ROOT_p'] = '/repo'
+
+    await rollbackClaim('j1', { tokenId: 'tA', instanceId: 'iA' })
+
+    // start-bump, push, refresh, executions-delete, refresh, worktree, slotstap
+    expect(calls).toEqual(['raw', 'push', 'raw', 'del', 'raw', 'cleanup', 'raw'])
+  })
+
+  it('interleaving: eigendom verloren ná de push → geen destructieve stap meer', async () => {
+    // 1e raw (start-bump) slaagt; 2e raw (refresh vóór executions) raakt 0 rijen.
+    mockPrisma.$executeRaw.mockResolvedValueOnce(1).mockResolvedValueOnce(0)
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      kind: 'SPRINT_IMPLEMENTATION',
+      product_id: 'p',
+      branch: 'feat/x',
+      task: { repo_url: null },
+    })
+    process.env['SCRUM4ME_REPO_ROOT_p'] = '/repo'
+
+    await rollbackClaim('j1', { tokenId: 'tA', instanceId: 'iA' })
+
+    expect(mockPrisma.sprintTaskExecution.deleteMany).not.toHaveBeenCalled()
+    expect(mockRemoveWorktree).not.toHaveBeenCalled()
+    expect(mockPrisma.$executeRaw).toHaveBeenCalledTimes(2) // géén QUEUED-slotstap
+  })
+
+  it('pusht de jobbranch vóór de cleanup, met het job-worktree-pad', async () => {
+    process.env['SCRUM4ME_REPO_ROOT_p'] = '/repo'
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = '/wt'
+    mockPrisma.$executeRaw.mockResolvedValue(1)
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      kind: 'TASK_IMPLEMENTATION',
+      product_id: 'p',
+      branch: 'feat/story-x',
+      task: { repo_url: null },
+    })
+    mockRemoveWorktree.mockResolvedValue({ removed: true })
+
+    await rollbackClaim('j2', { tokenId: 'tA', instanceId: 'iA' })
+
+    expect(mockBackupPush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        worktreePath: path.join('/wt', 'j2'),
+        branchName: 'feat/story-x',
+      }),
+    )
   })
 })
