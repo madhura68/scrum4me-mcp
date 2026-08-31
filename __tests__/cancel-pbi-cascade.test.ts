@@ -30,9 +30,14 @@ vi.mock('../src/git/push.js', () => ({
   deleteRemoteBranch: vi.fn(),
 }))
 
+vi.mock('../src/git/branch-safety.js', () => ({
+  remoteTipMergedIntoMain: vi.fn(),
+}))
+
 import { prisma } from '../src/prisma.js'
 import { resolveRepoRoot } from '../src/tools/wait-for-job.js'
 import { removeWorktreeForJob } from '../src/git/worktree.js'
+import { remoteTipMergedIntoMain } from '../src/git/branch-safety.js'
 import {
   closePullRequest,
   getPullRequestState,
@@ -55,6 +60,7 @@ const mockClosePr = closePullRequest as ReturnType<typeof vi.fn>
 const mockGetPrState = getPullRequestState as ReturnType<typeof vi.fn>
 const mockCreateRevertPr = createRevertPullRequest as ReturnType<typeof vi.fn>
 const mockDeleteBranch = deleteRemoteBranch as ReturnType<typeof vi.fn>
+const mockRemoteMerged = remoteTipMergedIntoMain as unknown as ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -62,6 +68,9 @@ beforeEach(() => {
   mockPrisma.claudeJob.updateMany.mockResolvedValue({ count: 0 })
   mockResolveRepoRoot.mockResolvedValue('/repos/proj')
   mockRemoveWorktree.mockResolvedValue(undefined)
+  // M38: default is "tip zit in origin/main" zodat bestaande delete-tests hun
+  // oorspronkelijke betekenis houden; de guard-tests hieronder zetten false.
+  mockRemoteMerged.mockResolvedValue(true)
   // Sensible defaults so an un-stubbed branch in a test doesn't throw on
   // `result.deleted` / `result.ok` access. Tests that care override these.
   mockDeleteBranch.mockResolvedValue({ deleted: true })
@@ -346,5 +355,114 @@ describe('cancelPbiOnFailure', () => {
       | undefined
     expect(updateCall?.data.error.length).toBeLessThanOrEqual(1900)
     expect(updateCall?.data.error.startsWith('X')).toBe(true)
+  })
+
+  // M38 T9 — spec §3.3: (repo,branch)-buckets + gemergde-tip-guard
+  it('bucket per (repo, branch): dezelfde branchnaam in twee repos is niet dezelfde branch', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      ...FAILED_JOB,
+      branch: 'feat/shared',
+      pr_url: null,
+      task: { repo_url: null, story: { pbi: { id: 'pbi-1', code: 'PBI-7' } } },
+    })
+    mockPrisma.claudeJob.findMany.mockResolvedValue([
+      {
+        id: 'sib-1',
+        branch: 'feat/shared',
+        pr_url: null,
+        status: 'QUEUED',
+        task_id: 't1',
+        task: { repo_url: 'https://git/other.git' },
+      },
+    ])
+    mockResolveRepoRoot.mockImplementation(async (_p: string, repoUrl: string | null) =>
+      repoUrl ? '/repos/other' : '/repos/proj',
+    )
+
+    const out = await cancelPbiOnFailure('job-failed')
+
+    expect(mockDeleteBranch).toHaveBeenCalledWith(
+      expect.objectContaining({ repoRoot: '/repos/proj', branch: 'feat/shared' }),
+    )
+    expect(mockDeleteBranch).toHaveBeenCalledWith(
+      expect.objectContaining({ repoRoot: '/repos/other', branch: 'feat/shared' }),
+    )
+    expect(out.deleted_branches).toEqual(['feat/shared', 'feat/shared'])
+  })
+
+  it('resolvet elke repo hooguit één keer (cache)', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      ...FAILED_JOB,
+      pr_url: null,
+      task: { repo_url: null, story: { pbi: { id: 'pbi-1', code: 'PBI-7' } } },
+    })
+    mockPrisma.claudeJob.findMany.mockResolvedValue([
+      {
+        id: 'sib-1',
+        branch: 'feat/story-aaaabbbb',
+        pr_url: null,
+        status: 'QUEUED',
+        task_id: 't1',
+        task: { repo_url: null },
+      },
+      {
+        id: 'sib-2',
+        branch: 'feat/story-aaaabbbb',
+        pr_url: null,
+        status: 'QUEUED',
+        task_id: 't2',
+        task: { repo_url: null },
+      },
+    ])
+
+    await cancelPbiOnFailure('job-failed')
+
+    expect(mockResolveRepoRoot).toHaveBeenCalledTimes(1)
+  })
+
+  it('verwijdert de remote branch niet wanneer de tip niet in origin/main zit', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      ...FAILED_JOB,
+      pr_url: null,
+      task: { repo_url: null, story: { pbi: { id: 'pbi-1', code: 'PBI-7' } } },
+    })
+    mockPrisma.claudeJob.findMany.mockResolvedValue([])
+    mockRemoteMerged.mockResolvedValue(false)
+
+    const out = await cancelPbiOnFailure('job-failed')
+
+    expect(mockDeleteBranch).not.toHaveBeenCalled()
+    expect(out.deleted_branches).toEqual([])
+    expect(out.warnings.join(' ')).toContain('backup bewaard')
+  })
+
+  it('gebruikt de repo van de job bij worktree-cleanup van gecancelde siblings', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      ...FAILED_JOB,
+      branch: null,
+      pr_url: null,
+      task: { repo_url: null, story: { pbi: { id: 'pbi-1', code: 'PBI-7' } } },
+    })
+    mockPrisma.claudeJob.findMany.mockResolvedValue([
+      {
+        id: 'sib-1',
+        branch: null,
+        pr_url: null,
+        status: 'QUEUED',
+        task_id: 't1',
+        task: { repo_url: 'https://git/other.git' },
+      },
+    ])
+    mockResolveRepoRoot.mockImplementation(async (_p: string, repoUrl: string | null) =>
+      repoUrl ? '/repos/other' : '/repos/proj',
+    )
+
+    await cancelPbiOnFailure('job-failed')
+
+    expect(mockRemoveWorktree).toHaveBeenCalledWith({
+      repoRoot: '/repos/other',
+      jobId: 'sib-1',
+      keepBranch: false,
+    })
   })
 })
