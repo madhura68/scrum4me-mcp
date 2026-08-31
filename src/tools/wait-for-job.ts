@@ -25,7 +25,7 @@ import { toolJson, toolError, withToolErrors } from '../errors.js'
 import { createWorktreeForJob, removeWorktreeForJob } from '../git/worktree.js'
 import { getWorktreeRoot } from '../git/worktree-paths.js'
 import { setupProductWorktrees, releaseLocksOnTerminal } from '../git/job-locks.js'
-import { pushBranchForJob } from '../git/push.js'
+import { maybeBackupPush } from '../git/branch-safety.js'
 import { fetchPrDiff, fetchCompareDiff, getPullRequestState } from '../git/pr.js'
 import { parseForgejoPrUrl } from '../git/forgejo-rest.js'
 import { resolveRuntimeJobConfig } from '@shared/job-config.js'
@@ -645,26 +645,35 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
     RETURNING id, task_id, product_id, kind::text AS kind, runtime::text AS runtime, source::text AS source, sprint_run_id, branch
   `
 
-  const requeuedRows = await prisma.$queryRaw<
-    (StaleRow & { retry_count: number })[]
-  >`
-    UPDATE claude_jobs
-    SET status = 'QUEUED',
-        claimed_by_token_id = NULL,
-        claimed_at = NULL,
-        plan_snapshot = NULL,
-        lease_until = NULL,
-        worker_instance_id = NULL,
-        retry_count = retry_count + 1
-    WHERE user_id = ${userId}
-      AND status IN ('CLAIMED', 'RUNNING')
-      AND retry_count < 2
-      AND (
-        lease_until < NOW()
-        OR (lease_until IS NULL AND claimed_at < NOW() - INTERVAL '30 minutes')
-      )
-    RETURNING id, task_id, product_id, kind::text AS kind, runtime::text AS runtime, source::text AS source, sprint_run_id, branch, retry_count
-  `
+  const requeuedRows = await prisma.$transaction(async (tx) => {
+    const rows = await tx.$queryRaw<(StaleRow & { retry_count: number })[]>`
+      UPDATE claude_jobs
+      SET status = 'QUEUED',
+          claimed_by_token_id = NULL,
+          claimed_at = NULL,
+          plan_snapshot = NULL,
+          lease_until = NULL,
+          worker_instance_id = NULL,
+          retry_count = retry_count + 1
+      WHERE user_id = ${userId}
+        AND status IN ('CLAIMED', 'RUNNING')
+        AND retry_count < 2
+        AND (
+          lease_until < NOW()
+          OR (lease_until IS NULL AND claimed_at < NOW() - INTERVAL '30 minutes')
+        )
+      RETURNING id, task_id, product_id, kind::text AS kind, runtime::text AS runtime, source::text AS source, sprint_run_id, branch, retry_count
+    `
+    // Spec §3.4: zonder deze cleanup faalt de volgende claim (cross-host)
+    // op @@unique([sprint_job_id, task_id]) — zelfde motivatie als in
+    // rollbackClaim. Binnen de transactie: de rijlock van de UPDATE hierboven
+    // houdt tryClaimJob (FOR UPDATE SKIP LOCKED) buiten tot de commit.
+    const sprintIds = rows.filter((r) => r.kind === 'SPRINT_IMPLEMENTATION').map((r) => r.id)
+    if (sprintIds.length > 0) {
+      await tx.sprintTaskExecution.deleteMany({ where: { sprint_job_id: { in: sprintIds } } })
+    }
+    return rows
+  })
 
   if (failedRows.length === 0 && requeuedRows.length === 0) return
 
@@ -672,23 +681,29 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
   for (const j of failedRows) await releaseLocksOnTerminal(j.id)
   for (const j of requeuedRows) await releaseLocksOnTerminal(j.id)
 
-  // PBI-50: voor stale FAILED SPRINT_IMPLEMENTATION jobs — push de branch
-  // zodat het werk niet verloren gaat (geen mark-ready / PR-promotie),
-  // en zet SprintRun.failure_reason met een verwijzing naar de laatst
-  // RUNNING execution voor diagnose.
-  for (const j of failedRows.filter((r) => r.kind === 'SPRINT_IMPLEMENTATION')) {
-    if (j.branch && j.product_id) {
-      const repoRoot = await resolveRepoRoot(j.product_id).catch(() => null)
-      if (repoRoot) {
-        const worktreeDir = getWorktreeRoot()
-        const worktreePath = path.join(worktreeDir, j.id)
-        try {
-          await pushBranchForJob({ worktreePath, branchName: j.branch })
-        } catch (err) {
-          console.warn(`[stale-reset] push failed for stale sprint-job ${j.id}:`, err)
-        }
-      }
+  // M38 (spec §3.2.3): vangnet-push voor élke stale rij met een branch —
+  // failed én requeued, elke kind. Vervangt de PBI-50-push die alleen stale
+  // FAILED SPRINT-jobs dekte. Host-lokaal best-effort: op een andere host
+  // ontbreekt het worktree-pad en logt maybeBackupPush een skip.
+  for (const j of [...failedRows, ...requeuedRows]) {
+    if (!j.branch || !j.product_id) continue
+    try {
+      await maybeBackupPush({
+        worktreePath: path.join(getWorktreeRoot(), j.id),
+        branchName: j.branch,
+        context: `stale-reset:${j.id}`,
+      })
+    } catch (err) {
+      // maybeBackupPush hoort nooit te throwen; contractuele backstop zodat
+      // een pushprobleem de rest van de sweep niet overslaat.
+      console.warn(`[stale-reset] backup push failed for job ${j.id}:`, err)
     }
+  }
+
+  // PBI-50: voor stale FAILED SPRINT_IMPLEMENTATION jobs — zet
+  // SprintRun.failure_reason met een verwijzing naar de laatst RUNNING
+  // execution voor diagnose.
+  for (const j of failedRows.filter((r) => r.kind === 'SPRINT_IMPLEMENTATION')) {
     if (j.sprint_run_id) {
       const lastRunning = await prisma.sprintTaskExecution.findFirst({
         where: { sprint_job_id: j.id, status: 'RUNNING' },
