@@ -5,6 +5,7 @@ import * as fs from 'node:fs/promises'
 import { getWorktreeRoot } from './worktree-paths.js'
 import { withRetry, isTransientGitError } from './retry.js'
 import { localTipContainedInRemote, maybeBackupPushBranch } from './branch-safety.js'
+import { resolveOriginDefaultRef } from './default-branch.js'
 import { claimLog } from '../lib/claim-log.js'
 
 const exec = promisify(execFile)
@@ -159,6 +160,13 @@ export async function createWorktreeForJob(opts: {
   repoRoot: string
   jobId: string
   branchName: string
+  /**
+   * Base voor een verse branch. Zonder waarde resolven we de échte default
+   * branch van origin (ISS-3): een hardcoded `origin/main` maakt sprint- en
+   * task-jobs onmogelijk op repo's met een andere default, zoals
+   * scrum4me-docker (master) — `worktree add` faalt dan met
+   * "Not a valid object name" en de job blijft claim–fail–rollback herhalen.
+   */
   baseRef?: string
   /**
    * When true the branch is expected to exist already (sibling job created it).
@@ -167,7 +175,7 @@ export async function createWorktreeForJob(opts: {
    */
   reuseBranch?: boolean
 }): Promise<{ worktreePath: string; branchName: string }> {
-  const { repoRoot, jobId, baseRef = 'origin/main', reuseBranch = false } = opts
+  const { repoRoot, jobId, reuseBranch = false } = opts
   let { branchName } = opts
 
   const parent = getWorktreeRoot()
@@ -199,6 +207,10 @@ export async function createWorktreeForJob(opts: {
   }
 
   await gitRetry(['fetch', 'origin', '--prune'])
+
+  // ISS-3: pas ná de fetch resolven, zodat `remote set-head --auto` een verse
+  // origin/HEAD ziet. Een expliciete baseRef van de caller wint altijd.
+  const baseRef = opts.baseRef ?? (await resolveOriginDefaultRef(repoRoot))
 
   if (reuseBranch) {
     // Sibling task already created the branch; check it out into a fresh worktree.

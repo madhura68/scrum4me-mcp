@@ -5,6 +5,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { pushBranchForJob } from './push.js'
+import { resolveOriginDefaultRef } from './default-branch.js'
 import { claimLog } from '../lib/claim-log.js'
 
 const exec = promisify(execFile)
@@ -134,6 +135,10 @@ export async function localTipContainedInRemote(
   }
 }
 
+// "Main" = de default branch van origin, niet per se `main` (ISS-3): in een
+// master-repo gooide de merge-base hieronder, wat via de catch als "niet
+// gemergd" telde — veilig, maar het betekende dat de cascade daar nooit een
+// gemergde branch opruimde.
 export async function remoteTipMergedIntoMain(
   repoRoot: string,
   branchName: string,
@@ -146,7 +151,8 @@ export async function remoteTipMergedIntoMain(
     )
     const remoteSha = remoteOut.trim().split(/\s+/)[0]
     if (!remoteSha) return false
-    await exec('git', ['merge-base', '--is-ancestor', remoteSha, 'origin/main'], { cwd: repoRoot })
+    const defaultRef = await resolveOriginDefaultRef(repoRoot)
+    await exec('git', ['merge-base', '--is-ancestor', remoteSha, defaultRef], { cwd: repoRoot })
     return true
   } catch {
     return false
