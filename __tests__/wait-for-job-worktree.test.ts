@@ -22,7 +22,12 @@ vi.mock('../src/git/branch-safety.js', () => ({ maybeBackupPush: vi.fn() }))
 import { prisma } from '../src/prisma.js'
 import { createWorktreeForJob, removeWorktreeForJob } from '../src/git/worktree.js'
 import { maybeBackupPush } from '../src/git/branch-safety.js'
-import { resolveRepoRoot, rollbackClaim, attachWorktreeToJob } from '../src/tools/wait-for-job.js'
+import {
+  resolveRepoRoot,
+  rollbackClaim,
+  attachWorktreeToJob,
+  resolveSprintBranchReuse,
+} from '../src/tools/wait-for-job.js'
 
 const mockPrisma = prisma as unknown as {
   $executeRaw: ReturnType<typeof vi.fn>
@@ -285,5 +290,44 @@ describe('rollbackClaim', () => {
         branchName: 'feat/story-x',
       }),
     )
+  })
+})
+
+// M38 T7 — spec §3.4: herclaim ná requeue moet het reuse-pad nemen
+describe('resolveSprintBranchReuse', () => {
+  it('quota-resume: previous_run_id + branch → reuse met die branch', () => {
+    expect(
+      resolveSprintBranchReuse(
+        { previous_run_id: 'prev', branch: 'feat/sprint-old' },
+        { sprint_run_id: 'run-abcdefgh', branch: null },
+      ),
+    ).toEqual({ branchName: 'feat/sprint-old', reuseBranch: true })
+  })
+
+  it('same-run-requeue: vastgelegde branch → reuse', () => {
+    expect(
+      resolveSprintBranchReuse(
+        { previous_run_id: null, branch: 'feat/sprint-abcdefgh' },
+        { sprint_run_id: 'run-abcdefgh', branch: 'feat/sprint-abcdefgh' },
+      ),
+    ).toEqual({ branchName: 'feat/sprint-abcdefgh', reuseBranch: true })
+  })
+
+  it('branch alleen op de job vastgelegd → óók reuse', () => {
+    expect(
+      resolveSprintBranchReuse(
+        { previous_run_id: null, branch: null },
+        { sprint_run_id: 'run-abcdefgh', branch: 'feat/sprint-abcdefgh' },
+      ),
+    ).toEqual({ branchName: 'feat/sprint-abcdefgh', reuseBranch: true })
+  })
+
+  it('eerste claim ooit: geen branch → vers, deterministische naam', () => {
+    expect(
+      resolveSprintBranchReuse(
+        { previous_run_id: null, branch: null },
+        { sprint_run_id: 'run-abcdefgh', branch: null },
+      ),
+    ).toEqual({ branchName: 'feat/sprint-abcdefgh', reuseBranch: false })
   })
 })

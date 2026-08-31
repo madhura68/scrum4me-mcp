@@ -189,6 +189,22 @@ export async function markJobTerminallyFailed(jobId: string, reason: string): Pr
   }
 }
 
+// Spec §3.4 (M38): reuse ook bij een vastgelegde branch van dezelfde run
+// (die blijft staan bij een requeue) — niet alleen bij quota-resume via
+// previous_run_id. Zonder deze verbreding nam een herclaim ná requeue het
+// fresh-pad en werd de bewaarde backup-branch niet hergebruikt.
+export function resolveSprintBranchReuse(
+  sprintRun: { previous_run_id: string | null; branch: string | null },
+  job: { sprint_run_id: string; branch: string | null },
+): { branchName: string; reuseBranch: boolean } {
+  const isResume = !!(sprintRun.previous_run_id && sprintRun.branch)
+  const recorded = sprintRun.branch ?? job.branch ?? null
+  const branchName = isResume
+    ? sprintRun.branch!
+    : recorded ?? `feat/sprint-${job.sprint_run_id.slice(-8)}`
+  return { branchName, reuseBranch: isResume || recorded !== null }
+}
+
 // M38: de claim-identiteit waarmee rollbackClaim zich fencet. Alle callsites
 // in dit bestand draaien ná de claim en hebben `ownerCtx` in scope; ontbreekt
 // die (legacy-aanroep zonder context), dan valt de rollback terug op het oude,
@@ -1905,11 +1921,12 @@ export async function getFullJobContext(
       return null
     }
 
-    // Branch resolution: previous_run_id + branch → reuse; anders verse.
-    const isResume = !!(sprintRun.previous_run_id && sprintRun.branch)
-    const branchName = isResume
-      ? sprintRun.branch!
-      : `feat/sprint-${job.sprint_run_id.slice(-8)}`
+    // Branch resolution (M38 T7): reuse bij quota-resume én bij een al
+    // vastgelegde branch van dezelfde run (blijft staan bij requeue).
+    const { branchName, reuseBranch } = resolveSprintBranchReuse(sprintRun, {
+      sprint_run_id: job.sprint_run_id,
+      branch: job.branch,
+    })
 
     let worktreePath: string
     let baseSha: string
@@ -1918,7 +1935,7 @@ export async function getFullJobContext(
         repoRoot,
         jobId: job.id,
         branchName,
-        reuseBranch: isResume,
+        reuseBranch,
       })
       worktreePath = wt.worktreePath
 
