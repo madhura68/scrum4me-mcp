@@ -26,6 +26,7 @@ import {
 import { releaseLocksOnTerminal } from '../git/job-locks.js'
 import { resolveRepoRoot } from './wait-for-job.js'
 import { pushBranchForJob } from '../git/push.js'
+import { maybeBackupPush } from '../git/branch-safety.js'
 import { notifyJobEnqueued } from '../lib/dispatch/notify.js'
 import { formatDocsAuditCursor } from '@shared/docs-audit-cursor.js'
 import { createPullRequest, getPullRequestState, listPullRequestFiles, markPullRequestReady } from '../git/pr.js'
@@ -167,6 +168,26 @@ export async function runDeferredWorktreeCleanup(jobId: string): Promise<void> {
     console.warn(`[update_job_status] deferred worktree cleanup FAILED for job=${jobId}:`, err)
   } finally {
     await clearWorktreeCleanupPending(jobId).catch(() => {})
+  }
+}
+
+// Spec §3.2.1: vangnet-push op het failed-pad (dekt ook QUOTA_PAUSE, dat als
+// status 'failed' binnenkomt) — vóór markWorktreeCleanupPending, best-effort.
+// Zet nooit pushed_at/head_sha en raakt de PR-keten niet: die blijven
+// exclusief achter het done-pad.
+export async function backupPushOnFailure(
+  jobId: string,
+  branch: string | null | undefined,
+): Promise<void> {
+  if (!branch) return
+  try {
+    await maybeBackupPush({
+      worktreePath: path.join(getWorktreeRoot(), jobId),
+      branchName: branch,
+      context: 'failed-path',
+    })
+  } catch (err) {
+    console.warn(`[update_job_status] backup push failed for job=${jobId}:`, err)
   }
 }
 
@@ -1592,6 +1613,15 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         // removing the worktree inline would make the hook spawn fail (ENOENT) and token
         // usage would never be persisted. We mark cleanup pending here; the worker runner
         // (run-one-job) calls runDeferredWorktreeCleanup() once the agent process exits.
+        //
+        // M38 (spec §3.2.1): op het failed-pad eerst een best-effort
+        // vangnet-push — de cleanup die hierna wordt gemarkeerd vernietigt de
+        // worktree, en zonder deze push zou al het afgeronde werk van de job
+        // alleen host-lokaal bestaan.
+        if (actualStatus === 'failed') {
+          await backupPushOnFailure(job_id, updated.branch ?? null)
+        }
+
         if (
           (actualStatus === 'done' || actualStatus === 'failed' || actualStatus === 'skipped') &&
           !skipWorktreeCleanup
