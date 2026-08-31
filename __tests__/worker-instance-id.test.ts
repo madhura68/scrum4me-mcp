@@ -23,11 +23,16 @@ vi.mock('../src/prisma.js', () => ({
       upsert: vi.fn(),
       findMany: vi.fn(),
     },
+    claudeJob: { findUnique: vi.fn() },
+    sprintTaskExecution: { deleteMany: vi.fn(), findFirst: vi.fn() },
+    sprintRun: { update: vi.fn() },
     $queryRaw: vi.fn(),
     $executeRaw: vi.fn(),
     $transaction: vi.fn(),
   },
 }))
+
+vi.mock('../src/git/branch-safety.js', () => ({ maybeBackupPush: vi.fn() }))
 
 vi.mock('pg', () => ({
   Client: vi.fn().mockImplementation(() => ({
@@ -51,6 +56,9 @@ const mockPrisma = prisma as unknown as {
     upsert: AnyMock
     findMany: AnyMock
   }
+  claudeJob: { findUnique: AnyMock }
+  sprintTaskExecution: { deleteMany: AnyMock; findFirst: AnyMock }
+  sprintRun: { update: AnyMock }
   $queryRaw: AnyMock
   $executeRaw: AnyMock
   $transaction: AnyMock
@@ -60,8 +68,19 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockPrisma.claudeWorker.upsert.mockResolvedValue(undefined)
   mockPrisma.claudeWorker.findMany.mockResolvedValue([])
+  mockPrisma.claudeJob.findUnique.mockResolvedValue(null)
+  mockPrisma.sprintTaskExecution.deleteMany.mockResolvedValue({ count: 0 })
   mockPrisma.$queryRaw.mockResolvedValue([])
   mockPrisma.$executeRaw.mockResolvedValue(1)
+  // M38: requeue-UPDATE + execution-cleanup draaien in één transactie; de
+  // callback krijgt dezelfde $queryRaw-mock zodat call-index 0 = FAILED en
+  // 1 = REQUEUE blijft gelden.
+  mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
+    fn({
+      $queryRaw: mockPrisma.$queryRaw,
+      sprintTaskExecution: mockPrisma.sprintTaskExecution,
+    }),
+  )
 })
 
 describe('registerWorker — instance_id', () => {
@@ -198,7 +217,8 @@ describe('tryClaimJob / rollbackClaim — worker_instance_id rotation', () => {
     expect(firstUpdate).toContain('instance-1')
 
     // --- 2) Rollback clears worker_instance_id ---
-    await rollbackClaim(jobId)
+    // owner=null → ongeguarde variant (M38): één $executeRaw, de QUEUED-update.
+    await rollbackClaim(jobId, null)
     const rollbackCall = mockPrisma.$executeRaw.mock.calls[0]
     const rollbackSql = (rollbackCall[0] as string[]).join('')
     expect(rollbackSql).toContain('worker_instance_id = NULL')

@@ -13,11 +13,17 @@ vi.mock('../src/prisma.js', () => ({
   },
 }))
 
+vi.mock('../src/git/branch-safety.js', () => ({
+  maybeBackupPush: vi.fn(),
+}))
+
 import { pushBranchForJob } from '../src/git/push.js'
 import { prisma } from '../src/prisma.js'
-import { prepareDoneUpdate } from '../src/tools/update-job-status.js'
+import { maybeBackupPush } from '../src/git/branch-safety.js'
+import { backupPushOnFailure, prepareDoneUpdate } from '../src/tools/update-job-status.js'
 
 const mockPush = pushBranchForJob as ReturnType<typeof vi.fn>
+const mockBackupPush = maybeBackupPush as unknown as ReturnType<typeof vi.fn>
 const mockFindUnique = (prisma as unknown as {
   claudeJob: { findUnique: ReturnType<typeof vi.fn> }
 }).claudeJob.findUnique
@@ -25,6 +31,7 @@ const mockFindUnique = (prisma as unknown as {
 beforeEach(() => {
   vi.clearAllMocks()
   mockFindUnique.mockResolvedValue(null)
+  mockBackupPush.mockResolvedValue('pushed')
 })
 
 describe('prepareDoneUpdate', () => {
@@ -136,5 +143,35 @@ describe('prepareDoneUpdate', () => {
 
     expect(plan.dbStatus).toBe('FAILED')
     expect(plan.skipWorktreeCleanup).toBe(true)
+  })
+})
+
+// M38 T4 — spec §3.2.1: vangnet-push op het failed-pad
+describe('backupPushOnFailure', () => {
+  const originalEnv = { ...process.env }
+
+  afterEach(() => {
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = originalEnv.SCRUM4ME_AGENT_WORKTREE_DIR
+  })
+
+  it('pusht de jobbranch vanaf het worktree-pad', async () => {
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = '/wt'
+    await backupPushOnFailure('job-1', 'feat/sprint-x')
+    expect(mockBackupPush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        worktreePath: path.join('/wt', 'job-1'),
+        branchName: 'feat/sprint-x',
+      }),
+    )
+  })
+
+  it('is een no-op zonder branch', async () => {
+    await backupPushOnFailure('job-1', null)
+    expect(mockBackupPush).not.toHaveBeenCalled()
+  })
+
+  it('slikt fouten', async () => {
+    mockBackupPush.mockRejectedValue(new Error('x'))
+    await expect(backupPushOnFailure('job-1', 'b')).resolves.toBeUndefined()
   })
 })

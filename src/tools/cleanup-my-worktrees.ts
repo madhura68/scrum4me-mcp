@@ -1,10 +1,12 @@
 import { z } from 'zod'
 import * as fs from 'node:fs/promises'
+import * as path from 'node:path'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { toolJson, withToolErrors } from '../errors.js'
 import { removeWorktreeForJob } from '../git/worktree.js'
+import { maybeBackupPush } from '../git/branch-safety.js'
 import { getWorktreeRoot, SYSTEM_WORKTREE_DIRS } from '../git/worktree-paths.js'
 import { resolveRepoRoot } from './wait-for-job.js'
 
@@ -46,7 +48,13 @@ export async function cleanupWorktrees(
 
   const jobs = await prisma.claudeJob.findMany({
     where: { id: { in: jobIds }, user_id: userId },
-    select: { id: true, status: true, product_id: true, branch: true },
+    select: {
+      id: true,
+      status: true,
+      product_id: true,
+      branch: true,
+      task: { select: { repo_url: true } },
+    },
   })
   const jobMap = new Map(jobs.map((j) => [j.id, j]))
 
@@ -65,10 +73,26 @@ export async function cleanupWorktrees(
     }
 
     if (TERMINAL_STATUSES.has(job.status)) {
-      const repoRoot = await resolveRepoRoot(job.product_id)
+      // M38: repo per job resolven — een cross-repo-task (task.repo_url) leeft
+      // niet in de product-repo.
+      const repoRoot = await resolveRepoRoot(job.product_id, job.task?.repo_url ?? null)
       if (!repoRoot) {
         skipped.push(jobId)
         continue
+      }
+
+      // Spec §3.2.4: push vóór verwijdering wanneer origin de tip mist.
+      // DONE-jobs hebben hun push al op het done-pad gehad.
+      if (job.branch && job.status !== 'DONE') {
+        try {
+          await maybeBackupPush({
+            worktreePath: path.join(worktreeParent, jobId),
+            branchName: job.branch,
+            context: `cleanup-my-worktrees:${jobId}`,
+          })
+        } catch {
+          // best-effort — nooit de cleanup blokkeren
+        }
       }
 
       // Keep branch for DONE jobs that already pushed (job.branch is set)

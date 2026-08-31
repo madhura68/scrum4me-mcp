@@ -13,6 +13,7 @@ import {
   getPullRequestState,
 } from '../git/pr.js'
 import { deleteRemoteBranch } from '../git/push.js'
+import { remoteTipMergedIntoMain } from '../git/branch-safety.js'
 import { releaseLocksOnTerminal } from '../git/job-locks.js'
 
 export type CascadeOutcome = {
@@ -54,6 +55,7 @@ async function runCascade(failedJobId: string): Promise<CascadeOutcome> {
       pr_url: true,
       task: {
         select: {
+          repo_url: true,
           story: {
             select: {
               pbi: { select: { id: true, code: true } },
@@ -80,7 +82,14 @@ async function runCascade(failedJobId: string): Promise<CascadeOutcome> {
       status: { in: ['QUEUED', 'CLAIMED', 'RUNNING'] },
       task: { story: { pbi_id: pbi.id } },
     },
-    select: { id: true, branch: true, pr_url: true, status: true, task_id: true },
+    select: {
+      id: true,
+      branch: true,
+      pr_url: true,
+      status: true,
+      task_id: true,
+      task: { select: { repo_url: true } },
+    },
   })
 
   if (eligible.length > 0) {
@@ -105,25 +114,48 @@ async function runCascade(failedJobId: string): Promise<CascadeOutcome> {
     warnings: [],
   }
 
-  // 2. Group affected jobs (cascade-set ∪ failed) by branch to avoid
+  // 2. Group affected jobs (cascade-set ∪ failed) by (repo, branch) to avoid
   //    closing the same PR twice for siblings sharing a story-branch.
-  const branchSet = new Map<string, { prUrl: string | null }>()
-  const all = [...eligible, { branch: failedJob.branch, pr_url: failedJob.pr_url }]
+  //    Spec §3.3 "Repo-resolutie per job, overal": branches zijn per repo, dus
+  //    dezelfde branchnaam in twee repo's is niet dezelfde branch.
+  type Bucket = { repoUrl: string | null; branch: string; prUrl: string | null }
+  const buckets = new Map<string, Bucket>()
+  const all = [
+    ...eligible.map((j) => ({
+      branch: j.branch,
+      pr_url: j.pr_url,
+      repo_url: j.task?.repo_url ?? null,
+    })),
+    {
+      branch: failedJob.branch,
+      pr_url: failedJob.pr_url,
+      repo_url: failedJob.task?.repo_url ?? null,
+    },
+  ]
   for (const j of all) {
     if (!j.branch) continue
-    const existing = branchSet.get(j.branch)
+    const key = JSON.stringify([j.repo_url ?? null, j.branch])
+    const existing = buckets.get(key)
     // Prefer a non-null pr_url if any sibling has one.
     if (!existing) {
-      branchSet.set(j.branch, { prUrl: j.pr_url ?? null })
+      buckets.set(key, { repoUrl: j.repo_url ?? null, branch: j.branch, prUrl: j.pr_url ?? null })
     } else if (!existing.prUrl && j.pr_url) {
-      branchSet.set(j.branch, { prUrl: j.pr_url })
+      existing.prUrl = j.pr_url
     }
   }
 
-  const repoRoot = await resolveRepoRoot(failedJob.product_id)
+  const repoRootCache = new Map<string, string | null>()
+  const rootFor = async (repoUrl: string | null): Promise<string | null> => {
+    const key = repoUrl ?? ''
+    if (!repoRootCache.has(key)) {
+      repoRootCache.set(key, await resolveRepoRoot(failedJob.product_id, repoUrl))
+    }
+    return repoRootCache.get(key)!
+  }
   const cascadeComment = `PBI ${pbi.code ?? pbi.id} cascaded fail — see job ${failedJobId}`
 
-  for (const [branch, { prUrl }] of branchSet) {
+  for (const { repoUrl, branch, prUrl } of buckets.values()) {
+    const repoRoot = await rootFor(repoUrl)
     if (prUrl) {
       const info = await getPullRequestState({ prUrl, cwd: repoRoot ?? undefined })
       if ('error' in info) {
@@ -189,13 +221,16 @@ async function runCascade(failedJobId: string): Promise<CascadeOutcome> {
   //    is handled elsewhere by cleanupWorktreeForTerminalStatus). For
   //    cancelled jobs we always discard the branch locally — they did not
   //    succeed.
-  if (repoRoot) {
-    for (const j of eligible) {
-      try {
-        await removeWorktreeForJob({ repoRoot, jobId: j.id, keepBranch: false })
-      } catch (err) {
-        outcome.warnings.push(`worktree cleanup for ${j.id}: ${(err as Error).message}`)
-      }
+  //    Per job de eigen repo resolven (spec §3.3); de laag-3-regel in
+  //    removeWorktreeForJob (M38 T2) bewaart daar automatisch een branch
+  //    waarvan origin de tip mist. Bewust géén push voor gecancelde siblings.
+  for (const j of eligible) {
+    const jobRoot = await rootFor(j.task?.repo_url ?? null)
+    if (!jobRoot) continue
+    try {
+      await removeWorktreeForJob({ repoRoot: jobRoot, jobId: j.id, keepBranch: false })
+    } catch (err) {
+      outcome.warnings.push(`worktree cleanup for ${j.id}: ${(err as Error).message}`)
     }
   }
 
@@ -231,6 +266,14 @@ async function tryDeleteBranch(
   outcome: CascadeOutcome,
   expectedHeadSha?: string | null,
 ): Promise<void> {
+  // Spec §3.3 remote kant: alleen deleten wanneer de remote tip in
+  // origin/main zit — niet-gemergd werk blijft als backup staan.
+  if (!(await remoteTipMergedIntoMain(repoRoot, branch))) {
+    outcome.warnings.push(
+      `branch ${branch} niet verwijderd: tip niet in origin/main (backup bewaard)`,
+    )
+    return
+  }
   const result = await deleteRemoteBranch({
     repoRoot,
     branch,

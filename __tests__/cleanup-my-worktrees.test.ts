@@ -21,8 +21,11 @@ vi.mock('node:fs/promises', () => ({
   readdir: vi.fn(),
 }))
 
+vi.mock('../src/git/branch-safety.js', () => ({ maybeBackupPush: vi.fn() }))
+
 import { prisma } from '../src/prisma.js'
 import { removeWorktreeForJob } from '../src/git/worktree.js'
+import { maybeBackupPush } from '../src/git/branch-safety.js'
 import { resolveRepoRoot } from '../src/tools/wait-for-job.js'
 import * as fsPromises from 'node:fs/promises'
 import { cleanupWorktrees, listWorktreeJobIds, getWorktreeParent } from '../src/tools/cleanup-my-worktrees.js'
@@ -33,6 +36,7 @@ const mockPrisma = prisma as unknown as {
 const mockRemove = removeWorktreeForJob as ReturnType<typeof vi.fn>
 const mockResolve = resolveRepoRoot as ReturnType<typeof vi.fn>
 const mockReaddir = fsPromises.readdir as ReturnType<typeof vi.fn>
+const mockBackupPush = maybeBackupPush as unknown as ReturnType<typeof vi.fn>
 
 const REPO_ROOT = '/repos/my-project'
 const USER_ID = 'user-1'
@@ -47,6 +51,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   mockResolve.mockResolvedValue(REPO_ROOT)
   mockRemove.mockResolvedValue({ removed: true })
+  mockBackupPush.mockResolvedValue('pushed')
 })
 
 describe('getWorktreeParent', () => {
@@ -178,5 +183,50 @@ describe('cleanupWorktrees', () => {
 
     expect(result).toEqual({ removed: [], kept: [], skipped: [] })
     expect(mockPrisma.claudeJob.findMany).not.toHaveBeenCalled()
+  })
+
+  // M38 T8 — spec §3.2.4 + §3.3 (repo-resolutie per job)
+  it('gebruikt task.repo_url bij een cross-repo-job', async () => {
+    mockReaddir.mockResolvedValue([makeDirent('j1')])
+    mockPrisma.claudeJob.findMany.mockResolvedValue([
+      {
+        id: 'j1',
+        status: 'FAILED',
+        product_id: PRODUCT_ID,
+        branch: 'feat/x',
+        task: { repo_url: 'https://git/other.git' },
+      },
+    ])
+
+    await cleanupWorktrees(WORKTREE_PARENT, USER_ID)
+
+    expect(mockResolve).toHaveBeenCalledWith(PRODUCT_ID, 'https://git/other.git')
+  })
+
+  it('pusht een FAILED-branch vóór verwijdering', async () => {
+    mockReaddir.mockResolvedValue([makeDirent('j1')])
+    mockPrisma.claudeJob.findMany.mockResolvedValue([
+      { id: 'j1', status: 'FAILED', product_id: PRODUCT_ID, branch: 'feat/x', task: null },
+    ])
+
+    await cleanupWorktrees(WORKTREE_PARENT, USER_ID)
+
+    expect(mockBackupPush).toHaveBeenCalledWith(
+      expect.objectContaining({
+        worktreePath: path.join(WORKTREE_PARENT, 'j1'),
+        branchName: 'feat/x',
+      }),
+    )
+  })
+
+  it('pusht niet voor DONE-jobs', async () => {
+    mockReaddir.mockResolvedValue([makeDirent('j1')])
+    mockPrisma.claudeJob.findMany.mockResolvedValue([
+      { id: 'j1', status: 'DONE', product_id: PRODUCT_ID, branch: 'feat/x', task: null },
+    ])
+
+    await cleanupWorktrees(WORKTREE_PARENT, USER_ID)
+
+    expect(mockBackupPush).not.toHaveBeenCalled()
   })
 })
