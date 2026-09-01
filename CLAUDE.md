@@ -90,7 +90,7 @@ deploying the MCP/worker claim SQL.
    - Otherwise → fresh branch `feat/story-<last-8-chars-of-story-id>`
 2. Then `createWorktreeForJob`:
    - Worktree directory: `SCRUM4ME_AGENT_WORKTREE_DIR/<job-id>` (default: `~/.scrum4me-agent-worktrees/<job-id>`)
-   - Base: `origin/main` for fresh branches; existing remote tip for reused branches
+   - Base: origin's default branch for fresh branches (resolved via `origin/HEAD` after fetch, falling back to `origin/main`, so repos whose default is `master` also work); existing remote tip for reused branches
    - When reusing: any stale sibling worktree still holding the branch is removed first (siblings are sequential)
 3. Tool response includes `worktree_path`, `branch_name`, `reused_branch`.
 4. **Work exclusively in `worktree_path`** — all file edits and commits go there.
