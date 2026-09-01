@@ -55,7 +55,8 @@ export function registerQueuePushTool(server: McpServer) {
         'review_request (review a document). For task/review_request supply cwd plus meta.task ' +
         '{objective, verification, response_format}; the tool derives meta.task.repo via ' +
         '`git remote get-url origin` in that cwd (pass meta.task.repo explicitly when derivation fails). ' +
-        'Optional sprint_id/story_id/task_id link the message to Scrum4Me work items: the tool derives the full hierarchy via the story (product_id included) and stores it as meta.work_item; inconsistent or unknown ids are rejected. ' +
+        'When this message is about Scrum4Me work you are doing — almost always a task or review_request tied to a story — pass its id via sprint_id/story_id/task_id so it is traceable on the dashboard. ' +
+        'The most specific id you have is enough: the tool derives the rest of the hierarchy (product_id included) via the story, stores it as meta.work_item, and rejects unknown/inconsistent ids. Get the id from get_claude_context or the story/task you are working on. ' +
         'Returns message_id — fetch the answer later with queue_wait_reply({ message_ids: [message_id] }).',
       inputSchema,
     },
