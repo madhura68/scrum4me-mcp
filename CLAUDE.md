@@ -106,9 +106,9 @@ A story with 3 sub-tasks lands as **1 branch** with 3 commits and **1 PR** (assu
 
 When a `TASK_IMPLEMENTATION` job ends in `FAILED`, `cancelPbiOnFailure` (`src/cancel/pbi-cascade.ts`) cancels every queued/claimed/running sibling under the **same PBI** (across all stories) and undoes already-pushed commits:
 
-- **Open PR** → Forgejo REST close (cascade-comment + state:closed) + best-effort `git push origin --delete <branch>` with `expectedHeadSha`-guard so a late worker-push isn't overwritten.
+- **Open PR** → Forgejo REST close (cascade-comment + state:closed) + best-effort `git push origin --delete <branch>` with `expectedHeadSha`-guard so a late worker-push isn't overwritten. Since M38 the remote delete only runs when origin's tip is already contained in the default branch; an unmerged tip is left in place as a backup instead of being deleted.
 - **Merged PR** → revert-PR opened against the base branch via `git revert` (parent-count-aware: `-m 1` for merge-commits, plain revert for squash-merges with 1 parent). **No** auto-merge on the revert PR — review by hand.
-- **Branch without PR** → best-effort `git push origin --delete <branch>` with `expectedHeadSha`-guard.
+- **Branch without PR** → best-effort `git push origin --delete <branch>` with `expectedHeadSha`-guard, subject to the same M38 gate: an unmerged tip is kept as a backup rather than deleted.
 
 A trace (cancelled job count, closed/reverted PRs, deleted branches) is written to the original failed job's `error` column. Race-protection: if a parallel worker tries to `update_job_status` on a job that the cascade already set to `CANCELLED`, the call is rejected with a `JOB_CANCELLED` error so the agent discards local work and calls `wait_for_job` again. The cascade is idempotent and never throws — failures become warnings on the failed-job's trace.
 
