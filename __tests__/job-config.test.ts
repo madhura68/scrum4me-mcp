@@ -2,12 +2,12 @@ import { describe, it, expect } from 'vitest'
 import { getKindDefault, resolveJobConfig, mapBudgetToEffort } from '../src/lib/job-config.js'
 
 const KIND_EXPECTED = {
-  IDEA_GRILL: { model: 'claude-sonnet-4-6', thinking_budget: 12000, permission_mode: 'acceptEdits', max_turns: 15 },
-  IDEA_MAKE_PLAN: { model: 'claude-opus-4-8', thinking_budget: 24000, permission_mode: 'acceptEdits', max_turns: 20 },
-  IDEA_REVIEW_PLAN: { model: 'claude-opus-4-8', thinking_budget: 6000, permission_mode: 'default', max_turns: 50 },
-  PLAN_CHAT: { model: 'claude-sonnet-4-6', thinking_budget: 6000, permission_mode: 'acceptEdits', max_turns: 5 },
-  TASK_IMPLEMENTATION: { model: 'claude-opus-4-8', thinking_budget: 6000, permission_mode: 'bypassPermissions', max_turns: 50 },
-  SPRINT_IMPLEMENTATION: { model: 'claude-opus-4-8', thinking_budget: 6000, permission_mode: 'bypassPermissions', max_turns: null },
+  IDEA_GRILL: { model: 'claude-sonnet-5', thinking_budget: 12000, permission_mode: 'acceptEdits', max_turns: 15 },
+  IDEA_MAKE_PLAN: { model: 'claude-opus-5', thinking_budget: 24000, permission_mode: 'acceptEdits', max_turns: 20 },
+  IDEA_REVIEW_PLAN: { model: 'claude-opus-5', thinking_budget: 6000, permission_mode: 'default', max_turns: 50 },
+  PLAN_CHAT: { model: 'claude-sonnet-5', thinking_budget: 6000, permission_mode: 'acceptEdits', max_turns: 5 },
+  TASK_IMPLEMENTATION: { model: 'claude-opus-5', thinking_budget: 6000, permission_mode: 'bypassPermissions', max_turns: 50 },
+  SPRINT_IMPLEMENTATION: { model: 'claude-opus-5', thinking_budget: 6000, permission_mode: 'bypassPermissions', max_turns: null },
 } as const
 
 describe('getKindDefault', () => {
@@ -23,7 +23,7 @@ describe('getKindDefault', () => {
 
   it('valt terug op een veilige fallback voor onbekende kinds', () => {
     const cfg = getKindDefault('SOMETHING_NEW')
-    expect(cfg.model).toBe('claude-sonnet-4-6')
+    expect(cfg.model).toBe('claude-sonnet-5')
     expect(cfg.permission_mode).toBe('default')
   })
 })
@@ -57,7 +57,7 @@ describe('resolveJobConfig — cascade', () => {
       { preferred_model: 'claude-sonnet-4-6' },
       { requires_opus: true },
     )
-    expect(cfg.model).toBe('claude-opus-4-8')
+    expect(cfg.model).toBe('claude-opus-5')
   })
 
   it('task.requires_opus overrult ook job.requested_model = haiku', () => {
@@ -66,7 +66,7 @@ describe('resolveJobConfig — cascade', () => {
       {},
       { requires_opus: true },
     )
-    expect(cfg.model).toBe('claude-opus-4-8')
+    expect(cfg.model).toBe('claude-opus-5')
   })
 
   it('job.requested_thinking_budget overrult kind-default', () => {
@@ -187,5 +187,13 @@ describe('mapBudgetToEffort', () => {
     [100000, 'max'],
   ])('budget %i → %s', (budget, expected) => {
     expect(mapBudgetToEffort(budget)).toBe(expected)
+  })
+})
+
+describe('M39 de-drift — shim op @shared', () => {
+  it('IDEA_MAKE_SPEC valt niet meer op FALLBACK (de-drift M39)', () => {
+    const cfg = getKindDefault('IDEA_MAKE_SPEC')
+    expect(cfg.model).toBe('claude-opus-5')
+    expect(cfg.thinking_budget).toBe(24000)
   })
 })

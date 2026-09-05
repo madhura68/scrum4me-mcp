@@ -110,7 +110,7 @@ describe('getFullJobContext — live JobKindConfig-resolutie', () => {
     const ctx = (await getFullJobContext('job-jkc-1', 'CLAUDE')) as any
     expect(ctx.config.runtime).toBe('CLAUDE')
     // IDEA_GRILL code-default (KIND_DEFAULTS): sonnet + acceptEdits
-    expect(ctx.config.model).toBe('claude-sonnet-4-6')
+    expect(ctx.config.model).toBe('claude-sonnet-5')
     expect(ctx.config.permission_mode).toBe('acceptEdits')
   })
 
@@ -118,7 +118,7 @@ describe('getFullJobContext — live JobKindConfig-resolutie', () => {
     mockPrisma.jobKindConfig.findUnique.mockResolvedValue(null)
 
     const ctx = (await getFullJobContext('job-jkc-1', 'CLAUDE')) as any
-    expect(ctx.config.model).toBe('claude-sonnet-4-6')
+    expect(ctx.config.model).toBe('claude-sonnet-5')
   })
 
   it('CODEX zonder DB-rij resolveert claim-time naar GPT-5.5', async () => {
