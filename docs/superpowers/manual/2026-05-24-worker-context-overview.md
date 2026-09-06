@@ -26,7 +26,7 @@ Bij claimen wordt `config` bepaald via deze volgorde:
 1. `task.requires_opus === true` forceert Opus.
 2. `ClaudeJob.requested_model`, `requested_thinking_budget`, `requested_permission_mode`.
 3. `Product.preferred_model`, `thinking_budget_default`, `preferred_permission_mode`.
-4. Hardcoded defaults in `src/lib/job-config.ts`.
+4. Hardcoded defaults in `@shared/job-config` (`vendor/scrum4me-shared/lib/job-config.ts`); `src/lib/job-config.ts` is sinds M39 nog slechts een re-export shim daarop.
 
 ## IDEA_GRILL
 
@@ -232,7 +232,7 @@ Agent-guide:
 ## Bronnen in code
 
 - `prisma/schema.prisma`: `ClaudeJobKind`, `ClaudeJob`, `SprintTaskExecution`
-- `src/lib/job-config.ts`: model/mode/tool defaults
+- `vendor/scrum4me-shared/lib/job-config.ts` (`@shared/job-config`): model/mode/tool defaults — canoniek; `src/lib/job-config.ts` re-exporteert het alleen
 - `src/tools/wait-for-job.ts`: payload-opbouw per job-kind
 - `src/prompts/idea/*.md`: idea worker prompts
 - `src/prompts/task/implementation.md`: task worker prompt
