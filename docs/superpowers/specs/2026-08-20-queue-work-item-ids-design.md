@@ -149,10 +149,16 @@ Gedrag:
   is het opgeslagen `product_id` op dat pad afgeleid en betrouwbaar; een tot
   product A gescopet token kan zo geen berichten over product B's werkitems
   opvragen. **Restrisico, bewust geaccepteerd:** rijen die buiten de MCP om zijn
-  geschreven (direct SQL; de CLI kán geen top-level `work_item` zetten, §8) worden
+  geschreven (bijvoorbeeld direct SQL) worden
   op hun opgeslagen `product_id` beoordeeld. Zo'n schrijver kan alleen de
   zichtbaarheid van zijn éigen bericht verkeerd taggen — er lekt geen inhoud van
   derden.
+  **Amendement 2026-09-06:** de s4m-queue CLI canonicaliseert sinds
+  [PR #25](https://git.jp-visser.nl/janpeter/s4m-queue/pulls/25) eveneens via de
+  werkitemresolver, met de story als bron voor product en sprint. Dit is uitgerold
+  op mac, max2 en scrum4me-server (merge `73b3809`, geteste runtime `f12cdf3`).
+  De CLI blijft een vertrouwde DB/admin-route zonder MCP-productguard; deze
+  autorisatiegrens en het restrisico van direct SQL blijven bestaan.
 - Sortering `created_at desc`. De limiet van 100 geldt voor de **request-matches**
   (`take: 100`); hun replies komen daar bovenop. Raakt de match-query de limiet, dan
   meldt de respons `truncated: true`.
@@ -206,11 +212,20 @@ meta-projectie of -redactie in het leespad groen doorschieten.
 - Kolommen/indexen op `agent_message` (heroverwegen zodra web/dashboard of SQL
   consument wordt).
 - Doorzoeken van het cold-store-archief (`agent_message_archive`).
-- CLI-ondersteuning in `s4m-queue`. Let op: `--meta-file` kan géén top-level
+- CLI-ondersteuning in `s4m-queue` viel buiten de oorspronkelijke MCP-fase.
+  Historische beperking bij dit ontwerp: `--meta-file` kon géén top-level
   `meta.work_item` zetten — `buildMeta` doet `parsed.task ?? parsed` en wikkelt
   alles in `{ task }` (`s4m-queue/src/cli.ts:29-47`), dus een `work_item`-sleutel
-  belandt in `meta.task` of vervalt. CLI-berichten zijn in deze fase niet
-  betrouwbaar te taggen; wie dat nodig heeft gebruikt het MCP-pad.
+  belandde in `meta.task` of verviel.
+  **Amendement 2026-09-06:** deze beperking is opgeheven in de afzonderlijke
+  CLI-implementatie van [PR #25](https://git.jp-visser.nl/janpeter/s4m-queue/pulls/25).
+  Het goedgekeurde [implementatieplan](https://git.jp-visser.nl/janpeter/s4m-queue/src/commit/73b3809456cff8524ae4179397d733ee78183c98/docs/superpowers/plans/2026-09-06-queue-work-item-metadata-parity.md)
+  beschrijft het CLI-contract en de verificatie.
+  `push --sprint-id/--story-id/--task-id` en een volledige `--meta-file`-envelope
+  ondersteunen nu canonieke `meta.work_item`; `product_id` wordt afgeleid.
+  `find-by-work-item` biedt AND-filters en directe replies binnen de actieve
+  tabel, zonder MCP-productautorisatie (zie §5). Dit amendement wijzigt geen
+  MCP-runtime en verruimt de overige scopegrenzen niet.
 - Work-item-ids op replies zetten (`queue_done`); de request-rij is de bron van
   waarheid en de find-tool voegt replies bij.
 - Tonen van queue-berichten in de Scrum4Me-UI.
