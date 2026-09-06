@@ -16,7 +16,7 @@ import { syncIssueToForgejo } from '../lib/issue-sync.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import {
   canTransitionIssue, issueStatusFromApi, issueSeverityFromApi, issueResolutionFromApi,
-  type IssueStatusDb,
+  ISSUE_RESOLUTION_API_VALUES, type IssueStatusDb,
 } from '@shared/issue-status.js'
 
 const inputSchema = z.object({
@@ -24,9 +24,12 @@ const inputSchema = z.object({
   title: z.string().trim().min(1).max(200).optional(),
   severity: z.string().optional(),
   status: z.string().optional(),
-  resolution: z.string().optional(),
-  append_research: z.string().trim().min(1).max(100000).optional(),
-  append_resolution: z.string().trim().min(1).max(100000).optional(),
+  resolution: z.string().optional()
+    .describe('Machineleesbare uitkomstcode, alleen samen met status=closed: fixed | wont_fix | duplicate | cannot_reproduce | invalid. De prozetoelichting hoort in append_resolution, niet hier.'),
+  append_research: z.string().trim().min(1).max(100000).optional()
+    .describe('Prozeonderzoek (Markdown); wordt getimestampt aan research_md toegevoegd.'),
+  append_resolution: z.string().trim().min(1).max(100000).optional()
+    .describe('Prozetoelichting bij de oplossing (Markdown); wordt getimestampt aan resolution_md toegevoegd. Los van de resolution-code.'),
   // trim().min(1) maakt whitespace-only een validatiefout: die zou anders via
   // `??` heen glippen en een scheider zónder afzender opleveren.
   authored_by: z.string().trim().min(1).max(60).optional(),
@@ -81,8 +84,28 @@ export async function handleUpdateIssue(input: z.infer<typeof inputSchema>) {
         return toolError(`Transitie ${issue.status} → ${to} is niet toegestaan`)
       }
       if (to === 'CLOSED') {
-        const resolution = parsed.resolution ? issueResolutionFromApi(parsed.resolution) : null
-        if (!resolution) return toolError('Sluiten vereist een resolution')
+        // `resolution` is een enum-code, geen vrije tekst (ISS-12). Agents gaven
+        // een prozezin mee; die viel via issueResolutionFromApi() op null en gaf
+        // de misleidende melding dat er "geen resolution" was — vandaar de valse
+        // catch-22-diagnose. Noem daarom de geldige codes en scheid de gevallen
+        // (ontbreekt vs. ongeldig); de proza hoort in append_resolution.
+        const codes = ISSUE_RESOLUTION_API_VALUES.join(', ')
+        if (parsed.resolution === undefined) {
+          return toolError(
+            `Sluiten vereist een resolution-code (${codes}). Dat is de machineleesbare ` +
+            `uitkomst; zet de prozetoelichting in append_resolution.`,
+          )
+        }
+        const resolution = issueResolutionFromApi(parsed.resolution)
+        if (!resolution) {
+          const seen = parsed.resolution.length > 40
+            ? `${parsed.resolution.slice(0, 40)}…`
+            : parsed.resolution
+          return toolError(
+            `Ongeldige resolution-code '${seen}'. Kies er één: ${codes}. ` +
+            `Vrije tekst hoort in append_resolution, niet in resolution.`,
+          )
+        }
         data.status = 'CLOSED'
         data.resolution = resolution
         data.closed_at = new Date()
@@ -159,7 +182,7 @@ export function registerUpdateIssueTool(server: McpServer) {
     {
       title: 'Update issue',
       description:
-        'Update an issue: append research or resolution (timestamped, attributed to authored_by or the token user), change status/severity, or link a PBI or idea. Closing requires a resolution; a closed issue can only reopen to investigating.',
+        'Update an issue: append research or resolution prose (timestamped, attributed to authored_by or the token user), change status/severity, or link a PBI or idea. Closing requires a resolution CODE (one of: fixed, wont_fix, duplicate, cannot_reproduce, invalid) passed as `resolution` together with status=closed — the prose explanation belongs in append_resolution, and both may be sent in one call. A closed issue can only reopen to investigating.',
       inputSchema,
     },
     async (input) => handleUpdateIssue(input),

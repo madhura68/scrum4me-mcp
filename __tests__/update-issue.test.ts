@@ -76,6 +76,53 @@ it('weigert sluiten zonder resolution', async () => {
   expect(toolText(res)).toMatch(/resolution/)
 })
 
+// ISS-12: `resolution` is een enum-code (fixed|wont_fix|duplicate|cannot_reproduce|
+// invalid), geen vrije tekst. De sluit-gate toetst de INKOMENDE code, niet de
+// opgeslagen waarde — er is dus geen catch-22. Deze tests leggen het werkende
+// sluitpad vast (dat nergens gedekt was, waardoor de bug als "niet te sluiten"
+// werd gediagnosticeerd) en eisen dat de foutmeldingen de geldige codes noemen.
+it('sluit met een geldige resolution-code en zet CLOSED + resolution + closed_at', async () => {
+  const res = await handleUpdateIssue({ issue_id: 'iss-1', status: 'closed', resolution: 'fixed' })
+  expect(res.isError).toBeFalsy()
+  const data = d.issueUpdate.mock.calls[0][0].data as Record<string, unknown>
+  expect(data.status).toBe('CLOSED')
+  expect(data.resolution).toBe('FIXED')
+  expect(data.closed_at).toBeInstanceOf(Date)
+})
+
+it('sluit in één aanroep met resolution-code én prozetoelichting in append_resolution', async () => {
+  const res = await handleUpdateIssue({
+    issue_id: 'iss-1', status: 'closed', resolution: 'fixed',
+    append_resolution: 'PR #16 gemerged; kruising bevestigd.',
+  })
+  expect(res.isError).toBeFalsy()
+  const data = d.issueUpdate.mock.calls[0][0].data as Record<string, unknown>
+  expect(data.resolution).toBe('FIXED')
+  expect(data.resolution_md as string).toContain('PR #16 gemerged')
+})
+
+it('weigert een prozetekst als resolution en noemt de geldige codes', async () => {
+  const res = await handleUpdateIssue({
+    issue_id: 'iss-1', status: 'closed',
+    resolution: 'PR #16 gemerged: kruising bevestigd, delta-review GO.',
+  })
+  expect(res.isError).toBe(true)
+  const text = toolText(res)
+  expect(text).toMatch(/ongeldige/i) // niet het misleidende "vereist een resolution"
+  expect(text).toMatch(/fixed/)
+  expect(text).toMatch(/wont_fix/)
+  expect(text).toMatch(/append_resolution/) // wijst proza naar het juiste veld
+})
+
+it('somt bij een ontbrekende resolution de geldige codes op en wijst naar append_resolution', async () => {
+  const res = await handleUpdateIssue({ issue_id: 'iss-1', status: 'closed' })
+  expect(res.isError).toBe(true)
+  const text = toolText(res)
+  expect(text).toMatch(/fixed/)
+  expect(text).toMatch(/cannot_reproduce/)
+  expect(text).toMatch(/append_resolution/)
+})
+
 it('append bouwt een scheider met timestamp en de opgegeven afzender', async () => {
   await handleUpdateIssue({
     issue_id: 'iss-1', append_research: 'Sweep-log bekeken', authored_by: 'max2:claude',
