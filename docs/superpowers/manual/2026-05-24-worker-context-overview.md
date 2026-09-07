@@ -26,7 +26,10 @@ Bij claimen wordt `config` bepaald via deze volgorde:
 1. `task.requires_opus === true` forceert Opus.
 2. `ClaudeJob.requested_model`, `requested_thinking_budget`, `requested_permission_mode`.
 3. `Product.preferred_model`, `thinking_budget_default`, `preferred_permission_mode`.
-4. Hardcoded defaults in `@shared/job-config` (`vendor/scrum4me-shared/lib/job-config.ts`); `src/lib/job-config.ts` is sinds M39 nog slechts een re-export shim daarop.
+4. De `JobKindConfig`-rij voor dit kind: de live per-kind default uit de DB, op claim-time vers geresolved. De lookup is best-effort — een DB-fout of ontbrekende rij blokkeert het claimen niet en valt door naar laag 5.
+5. Hardcoded defaults in `@shared/job-config` (`vendor/scrum4me-shared/lib/job-config.ts`); `src/lib/job-config.ts` is sinds M39 nog slechts een re-export shim daarop.
+
+Sinds M39 fase B (B6) leest ook de enqueue-snapshot (`src/lib/dispatch/snapshot.ts`) de `JobKindConfig`-rij, zodat een per-kind default die via de workers-editor gezet is direct doorwerkt op nieuwe enqueues — zonder mcp-deploy.
 
 ## IDEA_GRILL
 
