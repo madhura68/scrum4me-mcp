@@ -608,13 +608,39 @@ export async function postPullRequestReview(opts: {
 }
 
 // =========================================================================
-// fetchCompareDiff — Phase 3: unified diff van een commit-range via de
-// Forgejo WEB-route (/{owner}/{repo}/compare/{base}...{head}.diff).
-// Bewust NIET via forgejoFetch: die hangt aan /api/v1, en de API-compare
-// produceert alléén JSON (geen raw diff; `.diff` op het API-pad is 404).
-// De web-route kent géén token-auth: een private repo geeft 404 → caller
-// valt terug op de PR-diff (API + token) of rolt de claim terug.
+// fetchCompareDiff — unified diff van een commit-range.
+//
+// De Forgejo-API kent GEEN raw diff voor een range. Blijkens de swagger van
+// de instance produceert /repos/{o}/{r}/compare/{basehead} uitsluitend
+// application/json, en `.diff` op dat pad is 404. Alleen
+// /git/commits/{sha}.{diffType} en /pulls/{index}.{diffType} leveren
+// text/plain.
+//
+// De vorige implementatie loste dat op met de WEB-route
+// (/{owner}/{repo}/compare/{base}...{head}.diff) en een kale fetch zonder
+// credential. Dat was bewust en gedocumenteerd, met de PR-diff als bedoelde
+// fallback. De web-route kent echter geen token-auth, dus op een PRIVATE repo
+// gaf hij onvoorwaardelijk 404 — voor elke range, altijd. En een TASK_REVIEW
+// uit een sprint-execution heeft geen pr_url, dus daar bestond de fallback
+// niet: de job requeuede eeuwig en blokkeerde als oudste rij de hele
+// reviewrij (ISS-5).
+//
+// Nu haalt de compare-JSON de commits van de range op en levert
+// /git/commits/{sha}.diff per commit de diff — allebei via forgejoFetch, dus
+// mét token. Het resultaat is de reeks commit-diffs in chronologische
+// volgorde (`git log -p base..head`), NIET de samengevouwen drie-punts-diff
+// die de web-route gaf: een bestand dat in twee commits is aangeraakt komt
+// twee keer voor. Voor een review is dat een andere, eerder rijkere vorm.
+// De API geeft commits nieuwste-eerst; die volgorde wordt hier omgedraaid.
+//
+// Een drie-punts-range trekt merge-historie mee (gemeten: HEAD~4...HEAD gaf
+// 16 commits), dus zijn er harde grenzen op aantal en omvang. Wordt een
+// grens geraakt, dan is dat een expliciete fout en geen stil afgekapte diff:
+// een half aangeleverde review is erger dan een geweigerde.
 // =========================================================================
+
+const COMPARE_MAX_COMMITS = 50
+const COMPARE_MAX_BYTES = 4_000_000
 
 export async function fetchCompareDiff(opts: {
   repoUrl: string
@@ -630,18 +656,76 @@ export async function fetchCompareDiff(opts: {
   } catch (err) {
     return { error: `fetchCompareDiff: ${(err as Error).message.slice(0, 300)}` }
   }
-  const url = `https://${repoRef.host}/${repoRef.owner}/${repoRef.repo}/compare/${opts.baseSha}...${opts.headSha}.diff`
+  const base = repoPath(repoRef.owner, repoRef.repo)
+  const range = `${encodePathSegment(opts.baseSha)}...${encodePathSegment(opts.headSha)}`
+
+  let shas: string[]
   try {
-    const res = await fetch(url, { redirect: 'follow' })
+    const res = await forgejoFetch(`${base}/compare/${range}`, { host: repoRef.host })
     if (!res.ok) {
-      return { error: `Forgejo compare-diff failed: ${res.status}` }
+      return { error: `Forgejo compare failed: ${res.status}` }
     }
-    const text = await res.text()
-    if (!text.startsWith('diff --git')) {
-      return { error: `Forgejo compare-diff: geen unified diff in response: ${text.slice(0, 120)}` }
+    const body = (await res.json()) as { commits?: { sha?: unknown }[] }
+    if (!Array.isArray(body.commits)) {
+      return { error: 'Forgejo compare: antwoord zonder commits-array' }
     }
-    return text
+    // Nieuwste-eerst uit de API → chronologisch, zodat de diffs in de volgorde
+    // staan waarin ze zijn ontstaan.
+    shas = body.commits
+      .map((c) => (typeof c.sha === 'string' ? c.sha : null))
+      .filter((sha): sha is string => Boolean(sha))
+      .reverse()
   } catch (err) {
-    return { error: `Forgejo compare-diff failed: ${(err as Error).message.slice(0, 300)}` }
+    return { error: `Forgejo compare failed: ${(err as Error).message.slice(0, 300)}` }
   }
+
+  if (shas.length === 0) {
+    return { error: 'Forgejo compare: lege range (geen commits tussen base en head)' }
+  }
+  if (shas.length > COMPARE_MAX_COMMITS) {
+    return {
+      error:
+        `Forgejo compare: ${shas.length} commits in de range, maximaal ${COMPARE_MAX_COMMITS} ` +
+        '(drie-punts-ranges trekken merge-historie mee)',
+    }
+  }
+
+  const delen: string[] = []
+  let bytes = 0
+  for (const sha of shas) {
+    let deel: string
+    try {
+      const res = await forgejoFetch(`${base}/git/commits/${encodePathSegment(sha)}.diff`, {
+        host: repoRef.host,
+      })
+      if (!res.ok) {
+        return { error: `Forgejo commit-diff failed voor ${sha.slice(0, 10)}: ${res.status}` }
+      }
+      deel = await res.text()
+    } catch (err) {
+      return {
+        error: `Forgejo commit-diff failed voor ${sha.slice(0, 10)}: ${(err as Error).message.slice(0, 300)}`,
+      }
+    }
+    // Een merge-commit levert een lege diff; die overslaan houdt het resultaat
+    // leesbaar zonder informatie te verliezen.
+    if (deel.trim() === '') continue
+    if (!deel.startsWith('diff --git')) {
+      return {
+        error: `Forgejo commit-diff voor ${sha.slice(0, 10)}: geen unified diff: ${deel.slice(0, 120)}`,
+      }
+    }
+    bytes += Buffer.byteLength(deel, 'utf8')
+    if (bytes > COMPARE_MAX_BYTES) {
+      return {
+        error: `Forgejo compare: diff groter dan ${COMPARE_MAX_BYTES} bytes over ${shas.length} commits`,
+      }
+    }
+    delen.push(deel.endsWith('\n') ? deel : `${deel}\n`)
+  }
+
+  if (delen.length === 0) {
+    return { error: 'Forgejo compare: alle commits in de range leverden een lege diff' }
+  }
+  return delen.join('')
 }

@@ -215,6 +215,11 @@ function ownerIdentity(
   return ownerCtx ? { tokenId: ownerCtx.tokenId, instanceId: ownerCtx.instanceId } : null
 }
 
+// Hoeveel keer een TASK_REVIEW opnieuw in de rij mag na een mislukte diff-fetch.
+// Gelijk aan de drempel die de stale-lease-sweep hanteert (`retry_count >= 2`),
+// zodat er één begrip van "genoeg pogingen" in dit bestand staat.
+const DIFF_FETCH_MAX_RETRIES = 2
+
 export async function rollbackClaim(
   jobId: string,
   owner: { tokenId: string; instanceId: string } | null,
@@ -1446,12 +1451,32 @@ export async function getFullJobContext(
       }
     }
     if (!taskDiff) {
-      // De bronnen bestaan, maar ophalen lukte niet. Dat is buiten deze job om op
-      // te lossen (Forgejo down, timeout, of de reviewer-account mist toegang tot
-      // de repo). Requeue i.p.v. terminaal falen — anders vernietigt één storing
-      // alle openstaande reviews.
+      // De bronnen bestaan, maar ophalen lukte niet. Dat is doorgaans buiten deze
+      // job om op te lossen (Forgejo down, timeout, of de reviewer-account mist
+      // toegang tot de repo), dus requeuen we in plaats van terminaal falen —
+      // anders vernietigt één storing alle openstaande reviews.
+      //
+      // Maar dat geldt alleen voor een TIJDELIJKE fout. Bij een permanente fout
+      // requeuet dezelfde job eeuwig, en omdat de claim de OUDSTE QUEUED rij
+      // pakt, wint hij elke ronde en komen jongere reviews nooit aan de beurt:
+      // één onmogelijke job legt de hele reviewrij stil (ISS-5, gemeten
+      // 2026-09-09: vijf jobs, drie uur, nul voortgang). Daarom is het budget
+      // begrensd. Dezelfde afweging als bij `!job.task_id` hierboven, en
+      // hetzelfde getal als de stale-sweep hanteert (`retry_count >= 2`).
+      const [bumped] = await prisma.$queryRaw<{ retry_count: number }[]>`
+        UPDATE claude_jobs SET retry_count = retry_count + 1
+        WHERE id = ${job.id}
+        RETURNING retry_count
+      `
+      const pogingen = bumped?.retry_count ?? DIFF_FETCH_MAX_RETRIES
+      if (pogingen >= DIFF_FETCH_MAX_RETRIES) {
+        throw new TerminalJobError(
+          `TASK_REVIEW job ${job.id}: diff-fetch mislukte ${pogingen}x en wordt niet opnieuw ` +
+            `gequeued — ${fetchErrors.join('; ')}`,
+        )
+      }
       console.error(
-        `getFullJobContext: TASK_REVIEW ${job.id} diff-fetch mislukt, requeue — ${fetchErrors.join('; ')}`,
+        `getFullJobContext: TASK_REVIEW ${job.id} diff-fetch mislukt (poging ${pogingen}/${DIFF_FETCH_MAX_RETRIES}), requeue — ${fetchErrors.join('; ')}`,
       )
       await rollbackClaim(job.id, ownerIdentity(ownerCtx))
       return null
