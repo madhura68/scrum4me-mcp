@@ -146,6 +146,22 @@ Bij wél-support (schedule-first, PBI-130): **stap 1** — `POST /pulls/{idx}/me
 
 `src/git/forgejo-rest.ts` past `encodePathSegment` toe op URL-segmenten (owner, repo, branchnames in path). JSON-body refs (`head`, `base`) worden **raw** doorgegeven — Forgejo doet zelf ref-matching en encoding daar leidt tot mismatches voor branchnames met slashes (bv. `feat/foo/bar`).
 
+### Range-diff: geen web-route, wel een reeks commit-diffs
+
+De Forgejo-API kent **geen** raw diff voor een commit-range: `/repos/{o}/{r}/compare/{basehead}` levert alleen JSON, en `.diff` op dat pad is 404. Alleen `/git/commits/{sha}.{diffType}` en `/pulls/{index}.{diffType}` geven `text/plain`.
+
+Gebruik daarvoor **niet** de web-route `/{owner}/{repo}/compare/{base}...{head}.diff`: web-routes kennen geen token-auth, dus op een private repo geeft die onvoorwaardelijk 404 — voor elke range, altijd. `fetchCompareDiff` (`src/git/pr.ts`) haalt daarom de commits uit de compare-JSON en per commit de diff via `/git/commits/{sha}.diff`, allebei via `forgejoFetch` (dus mét token).
+
+Gevolgen voor de caller — en voor wie zo'n diff reviewt:
+
+- Het resultaat is de reeks commit-diffs in **chronologische** volgorde (`git log -p base..head`), niet de samengevouwen drie-punts-diff. Een bestand dat in twee commits is aangeraakt, komt twee keer voor.
+- Merge-commits leveren een lege diff en worden overgeslagen.
+- Harde grenzen: **50** commits (`COMPARE_MAX_COMMITS`) en **4 MB** (`COMPARE_MAX_BYTES`) — een drie-punts-range trekt merge-historie mee. Overschrijding is een expliciete fout, geen stil afgekapte diff.
+
+### TASK_REVIEW-requeue is begrensd
+
+Mislukt de diff-fetch voor een `TASK_REVIEW`, dan requeuet `getFullJobContext` de job (meestal een storing buiten deze job om), maar hoogt het daarbij `retry_count` op en gooit `TerminalJobError` zodra dat `DIFF_FETCH_MAX_RETRIES` (2, gelijk aan de stale-lease-sweep) bereikt. Zonder die grens wint een permanent-falende job elke ronde — de claim pakt de **oudste** QUEUED rij — en legt hij de hele reviewrij stil.
+
 ### Required configuration
 
 Set env var per product:
