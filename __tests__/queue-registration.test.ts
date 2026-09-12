@@ -8,6 +8,8 @@ import { createMcpServer } from '../src/http.js'
 const QUEUE_TOOL_NAMES = [
   'queue_push', 'queue_wait_reply', 'queue_next', 'queue_done',
   'queue_fail', 'queue_status', 'queue_list', 'queue_find_by_work_item',
+  // IDEA-194: read-only presence per queue-adres.
+  'queue_presence',
   // M32-archivering: muterend, maar even stdio-only als de rest.
   'queue_archive', 'queue_unarchive',
   'queue_register_consumer', 'queue_claim_marked', 'queue_renew_marked',

@@ -33,6 +33,7 @@ import {
   QUEUE_MODELS,
   QUEUE_REQUEST_TYPES,
   QUEUE_RESPONSE_TYPES,
+  QUEUE_SERVERS,
 } from '@shared/queue-identity.js'
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,7 @@ import {
 const SHARED_VOCABULARIES = {
   QUEUE_MODELS,
   QUEUE_REQUEST_TYPES,
+  QUEUE_SERVERS, // IDEA-194: queue_presence.server
 } as const satisfies Record<string, readonly string[]>
 
 type VocabularyName = keyof typeof SHARED_VOCABULARIES
@@ -54,6 +56,9 @@ type VocabularyName = keyof typeof SHARED_VOCABULARIES
 const REJECT_PROBES: Record<VocabularyName, readonly string[]> = {
   QUEUE_MODELS: ['gemini', 'gpt', 'llama'],
   QUEUE_REQUEST_TYPES: [...QUEUE_RESPONSE_TYPES, 'gemini'],
+  // Het job-namespace is een bestemming, geen presence-adres: een job heeft
+  // geen (server, model)-paar en krijgt dus nooit een presence-rij.
+  QUEUE_SERVERS: ['scrum4us-job', 'localhost', 'nas'],
 }
 
 const A_UUID = 'aaaaaaaa-0000-4000-8000-000000000001'
@@ -80,6 +85,8 @@ const BOUND_FIELDS: readonly BoundField[] = [
     sample: { to: 'scrum4me-server:claude', body: 'x' },
   },
   { tool: 'queue_next', field: 'as', vocabulary: 'QUEUE_MODELS', sample: {} },
+  { tool: 'queue_presence', field: 'server', vocabulary: 'QUEUE_SERVERS', sample: {} },
+  { tool: 'queue_presence', field: 'model', vocabulary: 'QUEUE_MODELS', sample: {} },
   { tool: 'queue_list', field: 'as', vocabulary: 'QUEUE_MODELS', sample: {} },
   {
     tool: 'queue_wait_reply',

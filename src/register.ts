@@ -86,6 +86,7 @@ import { registerQueueNextTool } from './tools/queue-next.js'
 import { registerQueueDoneTool } from './tools/queue-done.js'
 import { registerQueueFailTool } from './tools/queue-fail.js'
 import { registerQueueStatusTool } from './tools/queue-status.js'
+import { registerQueuePresenceTool } from './tools/queue-presence.js'
 import { registerQueueListTool } from './tools/queue-list.js'
 import { registerQueueFindByWorkItemTool } from './tools/queue-find-by-work-item.js'
 import { registerQueueArchiveTools } from './tools/queue-archive.js'
@@ -192,6 +193,7 @@ export function registerQueueTools(server: McpServer): void {
   registerQueueDoneTool(server)
   registerQueueFailTool(server)
   registerQueueStatusTool(server)
+  registerQueuePresenceTool(server)
   registerQueueListTool(server)
   registerQueueFindByWorkItemTool(server)
   registerQueueArchiveTools(server)
