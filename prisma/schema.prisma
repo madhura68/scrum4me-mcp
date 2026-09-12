@@ -822,6 +822,24 @@ model ModelPrice {
   @@map("model_prices")
 }
 
+/// M39: model-registry — bron voor keuzelijsten en validatie.
+/// Prijzen blijven in ModelPrice (join op model_id); dit tabel is
+/// beschikbaarheid/presentatie (actief, volgorde, weergavenaam).
+model AgentModel {
+  id           String       @id @default(cuid())
+  runtime      AgentRuntime @default(CLAUDE)
+  model_id     String
+  display_name String
+  active       Boolean      @default(true)
+  sort_order   Int          @default(0)
+  notes        String?      @db.Text
+  created_at   DateTime     @default(now())
+  updated_at   DateTime     @updatedAt
+
+  @@unique([runtime, model_id])
+  @@map("agent_models")
+}
+
 model ClaudeWorker {
   id                  String    @id @default(cuid())
   user                User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
@@ -1452,6 +1470,32 @@ model AgentMessageArchive {
 
   @@index([created_at(sort: Desc), id(sort: Desc)], map: "agent_message_archive_created_idx")
   @@map("agent_message_archive")
+}
+
+/// IDEA-194: presence per queue-adres — één rij per (server, model), nooit
+/// per pid. Watcher-kolommen schrijft `s4m-queue watch` (hartslag op de
+/// 15s-tick, GEEN pg_notify); sessie-kolommen schrijft de s4m-monitor-skill
+/// via de CLI (`session on/off`), de drain-stempel komt als best-effort
+/// side-effect uit de claim-paden (CLI + MCP) en `session_expected_by` is de
+/// zelfverklaarde termijn van de poll-route (`next --expect-seconds`). "Vers"
+/// en "aangemeld" zijn leesregels (PRESENCE_FRESH_SECONDS), geen kolommen.
+/// Stale rijen blijven staan — bewust geen cleanup en geen DELETE-grant.
+/// Zie Scrum4Me docs/superpowers/specs/2026-08-30-idea-194-presence-queue-adres-design.md.
+model AgentPresence {
+  server                String
+  model                 String
+  watcher_heartbeat_at  DateTime? @db.Timestamptz(6)
+  watcher_started_at    DateTime? @db.Timestamptz(6)
+  watcher_pid           Int?
+  watcher_types         String[]
+  session_announced_at  DateTime? @db.Timestamptz(6)
+  session_last_drain_at DateTime? @db.Timestamptz(6)
+  session_signed_off_at DateTime? @db.Timestamptz(6)
+  session_expected_by   DateTime? @db.Timestamptz(6)
+  updated_at            DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@id([server, model], map: "agent_presence_pkey")
+  @@map("agent_presence")
 }
 
 // M31 — Communicatiecentrum slice B (IDEA-179). Spec:

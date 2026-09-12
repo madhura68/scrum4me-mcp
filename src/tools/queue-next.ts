@@ -11,6 +11,7 @@ import { getInstanceId } from '../presence/instance.js'
 import { messageView } from '../queue/view.js'
 import { QUEUE_MODELS, QUEUE_REQUEST_TYPES } from '@shared/queue-identity.js'
 import type { QueueAddress } from '../queue/types.js'
+import { stampDrainPresenceBestEffort } from '../queue/presence.js'
 
 const INSTRUCTIONS_TEXT =
   'Execute within meta.task.cwd. If required context is missing → queue_fail, do not guess. ' +
@@ -91,7 +92,16 @@ export function registerQueueNextTool(server: McpServer) {
           }
         }
 
-        if (!claimed) return toolJson({ status: 'timeout', message: null })
+        if (!claimed) {
+          // IDEA-194 §5.2: een lege drain bewijst óók responsiviteit — één
+          // stempel per tool-aanroep op het identiteitsadres, nooit per
+          // iteratie van de wachtlus hierboven.
+          // Behalve bij abort: de wachtlus kan ook eindigen doordat de client
+          // de aanroep annuleert, en dan bewijst niemand meer responsiviteit —
+          // zelfde regel als in queue_wait_reply.
+          if (!signal.aborted) await stampDrainPresenceBestEffort(self.server, self.model)
+          return toolJson({ status: 'timeout', message: null })
+        }
 
         if (signal.aborted) {
           // MCP-cancel right after the claim transaction: the response will
@@ -102,6 +112,10 @@ export function registerQueueNextTool(server: McpServer) {
           return toolJson({ status: 'cancelled', message: null })
         }
 
+        // Geslaagde claim: stempel op het rij-adres (== identiteitsadres).
+        // Het cancelled-pad hierboven stempelt bewust niet — die claim is
+        // teruggerold.
+        await stampDrainPresenceBestEffort(claimed.row.to_server, claimed.row.to_model)
         return toolJson({
           status: 'claimed',
           message: messageView(claimed.row),
