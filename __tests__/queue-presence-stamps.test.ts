@@ -144,6 +144,20 @@ describe('queue_next (§5.2)', () => {
     expect(mockStamp).toHaveBeenCalledTimes(1)
   })
 
+  it('stempelt niet wanneer de wachtlus door een abort eindigt zonder claim', async () => {
+    // Review #140 (s4m-codex-reviewer): de lus eindigt via `break` op abort en
+    // valt dan door naar het lege pad — zonder guard bewijst een geannuleerde
+    // aanroep alsnog responsiviteit.
+    const controller = new AbortController()
+    mockWakeup.mockImplementationOnce(async () => {
+      controller.abort()
+    })
+    const server = makeServer(registerQueueNextTool)
+    const result = await server.call({ wait_seconds: 5 }, { signal: controller.signal })
+    expect(JSON.parse(result.content[0].text).status).toBe('timeout')
+    expect(mockStamp).not.toHaveBeenCalled()
+  })
+
   it('stempelt niet wanneer de claim wordt teruggerold (cancelled)', async () => {
     const controller = new AbortController()
     mockClaimRequest.mockImplementationOnce(async () => {

@@ -96,7 +96,10 @@ export function registerQueueNextTool(server: McpServer) {
           // IDEA-194 §5.2: een lege drain bewijst óók responsiviteit — één
           // stempel per tool-aanroep op het identiteitsadres, nooit per
           // iteratie van de wachtlus hierboven.
-          await stampDrainPresenceBestEffort(self.server, self.model)
+          // Behalve bij abort: de wachtlus kan ook eindigen doordat de client
+          // de aanroep annuleert, en dan bewijst niemand meer responsiviteit —
+          // zelfde regel als in queue_wait_reply.
+          if (!signal.aborted) await stampDrainPresenceBestEffort(self.server, self.model)
           return toolJson({ status: 'timeout', message: null })
         }
 
