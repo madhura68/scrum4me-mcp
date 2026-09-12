@@ -7,6 +7,7 @@ import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { parseQueueTarget, resolveQueueIdentity } from '../queue/identity.js'
 import { requiresTaskMeta, validateTaskMeta } from '../queue/types.js'
 import { deriveRepoFromCwd } from '../queue/git-origin.js'
+import { readPresenceBlockBestEffort } from '../queue/presence.js'
 import {
   extractWorkItemIds,
   mergeWorkItemInputs,
@@ -128,10 +129,18 @@ export function registerQueuePushTool(server: McpServer) {
         // NOTIFY after commit, best-effort (§5.1) — CLI --wait and the
         // Messages-dashboard receive the same byte-compatible envelope.
         await emitQueueNotifyBestEffort(envelopeOf(row, null))
+        // IDEA-194 §6.4: presence van de bestemming — informatie, nooit een
+        // gate. Best-effort: elke fout ⇒ veld weglaten, de push is geslaagd.
+        // Het job-namespace heeft geen (server, model)-adres.
+        const presence =
+          target.server === QUEUE_JOB_SERVER
+            ? null
+            : await readPresenceBlockBestEffort(dest.server, dest.model)
         return toolJson({
           message_id: row.id,
           to: formatQueueAddress(target),
           type,
+          ...(presence ? { presence } : {}),
           hint: `Fetch the reply with queue_wait_reply({ message_ids: ["${row.id}"] })`,
         })
       }),

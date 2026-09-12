@@ -14,10 +14,12 @@ vi.mock('../src/auth.js', async (importOriginal) => {
   return { ...original, requireWriteAccess: vi.fn() }
 })
 vi.mock('../src/queue/git-origin.js', () => ({ deriveRepoFromCwd: vi.fn() }))
+vi.mock('../src/queue/presence.js', () => ({ readPresenceBlockBestEffort: vi.fn() }))
 
 import { prisma } from '../src/prisma.js'
 import { requireWriteAccess } from '../src/auth.js'
 import { deriveRepoFromCwd } from '../src/queue/git-origin.js'
+import { readPresenceBlockBestEffort } from '../src/queue/presence.js'
 import { registerQueuePushTool } from '../src/tools/queue-push.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 
@@ -29,6 +31,7 @@ const mockPrisma = prisma as unknown as {
   sprint: { findUnique: ReturnType<typeof vi.fn> }
 }
 const mockDerive = deriveRepoFromCwd as ReturnType<typeof vi.fn>
+const mockPresence = readPresenceBlockBestEffort as ReturnType<typeof vi.fn>
 const mockAuth = requireWriteAccess as ReturnType<typeof vi.fn>
 
 type ToolResult = { isError?: boolean; content: { text: string }[] }
@@ -408,5 +411,42 @@ describe('queue_push — meta.work_item (spec 2026-08-20)', () => {
     expect(meta.inputSchema.parse({ ...base, story_id: 's1' }).story_id).toBe('s1')
     expect(meta.inputSchema.parse({ ...base, task_id: 't1' }).task_id).toBe('t1')
     expect(() => meta.inputSchema.parse({ ...base, task_id: '' })).toThrow()
+  })
+})
+
+describe('queue_push — presence-blok (IDEA-194 §6.4)', () => {
+  it('draagt de presence van de bestemming in het antwoord', async () => {
+    mockPresence.mockResolvedValueOnce({
+      address: 'scrum4me-server:claude',
+      status: 'beschikbaar',
+      watcher: { heartbeat_at: '2026-08-30T12:00:00.000Z', age_s: 7, started_at: null, pid: 1, types: [] },
+      session: { announced_at: null, last_drain_at: null, signed_off_at: null, expected_by: null },
+      claims: { open: 0, oldest_claimed_at: null, message_ids: [] },
+    })
+    const server = makeServer()
+    const result = await server.call({ to: 'scrum4me-server:claude', type: 'info', body: 'vraag' })
+    const body = JSON.parse(result.content[0].text)
+    expect(mockPresence).toHaveBeenCalledWith('scrum4me-server', 'claude')
+    expect(body.presence.status).toBe('beschikbaar')
+    expect(body.message_id).toBe(createdRow.id)
+  })
+
+  it('laat het veld weg bij een job-bestemming (geen (server, model)-adres)', async () => {
+    const server = makeServer()
+    const result = await server.call({ to: 'scrum4us-job:cmxyzjobid1', type: 'info', body: 'vraag' })
+    const body = JSON.parse(result.content[0].text)
+    expect(mockPresence).not.toHaveBeenCalled()
+    expect(body.presence).toBeUndefined()
+    expect(body.message_id).toBe(createdRow.id)
+  })
+
+  it('laat het veld weg wanneer de presence-lezing niets oplevert — de push blijft geslaagd', async () => {
+    mockPresence.mockResolvedValueOnce(null) // best-effort helper slikt de fout al
+    const server = makeServer()
+    const result = await server.call({ to: 'scrum4me-server:claude', type: 'info', body: 'vraag' })
+    const body = JSON.parse(result.content[0].text)
+    expect(result.isError).toBeUndefined()
+    expect(body.presence).toBeUndefined()
+    expect(body.message_id).toBe(createdRow.id)
   })
 })
