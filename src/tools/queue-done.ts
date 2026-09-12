@@ -9,6 +9,7 @@ import { verifyLocalOwnership } from '../queue/ownership.js'
 import { QUEUE_CHANNEL, envelopeOf } from '../queue/notify.js'
 import type { AgentMessageRecord } from '../queue/claim.js'
 import { assertLegacyQueueRow, LEGACY_MARKER_SQL } from '../queue/marked.js'
+import { stampDrainPresenceBestEffort } from '../queue/presence.js'
 
 const inputSchema = z.object({
   message_id: z.string().uuid(),
@@ -102,6 +103,9 @@ export function registerQueueDoneTool(server: McpServer) {
         if ('error' in outcome) return toolError(outcome.error)
         // §5.4: entry removed after terminal completion.
         releaseLease(message_id)
+        // IDEA-194 §5.2: drain-stempel op het adres van de afgesloten rij, ná
+        // de transactie en best-effort.
+        await stampDrainPresenceBestEffort(outcome.done.to_server, outcome.done.to_model)
         return toolJson({
           message_id,
           status: 'done',
