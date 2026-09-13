@@ -124,11 +124,11 @@ export async function readPresenceViews(filter?: {
     SELECT p.*, COALESCE(c.open_claims, 0) AS open_claims, c.oldest_claimed_at, c.claim_ids
       FROM agent_presence p
       LEFT JOIN LATERAL (
-        SELECT count(*)::int AS open_claims, min(m.claimed_at) AS oldest_claimed_at,
+        SELECT count(*)::int AS open_claims, min(COALESCE(m.started_at, m.claimed_at)) AS oldest_claimed_at,
                (SELECT array_agg(id) FROM (
                   SELECT id FROM agent_message
                    WHERE to_server = p.server AND to_model = p.model AND status = 'claimed'
-                   ORDER BY claimed_at LIMIT 5) ids) AS claim_ids
+                   ORDER BY COALESCE(started_at, claimed_at) LIMIT 5) ids) AS claim_ids
           FROM agent_message m
          WHERE m.to_server = p.server AND m.to_model = p.model AND m.status = 'claimed'
       ) c ON true
@@ -142,11 +142,11 @@ export async function readPresenceViews(filter?: {
     const claims = await prisma.$queryRaw<
       { open_claims: number; oldest_claimed_at: Date | null; claim_ids: string[] | null }[]
     >`
-      SELECT count(*)::int AS open_claims, min(claimed_at) AS oldest_claimed_at,
+      SELECT count(*)::int AS open_claims, min(COALESCE(started_at, claimed_at)) AS oldest_claimed_at,
              (SELECT array_agg(id) FROM (
                 SELECT id FROM agent_message
                  WHERE to_server = ${server} AND to_model = ${model} AND status = 'claimed'
-                 ORDER BY claimed_at LIMIT 5) ids) AS claim_ids
+                 ORDER BY COALESCE(started_at, claimed_at) LIMIT 5) ids) AS claim_ids
         FROM agent_message WHERE to_server = ${server} AND to_model = ${model} AND status = 'claimed'`
     return [
       toView(
