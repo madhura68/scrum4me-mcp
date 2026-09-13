@@ -125,6 +125,27 @@ describe('readPresenceViews', () => {
     expect(views[0].claims.open).toBe(2)
     expect(views[0].claims.message_ids).toEqual(['a', 'b'])
   })
+
+  // E2E-gate 2026-09-13: lease-refresh.ts herschrijft claimed_at elke 10 s, dus
+  // min(claimed_at) toonde de laatste refresh. De claimstart is started_at;
+  // marked (PPE) claims zetten die niet, vandaar de COALESCE. Het gedrag zelf is
+  // tegen Postgres getest in de CLI-twin (s4m-queue test/presence-db.test.ts);
+  // hier bewaken we dat deze twin dezelfde expressie gebruikt.
+  it('leest claimstart als COALESCE(started_at, claimed_at) in beide queries', async () => {
+    mockPrisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      { open_claims: 0, oldest_claimed_at: null, claim_ids: null },
+    ])
+    await readPresenceViews({ server: 'max2', model: 'codex' })
+    const sql = mockPrisma.$queryRaw.mock.calls.map((call) =>
+      (call[0] as TemplateStringsArray).join('?').replace(/\s+/g, ' '),
+    )
+    expect(sql).toHaveLength(2)
+    for (const q of sql) {
+      expect(q).toMatch(/min\(COALESCE\((m\.)?started_at, (m\.)?claimed_at\)\) AS oldest_claimed_at/)
+      expect(q).toContain('ORDER BY COALESCE(started_at, claimed_at) LIMIT 5')
+      expect(q).not.toMatch(/min\((m\.)?claimed_at\)/)
+    }
+  })
 })
 
 describe('best-effort-contracten', () => {
