@@ -3,7 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { Prisma } from '@prisma/client'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
-import { toolError, toolJson, withToolErrors } from '../errors.js'
+import { formatZodError, toolError, toolJson, withToolErrors } from '../errors.js'
 import { parseQueueTarget, resolveQueueIdentity } from '../queue/identity.js'
 import { requiresTaskMeta, validateTaskMeta } from '../queue/types.js'
 import { deriveRepoFromCwd } from '../queue/git-origin.js'
@@ -21,6 +21,31 @@ import {
   QUEUE_SERVERS,
   formatQueueAddress,
 } from '@shared/queue-identity.js'
+import { reviewDocumentsSchema } from '@shared/queue-review-documents.js'
+
+function objectHasOwn(value: unknown, key: string): value is Record<string, unknown> {
+  return Boolean(value)
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && Object.prototype.hasOwnProperty.call(value, key)
+}
+
+function validateReviewDocumentsMeta(meta: Record<string, unknown>) {
+  if (objectHasOwn(meta.task, 'review_documents')) {
+    return toolError(
+      'VALIDATION_ERROR: meta.review_documents must be a sibling of meta.task, ' +
+        'not nested inside meta.task',
+    )
+  }
+  if (!Object.prototype.hasOwnProperty.call(meta, 'review_documents')) return null
+
+  const parsed = reviewDocumentsSchema.safeParse(meta.review_documents)
+  if (!parsed.success) {
+    return toolError(`VALIDATION_ERROR: meta.review_documents: ${formatZodError(parsed.error)}`)
+  }
+  meta.review_documents = parsed.data
+  return null
+}
 
 const inputSchema = z.object({
   to: z.string().min(1),
@@ -56,6 +81,8 @@ export function registerQueuePushTool(server: McpServer) {
         'review_request (review a document). For task/review_request supply cwd plus meta.task ' +
         '{objective, verification, response_format}; the tool derives meta.task.repo via ' +
         '`git remote get-url origin` in that cwd (pass meta.task.repo explicitly when derivation fails). ' +
+        'For pinned review material, pass immutable sources as meta.review_documents ' +
+        '(sibling of meta.task, version 1, product_doc and/or git refs). ' +
         'When this message is about Scrum4Me work you are doing — almost always a task or review_request tied to a story — pass its id via sprint_id/story_id/task_id so it is traceable on the dashboard. ' +
         'The most specific id you have is enough: the tool derives the rest of the hierarchy (product_id included) via the story, stores it as meta.work_item, and rejects unknown/inconsistent ids. Get the id from get_claude_context or the story/task you are working on. ' +
         'Returns message_id — fetch the answer later with queue_wait_reply({ message_ids: [message_id] }).',
@@ -73,6 +100,8 @@ export function registerQueuePushTool(server: McpServer) {
             : { server: target.server as string, model: target.model }
 
         const finalMeta: Record<string, unknown> = { ...(meta ?? {}) }
+        const reviewDocumentsError = validateReviewDocumentsMeta(finalMeta)
+        if (reviewDocumentsError) return reviewDocumentsError
         if (requiresTaskMeta(type)) {
           const task: Record<string, unknown> = {
             ...((finalMeta.task as Record<string, unknown> | undefined) ?? {}),
