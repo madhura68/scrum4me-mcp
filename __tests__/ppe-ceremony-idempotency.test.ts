@@ -26,6 +26,7 @@ import { handleCreatePbi } from '../src/tools/create-pbi.js'
 import { handleCreateStory } from '../src/tools/create-story.js'
 import { handleCreateTask } from '../src/tools/create-task.js'
 
+const HAS_PPE_CONTROLLER_TEST_DATABASE_URL = Boolean(process.env.PPE_CONTROLLER_TEST_DATABASE_URL)
 const DATABASE_URL = process.env.PPE_CONTROLLER_TEST_DATABASE_URL
   ?? 'postgresql://idea169:idea169@127.0.0.1:55442/idea169_plan_b_tests'
 const RUN_ID = '11111111-1111-4111-8111-111111111111'
@@ -126,31 +127,30 @@ function text(result: { content?: Array<{ type: string; text?: string }> }): str
 
 const db = prisma as unknown as Record<string, any>
 
-beforeAll(async () => {
-  process.env.PPE_CONTROLLER_DATABASE_URL = DATABASE_URL
-  await seedController()
-})
-afterAll(async () => { await clearController() })
+describe.skipIf(!HAS_PPE_CONTROLLER_TEST_DATABASE_URL)('PPE ceremony idempotency', () => {
+  beforeAll(async () => {
+    process.env.PPE_CONTROLLER_DATABASE_URL = DATABASE_URL
+    await seedController()
+  })
+  afterAll(async () => { await clearController() })
 
-beforeEach(() => {
-  vi.clearAllMocks()
-  db.$transaction.mockImplementation(async (run: (tx: typeof prisma) => Promise<unknown>) => run(prisma))
-  db.sprint.findMany.mockResolvedValue([])
-  db.sprint.create.mockImplementation(async ({ data }: any) => ({ id: 'sprint-1', created_at: new Date('2026-08-11T00:00:00Z'), ...data }))
-  db.productDoc.findMany.mockResolvedValue([])
-  db.pbi.findMany.mockResolvedValue([])
-  db.pbi.findFirst.mockResolvedValue(null)
-  db.pbi.create.mockImplementation(async ({ data }: any) => ({ id: 'pbi-1', created_at: new Date('2026-08-11T00:00:00Z'), ...data }))
-  db.story.findUnique.mockResolvedValue({ product_id: 'product-1', sprint_id: 'sprint-1', assignee_id: null })
-  db.story.findMany.mockResolvedValue([])
-  db.story.findFirst.mockResolvedValue(null)
-  db.story.create.mockImplementation(async ({ data }: any) => ({ id: 'story-1', created_at: new Date('2026-08-11T00:00:00Z'), ...data }))
-  db.task.findMany.mockResolvedValue([])
-  db.task.findFirst.mockResolvedValue(null)
-  db.task.create.mockImplementation(async ({ data }: any) => ({ id: 'task-1', created_at: new Date('2026-08-11T00:00:00Z'), ...data }))
-})
-
-describe('PPE ceremony idempotency', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    db.$transaction.mockImplementation(async (run: (tx: typeof prisma) => Promise<unknown>) => run(prisma))
+    db.sprint.findMany.mockResolvedValue([])
+    db.sprint.create.mockImplementation(async ({ data }: any) => ({ id: 'sprint-1', created_at: new Date('2026-08-11T00:00:00Z'), ...data }))
+    db.productDoc.findMany.mockResolvedValue([])
+    db.pbi.findMany.mockResolvedValue([])
+    db.pbi.findFirst.mockResolvedValue(null)
+    db.pbi.create.mockImplementation(async ({ data }: any) => ({ id: 'pbi-1', created_at: new Date('2026-08-11T00:00:00Z'), ...data }))
+    db.story.findUnique.mockResolvedValue({ product_id: 'product-1', sprint_id: 'sprint-1', assignee_id: null })
+    db.story.findMany.mockResolvedValue([])
+    db.story.findFirst.mockResolvedValue(null)
+    db.story.create.mockImplementation(async ({ data }: any) => ({ id: 'story-1', created_at: new Date('2026-08-11T00:00:00Z'), ...data }))
+    db.task.findMany.mockResolvedValue([])
+    db.task.findFirst.mockResolvedValue(null)
+    db.task.create.mockImplementation(async ({ data }: any) => ({ id: 'task-1', created_at: new Date('2026-08-11T00:00:00Z'), ...data }))
+  })
   it('returns the original sprint, PBI, story and task on identical keyed replay', async () => {
     const sprintObject = objectKey('sprint')
     const sprintRequest = { product_id: 'product-1', code: 'B5-SPRINT', sprint_goal: 'B5', start_date: '2026-08-11', ceremony_object_key: sprintObject }

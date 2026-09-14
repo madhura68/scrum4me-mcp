@@ -25,6 +25,7 @@ import { updateTaskStatusWithStoryPromotion } from '../src/lib/tasks-status-upda
 import { handleUpdateTaskPlan } from '../src/tools/update-task-plan.js'
 import { handleUpdateTaskStatus } from '../src/tools/update-task-status.js'
 
+const HAS_PPE_CONTROLLER_TEST_DATABASE_URL = Boolean(process.env.PPE_CONTROLLER_TEST_DATABASE_URL)
 const DATABASE_URL = process.env.PPE_CONTROLLER_TEST_DATABASE_URL
   ?? 'postgresql://idea169:idea169@127.0.0.1:55442/idea169_plan_b_tests'
 const RUN_ID = '22222222-2222-4222-8222-222222222222'
@@ -96,21 +97,20 @@ const text = (result: { content?: Array<{ type: string; text?: string }> }) => r
 const db = prisma as unknown as Record<string, any>
 const statusMutation = updateTaskStatusWithStoryPromotion as ReturnType<typeof vi.fn>
 
-beforeAll(async () => { process.env.PPE_CONTROLLER_DATABASE_URL = DATABASE_URL; await seedController() })
-afterAll(async () => { await clearController() })
-beforeEach(() => {
-  vi.clearAllMocks()
-  db.$transaction.mockImplementation(async (run: (tx: typeof prisma) => Promise<unknown>) => run(prisma))
-  db.task.findUnique.mockResolvedValue({ id: 'task-1', status: 'TO_DO', implementation_plan: 'old\n' })
-  db.task.updateMany.mockResolvedValue({ count: 1 })
-  db.task.update.mockImplementation(async ({ data }: any) => ({ id: 'task-1', status: 'TO_DO', implementation_plan: data.implementation_plan }))
-  statusMutation.mockResolvedValue({
-    task: { id: 'task-1', status: 'IN_PROGRESS', implementation_plan: 'new\n' },
-    storyStatusChange: null, sprintRunChanged: false,
+describe.skipIf(!HAS_PPE_CONTROLLER_TEST_DATABASE_URL)('PPE task plan and status CAS', () => {
+  beforeAll(async () => { process.env.PPE_CONTROLLER_DATABASE_URL = DATABASE_URL; await seedController() })
+  afterAll(async () => { await clearController() })
+  beforeEach(() => {
+    vi.clearAllMocks()
+    db.$transaction.mockImplementation(async (run: (tx: typeof prisma) => Promise<unknown>) => run(prisma))
+    db.task.findUnique.mockResolvedValue({ id: 'task-1', status: 'TO_DO', implementation_plan: 'old\n' })
+    db.task.updateMany.mockResolvedValue({ count: 1 })
+    db.task.update.mockImplementation(async ({ data }: any) => ({ id: 'task-1', status: 'TO_DO', implementation_plan: data.implementation_plan }))
+    statusMutation.mockResolvedValue({
+      task: { id: 'task-1', status: 'IN_PROGRESS', implementation_plan: 'new\n' },
+      storyStatusChange: null, sprintRunChanged: false,
+    })
   })
-})
-
-describe('PPE task plan and status CAS', () => {
   it('replays one exact task-plan CAS and rejects changed or stale replacement', async () => {
     const operationKey = `task-plan:${RUN_ID}:${randomUUID()}`
     const request = { task_id: 'task-1', expected_current_hash: bytesHash('old\n'), replacement_hash: bytesHash('new\n'), implementation_plan: 'new\n' }

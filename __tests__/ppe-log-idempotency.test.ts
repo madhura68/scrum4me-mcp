@@ -15,6 +15,7 @@ import { handleLogImplementation } from '../src/tools/log-implementation.js'
 import { handleLogCommit } from '../src/tools/log-commit.js'
 import { handleLogTestResult } from '../src/tools/log-test-result.js'
 
+const HAS_PPE_CONTROLLER_TEST_DATABASE_URL = Boolean(process.env.PPE_CONTROLLER_TEST_DATABASE_URL)
 const DATABASE_URL = process.env.PPE_CONTROLLER_TEST_DATABASE_URL
   ?? 'postgresql://idea169:idea169@127.0.0.1:55442/idea169_plan_b_tests'
 const RUN_ID = '33333333-3333-4333-8333-333333333333'
@@ -84,16 +85,15 @@ const text = (result: { content?: Array<{ type: string; text?: string }> }) => r
 const db = prisma as unknown as { storyLog: { create: ReturnType<typeof vi.fn> } }
 const auth = requireWriteAccess as ReturnType<typeof vi.fn>
 
-beforeAll(async () => { process.env.PPE_CONTROLLER_DATABASE_URL = DATABASE_URL; await seedController() })
-afterAll(async () => { await clearController() })
-beforeEach(() => {
-  vi.clearAllMocks()
-  auth.mockResolvedValue({ userId: 'user-1', tokenId: 'token-1', username: 'claude' })
-  let row = 0
-  db.storyLog.create.mockImplementation(async () => ({ id: `log-${++row}`, created_at: new Date('2026-08-11T00:00:00Z') }))
-})
-
-describe('PPE execution log idempotency', () => {
+describe.skipIf(!HAS_PPE_CONTROLLER_TEST_DATABASE_URL)('PPE execution log idempotency', () => {
+  beforeAll(async () => { process.env.PPE_CONTROLLER_DATABASE_URL = DATABASE_URL; await seedController() })
+  afterAll(async () => { await clearController() })
+  beforeEach(() => {
+    vi.clearAllMocks()
+    auth.mockResolvedValue({ userId: 'user-1', tokenId: 'token-1', username: 'claude' })
+    let row = 0
+    db.storyLog.create.mockImplementation(async () => ({ id: `log-${++row}`, created_at: new Date('2026-08-11T00:00:00Z') }))
+  })
   it('replays implementation, commit and test-result logs under one model-neutral principal', async () => {
     const implementationKey = `log-implementation:${RUN_ID}:${EXECUTION_KEY}:attempt:1`
     const implementationRequest = { story_id: 'story-1', task_id: 'task-1', execution_key: EXECUTION_KEY, content: 'implemented', metadata: null }

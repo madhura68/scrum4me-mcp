@@ -6,6 +6,7 @@ vi.mock('../../src/prisma.js', () => ({
     claudeJob: { findUnique: vi.fn() },
     task: { findUnique: vi.fn() },
     jobKindConfig: { findUnique: vi.fn().mockResolvedValue(null) },
+    $queryRaw: vi.fn(),
     $executeRaw: vi.fn(),
   },
 }))
@@ -43,6 +44,7 @@ import { TerminalJobError } from '../../src/git/on-demand-clone.js'
 const mockPrisma = prisma as unknown as {
   claudeJob: { findUnique: ReturnType<typeof vi.fn> }
   task: { findUnique: ReturnType<typeof vi.fn> }
+  $queryRaw: ReturnType<typeof vi.fn>
   $executeRaw: ReturnType<typeof vi.fn>
 }
 
@@ -115,6 +117,7 @@ describe('getFullJobContext TASK_REVIEW', () => {
     // Default mocks: job, task, impl context, compare diff
     mockPrisma.claudeJob.findUnique.mockResolvedValue(BASE_JOB)
     mockPrisma.task.findUnique.mockResolvedValue(BASE_TASK)
+    mockPrisma.$queryRaw.mockResolvedValue([{ retry_count: 1 }])
     mockPrisma.$executeRaw.mockResolvedValue(1)
     mockResolveTaskImplContext.mockResolvedValue(BASE_IMPL)
     mockFetchCompareDiff.mockResolvedValue('diff --git a b\n--- a\n+++ b')
@@ -232,9 +235,6 @@ describe('getFullJobContext TASK_REVIEW', () => {
   it('both fetchers fail (sources present) → rollbackClaim + null, GEEN TerminalJobError', async () => {
     mockFetchCompareDiff.mockResolvedValue({ error: 'compare failed: HTTP 503' })
     mockFetchPrDiff.mockResolvedValue({ error: 'pr diff failed: HTTP 503' })
-    mockPrisma.claudeJob.findUnique
-      .mockResolvedValueOnce(BASE_JOB)
-      .mockResolvedValueOnce({ kind: 'TASK_REVIEW', product_id: 'prod-1', task: null })
 
     const ctx = await getFullJobContext('job-task-review-1', 'CLAUDE')
 
@@ -248,9 +248,6 @@ describe('getFullJobContext TASK_REVIEW', () => {
   it('compare 404 + geen pr_url → rollbackClaim + null, GEEN TerminalJobError', async () => {
     mockResolveTaskImplContext.mockResolvedValue({ ...BASE_IMPL, pr_url: null })
     mockFetchCompareDiff.mockResolvedValue({ error: 'compare failed: HTTP 404' })
-    mockPrisma.claudeJob.findUnique
-      .mockResolvedValueOnce(BASE_JOB)
-      .mockResolvedValueOnce({ kind: 'TASK_REVIEW', product_id: 'prod-1', task: null })
 
     const ctx = await getFullJobContext('job-task-review-1', 'CLAUDE')
 
