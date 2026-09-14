@@ -36,6 +36,30 @@ const mockAuth = requireWriteAccess as ReturnType<typeof vi.fn>
 
 type ToolResult = { isError?: boolean; content: { text: string }[] }
 
+const pinnedReviewDocuments = {
+  version: 1,
+  items: [
+    {
+      key: 'plan',
+      title: 'Implementatieplan',
+      source: 'product_doc',
+      product_id: 'prod-214',
+      doc_id: 'doc-214',
+      revision_id: 'rev-214',
+      sha256: 'a'.repeat(64),
+    },
+    {
+      key: 'published',
+      title: 'Gepubliceerde runbook',
+      source: 'git',
+      product_id: 'prod-214',
+      path: 'docs/runbooks/review-documents.md',
+      commit_sha: 'b'.repeat(40),
+      sha256: 'c'.repeat(64),
+    },
+  ],
+} as const
+
 function makeServer() {
   let handler: (args: Record<string, unknown>) => Promise<unknown>
   const server = {
@@ -309,6 +333,93 @@ describe('queue_push — §5.1', () => {
     expect(result.isError).toBeUndefined()
     const body = JSON.parse(result.content[0].text)
     expect(body.message_id).toBe(createdRow.id)
+  })
+})
+
+describe('queue_push — meta.review_documents (IDEA-214)', () => {
+  it('bewaart gevalideerde reviewdocumenten naast meta.task en meta.work_item', async () => {
+    mockPrisma.story.findUnique.mockResolvedValue({ sprint_id: 'sp1', product_id: 'prod-214' })
+    const server = makeServer()
+    await server.call({
+      to: 'scrum4me-server:claude',
+      type: 'review_request',
+      body: 'review dit',
+      cwd: '/work/dir',
+      story_id: 's1',
+      meta: {
+        task: { objective: 'o', verification: 'v', response_format: 'rf' },
+        review_documents: pinnedReviewDocuments,
+      },
+    })
+
+    expect(mockPrisma.agentMessage.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        meta: {
+          task: {
+            cwd: '/work/dir',
+            repo: 'https://git.jp-visser.nl/janpeter/x.git',
+            objective: 'o',
+            verification: 'v',
+            response_format: 'rf',
+          },
+          review_documents: pinnedReviewDocuments,
+          work_item: { product_id: 'prod-214', sprint_id: 'sp1', story_id: 's1' },
+        },
+      }),
+    })
+  })
+
+  it('weigert reviewdocumenten die onder meta.task staan zodat ze niet stil worden gestript', async () => {
+    const server = makeServer()
+    const result = await server.call({
+      to: 'scrum4me-server:claude',
+      type: 'review_request',
+      body: 'review dit',
+      cwd: '/work/dir',
+      meta: {
+        task: {
+          objective: 'o',
+          verification: 'v',
+          response_format: 'rf',
+          review_documents: pinnedReviewDocuments,
+        },
+      },
+    })
+
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('VALIDATION_ERROR')
+    expect(result.content[0].text).toContain('meta.review_documents')
+    expect(mockPrisma.agentMessage.create).not.toHaveBeenCalled()
+    expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
+  })
+
+  it('weigert ongeldige reviewdocumenten vóór insert en NOTIFY', async () => {
+    const server = makeServer()
+    const result = await server.call({
+      to: 'scrum4me-server:claude',
+      type: 'info',
+      body: 'x',
+      meta: {
+        review_documents: {
+          version: 1,
+          items: [{ ...pinnedReviewDocuments.items[0], sha256: 'A'.repeat(64) }],
+        },
+      },
+    })
+
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('VALIDATION_ERROR')
+    expect(result.content[0].text).toContain('meta.review_documents')
+    expect(mockPrisma.agentMessage.create).not.toHaveBeenCalled()
+    expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
+  })
+
+  it('beschrijft waar pinned reviewdocumenten horen', () => {
+    const server = makeServer()
+    const meta = server.registerTool.mock.calls[0][1] as { description: string }
+
+    expect(meta.description).toContain('meta.review_documents')
+    expect(meta.description).toContain('sibling of meta.task')
   })
 })
 
