@@ -13,14 +13,23 @@ const run=promisify(execFile),oid=/^[a-f0-9]{40}$/,uuid=/^[a-f0-9]{8}-[a-f0-9]{4
 const invalid=():never=>{throw new DispatchError('DISPATCH_INVALID_INPUT')}
 /** Explicit minimal environment drops global/system Git config, SSH, askpass,
  * credentials, alternates and process Git variables. Only preparation may fetch. */
-export async function isolatedGit(cwd:string,args:string[],protocols='',httpAuth?:{repoUrl:string;header:string}):Promise<string>{
- try{const {stdout}=await run('git',['-c','core.hooksPath=/dev/null','-c','credential.helper=','-c','protocol.allow=never','-c','core.fsmonitor=false','-c','http.followRedirects=false',...args],{cwd,encoding:'utf8',maxBuffer:ARTIFACT_MAX_BYTES,timeout:60000,env:{PATH:process.env.PATH,HOME:cwd,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_ALLOW_PROTOCOL:protocols,...(httpAuth?{GIT_CONFIG_COUNT:'1',GIT_CONFIG_KEY_0:`http.${httpAuth.repoUrl}.extraHeader`,GIT_CONFIG_VALUE_0:httpAuth.header}:{})}});return stdout.trim()}
+export async function isolatedGitRaw(cwd:string,args:string[],protocols='',httpAuth?:{repoUrl:string;header:string}):Promise<Buffer>{
+ try{const {stdout}=await run('git',['-c','core.hooksPath=/dev/null','-c','credential.helper=','-c','protocol.allow=never','-c','core.fsmonitor=false','-c','http.followRedirects=false',...args],{cwd,encoding:'buffer',maxBuffer:ARTIFACT_MAX_BYTES,timeout:60000,env:{PATH:process.env.PATH,HOME:cwd,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_ALLOW_PROTOCOL:protocols,...(httpAuth?{GIT_CONFIG_COUNT:'1',GIT_CONFIG_KEY_0:`http.${httpAuth.repoUrl}.extraHeader`,GIT_CONFIG_VALUE_0:httpAuth.header}:{})}});return stdout}
  catch(error){
   const detail=String((error as {stderr?:string}).stderr??'')
   if(/not our ref|couldn't find remote ref|unadvertised object|reference is not a tree/i.test(detail))throw new DispatchSourceError('missing')
   if(/authentication failed|could not read username|access denied|403|401/i.test(detail))throw new DispatchSourceError('forbidden')
   throw new DispatchSourceError('network')
  }
+}
+/** R26: textual Git data is exact UTF-8, never replacement-decoded. Binary
+ * patches emitted by git --binary are ASCII and retain their original bytes. */
+function exactGitText(bytes:Uint8Array):string{
+ try{return new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes)}catch{throw new DispatchError('DISPATCH_UNSUPPORTED_ENCODING')}
+}
+/** Only remove the single LF terminator emitted by scalar Git commands. */
+export async function isolatedGit(cwd:string,args:string[],protocols='',httpAuth?:{repoUrl:string;header:string}):Promise<string>{
+ const text=exactGitText(await isolatedGitRaw(cwd,args,protocols,httpAuth));return text.endsWith('\n')?text.slice(0,-1):text
 }
 export async function importBaseBundle(path:string,bundlePath:string,baseSha:string,repoUrl:string,branch:string){
  if(!oid.test(baseSha)||!/^codex\/queue-[a-f0-9-]{36}$/.test(branch))return invalid()
@@ -75,7 +84,9 @@ type Expected={repoUrl:string;baseSha:string;headSha:string;branch:string;checks
 async function verifyHead(path:string,x:Expected){
  if(!oid.test(x.baseSha)||!oid.test(x.headSha)||await isolatedGit(path,['remote','get-url','origin'])!==x.repoUrl)return invalid()
  await isolatedGit(path,['cat-file','-e',`${x.baseSha}^{commit}`]);await isolatedGit(path,['cat-file','-e',`${x.headSha}^{commit}`]);await isolatedGit(path,['merge-base','--is-ancestor',x.baseSha,x.headSha])
- return {files:(await isolatedGit(path,['diff','--name-only','-z',x.baseSha,x.headSha])).split('\0').filter(Boolean),diff:await isolatedGit(path,['diff','--binary','--no-ext-diff','--no-textconv',x.baseSha,x.headSha])}
+ const names=exactGitText(await isolatedGitRaw(path,['diff','--name-only','-z',x.baseSha,x.headSha]))
+ if(names&&!names.endsWith('\0'))return invalid()
+ return {files:names?names.slice(0,-1).split('\0'):[],diff:exactGitText(await isolatedGitRaw(path,['diff','--binary','--no-ext-diff','--no-textconv',x.baseSha,x.headSha]))}
 }
 /** Agent Git configuration and filesystem objects are untrusted at collection.
  * Git config itself is read without includes; filters/aliases/external helpers
@@ -100,7 +111,7 @@ async function assertCollectableRepository(path:string){
   const allowed:Record<string,string[]>= {core:['repositoryformatversion','filemode','bare','logallrefupdates','hookspath','ignorecase','precomposeunicode','symlinks'],user:['name','email'],protocol:['allow'],'remote "origin"':['url','fetch']}
   if(!allowed[section].includes(field[1].toLowerCase()))return denied()
  }
- const config=await isolatedGit(path,['config','--local','--no-includes','--null','--list'])
+ const config=exactGitText(await isolatedGitRaw(path,['config','--local','--no-includes','--null','--list']))
  for(const entry of config.split('\0').filter(Boolean)){
   const key=entry.split('\n',1)[0]
   if(!/^core\.(repositoryformatversion|filemode|bare|logallrefupdates|hookspath|ignorecase|precomposeunicode|symlinks)$/.test(key)&&!/^remote\.origin\.(url|fetch)$/.test(key)&&!/^user\.(name|email)$/.test(key)&&key!=='protocol.allow')return denied()

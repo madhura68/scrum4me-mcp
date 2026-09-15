@@ -22,3 +22,32 @@ it('blocks executable filters, includes and Git filesystem escapes before a trus
 it('preserves a verified no-change base with an empty diff without exporting history',async()=>{const x=await service().prepareDispatchWorkspace({...input(),requestId:randomUUID()},randomUUID()),expected={repoUrl,baseSha:base,headSha:base,branch:x.branch,checks:[]},source=await service().prepareRepositorySource(input(),randomUUID(),{}),bytes=await createCodeArtifact(x.path,expected);expect(JSON.parse(Buffer.from(bytes).toString()).bundle).toBe('');expect(await verifyCodeArtifact(bytes,source.bytes,expected)).toEqual({files:[]})})
 it('refuses host-directed core.worktree and symlinked Git objects before executing Git',async()=>{const x=await service().prepareDispatchWorkspace({...input(),requestId:randomUUID()},randomUUID()),expected={repoUrl,baseSha:base,headSha:base,branch:x.branch,checks:[]};git(x.path,'config','core.worktree',join(root,'forbidden-host-path'));await expect(createCodeArtifact(x.path,expected)).rejects.toThrow('DISPATCH_FORBIDDEN');git(x.path,'config','--unset','core.worktree');const fs=await import('node:fs/promises');await fs.symlink(join(root,'forbidden-host-objects'),join(x.path,'.git','objects','host-link'));await expect(createCodeArtifact(x.path,expected)).rejects.toThrow('DISPATCH_FORBIDDEN')})
 it('does not run configured hooks or textconv commands during collection',async()=>{const x=await service().prepareDispatchWorkspace({...input(),requestId:randomUUID()},randomUUID()),expected={repoUrl,baseSha:base,headSha:base,branch:x.branch,checks:[]},marker=join(root,'hook-executed');await writeFile(join(x.path,'.git','hooks-malicious'),'#!/bin/sh\ntouch '+marker+'\n',{mode:0o755});git(x.path,'config','core.hooksPath',root);expect(await createCodeArtifact(x.path,expected)).toBeInstanceOf(Uint8Array);await expect(readFile(marker)).rejects.toThrow();git(x.path,'config','diff.attack.textconv','touch '+marker);await expect(createCodeArtifact(x.path,expected)).rejects.toThrow('DISPATCH_FORBIDDEN');await expect(readFile(marker)).rejects.toThrow()})
+it('preserves raw NUL-separated UTF-8 paths and complete diff bytes across real export and import',async()=>{
+ const x=await service().prepareDispatchWorkspace({...input(),requestId:randomUUID()},randomUUID()),names=[' leading.txt','tab\tname.txt','line\nbreak.txt','trailing.txt ','\ufeffbom-name.txt']
+ git(x.path,'config','user.name','Test');git(x.path,'config','user.email','test@example.test')
+ for(const name of names)await writeFile(join(x.path,name),'content with trailing spaces  \n\n')
+ await writeFile(join(x.path,'binary.bin'),Buffer.from([0,255,1,2,10]))
+ git(x.path,'add','.');git(x.path,'commit','-m','special filenames')
+ const expected={repoUrl,baseSha:base,headSha:git(x.path,'rev-parse','HEAD'),branch:x.branch,checks:[]},source=await service().prepareRepositorySource(input(),randomUUID(),{}),bytes=await createCodeArtifact(x.path,expected),artifact=JSON.parse(Buffer.from(bytes).toString('utf8'))
+ const raw=(...args:string[])=>execFileSync('git',args,{cwd:x.path,stdio:['ignore','pipe','pipe']})
+ const actualFiles=raw('diff','--name-only','-z',base,expected.headSha).toString('utf8').split('\0').slice(0,-1)
+ expect(actualFiles).toContain(' leading.txt');expect(artifact.files).toEqual(actualFiles)
+ expect(Buffer.from(artifact.diff,'utf8')).toEqual(raw('diff','--binary','--no-ext-diff','--no-textconv',base,expected.headSha))
+ expect((await verifyCodeArtifact(bytes,source.bytes,expected)).files).toEqual(actualFiles)
+})
+it('rejects invalid UTF-8 Git path bytes in a real imported bundle instead of replacement decoding',async()=>{
+ const x=await service().prepareDispatchWorkspace({...input(),requestId:randomUUID()},randomUUID());git(x.path,'config','user.name','Test');git(x.path,'config','user.email','test@example.test')
+ const blob=execFileSync('git',['hash-object','-w','--stdin'],{cwd:x.path,input:'content'}).toString().trim()
+ const tree=execFileSync('git',['mktree','-z'],{cwd:x.path,input:Buffer.concat([Buffer.from(`100644 blob ${blob}\tbad-`),Buffer.from([255]),Buffer.from('.txt\0')])}).toString().trim()
+ const head=execFileSync('git',['commit-tree',tree,'-p',base],{cwd:x.path,input:'invalid path\n'}).toString().trim();git(x.path,'update-ref',`refs/heads/${x.branch}`,head)
+ const bundlePath=join(root,'invalid-path.bundle');git(x.path,'bundle','create',bundlePath,`${base}..HEAD`)
+ const expected={repoUrl,baseSha:base,headSha:head,branch:x.branch,checks:[]},source=await service().prepareRepositorySource(input(),randomUUID(),{})
+ const bytes=Buffer.from(JSON.stringify({version:1,...expected,files:git(x.path,'diff','--name-only','-z',base,head).split('\0').filter(Boolean),diff:git(x.path,'diff','--binary','--no-ext-diff','--no-textconv',base,head),bundle:(await readFile(bundlePath)).toString('base64')}))
+ await expect(verifyCodeArtifact(bytes,source.bytes,expected)).rejects.toThrow('DISPATCH_UNSUPPORTED_ENCODING')
+})
+it('rejects non-UTF8 textual diff bytes and retains the committed workspace',async()=>{
+ const x=await service().prepareDispatchWorkspace({...input(),requestId:randomUUID()},randomUUID());git(x.path,'config','user.name','Test');git(x.path,'config','user.email','test@example.test');await writeFile(join(x.path,'a.txt'),Buffer.from([255,10]));git(x.path,'commit','-am','non UTF8 text')
+ const expected={repoUrl,baseSha:base,headSha:git(x.path,'rev-parse','HEAD'),branch:x.branch,checks:[]}
+ await expect(createCodeArtifact(x.path,expected)).rejects.toThrow('DISPATCH_UNSUPPORTED_ENCODING')
+ expect(git(x.path,'rev-parse','HEAD')).toBe(expected.headSha);expect(await readFile(join(x.path,'a.txt'))).toEqual(Buffer.from([255,10]))
+})
