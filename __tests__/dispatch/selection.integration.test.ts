@@ -43,6 +43,10 @@ describe('atomic capacity selection', () => {
   })
 })
 describe('authenticated incarnation registration', () => {
+  it('refuses an old job config that binds an ordinary worker identity', async () => {
+    await h.dispatch.query("UPDATE queue_dispatch_slots SET config=jsonb_set(config,'{worker_instance_id}',to_jsonb($2::text)) WHERE id=$1", [f.jobSlot.id, f.jobSlot.id])
+    await expect(registration.registerDispatchExecutor(f.actor, { registration_key: 'ordinary-config', slot_id: f.jobSlot.id, boot_id: 'new', runtime: 'CODEX', image_digest: `sha256:${'a'.repeat(64)}`, profile_sha256: 'a'.repeat(64) })).rejects.toThrow('DISPATCH_INVALID_INPUT')
+  })
   it('reconstructs the same credential and stores only its hash', async () => {
     const input = { registration_key: 'same-boot', slot_id: f.jobSlot.id, boot_id: 'boot-new', runtime: 'CODEX' as const, image_digest: `sha256:${'a'.repeat(64)}`, profile_sha256: 'a'.repeat(64) }
     const [a, b] = await Promise.all([registration.registerDispatchExecutor(f.actor, input), registration.registerDispatchExecutor(f.actor, input)])
@@ -63,12 +67,12 @@ describe('authenticated incarnation registration', () => {
 describe('current eligibility negatives', () => {
   it.each(['scope', 'runtime', 'capability', 'profile', 'quota', 'stale-worker'])('does not select an ineligible job (%s)', async reason => {
     await h.dispatch.query('UPDATE queue_dispatch_incarnations SET busy=true WHERE id=$1', [f.hostSlot.incarnationId])
-    if (reason === 'scope') await h.admin.query("UPDATE claude_workers SET product_id='other' WHERE instance_id=$1", [f.jobSlot.id])
-    if (reason === 'runtime') await h.admin.query("UPDATE claude_workers SET runtime='CLAUDE' WHERE instance_id=$1", [f.jobSlot.id])
+    if (reason === 'scope') await h.admin.query("UPDATE claude_workers SET product_id='other' WHERE instance_id=$1", [f.jobSlot.instanceId])
+    if (reason === 'runtime') await h.admin.query("UPDATE claude_workers SET runtime='CLAUDE' WHERE instance_id=$1", [f.jobSlot.instanceId])
     if (reason === 'capability') await h.dispatch.query("UPDATE queue_dispatch_slots SET config=jsonb_set(config,'{capabilities}','[\"deploy\"]') WHERE id=$1", [f.jobSlot.id])
     if (reason === 'profile') await h.dispatch.query('UPDATE queue_dispatch_profiles SET revoked_at=now() WHERE id=$1', [f.profileId])
-    if (reason === 'quota') { await h.admin.query('UPDATE users SET min_quota_pct=20 WHERE id=$1', [f.actor.userId]); await h.admin.query('UPDATE claude_workers SET last_quota_pct=5 WHERE instance_id=$1', [f.jobSlot.id]) }
-    if (reason === 'stale-worker') await h.admin.query("UPDATE claude_workers SET last_seen_at=now()-interval '31 seconds' WHERE instance_id=$1", [f.jobSlot.id])
+    if (reason === 'quota') { await h.admin.query('UPDATE users SET min_quota_pct=20 WHERE id=$1', [f.actor.userId]); await h.admin.query('UPDATE claude_workers SET last_quota_pct=5 WHERE instance_id=$1', [f.jobSlot.instanceId]) }
+    if (reason === 'stale-worker') await h.admin.query("UPDATE claude_workers SET last_seen_at=now()-interval '31 seconds' WHERE instance_id=$1", [f.jobSlot.instanceId])
     await requests.submitDispatch(f.actor, f.input, 'negative')
     expect(await selection.reserveNextRequest()).toBeNull()
     expect((await h.dispatch.query('SELECT count(*)::int AS n FROM queue_dispatch_candidates')).rows[0].n).toBe(0)
@@ -110,13 +114,14 @@ describe('managed host identity and exact worker binding', () => {
   })
   it('binds the exact worker among multiple rows and refuses absent bootstrap', async () => {
     const other = crypto.randomUUID()
-    await h.admin.query("INSERT INTO claude_workers(id,user_id,token_id,instance_id,runtime,capabilities,capability,last_seen_at) VALUES($1,$2,$3,$1,'CLAUDE',ARRAY['deploy'],'HIGH_P',now())", [other, f.actor.userId, f.actor.tokenId])
-    const base = { action_id: 'exact', token_id: f.actor.tokenId!, product_id: f.input.product_id, kind: 'job' as const, capacity_key: `job:${f.jobSlot.id}`, address: null, profile_revision_ids: [f.profileId] }
+    await h.admin.query("INSERT INTO claude_workers(id,user_id,token_id,instance_id,runtime,capabilities,capability,last_seen_at) VALUES($1,$2,$3,'managed:' || $1,'CLAUDE',ARRAY['deploy'],'HIGH_P',now())", [other, f.actor.userId, f.actor.tokenId])
+    const base = { action_id: 'exact', token_id: f.actor.tokenId!, product_id: f.input.product_id, kind: 'job' as const, capacity_key: `job:${f.jobSlot.instanceId}`, address: null, profile_revision_ids: [f.profileId] }
+    await expect(registration.createSlot(f.actor, { ...base, action_id: 'ordinary-key', capacity_key: `job:${f.jobSlot.id}` })).rejects.toThrow('DISPATCH_INVALID_INPUT')
     const same = await registration.createSlot(f.actor, base)
     expect(same.id).toBe(f.jobSlot.id)
-    expect((await h.dispatch.query('SELECT config FROM queue_dispatch_slots WHERE id=$1', [same.id])).rows[0].config).toMatchObject({ runtime: 'CODEX', worker_instance_id: f.jobSlot.id, capabilities: [], tier: null })
-    await expect(registration.createSlot(f.actor, { ...base, action_id: 'absent', capacity_key: 'job:missing' })).rejects.toThrow('DISPATCH_FORBIDDEN')
-    await expect(registration.createSlot(f.actor, { ...base, action_id: 'wrong-runtime', capacity_key: `job:${other}` })).rejects.toThrow('DISPATCH_FORBIDDEN')
+    expect((await h.dispatch.query('SELECT config FROM queue_dispatch_slots WHERE id=$1', [same.id])).rows[0].config).toMatchObject({ runtime: 'CODEX', worker_instance_id: f.jobSlot.instanceId, capabilities: [], tier: null })
+    await expect(registration.createSlot(f.actor, { ...base, action_id: 'absent', capacity_key: 'job:managed:missing' })).rejects.toThrow('DISPATCH_FORBIDDEN')
+    await expect(registration.createSlot(f.actor, { ...base, action_id: 'wrong-runtime', capacity_key: `job:managed:${other}` })).rejects.toThrow('DISPATCH_FORBIDDEN')
   })
   it('different profiles sharing a slot cannot reserve it twice', async () => {
     const extra = crypto.randomUUID()
@@ -145,7 +150,7 @@ async function explicitTask() {
   await h.dispatch.query('INSERT INTO queue_dispatch_slot_profiles(slot_id,profile_revision_id) VALUES($1,$2)', [f.jobSlot.id, profileId])
   await h.dispatch.query("UPDATE queue_dispatch_slots SET config=jsonb_set(config,'{capabilities}','[\"code_edit\"]') WHERE id=$1", [f.jobSlot.id])
   await h.dispatch.query("UPDATE queue_dispatch_incarnations SET runtime_scope=jsonb_set(jsonb_set(runtime_scope,'{capabilities}','[\"code_edit\"]'),'{profile_revision_ids}',to_jsonb(ARRAY[$2::text])) WHERE id=$1", [f.jobSlot.incarnationId, profileId])
-  await h.admin.query("UPDATE claude_workers SET capabilities=ARRAY['code_edit'] WHERE instance_id=$1", [f.jobSlot.id])
+  await h.admin.query("UPDATE claude_workers SET capabilities=ARRAY['code_edit'] WHERE instance_id=$1", [f.jobSlot.instanceId])
   return { ...f.input, action: 'task_implementation' as const, task_id: task, publish: 'branch' as const, requirements: { access: 'repo_write' as const, environment_keys: [], repository: { product_id: f.input.product_id, base_sha: 'a'.repeat(40) } } }
 }
 describe('shared Task locking', () => {
@@ -221,7 +226,7 @@ it('registration replay rechecks revocation, and old session heartbeat cannot si
 })
 it('a real ordinary running job consumes its stable worker slot',async()=>{
  const job=crypto.randomUUID()
- await h.admin.query("INSERT INTO claude_jobs(id,user_id,product_id,kind,status,worker_instance_id,updated_at) VALUES($1,$2,$3,'DEPLOY','RUNNING',$4,now())",[job,f.actor.userId,f.input.product_id,f.jobSlot.id])
+ await h.admin.query("INSERT INTO claude_jobs(id,user_id,product_id,kind,status,worker_instance_id,updated_at) VALUES($1,$2,$3,'DEPLOY','RUNNING',$4,now())",[job,f.actor.userId,f.input.product_id,f.jobSlot.instanceId])
  const r=await requests.submitDispatch(f.actor,f.input,'live-job')
  await selection.reserveNextRequest()
  expect((await requests.getDispatch(f.actor,r.id)).route).toBe('host')

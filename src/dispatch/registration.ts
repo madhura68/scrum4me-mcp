@@ -8,6 +8,7 @@ import type { ExecutorSession, RegisterExecutorInput, SlotInput, DispatchSlotVie
 import type { ManagedSlotConfig } from './eligibility.js'
 import { withDispatchRetryTransaction, type DispatchStore } from './db.js'
 import { DispatchError } from './errors.js'
+import { isManagedWorkerInstanceId } from '../presence/worker-mode.js'
 
 type Profile = { id: string; product_id: string; config: DispatchProfileConfig; sha256: string; revoked_at: Date | null }
 export type IncarnationScope = ManagedSlotConfig & { profile_revision_ids: string[]; image_digest: string; profile_sha256: string; supervisor_token_id: string }
@@ -21,7 +22,7 @@ export function parseManagedSlotConfig(value: unknown): ManagedSlotConfig {
     || c.version !== 1 || !['CODEX', 'CLAUDE'].includes(c.runtime) || !Array.isArray(c.product_ids) || !c.product_ids.length
     || c.product_ids.some(x => typeof x !== 'string' || !x) || !Array.isArray(c.capabilities) || c.capabilities.some(x => typeof x !== 'string' || !x)
     || (c.tier !== null && !['HIGH_P', 'MEDIUM_P', 'LOW_P'].includes(c.tier))
-    || (c.worker_instance_id !== null && (typeof c.worker_instance_id !== 'string' || !c.worker_instance_id))) throw new DispatchError('DISPATCH_INVALID_INPUT')
+    || (c.worker_instance_id !== null && !isManagedWorkerInstanceId(c.worker_instance_id))) throw new DispatchError('DISPATCH_INVALID_INPUT')
   return c
 }
 export function actorForToken(userId: string, tokenId: string): DispatchActor {
@@ -46,6 +47,7 @@ export function createDispatchRegistration(deps: { store: DispatchStore; auth: D
       'SELECT * FROM queue_dispatch_slots WHERE id=$1 FOR UPDATE', [slotId])).rows[0]
     if (!slot || !slot.enabled || slot.owner_user_id !== current.userId || slot.token_id !== current.tokenId) return forbidden()
     const config = parseManagedSlotConfig(slot.config)
+    if (slot.kind === 'job' && !isManagedWorkerInstanceId(config.worker_instance_id)) return forbidden()
     const ids = (await db.query<{ profile_revision_id: string }>('SELECT profile_revision_id FROM queue_dispatch_slot_profiles WHERE slot_id=$1', [slotId])).rows.map(r => r.profile_revision_id)
     const allowed = (await profiles(db, ids, true)).filter(p => !p.revoked_at)
     if (!allowed.length) return forbidden()
@@ -106,7 +108,7 @@ export function createDispatchRegistration(deps: { store: DispatchStore; auth: D
     if (input.kind === 'host') {
       try { const a = parseQueueAddress(input.address?.trim().toLowerCase() ?? ''); if (!('model' in a) || !['claude', 'codex'].includes(a.model)) throw new Error(); address = formatQueueAddress(a) } catch { throw new DispatchError('DISPATCH_INVALID_INPUT') }
       capacityKey = `host:${address}`; if (input.capacity_key !== capacityKey) throw new DispatchError('DISPATCH_INVALID_INPUT')
-    } else if (input.address !== null || !/^job:.{1,256}$/.test(capacityKey)) throw new DispatchError('DISPATCH_INVALID_INPUT')
+    } else if (input.address !== null || !capacityKey.startsWith('job:') || !isManagedWorkerInstanceId(capacityKey.slice(4))) throw new DispatchError('DISPATCH_INVALID_INPUT')
     return withDispatchRetryTransaction(deps.store, async db => {
       await deps.auth.authorizeDispatch(actor, productInput(input.product_id), 'profile', db)
       const ps = await profiles(db, input.profile_revision_ids)

@@ -19,7 +19,7 @@ type FixtureIds = {
 export type DispatchHarnessSeed = {
   actor: DispatchActor
   input: DispatchInput
-  jobSlot: { id: string; incarnationId: string }
+  jobSlot: { id: string; incarnationId: string; instanceId: string }
   hostSlot: { id: string; incarnationId: string }
   otherUser: string
   profileId: string
@@ -251,7 +251,7 @@ export async function makeDispatchHarness(): Promise<DispatchHarness> {
        (id,capacity_key,owner_user_id,token_id,kind,address,config,enabled)
        VALUES($1,$2,$3,$4,'job',NULL,'{}',true),
              ($5,$6,$3,$4,'host',$7,'{}',true)`,
-      [jobSlotId, `job:${jobSlotId}`, userId, tokenId,
+      [jobSlotId, `job:managed:${jobSlotId}`, userId, tokenId,
         hostSlotId, 'host:max2:codex', 'max2:codex'],
     )
     await pools.dispatch.query(
@@ -266,14 +266,14 @@ export async function makeDispatchHarness(): Promise<DispatchHarness> {
       [jobIncarnationId, jobSlotId, `boot-${jobIncarnationId}`, 'b'.repeat(64),
         hostIncarnationId, hostSlotId, `boot-${hostIncarnationId}`, 'c'.repeat(64)],
     )
-    const jobConfig={version:1,runtime:'CODEX',product_ids:[productId],capabilities:[],tier:null,worker_instance_id:jobSlotId}
+    const jobConfig={version:1,runtime:'CODEX',product_ids:[productId],capabilities:[],tier:null,worker_instance_id:`managed:${jobSlotId}`}
     const hostConfig={...jobConfig,worker_instance_id:null}
     await pools.dispatch.query('UPDATE queue_dispatch_slots SET config=$2::jsonb WHERE id=$1',[jobSlotId,JSON.stringify(jobConfig)])
     await pools.dispatch.query('UPDATE queue_dispatch_slots SET config=$2::jsonb WHERE id=$1',[hostSlotId,JSON.stringify(hostConfig)])
     for(const [id,config] of [[jobIncarnationId,jobConfig],[hostIncarnationId,hostConfig]] as const) {
       await pools.dispatch.query('UPDATE queue_dispatch_incarnations SET runtime_scope=$2::jsonb WHERE id=$1',[id,JSON.stringify({...config,profile_revision_ids:[profileId],image_digest:profile.image_digest,profile_sha256:'a'.repeat(64),supervisor_token_id:tokenId})])
     }
-    await pools.admin.query(`INSERT INTO claude_workers(id,user_id,token_id,instance_id,runtime,capabilities,last_seen_at) VALUES($1,$2,$3,$1,'CODEX','{}',now())`,[jobSlotId,userId,tokenId])
+    await pools.admin.query(`INSERT INTO claude_workers(id,user_id,token_id,instance_id,runtime,capabilities,last_seen_at) VALUES($1,$2,$3,$4,'CODEX','{}',now())`,[jobSlotId,userId,tokenId,jobConfig.worker_instance_id])
     await pools.dispatch.query(
       `INSERT INTO queue_dispatch_reply_addresses(user_id,address,enabled)
        VALUES($1,'mac:jp',true)`,
@@ -283,7 +283,7 @@ export async function makeDispatchHarness(): Promise<DispatchHarness> {
     return {
       actor,
       input,
-      jobSlot: { id: jobSlotId, incarnationId: jobIncarnationId },
+      jobSlot: { id: jobSlotId, incarnationId: jobIncarnationId, instanceId: jobConfig.worker_instance_id },
       hostSlot: { id: hostSlotId, incarnationId: hostIncarnationId },
       otherUser: otherUserId,
       profileId,

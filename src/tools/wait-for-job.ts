@@ -12,6 +12,7 @@ import * as path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { prisma } from '../prisma.js'
+import { managedWorkerPollScope } from '../presence/worker-mode.js'
 import {
   cloneRepoOnDemand,
   TerminalJobError,
@@ -633,6 +634,9 @@ export async function tryClaimJob(
   capabilities: string[] = [],
   capability: 'HIGH_P' | 'MEDIUM_P' | 'LOW_P' | null = null,
 ): Promise<string | null> {
+  // Managed-only bootstrap identities never participate in the ordinary loop,
+  // including legacy NULL-tier callers that bypass the peer-priority clause.
+  if (managedWorkerPollScope.test(instanceId)) return null
   // Atomic claim in a single transaction — also captures plan_snapshot from task.
   //
   // PBI-50: claim-filter discrimineert via cj.kind:

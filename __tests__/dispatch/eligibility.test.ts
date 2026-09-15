@@ -1,7 +1,19 @@
 import { describe, it, expect } from 'vitest'
 import { buildClaimableJobWhereFragment, evaluateClaimPredicates } from '../../src/dispatch/eligibility.js'
+import { isManagedWorkerInstanceId, managedWorkerPollScope } from '../../src/presence/worker-mode.js'
+import { parseManagedSlotConfig } from '../../src/dispatch/registration.js'
 
 describe('shared claim eligibility', () => {
+  it('binds managed configuration to the reserved stable worker namespace', () => {
+    const config = { version: 1, runtime: 'CODEX', product_ids: ['p'], capabilities: [], tier: null, worker_instance_id: 'managed:stable-host' }
+    expect(parseManagedSlotConfig(config)).toEqual(config)
+    for (const id of ['ordinary-worker', 'managed:', '', null]) {
+      expect(isManagedWorkerInstanceId(id)).toBe(false)
+      if (id !== null) expect(() => parseManagedSlotConfig({ ...config, worker_instance_id: id })).toThrow('DISPATCH_INVALID_INPUT')
+    }
+    expect(managedWorkerPollScope.test('managed:')).toBe(true) // malformed reserved IDs cannot ordinary-poll either
+    expect(managedWorkerPollScope.test('ordinary:managed:host')).toBe(false)
+  })
   const job = { userId: 'u', productId: 'p', runtime: 'CODEX' as const, status: 'QUEUED', kind: 'QUEUE_TASK', source: 'COPILOT', requiredCapability: null, dispatchRequestId: 'r', profileRevisionId: 'profile', sprintRunId: null, sprintStatus: null, earlierSibling: false, taskId: null, ideaId: null }
   const executor = { userId: 'u', productIds: ['p'], runtime: 'CODEX' as const, capabilities: [], profileRevisionIds: ['profile'], managed: true, incarnationId: 'inc', quotaPct: null, minQuotaPct: 10 }
   it('permits only bound managed COPILOT queue work', () => {

@@ -5,7 +5,8 @@ import { dbClientConfig } from '../db-connection.js'
 export type WorkerCapability = 'HIGH_P' | 'MEDIUM_P' | 'LOW_P'
 
 /** Persisted poll scope, also snapshotted by managed slot administration.
- * instanceId must be operator-stable for managed supervisors: a new boot is
+ * Managed instanceId must be `managed:<nonempty operator-stable-id>` (R11).
+ * Ordinary pollers must never use that reserved namespace. A new boot is
  * a new dispatch incarnation of the same capacity slot, not a new worker key.
  * Advertisements here grant no managed authority; an admin freezes the exact
  * user/token/instance row before registration can use it. */

@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client'
+import { managedWorkerPollScope } from '../presence/worker-mode.js'
 import type { DispatchInput, DispatchProfileConfig } from '@shared/queue-dispatch.js'
 type WorkerRuntime = 'CLAUDE' | 'CODEX'
 
@@ -154,6 +155,7 @@ export function buildHigherTierIdleFragment(input: HigherTierIdleInput): Prisma.
         AND (w.product_id IS NULL OR w.product_id = cj.product_id)
         AND w.runtime = ${input.selfRuntime}::"AgentRuntime"
         AND w.instance_id <> ${input.selfInstanceId}
+        AND NOT (${managedWorkerPollScope.peerSql})
         AND CASE w.capability
               WHEN 'HIGH_P' THEN 3
               WHEN 'MEDIUM_P' THEN 2

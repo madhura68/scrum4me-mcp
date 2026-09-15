@@ -60,6 +60,10 @@ beforeEach(() => {
 })
 
 describe('tryClaimJob sprint sequence barrier', () => {
+  it('refuses the reserved managed-only worker namespace before ordinary SQL', async () => {
+    expect(await tryClaimJob('user-1', 'token-1', 'managed:stable-supervisor')).toBeNull()
+    expect(queryRawMock).not.toHaveBeenCalled()
+  })
   it.each([
     ['zonder productscope', undefined],
     ['met productscope', 'product-1'],

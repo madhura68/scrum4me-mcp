@@ -20,6 +20,8 @@ describe('buildHigherTierIdleFragment', () => {
     expect(text).toMatch(/FROM claude_workers w/i)
     expect(text).toMatch(/w\.runtime\s*=\s*\?::"AgentRuntime"/i)
     expect(text).toMatch(/w\.instance_id\s*<>\s*\?/i)
+    expect(text).toContain("AND NOT (starts_with(w.instance_id, 'managed:'))")
+    expect(text).not.toContain('queue_dispatch_')
     expect(text).toMatch(/CASE w\.capability\s+WHEN 'HIGH_P' THEN 3\s+WHEN 'MEDIUM_P' THEN 2\s+WHEN 'LOW_P' THEN 1\s+END/i)
     expect(text).toMatch(/CASE \?::"WorkerCapability"\s+WHEN 'HIGH_P' THEN 3\s+WHEN 'MEDIUM_P' THEN 2\s+WHEN 'LOW_P' THEN 1\s+END/i)
     expect(text).toMatch(/w\.last_seen_at\s*>\s*NOW\(\)\s*-\s*INTERVAL\s*'30 seconds'/i)
