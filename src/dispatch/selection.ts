@@ -1,3 +1,4 @@
+import {assertRetryAuthorization} from './retry-authorization.js'
 import {rejectUnstartedInTransaction} from './sources.js'
 import { randomUUID } from 'node:crypto'
 import type { PoolClient } from 'pg'
@@ -76,6 +77,7 @@ export function createDispatchSelection(deps: { store: DispatchStore; auth: Disp
     return withDispatchRetryTransaction(deps.store, async db => {
       const r = (await db.query<Request>("SELECT * FROM queue_dispatch_requests WHERE id=$1 AND state='WAITING' FOR UPDATE SKIP LOCKED", [id])).rows[0]
       if (!r || !r.sources_ready_at) return null
+      if(r.first_claimed_at)await assertRetryAuthorization(db,r as typeof r & {input_hash:string;retry_authorization_event_id:string|null})
       try { await deps.auth.authorizeDispatch(requestActor(r), r.input, 'claim', db); await lockManagedTask(db, r) } catch (error) {
         if (!(error instanceof DispatchError)) throw error
         if(['DISPATCH_FORBIDDEN','DISPATCH_UNAUTHENTICATED'].includes(error.code)){await rejectUnstartedInTransaction(db,r.id,'authorization_unavailable');return null}

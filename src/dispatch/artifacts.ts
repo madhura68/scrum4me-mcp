@@ -1,3 +1,6 @@
+import type {DispatchStartBinding} from '@shared/queue-dispatch-start-permit.js'
+import {validateHistoricalBinding} from './historical-binding.js'
+import {lockManagedTaskHierarchy} from './task-status.js'
 import {createHash,randomUUID} from 'node:crypto'
 import type {PoolClient} from 'pg'
 import type {AttemptProof,DispatchInput,DispatchProfileConfig,StopEvidence} from '@shared/queue-dispatch.js'
@@ -25,7 +28,7 @@ const denied=():never=>{throw new DispatchError('DISPATCH_FORBIDDEN')}
 export async function lockArtifactAttempt(db:PoolClient,attemptId:string){
  const hint=(await db.query('SELECT c.request_id FROM queue_dispatch_attempts a JOIN queue_dispatch_candidates c ON c.id=a.candidate_id WHERE a.id=$1',[attemptId])).rows[0];if(!hint)return denied()
  const r=(await db.query<ArtifactRequest>('SELECT * FROM queue_dispatch_requests WHERE id=$1 FOR UPDATE',[hint.request_id])).rows[0]
- if(r.input.task_id)await db.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE',[r.input.task_id])
+ if(r.input.action==='task_implementation')await lockManagedTaskHierarchy(db,r.input.task_id!)
  const c=(await db.query('SELECT c.* FROM queue_dispatch_candidates c JOIN queue_dispatch_attempts a ON a.candidate_id=c.id WHERE a.id=$1 FOR UPDATE OF c',[attemptId])).rows[0]
  const s=(await db.query('SELECT * FROM queue_dispatch_slots WHERE id=$1 FOR UPDATE',[c.reserved_slot_id])).rows[0]
  if(c.job_id)await db.query('SELECT id FROM claude_jobs WHERE id=$1 FOR UPDATE',[c.job_id])
@@ -82,6 +85,19 @@ export function createDispatchArtifacts(deps:{store:DispatchStore;auth:DispatchA
   return withDispatchRetryTransaction(deps.store,async db=>{const x=await lockArtifactAttempt(db,proof.attempt_id);verifyArtifactProof(actor,proof,x);await deps.auth.refreshActor(actor,db);await authorizeArtifactAttempt(db,deps.auth,x)
    return insertArtifact(db,{requestId:x.r.id,attemptId:x.a.id,key,bytes,sha256,actor:{source:'supervisor_output',user_id:actor.userId,token_id:actor.tokenId,incarnation_id:x.i.id}})})
  }
+ /** Post-stop collection is original-supervisor authority, never a child capability. */
+ async function stageCollectedArtifact(actor:DispatchActor,binding:DispatchStartBinding,key:'report'|'checks'|'code',input:ArtifactBytes,sha256:string){
+  if(!['report','checks','code'].includes(key))return denied()
+  const bytes=await readBoundedBytes(input)
+  return withDispatchRetryTransaction(deps.store,async db=>{
+   const x=await lockArtifactAttempt(db,binding.attemptId);await deps.auth.refreshActor(actor,db)
+   if(actor.source!=='bearer'||actor.userId!==x.s.owner_user_id||actor.tokenId!==x.scope.supervisor_token_id||actor.tokenId!==x.s.token_id)return denied()
+   await validateHistoricalBinding(db,x,binding)
+   if(!x.a.stopped_at||!(await db.query("SELECT 1 FROM queue_dispatch_events WHERE request_id=$1 AND attempt_id=$2 AND type='stop_accepted'",[x.r.id,x.a.id])).rowCount)throw new DispatchError('DISPATCH_STATE_CONFLICT')
+   if(key==='code'&&(x.r.input.requirements.access!=='repo_write'||x.r.input.action==='review'))return denied()
+   return insertArtifact(db,{requestId:x.r.id,attemptId:x.a.id,key,bytes,sha256,actor:{source:'stopped_supervisor_collector',user_id:actor.userId,token_id:actor.tokenId,incarnation_id:x.i.id},binding})
+  })
+ }
  async function loadAuthorizedArtifact(actor:DispatchActor,id:string):Promise<Uint8Array>{
   const row=(await deps.store.query('SELECT a.*,r.input,r.user_id FROM queue_dispatch_artifacts a JOIN queue_dispatch_requests r ON r.id=a.request_id WHERE a.id=$1',[id])).rows[0]
   if(!row)throw new DispatchError('DISPATCH_NOT_FOUND')
@@ -118,5 +134,5 @@ export function createDispatchArtifacts(deps:{store:DispatchStore;auth:DispatchA
   })
  }
  async function downloadArtifact(actor:DispatchActor,id:string){const bytes=await loadAuthorizedArtifact(actor,id);return {bytes,headers:{'Content-Type':'application/octet-stream','Content-Disposition':`attachment; filename="dispatch-${id}.bin"`,'X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'",'X-Content-SHA256':artifactHash(bytes)}}}
- return {storeAttemptArtifact,loadAuthorizedArtifact,downloadArtifact,stageSupervisorStop,assertCleanupReceipt}
+ return {storeAttemptArtifact,stageCollectedArtifact,loadAuthorizedArtifact,downloadArtifact,stageSupervisorStop,assertCleanupReceipt}
 }

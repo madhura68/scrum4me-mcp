@@ -1,8 +1,9 @@
+import {decideStoryStatus,decidePbiStatus,decideSprintStatus} from './task-status-decisions.js'
 // **HOUD SYNC** met Scrum4Me/lib/tasks-status-update.ts.
 // Beide repos delen dezelfde DB; deze helper moet bit-voor-bit gelijke
 // statusovergangen produceren als de Scrum4Me-versie. Bij wijziging hier
 // ook in de Scrum4Me-repo updaten en omgekeerd.
-import type { Prisma, TaskStatus, StoryStatus, PbiStatus, SprintStatus } from '@prisma/client'
+import type { Prisma, TaskStatus, SprintStatus } from '@prisma/client'
 import { prisma } from '../prisma.js'
 
 export interface PropagationResult {
@@ -62,20 +63,12 @@ export async function propagateStatusUpwards(
       where: { story_id: task.story_id },
       select: { status: true },
     })
-    const anyTaskFailed = siblings.some((s) => s.status === 'FAILED')
-    const allTasksDone =
-      siblings.length > 0 && siblings.every((s) => s.status === 'DONE')
-
     const story = await tx.story.findUniqueOrThrow({
       where: { id: task.story_id },
       select: { id: true, status: true, pbi_id: true, sprint_id: true },
     })
 
-    const defaultActive: StoryStatus = story.sprint_id ? 'IN_SPRINT' : 'OPEN'
-    let nextStoryStatus: StoryStatus
-    if (anyTaskFailed) nextStoryStatus = 'FAILED'
-    else if (allTasksDone) nextStoryStatus = 'DONE'
-    else nextStoryStatus = defaultActive
+    const nextStoryStatus = decideStoryStatus(siblings.map(s=>s.status),!!story.sprint_id)
 
     let storyChanged = false
     if (nextStoryStatus !== story.status) {
@@ -98,14 +91,7 @@ export async function propagateStatusUpwards(
         where: { pbi_id: pbi.id },
         select: { status: true },
       })
-      const anyStoryFailed = pbiStories.some((s) => s.status === 'FAILED')
-      const allStoriesDone =
-        pbiStories.length > 0 && pbiStories.every((s) => s.status === 'DONE')
-
-      let nextPbiStatus: PbiStatus
-      if (anyStoryFailed) nextPbiStatus = 'FAILED'
-      else if (allStoriesDone) nextPbiStatus = 'DONE'
-      else nextPbiStatus = 'READY'
+      const nextPbiStatus = decidePbiStatus(pbiStories.map(s=>s.status),pbi.status)
 
       if (nextPbiStatus !== pbi.status) {
         await tx.pbi.update({
@@ -134,14 +120,7 @@ export async function propagateStatusUpwards(
         where: { id: { in: sprintPbiRows.map((s) => s.pbi_id) } },
         select: { status: true },
       })
-      const anyPbiFailed = sprintPbis.some((p) => p.status === 'FAILED')
-      const allPbisDone =
-        sprintPbis.length > 0 && sprintPbis.every((p) => p.status === 'DONE')
-
-      let nextStatus: SprintStatus
-      if (anyPbiFailed) nextStatus = 'FAILED'
-      else if (allPbisDone) nextStatus = 'CLOSED'
-      else nextStatus = 'OPEN'
+      const nextStatus = decideSprintStatus(sprintPbis.map(p=>p.status))
 
       if (nextStatus !== sprint.status) {
         await tx.sprint.update({

@@ -1,3 +1,4 @@
+import {assertRetryAuthorization} from './retry-authorization.js'
 import {randomUUID,sign,type KeyObject} from 'node:crypto'
 import type {DispatchInput,DispatchResult} from '@shared/queue-dispatch.js'
 import {canonicalDispatchInput} from '@shared/queue-dispatch-validation.js'
@@ -109,14 +110,16 @@ export function createDispatchSources(deps:{store:DispatchStore;auth:DispatchAut
 /** Shared pre-claim failure producer, DB-only and safe under the request lock. */
 export async function rejectUnstartedInTransaction(db:import('pg').PoolClient,requestId:string,reason:string):Promise<void>{
    const r=(await db.query<SourceRequest>('SELECT * FROM queue_dispatch_requests WHERE id=$1 FOR UPDATE',[requestId])).rows[0]
-   if(!r||r.first_claimed_at||!['WAITING','RESERVED'].includes(r.state))return
+   if(!r||!['WAITING','RESERVED'].includes(r.state))return
+   if(r.first_claimed_at)await assertRetryAuthorization(db,r as typeof r & {retry_authorization_event_id:string|null;generation:number})
    if(r.input.task_id)await db.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE',[r.input.task_id])
-   const c=(await db.query('SELECT * FROM queue_dispatch_candidates WHERE request_id=$1 AND generation=$2 FOR UPDATE',[r.id,r.generation])).rows[0]
+   const c=(await db.query("SELECT * FROM queue_dispatch_candidates WHERE request_id=$1 AND generation=$2 AND state NOT IN ('FINISHED','RETIRED') FOR UPDATE",[r.id,r.generation])).rows[0]
    if(c){if(c.first_claimed_at)return;await db.query('SELECT id FROM queue_dispatch_slots WHERE id=$1 FOR UPDATE',[c.reserved_slot_id]);if(c.job_id){const j=(await db.query('SELECT * FROM claude_jobs WHERE id=$1 FOR UPDATE',[c.job_id])).rows[0];if(j?.status!=='QUEUED'||j.claimed_at)return;await db.query("UPDATE claude_jobs SET status='CANCELLED',finished_at=now(),updated_at=now() WHERE id=$1",[c.job_id])}
     await db.query("UPDATE queue_dispatch_candidates SET state='RETIRED' WHERE id=$1",[c.id]);await db.query('UPDATE queue_dispatch_reservations SET released_at=now() WHERE candidate_id=$1 AND released_at IS NULL',[c.id])}
    const next=decideDispatchTransition(r.state as 'WAITING'|'RESERVED','reject_unstarted'),id=randomUUID(),payload:DispatchResult={version:1,outcome:'failed',summary:reason,report_markdown:`Execution could not start: ${reason}.`,checks:[]}
    await db.query("INSERT INTO queue_dispatch_results(id,request_id,outcome,payload,source_refs,sha256) VALUES($1,$2,'FAILED',$3,$4,$5)",[id,r.id,payload,r.input.review_documents??{},artifactHash(JSON.stringify(payload))])
    const version=(await db.query('UPDATE queue_dispatch_requests SET state=$2,result_id=$3,version=version+1,updated_at=now() WHERE id=$1 RETURNING version::text',[r.id,next,id])).rows[0].version
+   if(r.input.action==='task_implementation'&&r.first_claimed_at)await db.query('UPDATE tasks SET dispatch_request_id=NULL WHERE id=$1 AND dispatch_request_id=$2',[r.input.task_id,r.id])
    await db.query("INSERT INTO queue_dispatch_events(id,request_id,type,actor,payload) VALUES($1,$2,'reject_unstarted',$3,$4)",[randomUUID(),r.id,{service:'dispatch'},{reason,result_id:id}])
    await db.query('INSERT INTO queue_dispatch_outbox(id,request_id,version,payload) VALUES($1,$2,$3,$4)',[randomUUID(),r.id,version,{version,request_id:r.id,root_message_id:r.root_message_id,reply_message_id:r.reply_message_id,state:next,result_id:id}])
 

@@ -1,3 +1,4 @@
+import {assertRetryAuthorization} from './retry-authorization.js'
 import { randomUUID, type KeyObject } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import type { AttemptProof, AttemptState, DispatchState, DispatchProfileConfig } from '@shared/queue-dispatch.js';
@@ -12,6 +13,7 @@ import { loadRegisteredCapacity } from './selection.js';
 import { eligibleExecutors, tierPriority, requestJob, evaluateClaimPredicates } from './eligibility.js';
 import { lockManagedTask, type ManagedRequest } from './job-adapter.js';
 type Request = ManagedRequest & {
+    input_hash:string;
     state: DispatchState;
     generation: number;
     first_claimed_at: Date | null;
@@ -200,9 +202,9 @@ export function createDispatchAttempts(deps: {
             }>(`SELECT c.id,c.request_id FROM queue_dispatch_candidates c JOIN queue_dispatch_requests r ON r.id=c.request_id WHERE r.state='RESERVED' AND c.state='RESERVED' AND r.generation=c.generation AND r.user_id=$1 AND r.product_id=ANY($2::text[]) ORDER BY r.created_at,c.id LIMIT 25`, [actor.userId, deps.productAllowlist])).rows;
             for (const candidate of candidates) {
                 const r = (await db.query<Request>("SELECT * FROM queue_dispatch_requests WHERE id=$1 AND state='RESERVED' FOR UPDATE SKIP LOCKED", [candidate.request_id])).rows[0];
-                if (!r || r.first_claimed_at)
-                    continue;
-                // IP09 must consume real recovery authorization before permitting historical requests.
+                if (!r) continue;
+                if(r.first_claimed_at){try{await assertRetryAuthorization(db,r)}catch(error){if(error instanceof DispatchError&&error.code==='DISPATCH_STATE_CONFLICT')continue;throw error}}
+                // Historical claims require a real, unconsumed accepted recovery event.
                 await lockManagedTask(db, r);
                 const c = (await db.query<Candidate>("SELECT * FROM queue_dispatch_candidates WHERE id=$1 AND state='RESERVED' FOR UPDATE", [candidate.id])).rows[0];
                 if (!c || c.generation !== r.generation || c.first_claimed_at)
@@ -247,6 +249,7 @@ export function createDispatchAttempts(deps: {
                     await db.query("UPDATE claude_jobs SET status='CLAIMED',claimed_at=now(),worker_instance_id=$2,updated_at=now() WHERE id=$1", [c.job_id, i.runtime_scope.worker_instance_id]);
                 const a = (await db.query<Attempt>("INSERT INTO queue_dispatch_attempts(id,candidate_id,incarnation_id,credential_hash,credential_key_version,claim_key,state,heartbeat_at) VALUES($1,$2,$3,$4,$5,$6,'CLAIMED',now()) RETURNING *", [id, c.id, i.id, credentialHash(secret), deps.keyVersion, claimKey])).rows[0];
                 await event(db, r, 'claimed', { candidate_id: c.id, attempt_id: id, incarnation_id: i.id, slot_id: i.slot_id });
+                if(r.retry_authorization_event_id){await event(db,r,'retry_consumed',{authorization_event_id:r.retry_authorization_event_id,attempt_id:a.id});await db.query('UPDATE queue_dispatch_requests SET retry_authorization_event_id=NULL WHERE id=$1',[r.id]);}
                 await state(db, r, 'CLAIMED');
                 return receipt(db, actor, { r, c, a, i });
             }

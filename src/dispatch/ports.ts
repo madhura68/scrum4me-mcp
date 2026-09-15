@@ -48,14 +48,4 @@ export interface RuntimePort {
   inspect(scope: RuntimeScope): Promise<'created' | 'running' | 'stopped' | 'unknown'>
 }
 
-export interface PublisherPort {
-  publish(input: {
-    requestId: string
-    attemptId: string
-    artifactId: string
-    productId: string
-    baseSha: string
-    headSha: string
-    mode: PublishMode
-  }): Promise<{ branch: string; prUrl: string | null }>
-}
+export type {GuardedPublicationPort as PublisherPort} from './publication.js'
