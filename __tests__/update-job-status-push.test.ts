@@ -175,3 +175,10 @@ describe('backupPushOnFailure', () => {
     await expect(backupPushOnFailure('job-1', 'b')).resolves.toBeUndefined()
   })
 })
+
+it('blocks managed failure and done push before invoking external publication',async()=>{
+  mockFindUnique.mockResolvedValue({kind:'QUEUE_TASK',dispatch_request_id:'request',dispatch_candidate_id:'candidate'})
+  await expect(prepareDoneUpdate('managed','codex/request')).rejects.toThrow('DISPATCH_MANAGED_ROW')
+  await expect(backupPushOnFailure('managed','codex/request')).rejects.toThrow('DISPATCH_MANAGED_ROW')
+  expect(mockPush).not.toHaveBeenCalled();expect(mockBackupPush).not.toHaveBeenCalled()
+})

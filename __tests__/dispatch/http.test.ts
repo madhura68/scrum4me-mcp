@@ -48,7 +48,7 @@ it('implements every REST matrix transport with exact methods, body, headers and
   await client.registerExecutor(register)
   await client.heartbeatExecutor({ ...session, busy: true })
   await client.claimAttempt({ ...session, claim_key: 'claim' })
-  await client.startAttempt({ proof, scope_id: 'scope', image_digest: profile.image_digest, profile_sha256: 'a'.repeat(64) })
+  await client.startAttempt({ proof, scope_id: 'scope', boot_id: 'boot', image_digest: profile.image_digest, profile_sha256: 'a'.repeat(64) })
   await client.heartbeatAttempt({ proof, scope_id: 'scope' })
   await client.submitStopEvidence({ proof, evidence })
   await client.submitResult({ proof, result })
@@ -71,7 +71,7 @@ it('implements every REST matrix transport with exact methods, body, headers and
   ])
   const bodies = [input, undefined, version, { ...version, evidence, mode: 'close_failed' }, bytes, register,
     { ...session, busy: true }, { ...session, claim_key: 'claim' },
-    { proof, scope_id: 'scope', image_digest: profile.image_digest, profile_sha256: 'a'.repeat(64) }, { proof, scope_id: 'scope' },
+    { proof, scope_id: 'scope', boot_id: 'boot', image_digest: profile.image_digest, profile_sha256: 'a'.repeat(64) }, { proof, scope_id: 'scope' },
     { proof, evidence }, { proof, result }, bytes, undefined,
     { action_id: 'action', key: 'profile', product_id: 'p', config: profile }, { action_id: 'action', reason: 'revoked' },
     undefined, createSlot, version, { action_id: 'action', user_id: 'user', address: 'mac:jp' }]
@@ -115,4 +115,10 @@ it('imports the app and entrypoint without connecting, and rejects malformed/ove
     expect((await fetch(url.replace('/requests', '/attempts/claim'), { method: 'POST', body: '{}' })).status).toBe(404)
     expect(pool.totalCount).toBe(0)
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); await pool.end() }
+})
+
+it('transports the authoritative no-authority claim receipt without inventing execution context',async()=>{
+  const receipt:import('../../src/dispatch/ports.js').DispatchClaimReceipt={requestId:'request',attemptId:'attempt',requestState:'CANCEL_REQUESTED',attemptState:'CANCEL_REQUESTED',authority:'none',scopeId:'scope',context:null}
+  const client=createDispatchClient({baseUrl:'https://dispatch.test/dispatch/v1',token:'secret',fetch:async()=>new Response(JSON.stringify(receipt))})
+  expect(await client.claimAttempt({incarnation_id:'incarnation',session_credential:'session',claim_key:'claim'})).toEqual(receipt)
 })

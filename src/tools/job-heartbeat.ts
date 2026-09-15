@@ -44,6 +44,7 @@ export function registerJobHeartbeatTool(server: McpServer) {
           WHERE id = ${job_id}
             AND claimed_by_token_id = ${auth.tokenId}
             AND status IN ('CLAIMED', 'RUNNING')
+            AND dispatch_request_id IS NULL
           RETURNING id, lease_until, kind::text AS kind, sprint_run_id
         `
         if (updated.length === 0) {

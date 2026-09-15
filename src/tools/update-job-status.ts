@@ -1,3 +1,4 @@
+import { assertUnmanagedJob, assertUnmanagedJobId } from '../dispatch/managed-job.js'
 // update_job_status — agent rapporteert voortgang: running | done | failed | skipped.
 // Auth: Bearer-token moet matchen claimed_by_token_id van de job.
 // Triggert automatisch een SSE-event naar de UI via pg_notify.
@@ -80,12 +81,14 @@ export async function cleanupWorktreeForTerminalStatus(
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     select: {
+      kind: true, dispatch_request_id: true, dispatch_candidate_id: true,
       task: { select: { story_id: true, repo_url: true } },
       sprint_run_id: true,
       sprint_run: { select: { pr_strategy: true } },
     },
   })
 
+  assertUnmanagedJob(job)
   const repoKey = job?.task?.repo_url ?? null
   const repoRoot = await resolveRepoRoot(productId, repoKey)
   if (!repoRoot) {
@@ -152,8 +155,9 @@ function terminalStatusForCleanup(dbStatus: string): 'done' | 'failed' | 'skippe
 // using the same sibling-aware logic. Called by the worker runner AFTER the
 // agent's Claude process has exited — i.e. after the PostToolUse usage-capture
 // hook (cwd = worktree) has had its chance to run. No-op if nothing is pending.
-// Best-effort: never throws.
+// Ordinary cleanup is best-effort; managed jobs fail before marker/filesystem access.
 export async function runDeferredWorktreeCleanup(jobId: string): Promise<void> {
+  await assertUnmanagedJobId(jobId)
   if (!(await isWorktreeCleanupPending(jobId))) return
   try {
     const job = await prisma.claudeJob.findUnique({
@@ -179,6 +183,7 @@ export async function backupPushOnFailure(
   jobId: string,
   branch: string | null | undefined,
 ): Promise<void> {
+  await assertUnmanagedJobId(jobId)
   if (!branch) return
   try {
     await maybeBackupPush({
@@ -211,6 +216,7 @@ export async function prepareDoneUpdate(
   //      voor STORY met sibling-reuse.
   //   3. Legacy fallback feat/job-<8> — alleen voor jobs zonder DB-branch
   //      (zou niet moeten voorkomen na PBI-50).
+  await assertUnmanagedJobId(jobId)
   let resolvedBranch = branch
   if (!resolvedBranch) {
     const dbJob = await prisma.claudeJob.findUnique({
@@ -547,12 +553,14 @@ export async function maybeCreateAutoPr(opts: {
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     select: {
+      kind: true, dispatch_request_id: true, dispatch_candidate_id: true,
       sprint_run_id: true,
       sprint_run: {
         select: { id: true, pr_strategy: true, sprint: { select: { sprint_goal: true } } },
       },
     },
   })
+  assertUnmanagedJob(job)
 
   const task = await prisma.task.findUnique({
     where: { id: taskId },
@@ -662,12 +670,14 @@ export async function maybeCreateSprintBatchPr(opts: {
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     select: {
+      kind: true, dispatch_request_id: true, dispatch_candidate_id: true,
       sprint_run_id: true,
       sprint_run: {
         select: { id: true, sprint: { select: { sprint_goal: true } } },
       },
     },
   })
+  assertUnmanagedJob(job)
   if (!job?.sprint_run) return null
 
   // Resume-pad: oude SprintRun heeft mogelijk al een PR via vorige run-job.
@@ -917,6 +927,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           where: { id: job_id },
           select: {
             id: true,
+            dispatch_request_id: true, dispatch_candidate_id: true,
             status: true,
             claimed_at: true,
             started_at: true,
@@ -938,6 +949,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         })
 
         if (!job) return toolError(`Job ${job_id} not found`)
+        assertUnmanagedJob(job)
         if (job.claimed_by_token_id !== tokenId) {
           return toolError('PERMISSION_DENIED: This job was not claimed by your token')
         }

@@ -148,7 +148,7 @@ describe('getFullJobContext DEPLOY jobs', () => {
     expect(mockPrisma.claudeJob.findUnique).toHaveBeenNthCalledWith(2, {
       where: { id: 'job-deploy-1234' },
       select: {
-        kind: true,
+        kind: true, dispatch_request_id: true, dispatch_candidate_id: true,
         product_id: true,
         branch: true,
         task: { select: { repo_url: true } },

@@ -3,6 +3,8 @@ import { Pool } from 'pg'
 import type { DispatchInput, DispatchProfileConfig } from '@shared/queue-dispatch.js'
 import { parseDispatchInput } from '@shared/queue-dispatch-validation.js'
 import type { DispatchActor } from '../../src/dispatch/ports.js'
+import { createDispatchAuth } from '../../src/dispatch/auth.js'
+import { createDispatchRegistration, actorForToken } from '../../src/dispatch/registration.js'
 import { assertDispatchTestUrl, assertTestCluster } from '../../scripts/dispatch-test-db.mjs'
 
 type FixtureIds = {
@@ -31,6 +33,7 @@ export interface DispatchHarness {
   queue: Pool
   web: Pool
   seed(input?: Partial<DispatchInput>): Promise<DispatchHarnessSeed>
+  registerNextIncarnation(slotId: string): Promise<{incarnationId:string;sessionCredential:string}>
   trackProduct(id: string): void
   trackSlot(id: string): void
   trackToken(id: string): void
@@ -293,6 +296,17 @@ export async function makeDispatchHarness(): Promise<DispatchHarness> {
   return {
     ...pools,
     seed,
+    registerNextIncarnation: async slotId => {
+      const fixture = fixtures.find(f => f.slotIds.includes(slotId))
+      if (!fixture) throw new Error('DISPATCH_FIXTURE_SLOT_UNKNOWN')
+      const profile = (await pools.dispatch.query<{config:DispatchProfileConfig;sha256:string}>(
+        'SELECT p.config,p.sha256 FROM queue_dispatch_profiles p JOIN queue_dispatch_slot_profiles b ON b.profile_revision_id=p.id WHERE b.slot_id=$1 AND p.revoked_at IS NULL ORDER BY p.id LIMIT 1', [slotId])).rows[0]
+      const registration = createDispatchRegistration({store:pools.dispatch,auth:createDispatchAuth({store:pools.dispatch}),credentialKeys:{1:Buffer.alloc(32,7)},keyVersion:1})
+      const session = await registration.registerDispatchExecutor(actorForToken(fixture.userId,fixture.tokenId), {
+        slot_id:slotId,registration_key:randomUUID(),boot_id:randomUUID(),runtime:profile.config.runtime,image_digest:profile.config.image_digest,profile_sha256:profile.sha256,
+      })
+      return {incarnationId:session.incarnation_id,sessionCredential:session.session_credential}
+    },
     trackToken: id => { fixtures.at(-1)!.additionalTokenIds.push(id) },
     trackProduct: id => { fixtures.at(-1)!.additionalProductIds.push(id) },
     trackSlot: id => { fixtures.at(-1)!.slotIds.push(id) },

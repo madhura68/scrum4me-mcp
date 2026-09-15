@@ -135,3 +135,10 @@ describe('job_heartbeat', () => {
     expect(body.sprint_run_pause_reason).toBeNull()
   })
 })
+
+it('excludes managed bindings in the atomic ordinary heartbeat SQL', async () => {
+  mockPrisma.$queryRaw.mockResolvedValue([])
+  await makeServer().call({ job_id: 'managed-job' })
+  const sql = mockPrisma.$queryRaw.mock.calls[0][0].join('')
+  expect(sql).toContain('dispatch_request_id IS NULL')
+})

@@ -3,7 +3,7 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { Pool } from 'pg'
 
-export const DISPATCH_SCHEMA_COMMIT = '4a48c9685749f6942c169430c8f4be9911b5dd4f'
+export const DISPATCH_SCHEMA_COMMIT = 'd60cfadefda64206bd347985f508f4e588b8ad2d'
 export const requiredUrls = [
   'DISPATCH_TEST_ADMIN_URL',
   'DISPATCH_TEST_URL',

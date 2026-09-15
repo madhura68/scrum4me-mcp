@@ -1,3 +1,4 @@
+import { assertUnmanagedJob } from '../dispatch/managed-job.js'
 // wait_for_job — blokkeert tot een QUEUED ClaudeJob beschikbaar is, claimt 'm
 // atomisch via FOR UPDATE SKIP LOCKED, en retourneert de volledige task-context.
 
@@ -173,8 +174,9 @@ export async function markJobTerminallyFailed(jobId: string, reason: string): Pr
   const trimmed = reason.slice(0, 2000)
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
-    select: { kind: true, sprint_run_id: true },
+    select: { kind: true, sprint_run_id: true, dispatch_request_id: true, dispatch_candidate_id: true },
   })
+  assertUnmanagedJob(job)
   await prisma.claudeJob.update({
     where: { id: jobId },
     data: { status: 'FAILED', finished_at: new Date(), error: trimmed },
@@ -245,6 +247,7 @@ export async function rollbackClaim(
       UPDATE claude_jobs
       SET lease_until = NOW() + INTERVAL '2 minutes'
       WHERE id = ${jobId}
+        AND dispatch_request_id IS NULL
         AND claimed_by_token_id = ${owner.tokenId}
         AND worker_instance_id = ${owner.instanceId}
         AND status IN ('CLAIMED', 'RUNNING')
@@ -258,13 +261,14 @@ export async function rollbackClaim(
   const job = (await prisma.claudeJob?.findUnique({
     where: { id: jobId },
     select: {
-      kind: true,
+      kind: true, dispatch_request_id: true, dispatch_candidate_id: true,
       product_id: true,
       branch: true,
       task: { select: { repo_url: true } },
     },
   })) ?? null
 
+  assertUnmanagedJob(job)
   // Spec §3.2.2: vangnet-push terwijl de job nog van A is.
   if (job?.branch) {
     await maybeBackupPush({
@@ -320,6 +324,7 @@ export async function rollbackClaim(
         SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL,
             plan_snapshot = NULL, worker_instance_id = NULL, lease_until = NULL
         WHERE id = ${jobId}
+        AND dispatch_request_id IS NULL
           AND claimed_by_token_id = ${owner.tokenId}
           AND worker_instance_id = ${owner.instanceId}
           AND status IN ('CLAIMED', 'RUNNING')
@@ -329,6 +334,7 @@ export async function rollbackClaim(
         SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL,
             plan_snapshot = NULL, worker_instance_id = NULL, lease_until = NULL
         WHERE id = ${jobId}
+        AND dispatch_request_id IS NULL
       `
   if (requeued === 0) claimLog('rollback.final_update_lost_ownership', { jobId })
 }
@@ -495,6 +501,7 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
         finished_at = NOW(),
         error = ${STALE_ERROR_MSG}
     WHERE user_id = ${userId}
+      AND dispatch_request_id IS NULL
       AND status IN ('CLAIMED', 'RUNNING')
       AND retry_count >= 2
       AND (
@@ -515,6 +522,7 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
           worker_instance_id = NULL,
           retry_count = retry_count + 1
       WHERE user_id = ${userId}
+      AND dispatch_request_id IS NULL
         AND status IN ('CLAIMED', 'RUNNING')
         AND retry_count < 2
         AND (
@@ -979,6 +987,7 @@ export async function getFullJobContext(
     },
   })
   if (!job) return null
+  assertUnmanagedJob(job)
 
   // JobKindConfig (fase 3): live / DB-leading per-kind config, vers op
   // claim-time geresolved. Best-effort lookup (zoals buildDocIndex hieronder):

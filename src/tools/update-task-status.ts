@@ -1,3 +1,4 @@
+import { assertUnmanagedTask } from '../dispatch/managed-job.js'
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
@@ -40,6 +41,7 @@ export async function handleUpdateTaskStatus({
     const ref = await resolveTaskRef(task_id, auth.userId)
     if ('error' in ref) return toolError(ref.error)
     const taskId = ref.id
+    await assertUnmanagedTask(taskId)
 
     if (sprint_run_id) {
       const sprintRun = await prisma.sprintRun.findUnique({

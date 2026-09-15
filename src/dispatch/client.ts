@@ -1,5 +1,5 @@
 import type { AttemptProof, DispatchInput, DispatchProfileConfig, DispatchResult, DispatchRuntime, DispatchView, StopEvidence } from '@shared/queue-dispatch.js'
-import type { ExecutionContext } from './ports.js'
+import type { DispatchClaimReceipt, DispatchStartPermit } from './ports.js'
 import { DispatchError } from './errors.js'
 
 export type VersionAction = { action_id: string; expected_version: string }
@@ -22,9 +22,9 @@ export interface DispatchClient {
   putRecoveryEvidence(id: string, key: string, input: BinaryArtifact & { attempt_id: string }): Promise<ArtifactReceipt>
   registerExecutor(input: RegisterExecutorInput): Promise<ExecutorSession>
   heartbeatExecutor(input: ExecutorSession & { busy: boolean }): Promise<{ live: boolean }>
-  claimAttempt(input: ExecutorSession & { claim_key: string }): Promise<ExecutionContext | null>
-  startAttempt(input: { proof: AttemptProof; scope_id: string; image_digest: string; profile_sha256: string }): Promise<{ start_permit: boolean }>
-  heartbeatAttempt(input: { proof: AttemptProof; scope_id: string }): Promise<{ lease_until: string | null; stop_required: boolean }>
+  claimAttempt(input: ExecutorSession & { claim_key: string }): Promise<DispatchClaimReceipt | null>
+  startAttempt(input: { proof: AttemptProof; scope_id: string; boot_id: string; image_digest: string; profile_sha256: string }): Promise<DispatchStartPermit>
+  heartbeatAttempt(input: { proof: AttemptProof; scope_id: string }): Promise<{ stopRequired: boolean }>
   submitStopEvidence(input: { proof: AttemptProof; evidence: StopEvidence }): Promise<{ receipt_id: string }>
   submitResult(input: { proof: AttemptProof; result: DispatchResult }): Promise<{ status: 'accepted' | 'late'; result_id: string | null }>
   putArtifact(key: string, input: BinaryArtifact & { proof: AttemptProof }): Promise<ArtifactReceipt>

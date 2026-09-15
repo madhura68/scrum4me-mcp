@@ -1,3 +1,5 @@
+vi.mock('../../src/prisma.js', () => ({ prisma: { claudeJob: { findUnique: vi.fn().mockResolvedValue({kind:'TASK_IMPLEMENTATION',dispatch_request_id:null,dispatch_candidate_id:null}) } } }))
+import { prisma } from '../../src/prisma.js'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
@@ -133,4 +135,12 @@ describe('job-locks: setupProductWorktrees', () => {
     expect(result[1].productId).toBe('a-secondary')
     await releaseLocksOnTerminal('j4')
   })
+})
+
+it('refuses managed lock release before touching held execution locks',async()=>{
+  const release=vi.fn()
+  registerJobLockReleases('managed',[release])
+  vi.mocked(prisma.claudeJob.findUnique).mockResolvedValueOnce({kind:'TASK_IMPLEMENTATION',dispatch_request_id:'request'} as never)
+  await expect(releaseLocksOnTerminal('managed')).rejects.toThrow('DISPATCH_MANAGED_ROW')
+  expect(release).not.toHaveBeenCalled()
 })

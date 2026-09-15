@@ -1,3 +1,4 @@
+import { assertUnmanagedJobId } from '../dispatch/managed-job.js'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { acquireFileLocksOrdered } from './file-lock.js'
@@ -19,6 +20,7 @@ export async function setupProductWorktrees(
   resolveRepoRoot: (productId: string) => Promise<string | null>,
 ): Promise<Array<{ productId: string; worktreePath: string }>> {
   if (productIds.length === 0) return []
+  await assertUnmanagedJobId(jobId)
 
   // Ensure parent dir exists so lockfile creation succeeds
   await fs.mkdir(path.join(getWorktreeRoot(), '_products'), { recursive: true })
@@ -57,6 +59,7 @@ export function registerJobLockReleases(
 export async function releaseLocksOnTerminal(jobId: string): Promise<void> {
   const releases = jobReleases.get(jobId)
   if (!releases) return // idempotent — already released or never locked
+  await assertUnmanagedJobId(jobId)
   jobReleases.delete(jobId)
   for (const release of releases) {
     try {

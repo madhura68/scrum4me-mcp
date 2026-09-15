@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHash, createHmac, randomUUID } from 'node:crypto'
 import type { PoolClient } from 'pg'
 import { parseQueueAddress, formatQueueAddress } from '@shared/queue-identity.js'
 import type { DispatchInput, DispatchProfileConfig } from '@shared/queue-dispatch.js'
@@ -9,6 +9,7 @@ import type { ManagedSlotConfig } from './eligibility.js'
 import { withDispatchRetryTransaction, type DispatchStore } from './db.js'
 import { DispatchError } from './errors.js'
 import { isManagedWorkerInstanceId } from '../presence/worker-mode.js'
+import { credentialMatches } from './credentials.js'
 
 type Profile = { id: string; product_id: string; config: DispatchProfileConfig; sha256: string; revoked_at: Date | null }
 export type IncarnationScope = ManagedSlotConfig & { profile_revision_ids: string[]; image_digest: string; profile_sha256: string; supervisor_token_id: string }
@@ -27,6 +28,16 @@ export function parseManagedSlotConfig(value: unknown): ManagedSlotConfig {
 }
 export function actorForToken(userId: string, tokenId: string): DispatchActor {
   return { userId, tokenId, principalKey: `bearer:${userId}:${tokenId}`, source: 'bearer', isDemo: false, scopedProducts: [], scopedRepos: [], tokenKind: null }
+}
+/** Read-only authentication, reusable after the caller's ordered slot locks. */
+export async function authenticateExecutorSession(db: PoolClient, auth: DispatchAuth, actor: DispatchActor, incarnationId: string, sessionCredential: string) {
+  const current = await auth.refreshActor(actor, db)
+  const row = (await db.query<{ id: string; slot_id: string; boot_id: string; credential_hash: string; signed_off_at: Date | null; runtime_scope: IncarnationScope; owner_user_id: string; token_id: string; enabled: boolean }>(
+    `SELECT i.*,s.owner_user_id,s.token_id,s.enabled FROM queue_dispatch_incarnations i JOIN queue_dispatch_slots s ON s.id=i.slot_id WHERE i.id=$1`, [incarnationId])).rows[0]
+  if (!row || current.source !== 'bearer' || current.userId !== row.owner_user_id || current.tokenId !== row.token_id
+    || row.runtime_scope.supervisor_token_id !== current.tokenId || row.signed_off_at || !row.enabled
+    || !credentialMatches(sessionCredential, row.credential_hash)) return forbidden()
+  return row
 }
 const productInput = (productId: string): DispatchInput => ({ version: 1, product_id: productId, action: 'free_task', objective: 'Slot authorization', verification: 'Current rights', response_format: 'Markdown', requirements: { access: 'read', environment_keys: [] }, publish: 'artifact', reply_to: 'mac:jp' })
 export function createDispatchRegistration(deps: { store: DispatchStore; auth: DispatchAuth; credentialKeys: Record<number, Uint8Array>; keyVersion: number }) {
@@ -94,8 +105,8 @@ export function createDispatchRegistration(deps: { store: DispatchStore; auth: D
       const row = (await db.query<{ slot_id: string; credential_hash: string; signed_off_at: Date | null; runtime_scope: IncarnationScope }>('SELECT slot_id,credential_hash,signed_off_at,runtime_scope FROM queue_dispatch_incarnations WHERE id=$1', [input.incarnation_id])).rows[0]
       if (!row) return forbidden()
       await slotAuthorization(db, actor, row.slot_id)
-      if (row.signed_off_at || row.runtime_scope.supervisor_token_id !== actor.tokenId || typeof input.session_credential !== 'string' || typeof input.busy !== 'boolean'
-        || !timingSafeEqual(Buffer.from(row.credential_hash, 'hex'), Buffer.from(hash(input.session_credential), 'hex'))) return forbidden()
+      await authenticateExecutorSession(db, deps.auth, actor, input.incarnation_id, input.session_credential)
+      if (typeof input.busy !== 'boolean') return forbidden()
       const result = await db.query('UPDATE queue_dispatch_incarnations SET last_seen_at=now(),busy=$2 WHERE id=$1 AND signed_off_at IS NULL', [input.incarnation_id, input.busy])
       return { live: result.rowCount === 1 }
     })
