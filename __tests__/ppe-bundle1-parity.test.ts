@@ -9,8 +9,10 @@ const PLAN_A_PREDECESSOR_INPUT_SHA256 = 'b5d72d6a49eb0ef50e1bc417d4c4d8fc39231d3
 const PLAN_A_JCS_VECTOR_SHA256 = 'a9489ef41ec3cf1d0f8f2190d21e7b1875dbb88a990c1c60fcef9367d3863a05'
 const B1_MCP_COMMIT = '4da3e7bf47af95b1d6f99533dd77aafe4011e051'
 const B1_MCP_SCHEMA_SHA256 = 'e22330c2c90246723eebb9eeddcaab7a3d192aa634f84f44eccca9d4a8ae75fb'
+const REBASELINED_MCP_COMMIT = '6bc6efa9452b232e7be2f52497692f6d1eabb9b6'
 const REBASELINED_SHARED_COMMIT = '194480afa549c87d21b32057bc8ce628ad55af2f'
 const REBASELINED_MCP_SCHEMA_SHA256 = 'a7ef8e39fa658e76241363fd526bafc7909ee6b112d84a50944edabd8d707b68'
+const CURRENT_SHARED_COMMIT = '365ac3f396a458d7634cb91e097794d96abe5656'
 const repository = new URL('..', import.meta.url)
 
 const predecessorInput = {
@@ -79,18 +81,45 @@ describe('Bundle 1 Plan A and B1 compatibility consumer', () => {
   })
 
   it('pins the rebaselined shared gitlink and generated consumer schema separately', () => {
+    expect(() => execFileSync(
+      'git',
+      ['merge-base', '--is-ancestor', REBASELINED_MCP_COMMIT, candidateAncestryRef()],
+      { cwd: repository },
+    )).not.toThrow()
+
+    const historicalGitlink = execFileSync(
+      'git',
+      ['ls-tree', REBASELINED_MCP_COMMIT, 'vendor/scrum4me-shared'],
+      { cwd: repository, encoding: 'utf8' },
+    ).trim()
+    expect(historicalGitlink).toBe(
+      `160000 commit ${REBASELINED_SHARED_COMMIT}\tvendor/scrum4me-shared`,
+    )
+
+    const historicalSchema = execFileSync(
+      'git',
+      ['show', `${REBASELINED_MCP_COMMIT}:prisma/schema.prisma`],
+      { cwd: repository },
+    )
+    expect(sha256(historicalSchema)).toBe(REBASELINED_MCP_SCHEMA_SHA256)
+    expect(REBASELINED_MCP_SCHEMA_SHA256).not.toBe(PLAN_A_JCS_VECTOR_SHA256)
+  })
+
+  it('matches the generated schema to the currently pinned shared source', () => {
     const stagedGitlink = execFileSync(
       'git',
       ['ls-files', '--stage', 'vendor/scrum4me-shared'],
       { cwd: repository, encoding: 'utf8' },
     ).trim()
     expect(stagedGitlink).toBe(
-      `160000 ${REBASELINED_SHARED_COMMIT} 0\tvendor/scrum4me-shared`,
+      `160000 ${CURRENT_SHARED_COMMIT} 0\tvendor/scrum4me-shared`,
     )
 
     const schema = readFileSync(new URL('../prisma/schema.prisma', import.meta.url))
-    expect(sha256(schema)).toBe(REBASELINED_MCP_SCHEMA_SHA256)
-    expect(REBASELINED_MCP_SCHEMA_SHA256).not.toBe(PLAN_A_JCS_VECTOR_SHA256)
+    const generatedSchema = execFileSync('bash', ['scripts/gen-schema.sh'], {
+      cwd: repository,
+    })
+    expect(schema.equals(generatedSchema)).toBe(true)
 
     const text = schema.toString('utf8')
     for (const model of [

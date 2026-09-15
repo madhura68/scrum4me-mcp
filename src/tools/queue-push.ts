@@ -15,6 +15,7 @@ import {
 } from '../queue/work-item.js'
 import { emitQueueNotifyBestEffort, envelopeOf } from '../queue/notify.js'
 import {
+  QUEUE_DISPATCH_SERVER,
   QUEUE_JOB_SERVER,
   QUEUE_MODELS,
   QUEUE_REQUEST_TYPES,
@@ -93,6 +94,11 @@ export function registerQueuePushTool(server: McpServer) {
         await requireWriteAccess()
         const from = resolveQueueIdentity(as)
         const target = parseQueueTarget(to)
+        if (target.server === QUEUE_DISPATCH_SERVER) {
+          return toolError(
+            `VALIDATION_ERROR: ${QUEUE_DISPATCH_SERVER} is reserved for managed dispatch projection`,
+          )
+        }
         // The job id lives on the model position — the columns stay text (M30 §5).
         const dest =
           target.server === QUEUE_JOB_SERVER

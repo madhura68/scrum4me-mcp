@@ -104,6 +104,19 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs())
 
 describe('queue_push — §5.1', () => {
+  it('weigert de gereserveerde managed-dispatchnamespace als gewone queuebestemming', async () => {
+    const server = makeServer()
+    const result = await server.call({
+      to: 'scrum4me-dispatch:aaaaaaaa-0000-4000-8000-000000000001',
+      type: 'info',
+      body: 'vraag',
+    })
+
+    expect(result.isError).toBe(true)
+    expect(result.content[0].text).toContain('reserved for managed dispatch projection')
+    expect(mockPrisma.agentMessage.create).not.toHaveBeenCalled()
+  })
+
   it('insert met source=mcp, status=pending en afzender uit de identiteit', async () => {
     const server = makeServer()
     const result = await server.call({ to: 'scrum4me-server:claude', type: 'info', body: 'vraag' })
