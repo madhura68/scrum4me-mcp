@@ -3,6 +3,8 @@ import type { DispatchClaimReceipt, DispatchStartPermit } from './ports.js'
 import { DispatchError } from './errors.js'
 
 export type VersionAction = { action_id: string; expected_version: string }
+export type WorkerObservation = { quota_pct: number | null; observed_at: string }
+export type ExecutorHeartbeat = ExecutorSession & { busy: boolean; worker_observation?: WorkerObservation }
 export type ExecutorSession = { incarnation_id: string; session_credential: string }
 export type RegisterExecutorInput = {
   registration_key: string; slot_id: string; boot_id: string; runtime: DispatchRuntime
@@ -21,9 +23,10 @@ export interface DispatchClient {
   recoverDispatch(id: string, input: VersionAction & { evidence: StopEvidence; mode: 'close_failed' | 'close_cancelled' | 'retry_same_contract' }): Promise<DispatchView>
   putRecoveryEvidence(id: string, key: string, input: BinaryArtifact & { attempt_id: string }): Promise<ArtifactReceipt>
   registerExecutor(input: RegisterExecutorInput): Promise<ExecutorSession>
-  heartbeatExecutor(input: ExecutorSession & { busy: boolean }): Promise<{ live: boolean }>
+  heartbeatExecutor(input: ExecutorHeartbeat): Promise<{ live: boolean }>
   claimAttempt(input: ExecutorSession & { claim_key: string }): Promise<DispatchClaimReceipt | null>
   startAttempt(input: { proof: AttemptProof; scope_id: string; boot_id: string; image_digest: string; profile_sha256: string }): Promise<DispatchStartPermit>
+  reconcileAttempt(input: { proof: AttemptProof; scope_id: string; boot_id: string; image_digest: string; profile_sha256: string }): Promise<void>
   heartbeatAttempt(input: { proof: AttemptProof; scope_id: string }): Promise<{ stopRequired: boolean }>
   submitStopEvidence(input: { proof: AttemptProof; evidence: StopEvidence }): Promise<{ receipt_id: string }>
   submitResult(input: { proof: AttemptProof; result: DispatchResult }): Promise<{ status: 'accepted' | 'late'; result_id: string | null }>
@@ -86,6 +89,7 @@ export function createDispatchClient(config: { baseUrl: string; token: string; f
     heartbeatExecutor: input => json('/executors/heartbeat', 'POST', input),
     claimAttempt: input => json('/attempts/claim', 'POST', input),
     startAttempt: input => json('/attempts/start', 'POST', input),
+    reconcileAttempt: async input => { await send('/attempts/reconcile', 'POST', input) },
     heartbeatAttempt: input => json('/attempts/heartbeat', 'POST', input),
     submitStopEvidence: input => json('/attempts/stop-evidence', 'POST', input),
     submitResult: input => json('/attempts/result', 'POST', input),

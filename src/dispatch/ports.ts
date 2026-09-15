@@ -21,7 +21,8 @@ export type DispatchActor = {
 }
 
 export type { DispatchRuntimeScope as RuntimeScope, DispatchStartPermit } from '@shared/queue-dispatch-start-permit.js'
-import type { DispatchRuntimeScope as RuntimeScope } from '@shared/queue-dispatch-start-permit.js'
+import type {RuntimeStopObservation} from '@shared/queue-dispatch-runtime-observation.js'
+import type { DispatchRuntimeScope as RuntimeScope, DispatchStartPermit } from '@shared/queue-dispatch-start-permit.js'
 
 export type ExecutionContext = {
   input: DispatchInput
@@ -42,8 +43,8 @@ export type DispatchClaimReceipt = ClaimStatus & (
 
 export interface RuntimePort {
   prepare(context: ExecutionContext): Promise<RuntimeScope>
-  start(scope: RuntimeScope): Promise<void>
-  stop(scope: RuntimeScope): Promise<StopEvidence>
+  start(scope: RuntimeScope, permit: DispatchStartPermit): Promise<void>
+  stop(scope: RuntimeScope): Promise<RuntimeStopObservation>
   inspect(scope: RuntimeScope): Promise<'created' | 'running' | 'stopped' | 'unknown'>
 }
 

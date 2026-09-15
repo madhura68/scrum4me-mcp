@@ -237,7 +237,7 @@ describe('dispatch service ports and real PostgreSQL roles', () => {
       '20260915090100_queue_dispatch_storage',
       '20260915090200_queue_dispatch_guards',
       '20260915120000_queue_dispatch_pool_transfer',
-      '20260915140000_queue_dispatch_task_binding',
+      '20260915140000_queue_dispatch_task_binding', '20260915160000_queue_dispatch_worker_observation',
     ])
   })
 

@@ -4,7 +4,7 @@ import { parseQueueAddress, formatQueueAddress } from '@shared/queue-identity.js
 import type { DispatchInput, DispatchProfileConfig } from '@shared/queue-dispatch.js'
 import type { DispatchAuth } from './auth.js'
 import type { DispatchActor } from './ports.js'
-import type { ExecutorSession, RegisterExecutorInput, SlotInput, DispatchSlotView } from './client.js'
+import type { ExecutorSession, ExecutorHeartbeat, RegisterExecutorInput, SlotInput, DispatchSlotView } from './client.js'
 import type { ManagedSlotConfig } from './eligibility.js'
 import { withDispatchRetryTransaction, type DispatchStore } from './db.js'
 import { DispatchError } from './errors.js'
@@ -76,7 +76,7 @@ export function createDispatchRegistration(deps: { store: DispatchStore; auth: D
       if (config.runtime !== input.runtime || !matched.length) return forbidden()
       if (slot.kind === 'job') {
         const worker = (await db.query<{ runtime: string; capabilities: string[]; product_id: string | null }>(
-          'SELECT runtime,capabilities,product_id FROM claude_workers WHERE user_id=$1 AND token_id=$2 AND instance_id=$3 AND last_seen_at>now()-interval \'30 seconds\'', [slot.owner_user_id, slot.token_id, config.worker_instance_id])).rows[0]
+          'SELECT runtime,capabilities,product_id FROM claude_workers WHERE user_id=$1 AND token_id=$2 AND instance_id=$3', [slot.owner_user_id, slot.token_id, config.worker_instance_id])).rows[0]
         if (!worker || worker.runtime !== config.runtime) return forbidden()
       }
       const operationKey = `${current.principalKey}:register:${input.registration_key}`
@@ -95,18 +95,30 @@ export function createDispatchRegistration(deps: { store: DispatchStore; auth: D
       await db.query('UPDATE queue_dispatch_incarnations SET signed_off_at=now() WHERE slot_id=$1 AND signed_off_at IS NULL', [slot.id])
       await db.query(`INSERT INTO queue_dispatch_incarnations(id,slot_id,boot_id,credential_hash,credential_key_version,last_seen_at,runtime_scope)
     VALUES($1,$2,$3,$4,$5,now(),$6::jsonb)`, [id, slot.id, input.boot_id, hash(secret), version, JSON.stringify(scope)])
+      if (slot.kind === 'job') await db.query('SELECT public.s4m_dispatch_observe_managed_worker($1::uuid,NULL,NULL,false)', [id])
       await db.query(`INSERT INTO queue_dispatch_events(id,type,actor,payload,action_id,operation_key) VALUES($1,'register',$2::jsonb,$3::jsonb,$4,$5)`,
         [randomUUID(), JSON.stringify({ user_id: current.userId, token_id: current.tokenId }), JSON.stringify({ input_hash: inputHash, response: { incarnation_id: id, slot_id: slot.id, token_id: current.tokenId, key_version: version } }), input.registration_key, operationKey])
       return { incarnation_id: id, session_credential: secret }
     })
   }
-  async function heartbeatExecutor(actor: DispatchActor, input: ExecutorSession & { busy: boolean }): Promise<{ live: boolean }> {
+  async function heartbeatExecutor(actor: DispatchActor, input: ExecutorHeartbeat): Promise<{ live: boolean }> {
+    const keys = Object.keys(input).sort().join(',')
+    const observation = input.worker_observation
+    if (!['busy,incarnation_id,session_credential','busy,incarnation_id,session_credential,worker_observation'].includes(keys)
+      || typeof input.busy !== 'boolean' || (observation !== undefined && (!observation
+        || Object.keys(observation).sort().join(',') !== 'observed_at,quota_pct'
+        || typeof observation.observed_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(observation.observed_at)
+        || !Number.isFinite(Date.parse(observation.observed_at))
+        || (observation.quota_pct !== null && (!Number.isInteger(observation.quota_pct) || observation.quota_pct < 0 || observation.quota_pct > 100))))) throw new DispatchError('DISPATCH_INVALID_INPUT')
     return withDispatchRetryTransaction(deps.store, async db => {
       const row = (await db.query<{ slot_id: string; credential_hash: string; signed_off_at: Date | null; runtime_scope: IncarnationScope }>('SELECT slot_id,credential_hash,signed_off_at,runtime_scope FROM queue_dispatch_incarnations WHERE id=$1', [input.incarnation_id])).rows[0]
       if (!row) return forbidden()
-      await slotAuthorization(db, actor, row.slot_id)
+      const { slot } = await slotAuthorization(db, actor, row.slot_id)
       await authenticateExecutorSession(db, deps.auth, actor, input.incarnation_id, input.session_credential)
-      if (typeof input.busy !== 'boolean') return forbidden()
+      if (slot.kind === 'job') {
+        await db.query('SELECT public.s4m_dispatch_observe_managed_worker($1::uuid,$2::timestamptz,$3::integer,$4::boolean)',
+          [input.incarnation_id, observation?.observed_at ?? null, observation?.quota_pct ?? null, observation !== undefined])
+      } else if (observation !== undefined) throw new DispatchError('DISPATCH_INVALID_INPUT')
       const result = await db.query('UPDATE queue_dispatch_incarnations SET last_seen_at=now(),busy=$2 WHERE id=$1 AND signed_off_at IS NULL', [input.incarnation_id, input.busy])
       return { live: result.rowCount === 1 }
     })
