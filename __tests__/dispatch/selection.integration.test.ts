@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { makeDispatchHarness, type DispatchHarness, type DispatchHarnessSeed } from './harness.js'
 import { createDispatchAuth } from '../../src/dispatch/auth.js'
 import { createDispatchRequests } from '../../src/dispatch/requests.js'
-import { createDispatchSelection } from '../../src/dispatch/selection.js'
+import { createReadyFixtureSelection as createDispatchSelection } from './source-fixtures.js'
 import { createDispatchRegistration } from '../../src/dispatch/registration.js'
 let h: DispatchHarness, f: DispatchHarnessSeed
 let selection: ReturnType<typeof createDispatchSelection>

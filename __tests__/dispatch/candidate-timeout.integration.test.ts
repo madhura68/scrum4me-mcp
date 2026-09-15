@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { makeDispatchHarness, type DispatchHarness, type DispatchHarnessSeed } from './harness.js'
 import { createDispatchAuth } from '../../src/dispatch/auth.js'
 import { createDispatchRequests } from '../../src/dispatch/requests.js'
-import { createDispatchSelection } from '../../src/dispatch/selection.js'
+import { createReadyFixtureSelection as createDispatchSelection } from './source-fixtures.js'
 let h: DispatchHarness, f: DispatchHarnessSeed, selection: ReturnType<typeof createDispatchSelection>, requestId: string
 beforeEach(async () => {
   h = await makeDispatchHarness(); f = await h.seed(); const auth = createDispatchAuth({ store: h.dispatch })

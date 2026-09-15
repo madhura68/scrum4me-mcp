@@ -122,3 +122,8 @@ it('transports the authoritative no-authority claim receipt without inventing ex
   const client=createDispatchClient({baseUrl:'https://dispatch.test/dispatch/v1',token:'secret',fetch:async()=>new Response(JSON.stringify(receipt))})
   expect(await client.claimAttempt({incarnation_id:'incarnation',session_credential:'session',claim_key:'claim'})).toEqual(receipt)
 })
+
+it('redacts binary response stream failures after headers arrive',async()=>{
+ const client=createDispatchClient({baseUrl:'https://dispatch.test/dispatch/v1',token:'secret',fetch:async()=>new Response(new ReadableStream({start(controller){controller.error(Error('private body transport detail'))}}),{headers:{'X-Content-SHA256':'a'.repeat(64)}})})
+ await expect(client.getArtifact('artifact')).rejects.toThrow('DISPATCH_TRANSPORT_ERROR')
+})

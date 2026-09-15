@@ -1,3 +1,4 @@
+import {rejectUnstartedInTransaction} from './sources.js'
 import { randomUUID } from 'node:crypto'
 import type { PoolClient } from 'pg'
 import type { DispatchActor } from './ports.js'
@@ -8,7 +9,7 @@ import { eligibleExecutors, tierPriority, type RegisteredSlot, type RegisteredPr
 import { parseManagedSlotConfig, actorForToken, type IncarnationScope } from './registration.js'
 import { enqueueManagedJob, lockManagedTask, readManagedJobSnapshot, type ManagedRequest } from './job-adapter.js'
 
-type Request = ManagedRequest & { state: string; generation: number; first_claimed_at: Date | null; principal_key: string; auth_source: { source: DispatchActor['source']; token_id: string | null }; root_message_id: string; reply_message_id: string }
+type Request = ManagedRequest & { state: string; generation: number; first_claimed_at: Date | null; sources_ready_at: Date | null; principal_key: string; auth_source: { source: DispatchActor['source']; token_id: string | null }; root_message_id: string; reply_message_id: string }
 function requestActor(r: Request): DispatchActor {
   return { userId: r.user_id, tokenId: r.auth_source.token_id, source: r.auth_source.source, principalKey: r.principal_key, isDemo: false, scopedProducts: [], scopedRepos: [], tokenKind: null }
 }
@@ -74,9 +75,10 @@ export function createDispatchSelection(deps: { store: DispatchStore; auth: Disp
     const snapshot = await readManagedJobSnapshot(deps.store, before)
     return withDispatchRetryTransaction(deps.store, async db => {
       const r = (await db.query<Request>("SELECT * FROM queue_dispatch_requests WHERE id=$1 AND state='WAITING' FOR UPDATE SKIP LOCKED", [id])).rows[0]
-      if (!r) return null
+      if (!r || !r.sources_ready_at) return null
       try { await deps.auth.authorizeDispatch(requestActor(r), r.input, 'claim', db); await lockManagedTask(db, r) } catch (error) {
         if (!(error instanceof DispatchError)) throw error
+        if(['DISPATCH_FORBIDDEN','DISPATCH_UNAUTHENTICATED'].includes(error.code)){await rejectUnstartedInTransaction(db,r.id,'authorization_unavailable');return null}
         await event(db, r.id, 'waiting_reason', { reason: error.code === 'DISPATCH_STATE_CONFLICT' ? 'task_not_dispatchable' : 'authorization_unavailable' })
         await db.query('UPDATE queue_dispatch_requests SET updated_at=now() WHERE id=$1', [id]); return null
       }

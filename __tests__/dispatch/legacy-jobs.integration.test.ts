@@ -4,7 +4,7 @@ import { PrismaPg } from '@prisma/adapter-pg'
 import { makeDispatchHarness,type DispatchHarness,type DispatchHarnessSeed } from './harness.js'
 import { createDispatchAuth } from '../../src/dispatch/auth.js'
 import { createDispatchRequests } from '../../src/dispatch/requests.js'
-import { createDispatchSelection } from '../../src/dispatch/selection.js'
+import { createReadyFixtureSelection as createDispatchSelection } from './source-fixtures.js'
 const holder=vi.hoisted(()=>({db:null as unknown as PrismaClient,actor:null as unknown as {userId:string;tokenId:string}}))
 vi.mock('../../src/prisma.js',()=>({get prisma(){return holder.db}}))
 vi.mock('../../src/auth.js',async importOriginal=>({...await importOriginal<typeof import('../../src/auth.js')>(),requireWriteAccess:async()=>holder.actor}))

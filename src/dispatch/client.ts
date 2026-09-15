@@ -99,7 +99,12 @@ export function createDispatchClient(config: { baseUrl: string; token: string; f
       const response = await send(`/artifacts/${segment(id)}`, 'GET', undefined, proof ? proofHeader(proof) : {})
       const sha256 = response.headers.get('X-Content-SHA256')
       if (!sha256 || !/^[a-f0-9]{64}$/.test(sha256)) throw new DispatchError('DISPATCH_TRANSPORT_ERROR')
-      return { bytes: new Uint8Array(await response.arrayBuffer()), sha256 }
+      try {
+        const reader=response.body?.getReader();if(!reader)throw Error()
+        const chunks:Uint8Array[]=[];let size=0
+        try{while(true){const x=await reader.read();if(x.done)break;size+=x.value.byteLength;if(size>33554432)throw Error();chunks.push(x.value)}}finally{await reader.cancel().catch(()=>{})}
+        return {bytes:new Uint8Array(Buffer.concat(chunks,size)),sha256}
+      }catch{throw new DispatchError('DISPATCH_TRANSPORT_ERROR')}
     },
     createProfile: input => json('/profiles', 'POST', input),
     revokeProfile: (id, input) => json(`/profiles/${segment(id)}/revoke`, 'POST', input),

@@ -3,7 +3,7 @@ import {makeDispatchHarness,type DispatchHarness,type DispatchHarnessSeed} from 
 import {createDispatchAuth} from '../../src/dispatch/auth.js'
 import {createDispatchRegistration} from '../../src/dispatch/registration.js'
 import {createDispatchRequests} from '../../src/dispatch/requests.js'
-import {createDispatchSelection} from '../../src/dispatch/selection.js'
+import {createReadyFixtureSelection as createDispatchSelection} from './source-fixtures.js'
 let h:DispatchHarness,f:DispatchHarnessSeed
 let registration:ReturnType<typeof createDispatchRegistration>
 beforeEach(async()=>{h=await makeDispatchHarness();f=await h.seed();registration=createDispatchRegistration({store:h.dispatch,auth:createDispatchAuth({store:h.dispatch}),credentialKeys:{1:Buffer.alloc(32,7)},keyVersion:1})})
