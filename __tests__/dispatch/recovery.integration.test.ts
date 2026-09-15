@@ -93,3 +93,21 @@ it('refuses a purported runtime reboot with unchanged VM boot identity and retai
  await expect(recovery.recoverDispatch(x.f.actor,v.id,randomUUID(),v.version,evidence,'retry_same_contract')).rejects.toThrow('DISPATCH_STATE_CONFLICT')
  expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations WHERE candidate_id=$1',[x.proof.candidate_id])).rows[0].released_at).toBeNull()
 })
+it('retains the bounded control reserve for operator recovery after ordinary output quota is full',async()=>{
+ const x=await running(h),recovery=createDispatchRecovery(x.opts),{artifactHash}=await import('../../src/dispatch/artifacts.js')
+ const first=Buffer.alloc(32*1024*1024),second=Buffer.alloc(32*1024*1024-64*1024)
+ await x.artifacts.storeAttemptArtifact(x.f.actor,x.proof,'report',first,artifactHash(first));await x.artifacts.storeAttemptArtifact(x.f.actor,x.proof,'checks',second,artifactHash(second))
+ await h.dispatch.query("UPDATE queue_dispatch_attempts SET heartbeat_at=now()-interval '121 seconds' WHERE id=$1",[x.proof.attempt_id]);await x.attempts.markExpiredAttempts()
+ const evidence=await recovery.stageRecoveryEvidence(x.f.actor,{version:1,binding:x.body.binding,kind:'operator_attested',observer:'Runtime operator',source:'Fixed stopped-runtime inspection record',statement:'The exact runtime scope has no remaining execution processes.',processesTerminated:true,runtimeBootBefore:'vm-boot',runtimeBootAfter:'vm-boot',observedAt:new Date().toISOString()}),v=await x.requests.getDispatch(x.f.actor,x.proof.request_id)
+ expect((await recovery.recoverDispatch(x.f.actor,v.id,randomUUID(),v.version,evidence,'close_failed')).state).toBe('FAILED')
+ expect(Number((await h.dispatch.query('SELECT sum(byte_size) n FROM queue_dispatch_artifacts WHERE attempt_id=$1',[x.proof.attempt_id])).rows[0].n)).toBeLessThanOrEqual(64*1024*1024)
+})
+it('enforces one combined control reserve and does not count identical control replays twice',async()=>{
+ const x=await running(h),{insertArtifact,lockArtifactAttempt,artifactHash}=await import('../../src/dispatch/artifacts.js'),{withDispatchRetryTransaction}=await import('../../src/dispatch/db.js')
+ // Boundary bytes exercise the shared accounting helper, not a forged accepted observation.
+ const bytes=Buffer.alloc(64*1024)
+ await expect(withDispatchRetryTransaction(h.dispatch,async db=>{await lockArtifactAttempt(db,x.proof.attempt_id);return insertArtifact(db,{requestId:x.proof.request_id,attemptId:x.proof.attempt_id,key:'__operator_recovery',bytes,sha256:artifactHash(bytes),actor:{source:'test_boundary'}})})).rejects.toThrow('DISPATCH_TOO_LARGE')
+ const {canonicalRuntimeStopObservation}=await import('@shared/queue-dispatch-runtime-observation.js')
+ expect(await x.artifacts.stageSupervisorStop(x.f.actor,{...x.body,sha256:artifactHash(canonicalRuntimeStopObservation(x.body))})).toEqual(x.stop)
+ expect((await h.dispatch.query("SELECT count(*)::int n FROM queue_dispatch_artifacts WHERE attempt_id=$1 AND key LIKE '__%'",[x.proof.attempt_id])).rows[0].n).toBe(1)
+})

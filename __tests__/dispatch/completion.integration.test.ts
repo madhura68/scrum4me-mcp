@@ -94,7 +94,10 @@ it('rejects collector credentials, reserved keys, wrong hashes, overwrites and a
  await expect(x.artifacts.stageCollectedArtifact(x.f.actor,x.body.binding,'report',bytes,hash)).rejects.toThrow('DISPATCH_STATE_CONFLICT')
  await x.completion.submitStop(x.f.actor,x.proof,x.stop)
  await expect(x.artifacts.stageCollectedArtifact({...x.f.actor,userId:x.f.otherUser},x.body.binding,'report',bytes,hash)).rejects.toThrow('DISPATCH_UNAUTHENTICATED')
- await expect(x.artifacts.stageCollectedArtifact(x.f.actor,x.body.binding,'__supervisor_stop' as 'report',bytes,hash)).rejects.toThrow('DISPATCH_FORBIDDEN')
+ for(const key of ['__supervisor_stop','__operator_recovery']){
+  await expect(x.artifacts.stageCollectedArtifact(x.f.actor,x.body.binding,key as 'report',bytes,hash)).rejects.toThrow('DISPATCH_FORBIDDEN')
+  await expect(x.artifacts.storeAttemptArtifact(x.f.actor,x.proof,key,bytes,hash)).rejects.toThrow('DISPATCH_FORBIDDEN')
+ }
  await expect(x.artifacts.stageCollectedArtifact(x.f.actor,x.body.binding,'report',bytes,'0'.repeat(64))).rejects.toThrow('DISPATCH_INVALID_INPUT')
  const large=Buffer.alloc(32*1024*1024),largeHash=artifactHash(large)
  await x.artifacts.stageCollectedArtifact(x.f.actor,x.body.binding,'report',large,largeHash)

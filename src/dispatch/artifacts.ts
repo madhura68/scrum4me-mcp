@@ -69,8 +69,11 @@ export async function insertArtifact(db:PoolClient,input:{requestId:string;attem
  const total=(await db.query<{n:string}>('SELECT COALESCE(sum(byte_size),0)::text n FROM queue_dispatch_artifacts WHERE request_id=$1 AND attempt_id IS NOT DISTINCT FROM $2::uuid',[requestId,attemptId])).rows[0].n
  if(Number(total)+bytes.byteLength>ATTEMPT_MAX_BYTES)throw new DispatchError('DISPATCH_TOO_LARGE')
  if(attemptId!==null){
-  if(key===SUPERVISOR_STOP_KEY){if(bytes.byteLength>STOP_EVIDENCE_MAX_BYTES)throw new DispatchError('DISPATCH_TOO_LARGE')}
-  else {const output=(await db.query<{n:string}>('SELECT COALESCE(sum(byte_size),0)::text n FROM queue_dispatch_artifacts WHERE attempt_id=$1 AND key<>$2',[attemptId,SUPERVISOR_STOP_KEY])).rows[0].n;if(Number(output)+bytes.byteLength>ATTEMPT_OUTPUT_MAX_BYTES)throw new DispatchError('DISPATCH_TOO_LARGE')}
+  // One shared control reserve, never an additional allowance per evidence kind.
+  const controlKeys=[SUPERVISOR_STOP_KEY,'__operator_recovery']
+  const control=controlKeys.includes(key)
+  const used=(await db.query<{n:string}>('SELECT COALESCE(sum(byte_size),0)::text n FROM queue_dispatch_artifacts WHERE attempt_id=$1 AND (key=ANY($2::text[]))=$3',[attemptId,controlKeys,control])).rows[0].n
+  if(Number(used)+bytes.byteLength>(control?STOP_EVIDENCE_MAX_BYTES:ATTEMPT_OUTPUT_MAX_BYTES))throw new DispatchError('DISPATCH_TOO_LARGE')
  }
  const id=randomUUID()
  await db.query('INSERT INTO queue_dispatch_artifacts(id,request_id,attempt_id,key,sha256,bytes,byte_size) VALUES($1,$2,$3,$4,$5,$6,$7)',[id,requestId,attemptId,key,sha256,Buffer.from(bytes),bytes.byteLength])
