@@ -286,6 +286,23 @@ tests fail with a shifting cast; serialized, all 26 pass.
 Point `TEST_DATABASE_URL` at a throwaway database, never at `scrum4me`. The
 sweep mutates whatever it finds.
 
+### The PPE controller suites need their own database
+
+`ppe-ceremony-idempotency`, `ppe-log-idempotency` and `ppe-task-cas` run against
+the PPE controller schema, not the `TEST_DATABASE_URL` one. They
+`describe.skipIf` themselves away unless
+`PPE_CONTROLLER_TEST_DATABASE_URL` is set, so a plain `npm test` reports them as
+skipped instead of failing on an absent local Postgres. Set the variable to opt
+in:
+
+```bash
+PPE_CONTROLLER_TEST_DATABASE_URL=<ppe-test-db-url> npm test
+```
+
+CI covers them: `.forgejo/workflows/ci.yml` provisions the database, exports the
+variable, and `npx prisma db push --url "$PPE_CONTROLLER_TEST_DATABASE_URL"`
+applies the schema.
+
 All worktree helpers have unit tests under `__tests__/git/worktree.test.ts`, `__tests__/wait-for-job-worktree.test.ts`, and `__tests__/update-job-status-worktree.test.ts`.
 
 ### Test files are typechecked by a second config
