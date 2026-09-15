@@ -43,6 +43,16 @@ export function assertDispatchSchemaRoot(raw) {
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim()
     if (head !== DISPATCH_SCHEMA_COMMIT) throw new Error('commit')
+    const status = execFileSync(
+      'git',
+      ['status', '--porcelain=v1', '--untracked-files=all', '--ignore-submodules=none'],
+      {
+        cwd: root,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      },
+    )
+    if (status.length > 0) throw new Error('dirty')
   } catch {
     throw new Error('DISPATCH_TEST_SCHEMA_ROOT_REFUSED')
   }
@@ -103,6 +113,9 @@ export async function provisionDispatchTestTarget(env = process.env) {
     await admin.end()
   }
 
+  // Repeat the source check immediately before execution so changes made while
+  // the cluster sentinel was checked cannot reach the provisioning process.
+  assertDispatchSchemaRoot(root)
   const result = spawnSync(
     process.execPath,
     [

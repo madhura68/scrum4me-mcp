@@ -1,13 +1,18 @@
 import { randomUUID } from 'node:crypto'
-import { spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { DispatchInput } from '@shared/queue-dispatch.js'
 import {
+  DISPATCH_SCHEMA_COMMIT,
   assertDispatchSchemaRoot,
   assertDispatchTestUrl,
   assertTestCluster,
   checkDispatchTestTarget,
+  provisionDispatchTestTarget,
 } from '../../scripts/dispatch-test-db.mjs'
 import { createDispatchStore, withDispatchTransaction } from '../../src/dispatch/db.js'
 import { DispatchError } from '../../src/dispatch/errors.js'
@@ -20,6 +25,32 @@ void _typecheckSideEffectPorts
 
 const repository = new URL('../..', import.meta.url)
 const schemaRoot = process.env.DISPATCH_TEST_SCHEMA_ROOT ?? ''
+const dirtySchemaSourceCases: Array<{
+  name: string
+  mutate(root: string): void
+}> = [
+  {
+    name: 'unstaged tracked',
+    mutate: (root) => appendFileSync(
+      join(root, 'scripts/queue-dispatch/provision.ts'),
+      '\n// dirty unstaged\n',
+    ),
+  },
+  {
+    name: 'staged tracked',
+    mutate: (root) => {
+      appendFileSync(join(root, 'scripts/queue-dispatch/provision.ts'), '\n// dirty staged\n')
+      execFileSync('git', ['add', 'scripts/queue-dispatch/provision.ts'], { cwd: root })
+    },
+  },
+  {
+    name: 'module-relevant untracked',
+    mutate: (root) => writeFileSync(
+      join(root, 'scripts/queue-dispatch/contract-inventory.js'),
+      'throw new Error("UNREVIEWED_MODULE")\n',
+    ),
+  },
+]
 
 let harness: DispatchHarness
 
@@ -132,6 +163,27 @@ describe('dispatch test target', () => {
       'DISPATCH_TEST_SCHEMA_ROOT_REFUSED',
     )
   })
+
+  it.each(dirtySchemaSourceCases)(
+    'refuses a $name schema source before provisioning',
+    async ({ mutate }) => {
+      const fixtureParent = mkdtempSync(join(tmpdir(), 'mcp-dispatch-schema-source-'))
+      const fixtureRoot = join(fixtureParent, 'main')
+      try {
+        execFileSync('git', ['clone', '--quiet', '--no-checkout', schemaRoot, fixtureRoot])
+        execFileSync('git', ['checkout', '--quiet', '--detach', DISPATCH_SCHEMA_COMMIT], {
+          cwd: fixtureRoot,
+        })
+        mutate(fixtureRoot)
+
+        await expect(provisionDispatchTestTarget({
+          DISPATCH_TEST_SCHEMA_ROOT: fixtureRoot,
+        })).rejects.toThrow('DISPATCH_TEST_SCHEMA_ROOT_REFUSED')
+      } finally {
+        rmSync(fixtureParent, { recursive: true, force: true })
+      }
+    },
+  )
 
   it('routes dispatch integration files only through the serial dispatch config', () => {
     const vitest = 'node_modules/vitest/vitest.mjs'
@@ -277,9 +329,37 @@ describe('dispatch service ports and real PostgreSQL roles', () => {
     )).rows).toEqual([{ count: 0 }])
   })
 
-  it('reset removes only fixtures owned by this harness', async () => {
+  it('reset removes other-user requests and their rows while preserving unrelated data', async () => {
     const fixture = await harness.seed()
+    const requestId = randomUUID()
+    const eventId = randomUUID()
+    const outboxId = randomUUID()
+    const artifactId = randomUUID()
     const unrelatedUser = randomUUID()
+    await harness.dispatch.query(
+      `INSERT INTO queue_dispatch_requests
+       (id,principal_key,idempotency_key,user_id,product_id,auth_source,input,input_hash,
+        snapshot,root_message_id,reply_message_id,updated_at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,'{}',$9,$10,now())`,
+      [requestId, `bearer:${fixture.otherUser}`, randomUUID(), fixture.otherUser,
+        fixture.input.product_id, JSON.stringify({ source: 'bearer' }),
+        JSON.stringify(fixture.input), 'd'.repeat(64), randomUUID(), randomUUID()],
+    )
+    await harness.dispatch.query(
+      `INSERT INTO queue_dispatch_events(id,request_id,type,actor,payload)
+       VALUES($1,$2,'FIXTURE_EVENT','{}','{}')`,
+      [eventId, requestId],
+    )
+    await harness.dispatch.query(
+      `INSERT INTO queue_dispatch_outbox(id,request_id,version,payload)
+       VALUES($1,$2,1,'{}')`,
+      [outboxId, requestId],
+    )
+    await harness.dispatch.query(
+      `INSERT INTO queue_dispatch_artifacts(id,request_id,key,sha256,bytes,byte_size)
+       VALUES($1,$2,'fixture',$3,$4,1)`,
+      [artifactId, requestId, 'e'.repeat(64), Buffer.from([0])],
+    )
     await harness.admin.query(
       `INSERT INTO users(id,username,password_hash,updated_at) VALUES($1,$1,'test',now())`,
       [unrelatedUser],
@@ -288,9 +368,20 @@ describe('dispatch service ports and real PostgreSQL roles', () => {
     await harness.reset()
 
     expect((await harness.admin.query(
-      'SELECT id FROM users WHERE id=$1',
-      [fixture.actor.userId],
+      'SELECT id FROM users WHERE id=ANY($1::text[])',
+      [[fixture.actor.userId, fixture.otherUser]],
     )).rowCount).toBe(0)
+    for (const [table, id] of [
+      ['queue_dispatch_requests', requestId],
+      ['queue_dispatch_events', eventId],
+      ['queue_dispatch_outbox', outboxId],
+      ['queue_dispatch_artifacts', artifactId],
+    ] as const) {
+      expect((await harness.admin.query(
+        `SELECT id FROM ${table} WHERE id=$1`,
+        [id],
+      )).rowCount).toBe(0)
+    }
     expect((await harness.admin.query(
       'SELECT id FROM users WHERE id=$1',
       [unrelatedUser],

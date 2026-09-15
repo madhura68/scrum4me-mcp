@@ -81,8 +81,8 @@ export async function makeDispatchHarness(): Promise<DispatchHarness> {
         await client.query('BEGIN')
         await client.query("SET LOCAL session_replication_role='replica'")
         const requestIds = (await client.query<{ id: string }>(
-          'SELECT id FROM queue_dispatch_requests WHERE user_id=$1 AND product_id=$2',
-          [fixture.userId, fixture.productId],
+          'SELECT id FROM queue_dispatch_requests WHERE product_id=$1',
+          [fixture.productId],
         )).rows.map(({ id }) => id)
         if (requestIds.length > 0) {
           for (const table of [
@@ -115,7 +115,10 @@ export async function makeDispatchHarness(): Promise<DispatchHarness> {
         )
         await client.query('DELETE FROM queue_dispatch_slots WHERE id=ANY($1::uuid[])', [fixture.slotIds])
         await client.query('DELETE FROM queue_dispatch_profiles WHERE id=$1', [fixture.profileId])
-        await client.query('DELETE FROM queue_dispatch_reply_addresses WHERE user_id=$1', [fixture.userId])
+        await client.query(
+          'DELETE FROM queue_dispatch_reply_addresses WHERE user_id=ANY($1::text[])',
+          [[fixture.userId, fixture.otherUserId]],
+        )
         await client.query('DELETE FROM api_tokens WHERE id=$1', [fixture.tokenId])
         await client.query('DELETE FROM products WHERE id=$1', [fixture.productId])
         await client.query('DELETE FROM users WHERE id=ANY($1::text[])', [
