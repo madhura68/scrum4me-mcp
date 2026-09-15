@@ -39,3 +39,31 @@ it('blocks direct publication after the immutable profile is revoked',async()=>{
   expect((await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_publications WHERE request_id=$1',[x.proof.request_id])).rows[0].n).toBe(0)
  }finally{await h.close();await rm(root,{recursive:true,force:true})}
 })
+it.each([1,2])('serializes concurrent publisher/reconciler instances with a bounded pool of %s without nested acquisition',async max=>{
+ const h=await makeDispatchHarness(),root=await mkdtemp(join(tmpdir(),'ip09-small-pool-')),{Pool}=await import('pg'),pool=new Pool({connectionString:process.env.DISPATCH_TEST_URL,max,connectionTimeoutMillis:300})
+ try{
+  const x=await codeAttempt(h,root,{free:true,change:true});let sends=0,pid:number|undefined;const externalTransactions:unknown[]=[]
+  const port={publish:async(i:PublicationIntent):Promise<PublicationReceipt>=>{sends++;externalTransactions.push((await h.admin.query('SELECT xact_start FROM pg_stat_activity WHERE pid=$1',[pid])).rows[0].xact_start);return {operationId:i.operationId,status:'unknown',branch:i.branch,headSha:i.headSha,prUrl:null}},reconcile:async(i:PublicationIntent):Promise<PublicationReceipt>=>({operationId:i.operationId,status:'confirmed',branch:i.branch,headSha:i.headSha,prUrl:null})}
+  const loadBaseBranch=async(_id:string,db?:import('pg').PoolClient)=>{if(db)pid=(await db.query('SELECT pg_backend_pid() pid')).rows[0].pid;return 'main'}
+  const a=createDispatchPublication({...x.opts,store:pool,port,loadBaseBranch}),b=createDispatchPublication({...x.opts,store:pool,port,loadBaseBranch})
+  const first=await a.publishDispatchArtifact(x.f.actor,x.proof,x.artifactId);expect(first.status).toBe('unknown')
+  const values=await Promise.all([a.publishDispatchArtifact(x.f.actor,x.proof,x.artifactId),b.publishDispatchArtifact(x.f.actor,x.proof,x.artifactId),a.reconcilePublication(first.operationId),b.reconcilePublication(first.operationId)])
+  expect(values.map(v=>v.status)).toEqual(['confirmed','confirmed','confirmed','confirmed']);expect(sends).toBe(1);expect(externalTransactions).toEqual([null])
+  expect((await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_publications WHERE request_id=$1',[x.proof.request_id])).rows[0].n).toBe(1)
+ }finally{await pool.end();await h.close();await rm(root,{recursive:true,force:true})}
+})
+it('accepted stop survives expiry while a lost publication response remains occupied until reconciliation',async()=>{
+ const h=await makeDispatchHarness(),root=await mkdtemp(join(tmpdir(),'ip09-stopped-expiry-'))
+ try{
+  const x=await codeAttempt(h,root,{free:true,change:true,staleHeartbeat:true});let sent=0
+  const port={publish:async(i:PublicationIntent):Promise<PublicationReceipt>=>{sent++;return {operationId:i.operationId,status:'unknown',branch:i.branch,headSha:i.headSha,prUrl:null}},reconcile:async(i:PublicationIntent):Promise<PublicationReceipt>=>({operationId:i.operationId,status:'confirmed',branch:i.branch,headSha:i.headSha,prUrl:null})}
+  const publisher=createDispatchPublication({...x.opts,port,loadBaseBranch:async()=> 'main'}),completion=createDispatchCompletion({...x.opts,publisher})
+  expect(await completion.acceptDispatchResult(x.f.actor,x.proof,x.result)).toMatchObject({accepted:false,reason:'publication_unknown'})
+  await x.attempts.markExpiredAttempts()
+  expect((await h.dispatch.query('SELECT state FROM queue_dispatch_requests WHERE id=$1',[x.proof.request_id])).rows[0].state).toBe('RUNNING')
+  expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations WHERE candidate_id=$1',[x.proof.candidate_id])).rows[0].released_at).toBeNull()
+  const restart=createDispatchPublication({...x.opts,port,loadBaseBranch:async()=> 'main'});await restart.reconcileIncompletePublications()
+  const final=await createDispatchCompletion({...x.opts,publisher:restart}).acceptDispatchResult(x.f.actor,x.proof,x.result);expect(final.accepted).toBe(true);expect(sent).toBe(1)
+  await x.artifacts.assertCleanupReceipt(x.f.actor,x.proof.attempt_id,final.resultId!)
+ }finally{await h.close();await rm(root,{recursive:true,force:true})}
+})

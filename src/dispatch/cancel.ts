@@ -15,7 +15,11 @@ export function createDispatchCancellation(deps:{store:DispatchStore;auth:Dispat
    const r=(await db.query('SELECT * FROM queue_dispatch_requests WHERE id=$1 FOR UPDATE',[id])).rows[0]
    if(!r)throw new DispatchError('DISPATCH_NOT_FOUND')
    await deps.auth.authorizeDispatch(actor,r.input,'cancel',db)
-   if(actor.userId!==r.user_id)throw new DispatchError('DISPATCH_FORBIDDEN')
+   if(actor.userId!==r.user_id){
+    if(actor.source==='web')throw new DispatchError('DISPATCH_FORBIDDEN')
+    // Same current product-administrator authority as explicit recovery; membership alone is insufficient.
+    await deps.auth.authorizeDispatch(actor,r.input,'recover',db)
+   }
    const hash=artifactHash(canonicalResult({id,expectedVersion})),key=`${actor.principalKey}:cancel:${actionId}`
    const previous=(await db.query("SELECT payload FROM queue_dispatch_events WHERE request_id=$1 AND type='cancel_action' AND payload->>'key'=$2",[id,key])).rows[0]
    if(previous){if(previous.payload.hash!==hash)throw new DispatchError('DISPATCH_IDEMPOTENCY_CONFLICT');return lifecycleView(db,id)}

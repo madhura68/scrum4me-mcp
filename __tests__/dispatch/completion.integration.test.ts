@@ -110,3 +110,50 @@ it('replays concurrent identical completion with the one immutable result receip
  const barrier=h.barrier(2),values=await Promise.all([barrier().then(()=>x.completion.acceptDispatchResult(x.f.actor,x.proof,result)),barrier().then(()=>x.completion.acceptDispatchResult(x.f.actor,x.proof,result))])
  expect(values.every(x=>x.accepted)).toBe(true);expect(values[0].resultId).toBe(values[1].resultId)
 })
+it.each(['heartbeat','maximum_duration'])('does not expire accepted stopped execution during later collection: %s',async expiry=>{
+ const x=await running()
+ if(expiry==='maximum_duration')await h.dispatch.query("UPDATE queue_dispatch_attempts SET started_at=now()-interval '5 hours' WHERE id=$1",[x.proof.attempt_id])
+ if(expiry==='heartbeat')await h.dispatch.query("UPDATE queue_dispatch_attempts SET heartbeat_at=now()-interval '121 seconds' WHERE id=$1",[x.proof.attempt_id])
+ await x.completion.submitStop(x.f.actor,x.proof,x.stop)
+ const {createDispatchTick}=await import('../../src/dispatch/tick.js'),tick=createDispatchTick({...x.opts,selection:createDispatchSelection(x.opts),attempts:x.attempts})
+ expect((await tick()).uncertain).toBe(0)
+ expect((await x.requests.getDispatch(x.f.actor,x.proof.request_id)).state).toBe('RUNNING')
+ expect((await x.completion.acceptDispatchResult(x.f.actor,x.proof,result)).accepted).toBe(true)
+})
+it('rechecks accepted stop under the request lock after expiry discovery',async()=>{
+ const x=await running(),held=await h.dispatch.connect();let pending:Promise<number>|undefined
+ try{
+  await h.dispatch.query("UPDATE queue_dispatch_attempts SET heartbeat_at=now()-interval '121 seconds' WHERE id=$1",[x.proof.attempt_id])
+  await held.query('BEGIN');await held.query('SELECT id FROM queue_dispatch_requests WHERE id=$1 FOR UPDATE',[x.proof.request_id]);const pid=(await held.query('SELECT pg_backend_pid() pid')).rows[0].pid
+  pending=x.attempts.markExpiredAttempts()
+  let blocked=false
+  for(let n=0;n<200&&!blocked;n++){blocked=(await h.admin.query('SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))) blocked',[pid])).rows[0].blocked;if(!blocked)await new Promise(r=>setTimeout(r,5))}
+  expect(blocked).toBe(true)
+  const {lockArtifactAttempt}=await import('../../src/dispatch/artifacts.js'),{authenticateHistoricalSupervisor,acceptStopInTransaction}=await import('../../src/dispatch/stop-evidence.js'),bound=await lockArtifactAttempt(held,x.proof.attempt_id)
+  await authenticateHistoricalSupervisor(held,x.opts.auth,x.f.actor,bound);await acceptStopInTransaction(held,bound,x.stop,x.f.actor);await held.query('COMMIT')
+  expect(await pending).toBe(0);expect((await x.completion.acceptDispatchResult(x.f.actor,x.proof,result)).accepted).toBe(true)
+ }finally{await held.query('ROLLBACK');held.release();await pending?.catch(()=>undefined)}
+})
+it.each(['owner','product_owner','admin','member','admin_without_access','web_owner'])('authorizes cancellation only for requester or current product administrator: %s',async role=>{
+ const x=await running(),token=randomUUID();h.trackToken(token)
+ await h.admin.query("INSERT INTO api_tokens(id,user_id,token_hash,kind,scoped_products) VALUES($1,$2,$3,'IMPLEMENTATION',$4)",[token,x.f.otherUser,randomUUID(),[x.f.input.product_id]])
+ let actor:import('../../src/dispatch/ports.js').DispatchActor={...x.f.actor,userId:x.f.otherUser,tokenId:token,principalKey:`bearer:${x.f.otherUser}:${token}`}
+ if(role==='owner'||role==='web_owner')await h.admin.query('UPDATE products SET user_id=$2 WHERE id=$1',[x.f.input.product_id,x.f.otherUser])
+ else if(role!=='admin_without_access')await h.admin.query("INSERT INTO product_members(id,product_id,user_id,role,access) VALUES($1,$2,$3,$4,'READ_WRITE')",[randomUUID(),x.f.input.product_id,x.f.otherUser,role==='product_owner'?'PRODUCT_OWNER':'DEVELOPER'])
+ if(role==='admin'||role==='admin_without_access')await h.admin.query("INSERT INTO user_roles(id,user_id,role) VALUES($1,$2,'ADMIN')",[randomUUID(),x.f.otherUser])
+ if(role==='web_owner')actor={...actor,source:'web',tokenId:null,principalKey:`web:${x.f.otherUser}`}
+ const v=(await h.dispatch.query('SELECT version FROM queue_dispatch_requests WHERE id=$1',[x.proof.request_id])).rows[0],action=randomUUID()
+ if(['owner','product_owner','admin'].includes(role)){
+  expect((await x.cancel.cancelDispatch(actor,x.proof.request_id,action,String(v.version))).state).toBe('CANCEL_REQUESTED')
+  expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations WHERE candidate_id=$1',[x.proof.candidate_id])).rows[0].released_at).toBeNull()
+  await x.completion.submitStop(x.f.actor,x.proof,x.stop)
+  expect((await x.cancel.cancelDispatch(actor,x.proof.request_id,action,String(v.version))).state).toBe('CANCELLED')
+ }else{
+  await expect(x.cancel.cancelDispatch(actor,x.proof.request_id,action,String(v.version))).rejects.toThrow('DISPATCH_FORBIDDEN')
+  expect((await h.dispatch.query('SELECT state,version FROM queue_dispatch_requests WHERE id=$1',[x.proof.request_id])).rows[0]).toEqual({state:'RUNNING',version:v.version})
+ }
+})
+it('keeps webissuer cancellation of its own request available',async()=>{
+ const x=await running(),actor={...x.f.actor,source:'web' as const,tokenId:null,principalKey:`web:${x.f.actor.userId}`},v=await x.requests.getDispatch(x.f.actor,x.proof.request_id)
+ expect((await x.cancel.cancelDispatch(actor,v.id,randomUUID(),v.version)).state).toBe('CANCEL_REQUESTED')
+})

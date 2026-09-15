@@ -16,7 +16,7 @@ import {createDispatchPublication,createGitPublicationPort} from '../../src/disp
 import {canonicalRuntimeStopObservation,type RuntimeStopObservationBody} from '@shared/queue-dispatch-runtime-observation.js'
 import {isolatedGit,createCodeArtifact} from '../../src/dispatch/workspace.js'
 import type {DispatchInput,DispatchResult} from '@shared/queue-dispatch.js'
-export async function codeAttempt(h:Awaited<ReturnType<typeof makeDispatchHarness>>,root:string,options:{verifyOnly?:boolean;change?:boolean;free?:boolean}={}){
+export async function codeAttempt(h:Awaited<ReturnType<typeof makeDispatchHarness>>,root:string,options:{verifyOnly?:boolean;change?:boolean;free?:boolean;staleHeartbeat?:boolean}={}){
  const verifyOnly=options.verifyOnly??false
   const f=await h.seed(),auth=createDispatchAuth({store:h.dispatch}),opts={store:h.dispatch,auth,enabled:true,productAllowlist:[f.input.product_id]},pbi=randomUUID(),story=randomUUID(),task=randomUUID(),profileId=randomUUID(),repo=join(root,'repo')
   await mkdir(repo);await isolatedGit(repo,['init','-b','main']);await isolatedGit(repo,['config','user.name','Fixture']);await isolatedGit(repo,['config','user.email','fixture@example.invalid']);await writeFile(join(repo,'file.txt'),'base\n');await isolatedGit(repo,['add','.']);await isolatedGit(repo,['commit','-m','base']);const baseSha=await isolatedGit(repo,['rev-parse','HEAD']);await isolatedGit(repo,['bundle','create',join(root,'base.bundle'),'HEAD']);const bundle=await readFile(join(root,'base.bundle'))
@@ -35,9 +35,10 @@ export async function codeAttempt(h:Awaited<ReturnType<typeof makeDispatchHarnes
   const headSha=await isolatedGit(repo,['rev-parse','HEAD'])
   const result:DispatchResult={version:1,outcome:'succeeded',summary:'Verified existing implementation against the fixed plan.',report_markdown:'Verification of existing implementation.',checks:[]},artifacts=createDispatchArtifacts(opts)
   const body:RuntimeStopObservationBody={version:1,slotId:f.hostSlot.id,binding:{requestId:r.id,candidateId:proof.candidate_id,generation:proof.generation,attemptId:proof.attempt_id,incarnationId:proof.incarnation_id,scope},runtimeBootId:'vm',observer:`broker:${f.hostSlot.id}`,observedAt:new Date().toISOString(),commands:[{command:'stop',succeeded:true}],containerId:scope.scopeId,pid:0,running:false,status:'exited'},stop=await artifacts.stageSupervisorStop(f.actor,{...body,sha256:artifactHash(canonicalRuntimeStopObservation(body))})
+  if(options.staleHeartbeat)await h.dispatch.query("UPDATE queue_dispatch_attempts SET heartbeat_at=now()-interval '121 seconds' WHERE id=$1",[proof.attempt_id])
   await createDispatchCompletion(opts).verifyStopEvidence(f.actor,proof,stop)
   const bytes=await createCodeArtifact(repo,{repoUrl:repo,baseSha,headSha,branch,checks:result.checks})
   const artifactId=await artifacts.stageCollectedArtifact(f.actor,body.binding,'code',bytes,artifactHash(bytes));result.code={base_sha:baseSha,head_sha:headSha,branch,artifact_id:artifactId}
   const publisher=createDispatchPublication({...opts,loadBaseBranch:async()=> 'main',port:createGitPublicationPort({root:join(root,'publisher'),allowedProtocols:['file'],allowedHosts:[]})}),completion=createDispatchCompletion({...opts,publisher})
- return {h,f,opts,task,story,pbi,repo,proof,result,artifactId,stop,artifacts,publisher,completion}
+ return {h,f,opts,attempts,task,story,pbi,repo,proof,result,artifactId,stop,artifacts,publisher,completion}
 }
