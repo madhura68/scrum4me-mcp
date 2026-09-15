@@ -1,4 +1,4 @@
-import { assertUnmanagedJob } from '../dispatch/managed-job.js'
+import { assertUnmanagedJob, managedTaskExecutionsSelect } from '../dispatch/managed-job.js'
 // wait_for_job — blokkeert tot een QUEUED ClaudeJob beschikbaar is, claimt 'm
 // atomisch via FOR UPDATE SKIP LOCKED, en retourneert de volledige task-context.
 
@@ -174,7 +174,7 @@ export async function markJobTerminallyFailed(jobId: string, reason: string): Pr
   const trimmed = reason.slice(0, 2000)
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
-    select: { kind: true, sprint_run_id: true, dispatch_request_id: true, dispatch_candidate_id: true },
+    select: { kind: true, sprint_run_id: true, dispatch_request_id: true, dispatch_candidate_id: true, task_executions: managedTaskExecutionsSelect, task: { select: { dispatch_request_id: true } } },
   })
   assertUnmanagedJob(job)
   await prisma.claudeJob.update({
@@ -261,10 +261,10 @@ export async function rollbackClaim(
   const job = (await prisma.claudeJob?.findUnique({
     where: { id: jobId },
     select: {
-      kind: true, dispatch_request_id: true, dispatch_candidate_id: true,
+      kind: true, dispatch_request_id: true, dispatch_candidate_id: true, task_executions: managedTaskExecutionsSelect,
       product_id: true,
       branch: true,
-      task: { select: { repo_url: true } },
+      task: { select: { repo_url: true, dispatch_request_id: true } },
     },
   })) ?? null
 
@@ -913,6 +913,7 @@ export async function getFullJobContext(
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     include: {
+      task_executions: managedTaskExecutionsSelect,
       task: {
         include: {
           story: {

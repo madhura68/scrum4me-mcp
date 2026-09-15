@@ -1,4 +1,4 @@
-import { assertUnmanagedJob, assertUnmanagedJobId } from '../dispatch/managed-job.js'
+import { assertUnmanagedJob, assertUnmanagedJobId, managedTaskExecutionsSelect } from '../dispatch/managed-job.js'
 // update_job_status — agent rapporteert voortgang: running | done | failed | skipped.
 // Auth: Bearer-token moet matchen claimed_by_token_id van de job.
 // Triggert automatisch een SSE-event naar de UI via pg_notify.
@@ -81,8 +81,8 @@ export async function cleanupWorktreeForTerminalStatus(
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     select: {
-      kind: true, dispatch_request_id: true, dispatch_candidate_id: true,
-      task: { select: { story_id: true, repo_url: true } },
+      kind: true, dispatch_request_id: true, dispatch_candidate_id: true, task_executions: managedTaskExecutionsSelect,
+      task: { select: { story_id: true, repo_url: true, dispatch_request_id: true } },
       sprint_run_id: true,
       sprint_run: { select: { pr_strategy: true } },
     },
@@ -553,7 +553,8 @@ export async function maybeCreateAutoPr(opts: {
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     select: {
-      kind: true, dispatch_request_id: true, dispatch_candidate_id: true,
+      kind: true, dispatch_request_id: true, dispatch_candidate_id: true, task_executions: managedTaskExecutionsSelect,
+      task: { select: { dispatch_request_id: true } },
       sprint_run_id: true,
       sprint_run: {
         select: { id: true, pr_strategy: true, sprint: { select: { sprint_goal: true } } },
@@ -670,7 +671,8 @@ export async function maybeCreateSprintBatchPr(opts: {
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     select: {
-      kind: true, dispatch_request_id: true, dispatch_candidate_id: true,
+      kind: true, dispatch_request_id: true, dispatch_candidate_id: true, task_executions: managedTaskExecutionsSelect,
+      task: { select: { dispatch_request_id: true } },
       sprint_run_id: true,
       sprint_run: {
         select: { id: true, sprint: { select: { sprint_goal: true } } },
@@ -927,7 +929,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           where: { id: job_id },
           select: {
             id: true,
-            dispatch_request_id: true, dispatch_candidate_id: true,
+            dispatch_request_id: true, dispatch_candidate_id: true, task_executions: managedTaskExecutionsSelect,
             status: true,
             claimed_at: true,
             started_at: true,
@@ -944,7 +946,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             created_at: true,
             chat_cutoff_message_id: true,
             chat_cutoff_at: true,
-            task: { select: { verify_only: true, verify_required: true } },
+            task: { select: { verify_only: true, verify_required: true, dispatch_request_id: true } },
           },
         })
 

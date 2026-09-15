@@ -78,3 +78,8 @@ it('locks the task before duplicate check and job creation in the same transacti
   expect(lock.mock.invocationCallOrder[0]).toBeLessThan(mockFindFirst.mock.invocationCallOrder[0])
   expect(mockFindFirst.mock.invocationCallOrder[0]).toBeLessThan(mockCreate.mock.invocationCallOrder[0])
 })
+it('rejects a public Task dispatch binding before creating a job or sending notification',async()=>{
+ mockTask.mockResolvedValue({...baseTask,dispatch_request_id:'active-host-request'})
+ await expect(dispatchTaskImplementation({taskId:'t1',productId:'prod-1',userId:'u1'})).rejects.toThrow('DISPATCH_MANAGED_ROW')
+ expect(mockCreate).not.toHaveBeenCalled()
+})

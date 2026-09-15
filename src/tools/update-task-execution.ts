@@ -1,4 +1,4 @@
-import { assertUnmanagedJob } from '../dispatch/managed-job.js'
+import { assertUnmanagedJob, managedTaskExecutionsSelect } from '../dispatch/managed-job.js'
 // PBI-50 F3-T2: update_task_execution
 //
 // SPRINT_IMPLEMENTATION-flow lifecycle-tool. Worker roept dit aan voor elke
@@ -45,8 +45,9 @@ export function registerUpdateTaskExecutionTool(server: McpServer) {
           select: {
             id: true,
             sprint_job_id: true,
+            task: { select: { dispatch_request_id: true } },
             sprint_job: {
-              select: { claimed_by_token_id: true, status: true, kind: true, branch: true, dispatch_request_id: true, dispatch_candidate_id: true },
+              select: { claimed_by_token_id: true, status: true, kind: true, branch: true, dispatch_request_id: true, dispatch_candidate_id: true, task_executions: managedTaskExecutionsSelect },
             },
           },
         })
@@ -54,6 +55,7 @@ export function registerUpdateTaskExecutionTool(server: McpServer) {
           return toolError(`SprintTaskExecution ${execution_id} not found`)
         }
         assertUnmanagedJob(execution.sprint_job)
+        assertUnmanagedJob({ task: execution.task })
         if (execution.sprint_job.kind !== 'SPRINT_IMPLEMENTATION') {
           return toolError(
             `Execution ${execution_id} hangs at job kind ${execution.sprint_job.kind}, expected SPRINT_IMPLEMENTATION`,

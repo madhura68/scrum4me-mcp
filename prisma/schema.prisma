@@ -571,6 +571,9 @@ model SprintRun {
 }
 
 model Task {
+  // Active dispatch occupancy across both job and host routes; guarded release.
+  dispatch_request_id String? @unique @db.Uuid
+  dispatch_request QueueDispatchRequest? @relation(fields: [dispatch_request_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
   id                     String                @id @default(cuid())
   story                  Story                 @relation(fields: [story_id], references: [id], onDelete: Cascade)
   story_id               String
@@ -1597,6 +1600,7 @@ model QueueDispatchIncarnation {
 }
 
 model QueueDispatchRequest {
+  occupied_task Task?
   id                           String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   principal_key                String
   idempotency_key              String

@@ -364,12 +364,12 @@ export function createDispatchAttempts(deps: {
             request_id: string;
             candidate_id: string;
             id: string;
-        }>(`SELECT a.id,a.candidate_id,c.request_id FROM queue_dispatch_attempts a JOIN queue_dispatch_candidates c ON c.id=a.candidate_id JOIN queue_dispatch_profiles p ON p.id=c.profile_revision_id WHERE a.state IN ('CLAIMED','RUNNING') AND (a.heartbeat_at<=now()-interval '120 seconds' OR a.started_at+make_interval(secs=>(p.config->>'max_duration_seconds')::int)<=now()) ORDER BY a.heartbeat_at,a.id LIMIT $1`, [Math.min(25, Math.max(0, limit))])).rows;
+        }>(`SELECT a.id,a.candidate_id,c.request_id FROM queue_dispatch_attempts a JOIN queue_dispatch_candidates c ON c.id=a.candidate_id JOIN queue_dispatch_profiles p ON p.id=c.profile_revision_id WHERE (a.state IN ('CLAIMED','RUNNING') AND a.heartbeat_at<=now()-interval '120 seconds') OR (a.state IN ('CLAIMED','RUNNING','UNCERTAIN') AND a.started_at+make_interval(secs=>(p.config->>'max_duration_seconds')::int)<=now()) ORDER BY a.heartbeat_at,a.id LIMIT $1`, [Math.min(25, Math.max(0, limit))])).rows;
         let count = 0;
         for (const row of rows)
             if (await withDispatchRetryTransaction(deps.store, async (db) => {
                 const x = await lock(db, row.request_id, row.candidate_id, row.id);
-                if (x.r.generation !== x.c.generation || !['CLAIMED', 'RUNNING'].includes(x.r.state) || !['CLAIMED', 'RUNNING'].includes(x.a.state) || !x.a.heartbeat_at)
+                if (x.r.generation !== x.c.generation || !['CLAIMED', 'RUNNING', 'UNCERTAIN'].includes(x.r.state) || !['CLAIMED', 'RUNNING', 'UNCERTAIN'].includes(x.a.state))
                     return false;
                 const time = await now(db), profile = (await db.query<{
                     config: DispatchProfileConfig;
@@ -378,7 +378,7 @@ export function createDispatchAttempts(deps: {
                     await cancelForStop(db, x, 'maximum_duration');
                     return false;
                 }
-                if (time.getTime() - x.a.heartbeat_at.getTime() < 120000)
+                if (x.a.state === 'UNCERTAIN' || !x.a.heartbeat_at || time.getTime() - x.a.heartbeat_at.getTime() < 120000)
                     return false;
                 await uncertain(db, x);
                 return true;

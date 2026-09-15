@@ -23,11 +23,11 @@ export async function readManagedJobSnapshot(db: Pool, request: ManagedRequest):
  * use this same tasks row lock, so an ordinary enqueue cannot race the check. */
 export async function lockManagedTask(db: PoolClient, request: ManagedRequest) {
   if (request.input.action !== 'task_implementation') return
-  const task = (await db.query<{ product_id: string; status: string; repo_url: string | null }>('SELECT product_id,status,repo_url FROM tasks WHERE id=$1 FOR UPDATE', [request.input.task_id])).rows[0]
+  const task = (await db.query<{ product_id: string; status: string; repo_url: string | null; dispatch_request_id: string | null }>('SELECT product_id,status,repo_url,dispatch_request_id FROM tasks WHERE id=$1 FOR UPDATE', [request.input.task_id])).rows[0]
   if (!task || task.product_id !== request.product_id) throw new DispatchError('DISPATCH_FORBIDDEN')
   const active = await db.query(`SELECT 1 FROM claude_jobs WHERE task_id=$1 AND status IN ('QUEUED','CLAIMED','RUNNING') AND dispatch_request_id IS DISTINCT FROM $2::uuid
   UNION ALL SELECT 1 FROM sprint_task_executions WHERE task_id=$1 AND status IN ('PENDING','RUNNING') LIMIT 1`, [request.input.task_id, request.id])
-  if (task.status !== 'TO_DO' || active.rowCount) throw new DispatchError('DISPATCH_STATE_CONFLICT')
+  if ((task.dispatch_request_id !== null && task.dispatch_request_id !== request.id) || task.status !== 'TO_DO' || active.rowCount) throw new DispatchError('DISPATCH_STATE_CONFLICT')
   const repos = (await db.query<{ id: string; repo_url: string | null }>('SELECT id,repo_url FROM products WHERE id=ANY($1::text[])', [[request.product_id, request.input.requirements.repository!.product_id]])).rows
   const main = repos.find(p => p.id === request.product_id), repo = repos.find(p => p.id === request.input.requirements.repository!.product_id)
   const accepted = request.snapshot.repository as { repo_url?: string } | undefined

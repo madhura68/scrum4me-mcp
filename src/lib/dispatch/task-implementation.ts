@@ -21,11 +21,12 @@ export async function dispatchTaskImplementation(opts: {
     await tx.$queryRaw`SELECT id FROM tasks WHERE id=${opts.taskId} FOR UPDATE`
     const task = await tx.task.findUnique({
       where: { id: opts.taskId },
-      select: { id: true, status: true, story: { select: { product_id: true } } },
+      select: { id: true, status: true, dispatch_request_id: true, story: { select: { product_id: true } } },
     })
     if (!task || task.story.product_id !== opts.productId) {
       throw new DispatchError(`Task ${opts.taskId} not found in this product`)
     }
+    if (task.dispatch_request_id != null) throw new DispatchError('DISPATCH_MANAGED_ROW')
     if (task.status !== 'TO_DO') {
       throw new DispatchError(`Task heeft status ${task.status}; alleen TO_DO is dispatchbaar.`)
     }
