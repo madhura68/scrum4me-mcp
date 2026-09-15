@@ -13,9 +13,9 @@ export async function getJobConfigSnapshot(opts: {
   kind: string
   productId: string
   taskId?: string | null
-}): Promise<ClaudeJobSnapshotFields> {
+}, db: typeof prisma = prisma): Promise<ClaudeJobSnapshotFields> {
   const [product, task, kindConfig] = await Promise.all([
-    prisma.product.findUnique({
+    db.product.findUnique({
       where: { id: opts.productId },
       select: {
         preferred_model: true,
@@ -24,12 +24,12 @@ export async function getJobConfigSnapshot(opts: {
       },
     }),
     opts.taskId
-      ? prisma.task.findUnique({
+      ? db.task.findUnique({
           where: { id: opts.taskId },
           select: { requires_opus: true },
         })
       : Promise.resolve(null),
-    prisma.jobKindConfig.findUnique({ where: { kind: opts.kind as never } }),
+    db.jobKindConfig.findUnique({ where: { kind: opts.kind as never } }),
   ])
 
   const cfg = resolveRuntimeJobConfig(

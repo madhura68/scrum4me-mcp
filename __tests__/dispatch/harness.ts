@@ -12,6 +12,8 @@ type FixtureIds = {
   tokenId: string
   profileId: string
   slotIds: string[]
+  additionalProductIds: string[]
+  additionalTokenIds: string[]
 }
 
 export type DispatchHarnessSeed = {
@@ -29,6 +31,9 @@ export interface DispatchHarness {
   queue: Pool
   web: Pool
   seed(input?: Partial<DispatchInput>): Promise<DispatchHarnessSeed>
+  trackProduct(id: string): void
+  trackSlot(id: string): void
+  trackToken(id: string): void
   reset(): Promise<void>
   close(): Promise<void>
   barrier(count: number): () => Promise<void>
@@ -80,9 +85,10 @@ export async function makeDispatchHarness(): Promise<DispatchHarness> {
       try {
         await client.query('BEGIN')
         await client.query("SET LOCAL session_replication_role='replica'")
+        const ownedProductIds=[fixture.productId,...fixture.additionalProductIds]
         const requestIds = (await client.query<{ id: string }>(
-          'SELECT id FROM queue_dispatch_requests WHERE product_id=$1',
-          [fixture.productId],
+          'SELECT id FROM queue_dispatch_requests WHERE product_id=ANY($1::text[])',
+          [ownedProductIds],
         )).rows.map(({ id }) => id)
         if (requestIds.length > 0) {
           for (const table of [
@@ -114,7 +120,7 @@ export async function makeDispatchHarness(): Promise<DispatchHarness> {
           [fixture.slotIds],
         )
         await client.query('DELETE FROM queue_dispatch_slots WHERE id=ANY($1::uuid[])', [fixture.slotIds])
-        await client.query('DELETE FROM queue_dispatch_profiles WHERE id=$1', [fixture.profileId])
+        await client.query('DELETE FROM queue_dispatch_profiles WHERE product_id=ANY($1::text[])', [ownedProductIds])
         await client.query(
           'DELETE FROM queue_dispatch_reply_addresses WHERE user_id=ANY($1::text[])',
           [[fixture.userId, fixture.otherUserId]],
@@ -128,16 +134,17 @@ export async function makeDispatchHarness(): Promise<DispatchHarness> {
         )
         await client.query(
           `DELETE FROM sprint_task_executions WHERE task_id IN
-           (SELECT id FROM tasks WHERE product_id=$1)`, [fixture.productId],
+           (SELECT id FROM tasks WHERE product_id=ANY($1::text[]))`, [ownedProductIds],
         )
-        await client.query('DELETE FROM claude_jobs WHERE product_id=$1', [fixture.productId])
-        await client.query('DELETE FROM tasks WHERE product_id=$1', [fixture.productId])
-        await client.query('DELETE FROM stories WHERE product_id=$1', [fixture.productId])
-        await client.query('DELETE FROM pbis WHERE product_id=$1', [fixture.productId])
-        await client.query('DELETE FROM product_members WHERE product_id=$1', [fixture.productId])
+        await client.query('DELETE FROM claude_jobs WHERE product_id=ANY($1::text[])', [ownedProductIds])
+        await client.query('DELETE FROM tasks WHERE product_id=ANY($1::text[])', [ownedProductIds])
+        await client.query('DELETE FROM stories WHERE product_id=ANY($1::text[])', [ownedProductIds])
+        await client.query('DELETE FROM pbis WHERE product_id=ANY($1::text[])', [ownedProductIds])
+        await client.query('DELETE FROM product_members WHERE product_id=ANY($1::text[])', [ownedProductIds])
         await client.query('DELETE FROM user_roles WHERE user_id=ANY($1::text[])', [[fixture.userId, fixture.otherUserId]])
-        await client.query('DELETE FROM api_tokens WHERE id=$1', [fixture.tokenId])
-        await client.query('DELETE FROM products WHERE id=$1', [fixture.productId])
+        await client.query('DELETE FROM claude_workers WHERE user_id=ANY($1::text[])', [[fixture.userId, fixture.otherUserId]])
+        await client.query('DELETE FROM api_tokens WHERE id=ANY($1::text[])', [[fixture.tokenId,...fixture.additionalTokenIds]])
+        await client.query('DELETE FROM products WHERE id=ANY($1::text[])', [ownedProductIds])
         await client.query('DELETE FROM users WHERE id=ANY($1::text[])', [
           [fixture.userId, fixture.otherUserId],
         ])
@@ -214,6 +221,8 @@ export async function makeDispatchHarness(): Promise<DispatchHarness> {
       tokenId,
       profileId,
       slotIds: [jobSlotId, hostSlotId],
+      additionalProductIds: [],
+      additionalTokenIds: [],
     })
 
     await pools.admin.query(
@@ -257,6 +266,14 @@ export async function makeDispatchHarness(): Promise<DispatchHarness> {
       [jobIncarnationId, jobSlotId, `boot-${jobIncarnationId}`, 'b'.repeat(64),
         hostIncarnationId, hostSlotId, `boot-${hostIncarnationId}`, 'c'.repeat(64)],
     )
+    const jobConfig={version:1,runtime:'CODEX',product_ids:[productId],capabilities:[],tier:null,worker_instance_id:jobSlotId}
+    const hostConfig={...jobConfig,worker_instance_id:null}
+    await pools.dispatch.query('UPDATE queue_dispatch_slots SET config=$2::jsonb WHERE id=$1',[jobSlotId,JSON.stringify(jobConfig)])
+    await pools.dispatch.query('UPDATE queue_dispatch_slots SET config=$2::jsonb WHERE id=$1',[hostSlotId,JSON.stringify(hostConfig)])
+    for(const [id,config] of [[jobIncarnationId,jobConfig],[hostIncarnationId,hostConfig]] as const) {
+      await pools.dispatch.query('UPDATE queue_dispatch_incarnations SET runtime_scope=$2::jsonb WHERE id=$1',[id,JSON.stringify({...config,profile_revision_ids:[profileId],image_digest:profile.image_digest,profile_sha256:'a'.repeat(64),supervisor_token_id:tokenId})])
+    }
+    await pools.admin.query(`INSERT INTO claude_workers(id,user_id,token_id,instance_id,runtime,capabilities,last_seen_at) VALUES($1,$2,$3,$1,'CODEX','{}',now())`,[jobSlotId,userId,tokenId])
     await pools.dispatch.query(
       `INSERT INTO queue_dispatch_reply_addresses(user_id,address,enabled)
        VALUES($1,'mac:jp',true)`,
@@ -276,6 +293,9 @@ export async function makeDispatchHarness(): Promise<DispatchHarness> {
   return {
     ...pools,
     seed,
+    trackToken: id => { fixtures.at(-1)!.additionalTokenIds.push(id) },
+    trackProduct: id => { fixtures.at(-1)!.additionalProductIds.push(id) },
+    trackSlot: id => { fixtures.at(-1)!.slotIds.push(id) },
     reset,
     close: async () => {
       try {

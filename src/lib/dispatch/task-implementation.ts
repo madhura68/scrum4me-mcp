@@ -9,41 +9,46 @@ export async function dispatchTaskImplementation(opts: {
   taskId: string
   productId: string
   userId: string
-}): Promise<{ job_id: string }> {
-  const task = await prisma.task.findUnique({
-    where: { id: opts.taskId },
-    select: { id: true, status: true, story: { select: { product_id: true } } },
-  })
-  if (!task || task.story.product_id !== opts.productId) {
-    throw new DispatchError(`Task ${opts.taskId} not found in this product`)
-  }
-  if (task.status !== 'TO_DO') {
-    throw new DispatchError(`Task heeft status ${task.status}; alleen TO_DO is dispatchbaar.`)
-  }
-  const existing = await prisma.claudeJob.findFirst({
-    where: { task_id: opts.taskId, status: { in: ['QUEUED', 'CLAIMED', 'RUNNING'] } },
-    select: { id: true },
-  })
-  if (existing) throw new DispatchError(`Er loopt al een actieve job voor deze task (${existing.id}).`)
-
+}, dependencies: { db?: typeof prisma; notify?: typeof notifyJobEnqueued } = {}): Promise<{ job_id: string }> {
+  const db = dependencies.db ?? prisma
   const snapshot = await getJobConfigSnapshot({
     kind: 'TASK_IMPLEMENTATION',
     productId: opts.productId,
     taskId: opts.taskId,
+  }, db)
+  const job = await db.$transaction(async tx => {
+    // Same Task-first lock as managed enqueue; includes duplicate check + create.
+    await tx.$queryRaw`SELECT id FROM tasks WHERE id=${opts.taskId} FOR UPDATE`
+    const task = await tx.task.findUnique({
+      where: { id: opts.taskId },
+      select: { id: true, status: true, story: { select: { product_id: true } } },
+    })
+    if (!task || task.story.product_id !== opts.productId) {
+      throw new DispatchError(`Task ${opts.taskId} not found in this product`)
+    }
+    if (task.status !== 'TO_DO') {
+      throw new DispatchError(`Task heeft status ${task.status}; alleen TO_DO is dispatchbaar.`)
+    }
+    const existing = await tx.claudeJob.findFirst({
+      where: { task_id: opts.taskId, status: { in: ['QUEUED', 'CLAIMED', 'RUNNING'] } },
+      select: { id: true },
+    })
+    if (existing) throw new DispatchError(`Er loopt al een actieve job voor deze task (${existing.id}).`)
+
+    return tx.claudeJob.create({
+      data: {
+        user_id: opts.userId,
+        product_id: opts.productId,
+        task_id: opts.taskId,
+        kind: 'TASK_IMPLEMENTATION',
+        status: 'QUEUED',
+        source: 'COPILOT',
+        ...snapshot,
+      },
+      select: { id: true },
+    })
   })
-  const job = await prisma.claudeJob.create({
-    data: {
-      user_id: opts.userId,
-      product_id: opts.productId,
-      task_id: opts.taskId,
-      kind: 'TASK_IMPLEMENTATION',
-      status: 'QUEUED',
-      source: 'COPILOT',
-      ...snapshot,
-    },
-    select: { id: true },
-  })
-  await notifyJobEnqueued({
+  await (dependencies.notify ?? notifyJobEnqueued)({
     job_id: job.id, user_id: opts.userId, product_id: opts.productId, kind: 'TASK_IMPLEMENTATION',
   })
   return { job_id: job.id }

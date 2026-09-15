@@ -18,7 +18,7 @@ beforeEach(() => {
 
 describe('M23 claim-filter', () => {
   it('CLAIMABLE_STANDALONE_KINDS bevat de spec-maker-kinds (SQL-tuple)', async () => {
-    const src = (await import('node:fs')).readFileSync('src/tools/wait-for-job.ts', 'utf8')
+    const src = (await import('node:fs')).readFileSync('src/dispatch/eligibility.ts', 'utf8')
     const tuple = src.match(/CLAIMABLE_STANDALONE_KINDS = "\(([^)]+)\)"/)?.[1] ?? ''
     expect(tuple).toContain("'IDEA_MAKE_SPEC'")
     expect(tuple).toContain("'IDEA_REVISE_SPEC'")

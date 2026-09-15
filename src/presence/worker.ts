@@ -4,7 +4,12 @@ import { dbClientConfig } from '../db-connection.js'
 
 export type WorkerCapability = 'HIGH_P' | 'MEDIUM_P' | 'LOW_P'
 
-export async function registerWorker(opts: {
+/** Persisted poll scope, also snapshotted by managed slot administration.
+ * instanceId must be operator-stable for managed supervisors: a new boot is
+ * a new dispatch incarnation of the same capacity slot, not a new worker key.
+ * Advertisements here grant no managed authority; an admin freezes the exact
+ * user/token/instance row before registration can use it. */
+export type WorkerRegistrationOptions = {
   userId: string
   tokenId: string
   productId?: string | null
@@ -14,7 +19,9 @@ export async function registerWorker(opts: {
   instanceId: string
   hostname?: string | null
   pid?: number | null
-}): Promise<void> {
+}
+
+export async function registerWorker(opts: WorkerRegistrationOptions): Promise<void> {
   await prisma.claudeWorker.upsert({
     where: {
       user_id_token_id_instance_id: {

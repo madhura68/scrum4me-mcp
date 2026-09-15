@@ -20,17 +20,18 @@ type RequestRow = {
   id: string; user_id: string; input: DispatchInput; input_hash: string; version: string
   state: DispatchView['state']; created_at: Date; result_id: string | null
   route: 'job' | 'host' | null; profile_revision_id: string | null; job_id: string | null
-  delivery: DispatchView['delivery']
+  delivery: DispatchView['delivery']; waiting_reason: string | null
 }
 const selectRequest = `SELECT r.id,r.user_id,r.input,r.input_hash,r.version::text,r.state,r.created_at,r.result_id,
  c.route,c.profile_revision_id,c.job_id,
+ (SELECT e.payload->>'reason' FROM queue_dispatch_events e WHERE e.request_id=r.id AND e.type='waiting_reason' ORDER BY e.created_at DESC,e.id DESC LIMIT 1) AS waiting_reason,
  CASE WHEN o.published_at IS NOT NULL THEN 'delivered' ELSE 'pending' END AS delivery
  FROM queue_dispatch_requests r
  LEFT JOIN queue_dispatch_candidates c ON c.request_id=r.id AND c.generation=r.generation
  LEFT JOIN queue_dispatch_outbox o ON o.request_id=r.id AND o.version=r.version`
 function view(row: RequestRow): DispatchView {
   return { id: row.id, version: row.version, state: row.state, action: row.input.action,
-    reason: row.state === 'WAITING' ? 'waiting_for_capacity' : row.state.toLowerCase(), route: row.route,
+    reason: row.state === 'WAITING' ? (row.waiting_reason ?? 'waiting_for_capacity') : row.state.toLowerCase(), route: row.route,
     profile_revision_id: row.profile_revision_id, job_id: row.job_id, executor_label: null,
     result_id: row.result_id, delivery: row.delivery, created_at: row.created_at.toISOString() }
 }
