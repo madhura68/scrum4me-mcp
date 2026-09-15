@@ -119,6 +119,23 @@ export async function makeDispatchHarness(): Promise<DispatchHarness> {
           'DELETE FROM queue_dispatch_reply_addresses WHERE user_id=ANY($1::text[])',
           [[fixture.userId, fixture.otherUserId]],
         )
+        // IP-04 also seeds real members, roles and explicit Task graphs. Replica
+        // cleanup deliberately suppresses cascade triggers, so delete these
+        // fixture-owned dependents explicitly before their parent rows.
+        await client.query(
+          "DELETE FROM queue_dispatch_events WHERE request_id IS NULL AND actor->>'user_id'=ANY($1::text[])",
+          [[fixture.userId, fixture.otherUserId]],
+        )
+        await client.query(
+          `DELETE FROM sprint_task_executions WHERE task_id IN
+           (SELECT id FROM tasks WHERE product_id=$1)`, [fixture.productId],
+        )
+        await client.query('DELETE FROM claude_jobs WHERE product_id=$1', [fixture.productId])
+        await client.query('DELETE FROM tasks WHERE product_id=$1', [fixture.productId])
+        await client.query('DELETE FROM stories WHERE product_id=$1', [fixture.productId])
+        await client.query('DELETE FROM pbis WHERE product_id=$1', [fixture.productId])
+        await client.query('DELETE FROM product_members WHERE product_id=$1', [fixture.productId])
+        await client.query('DELETE FROM user_roles WHERE user_id=ANY($1::text[])', [[fixture.userId, fixture.otherUserId]])
         await client.query('DELETE FROM api_tokens WHERE id=$1', [fixture.tokenId])
         await client.query('DELETE FROM products WHERE id=$1', [fixture.productId])
         await client.query('DELETE FROM users WHERE id=ANY($1::text[])', [

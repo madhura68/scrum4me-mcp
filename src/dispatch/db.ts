@@ -41,3 +41,15 @@ export async function withDispatchTransaction<T>(
     client.release()
   }
 }
+
+/** Only PostgreSQL-confirmed aborts are replayable. Connection loss, including
+ * an ambiguous COMMIT response, is left for a caller retry with the same key. */
+export async function withDispatchRetryTransaction<T>(store: DispatchStore, fn: DispatchTransaction<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try { return await withDispatchTransaction(store, fn) } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error ? error.code : null
+      if (attempt >= 3 || (code !== '40001' && code !== '40P01')) throw error
+      await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 10 * attempt)))
+    }
+  }
+}

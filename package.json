@@ -29,7 +29,8 @@
     "sync-schema": "bash scripts/sync-schema.sh",
     "test": "vitest run",
     "test:integration": "vitest run --no-file-parallelism integration.test",
-    "test:dispatch": "node scripts/dispatch-test-db.mjs check && vitest run --config vitest.dispatch.config.ts --no-file-parallelism"
+    "test:dispatch": "node scripts/dispatch-test-db.mjs check && vitest run --config vitest.dispatch.config.ts --no-file-parallelism",
+    "start:dispatch": "tsx src/dispatch/server.ts"
   },
   "keywords": [
     "mcp",
