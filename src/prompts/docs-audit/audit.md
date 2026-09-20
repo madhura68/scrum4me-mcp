@@ -7,7 +7,8 @@ docs; kan `null` of leeg zijn — dan zijn er geen DB-docs voor dit product).
 **Belangrijk over pushen en afsluiten:** jij pusht NIET en zet de job-status NIET
 zelf. Je bewerkt en commit lokaal en schrijft aan het eind een handoff-JSON naar
 `$RESULT_PATH`. De **runner** valideert dan je diff (alleen-markdown), pusht met
-zijn eigen token naar de default branch, en zet de terminale status. Zo kan geen
+zijn eigen token naar een eigen auditbranch, opent of hergebruikt een PR naar de
+default branch, en zet de terminale status. De runner merget niet. Zo kan geen
 enkele run een niet-markdown-wijziging op de repo krijgen.
 
 ## Hardstops (niet-onderhandelbaar)
@@ -26,7 +27,7 @@ enkele run een niet-markdown-wijziging op de repo krijgen.
 Commit ALLEEN bij **feitelijke** drift: de docs zijn aantoonbaar verouderd,
 onjuist, of missen documentatie voor nieuw gedrag. Herschrijf NOOIT correcte
 docs voor stijl, woordkeus of vorm — bij twijfel: verifieer-en-laat-staan. Deze
-job draait dagelijks; een stilistische edit wordt morgen een commit + web-push.
+job draait dagelijks; een stilistische edit wordt morgen een commit + review-PR.
 Kloppen alle docs → geen commit (dat is de normale uitkomst).
 
 ## Stappen
@@ -49,17 +50,18 @@ Kloppen alle docs → geen commit (dat is de normale uitkomst).
 4. **Fix (commit-only — NIET pushen).** Bewerk alleen markdown in `$REPO_PATH`.
    Commit per samenhangende fix op de uitgecheckte branch als
    `docs(audit): <wat> (PR #n)`. **Push niet, maak geen branch/PR, zet geen
-   status.** De runner valideert je diff en pusht. Raak je per ongeluk
+   status.** De runner valideert je diff en biedt die via een PR aan. Raak je per ongeluk
    niet-markdown aan, dan weigert de runner de push en faalt de job
    (`non_markdown_change_blocked`) — er komt dan niets op de repo.
-5. **DB-mirror (alleen als `is_scrum4me` true is; anders overslaan).** Draai in
-   `$REPO_PATH` `npm ci --no-audit --no-fund` en dan `npm run db:sync-product-docs`
-   (`DATABASE_URL` staat in je env). **Soft-fail:** lukt dit niet, meld het in de
-   summary maar zet `outcome` NIET op failed — de commit is de eigenlijke fix.
+5. **DB-mirror uitstellen.** Synchroniseer de gewijzigde docs NIET naar de DB:
+   de wijzigingen moeten eerst via de PR beoordeeld en gemerged worden. Ook
+   voor `is_scrum4me` hoort DB-sync bij de normale route na de merge.
 6. **Afsluiten (handoff, geen status-call).** Schrijf naar `$RESULT_PATH`:
    `{"outcome":"done","summary":"<per PR: geverifieerd / bijgewerkt met
    commit-sha's / geskipt>","capped":<bool>,"processed_until":"<iso of null>"}`
-   en stop. De runner pusht (na markdown-validatie) en zet DONE + de cursor.
+   en stop. De runner valideert en publiceert zo nodig een review-PR, en zet daarna DONE +
+   de cursor. DONE betekent dat de audit is aangeboden, niet dat de PR gemerged
+   of gedeployed is. Bij onzekere publicatie bevestigt de runner geen succes.
    Kun je door een harde fout niets zinnigs doen (repo onbereikbaar): schrijf
    `{"outcome":"failed","summary":"<reden>"}`.
 
