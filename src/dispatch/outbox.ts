@@ -3,6 +3,7 @@ import type { PoolClient } from 'pg'
 import type { DispatchInput, DispatchResult, DispatchState } from '@shared/queue-dispatch.js'
 import { buildDispatchProjection, type DispatchProjection } from '@shared/queue-dispatch-projection.js'
 import { DispatchError } from './errors.js'
+import { notifyDispatchTick } from './notify.js'
 
 type Row = {
   id: string; version: string; state: DispatchState; input: DispatchInput
@@ -21,6 +22,11 @@ export async function writeDispatchOutbox(db: PoolClient, requestId: string): Pr
   const projection = buildDispatchProjection({ id: r.id, version: r.version, state: r.state, input: r.input, rootId: r.root_message_id, replyId: r.reply_message_id,
     route: r.route, reason: r.state === 'WAITING' ? (r.waiting_reason ?? 'waiting_for_capacity') : r.state.toLowerCase() }, r.result)
   await db.query('INSERT INTO queue_dispatch_outbox(id,request_id,version,payload) VALUES($1,$2,$3,$4::jsonb)', [randomUUID(), r.id, r.version, JSON.stringify(projection)])
+  // Every durable request transition passes here, and so does every outbox row the delivery stage
+  // drains: intake, reservation, retirement, cancel, recovery and completion alike. One emit in
+  // the caller's own transaction therefore covers every event-driven stage of the tick, and fires
+  // at COMMIT — never for a transition that rolled back.
+  await notifyDispatchTick(db, 'request', r.id)
   return projection
 }
 /** 1, 2, 4 ... 60 seconds with bounded jitter. Delivery keeps retrying after the visible failure threshold. */

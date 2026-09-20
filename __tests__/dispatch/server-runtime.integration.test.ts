@@ -42,6 +42,19 @@ async function start(env: Record<string, string>) {
   return { service, url: `http://127.0.0.1:${(service.server.address() as { port: number }).port}` }
 }
 
+/** Waits on an observed fact instead of on a duration; it fails loudly rather than hanging. */
+function waitFor(condition: () => boolean, what: string, timeoutMs = 20_000) {
+  return new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => { clearInterval(poll); reject(new Error(`DISPATCH_NEVER_${what}`)) }, timeoutMs)
+    const poll = setInterval(() => {
+      if (!condition()) return
+      clearInterval(poll); clearTimeout(timeout); resolve()
+    }, 5)
+  })
+}
+const ticks = (log: { events: Record<string, unknown>[] }) => log.events.filter(event => 'tick' in event).length
+const listenerEvents = (log: { events: Record<string, unknown>[] }) => log.events.filter(event => 'tick_listener' in event).map(event => event.tick_listener)
+
 const exec = promisify(execFile)
 const gitEnv = { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_AUTHOR_NAME: 'Runtime', GIT_AUTHOR_EMAIL: 'runtime@example.invalid',
@@ -89,16 +102,20 @@ const submit = (url: string, token: string, input: unknown) => fetch(`${url}/dis
 it('prepares the pinned repository source when a workspace root is configured', async () => {
   const { forge, productId, token, input } = await repoWriteFixture()
   const workspaceRoot = await realpath(await mkdtemp(join(tmpdir(), 'dispatch-runtime-workspace-')))
-  const { service, url } = await start({
+  const log = captureLog()
+  try {
+  const { url } = await start({
     DISPATCH_ENABLED: '1', DISPATCH_PRODUCT_ALLOWLIST: productId, DISPATCH_TICK_INTERVAL_MS: '3600000',
     DISPATCH_WORKSPACE_ROOT: workspaceRoot, DISPATCH_GIT_PROTOCOLS: 'file',
   })
+  await waitFor(() => listenerEvents(log).includes('listening'), 'LISTENED')
   const submitted = await submit(url, token, input)
   expect(submitted.status).toBe(200)
   const { id } = await submitted.json() as { id: string }
 
-  // The entrypoint's own tick, driven explicitly: preparation is the stage under test, not the timer.
-  expect(await service.tick!()).toMatchObject({ prepared: 1, errors: 0 })
+  // The hour-long interval cannot have fired: the tick that prepares these sources is the one the
+  // intake commit pulled forward over NOTIFY.
+  await waitFor(() => ticks(log) > 0, 'TICKED')
   const sources = (await h.dispatch.query<{ key: string }>(
     'SELECT key FROM queue_dispatch_artifacts WHERE request_id=$1 AND attempt_id IS NULL ORDER BY key', [id])).rows.map(r => r.key)
   expect(sources).toContain('__repository_base')
@@ -109,6 +126,24 @@ it('prepares the pinned repository source when a workspace root is configured', 
   expect((await h.dispatch.query('SELECT sources_ready_at FROM queue_dispatch_requests WHERE id=$1', [id])).rows[0].sources_ready_at).not.toBeNull()
   // Nothing of the request's working tree outlives its own preparation.
   expect(await readdir(workspaceRoot)).toEqual([])
+  } finally { log.restore() }
+})
+
+it('keeps ticking and reconnects when the listener session is lost', async () => {
+  const log = captureLog()
+  try {
+    await start({ DISPATCH_TICK_INTERVAL_MS: '1' })
+    await waitFor(() => listenerEvents(log).includes('listening'), 'LISTENED')
+    const terminated = await h.admin.query(
+      `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='scrum4me-dispatch-listener'`)
+    expect(terminated.rowCount).toBeGreaterThan(0)
+    // A lost session is latency, never a stopped service: the interval keeps the tick going …
+    await waitFor(() => listenerEvents(log).some(event => String(event).startsWith('dropped_on_')), 'DROPPED')
+    const after = ticks(log)
+    await waitFor(() => ticks(log) > after, 'TICKED_AFTER_DROP')
+    // … and the listener comes back by itself, without anyone restarting the service.
+    await waitFor(() => listenerEvents(log).filter(event => event === 'listening').length >= 2, 'RELISTENED')
+  } finally { log.restore() }
 })
 
 it('refuses a repo_write request at intake when no workspace root is configured', async () => {

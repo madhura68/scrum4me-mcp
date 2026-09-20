@@ -523,7 +523,7 @@ reads it. Values below are shapes and examples only; no real value belongs in th
 | `DISPATCH_PRODUCT_ALLOWLIST` | dispatch service | release operator | Comma-separated product ids that may dispatch. Empty means none |
 | `DISPATCH_HOST` | dispatch service | host operator | Listen address, default `127.0.0.1`. TLS ingress terminates in front of it |
 | `DISPATCH_PORT` | dispatch service | host operator | Listen port, default `4319` |
-| `DISPATCH_TICK_INTERVAL_MS` | dispatch service | host operator | Selection tick, default `5000` |
+| `DISPATCH_TICK_INTERVAL_MS` | dispatch service | host operator | Selection tick, default `5000`. It is the safety net under the `dispatch_tick` NOTIFY, not a replacement for it: a lost notification costs at most this much latency |
 | `DISPATCH_MAINTENANCE_INTERVAL_MS` | dispatch service | host operator | Queue repair/retention interval, default `900000`. Not the selection tick |
 | `DISPATCH_RETENTION_DAYS` | dispatch service | release operator | Opt-in. Whole days after which a terminal, acknowledged, non-recovered thread is archived and removed from the hot queue. Unset → no retention pass runs |
 | `DISPATCH_WORKERS_ASSERTION_KEY` | dispatch service **and** scrum4me-workers | secret owner (shared with workers) | Shared secret, ≥32 bytes UTF-8, byte-identical on both sides |
@@ -602,6 +602,28 @@ Same authority as recovery on that request. A remote that already carries our he
 confirmation for reconciliation to find, not something to attest: that is refused. The route
 exists only where the deployment configured a publisher.
 
+### The tick, and what wakes it
+
+The service advances on two things: its own interval, `DISPATCH_TICK_INTERVAL_MS`, and a
+`NOTIFY` on `dispatch_tick` in the dispatch database. The producer is the service's own
+transactions — no database trigger, and therefore no migration. Two emit points cover every
+event-driven stage: the outbox write that every durable request transition passes through
+(intake, reservation, retirement, cancel, recovery, completion) and a newly registered
+incarnation, which is the capacity a waiting request was missing. Candidate deadlines and attempt
+leases are elapsed time; nothing can wake those early. The payload is
+`{"v":1,"reason":"request"|"capacity","request_id":<uuid|null>}` — ids only, no secret and no
+product content, because the tick re-reads every authoritative row under its own locks anyway.
+`LISTEN`/`NOTIFY` need no grant in PostgreSQL, so the limited `scrum4me_dispatch` role uses the
+channel as it is.
+
+The consumer is a `pg.Client` of its own, never a pool member, because a `LISTEN` session holds
+its backend for as long as it lives. A burst inside a 25 ms window costs exactly one early tick,
+and a notification arriving during a tick becomes exactly one follow-up — never a second
+concurrent tick. **The notification is a hint and the interval is the guarantee:** a lost
+notification, a dropped session or a restart costs latency and nothing else, and the listener
+reconnects on its own with bounded exponential backoff. Shutdown closes it first, so nothing asks
+for another tick and its connection is closed while the database is still reachable.
+
 Queue repair and retention need no operator command: they are stages of the service's own tick,
 bounded, caught per unit and run last, on `DISPATCH_MAINTENANCE_INTERVAL_MS`. Repair hands a
 reply back that a crashed reader claimed and never acknowledged (after the CLI's four-hour inbox
@@ -645,9 +667,6 @@ Measured on this build; none of these is scheduled work in IP-14.
   has used `/agent/*` outside tests. The read-only artifact profile does not need it: the child
   writes its `result.json` to `/output` and the supervisor stages it through
   `PUT /attempts/collected/:key` after the stop.
-- **No NOTIFY producer.** The service relies on its tick alone. A queue-side `NOTIFY` on dispatch
-  state changes was part of the plan and is not implemented; delivery latency is therefore bounded
-  by `DISPATCH_TICK_INTERVAL_MS`.
 - **`GET /artifacts/:id` ignores the bound-attempt proof.** Only the requester or a product
   administrator can read an artifact; a supervisor holding a valid attempt proof cannot.
 - `queue_dispatch_reply_addresses` must be populated through `POST /reply-addresses` before anyone

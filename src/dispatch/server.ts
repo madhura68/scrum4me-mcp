@@ -1,6 +1,8 @@
 import { createPrivateKey, type KeyObject } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
+import { Client } from 'pg'
 import { createDispatchStore, type DispatchStore } from './db.js'
+import { createDispatchTickListener } from './notify.js'
 import { createDispatchApp, type DispatchExecutorKeys } from './routes.js'
 import { createDispatchAuth } from './auth.js'
 import { createDispatchSelection } from './selection.js'
@@ -49,17 +51,28 @@ function assertionKey(value: string | undefined) {
 
 /** The tick's own lifecycle, separate from the listener. At most one tick is in flight; a stopped
  * runner starts no new one and its `stop` resolves only once the tick in flight has finished its
- * own transactions. A failed tick is logged by error name — never by message — and never stops it. */
+ * own transactions. A failed tick is logged by error name — never by message — and never stops it.
+ *
+ * `run` is the interval's entry: if a tick is already in flight this interval is simply skipped.
+ * `wake` is the notification's: it asks for a tick that reflects what was just committed, so a
+ * wake that lands during a tick is remembered and becomes exactly one follow-up — however many
+ * wakes arrived, and never a second concurrent tick. */
 export function createDispatchTickRunner(deps: { tick: () => Promise<DispatchTickResult>; log: (event: Record<string, unknown>) => void }) {
   let running: Promise<DispatchTickResult> | null = null
+  let pending = false
   let stopped = false
-  return {
-    async run(): Promise<void> {
-      if (stopped || running) return
+  async function drive(): Promise<void> {
+    if (stopped || running) return
+    do {
+      pending = false
       running = deps.tick().finally(() => { running = null })
       const result = await running.catch(error => { deps.log({ tick_failed: error instanceof Error ? error.name : 'unknown' }); return null })
       if (result) deps.log({ tick: result })
-    },
+    } while (pending && !stopped)
+  }
+  return {
+    run(): Promise<void> { return drive() },
+    wake(): void { if (stopped) return; pending = true; void drive() },
     stop(): Promise<unknown> {
       stopped = true
       return running?.catch(() => undefined) ?? Promise.resolve()
@@ -157,16 +170,33 @@ export function startDispatchServer(env: NodeJS.ProcessEnv = process.env): Dispa
   const runner = createDispatchTickRunner({ tick: dispatchTick, log })
   const timer = setInterval(() => { void runner.run() }, Number(env.DISPATCH_TICK_INTERVAL_MS ?? DISPATCH_TICK_INTERVAL_MS))
   timer.unref()
+  // The notification half of §2.1's "NOTIFY and a tick every five seconds". It pulls the next
+  // tick forward and can do nothing else: the interval above remains the safety net, so a lost
+  // notification or a dropped session costs latency only. The URL was already validated by
+  // createDispatchStore; this is deliberately a Client and not a pool member, because a LISTEN
+  // session holds its backend for as long as it lives.
+  const listener = createDispatchTickListener({
+    connect: async () => {
+      const client = new Client({ connectionString: env.DISPATCH_DATABASE_URL, application_name: 'scrum4me-dispatch-listener' })
+      await client.connect()
+      return client
+    },
+    wake: () => runner.wake(), log,
+  })
+  void listener.start()
   const server = app.listen(Number(env.DISPATCH_PORT ?? 4319), env.DISPATCH_HOST ?? '127.0.0.1')
 
   let closing: Promise<void> | null = null
   // Shutdown runs once. Both signals are wired, and a listener, a timer and two pools may each be
   // closed exactly once — a second SIGINT must not turn an orderly shutdown into an error.
   const close = () => closing ??= (async () => {
-    // Order matters. Closing the listener first is what stops new intake, selection and start;
-    // the timer stops next so no further selection begins, and the tick in flight is allowed to
-    // finish its own transactions. Nothing here touches attempts or reservations: capacity is
-    // released by stop evidence, never by a shutdown.
+    // Order matters. The notification listener goes first, so nothing can ask for another tick
+    // and its own connection is closed while the database is still reachable. Closing the HTTP
+    // listener is what stops new intake, selection and start; the timer stops next so no further
+    // selection begins, and the tick in flight is allowed to finish its own transactions. Nothing
+    // here touches attempts or reservations: capacity is released by stop evidence, never by a
+    // shutdown.
+    await listener.stop()
     const drained = runner.stop()
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
     clearInterval(timer)

@@ -10,6 +10,7 @@ import { withDispatchRetryTransaction, type DispatchStore } from './db.js'
 import { DispatchError } from './errors.js'
 import { isManagedWorkerInstanceId } from '../presence/worker-mode.js'
 import { credentialMatches } from './credentials.js'
+import { notifyDispatchTick } from './notify.js'
 
 type Profile = { id: string; product_id: string; config: DispatchProfileConfig; sha256: string; revoked_at: Date | null }
 export type IncarnationScope = ManagedSlotConfig & { profile_revision_ids: string[]; image_digest: string; profile_sha256: string; supervisor_token_id: string }
@@ -99,6 +100,10 @@ export function createDispatchRegistration(deps: { store: DispatchStore; auth: D
       if (slot.kind === 'job') await db.query('SELECT public.s4m_dispatch_observe_managed_worker($1::uuid,NULL,NULL,false)', [id])
       await db.query(`INSERT INTO queue_dispatch_events(id,type,actor,payload,action_id,operation_key) VALUES($1,'register',$2::jsonb,$3::jsonb,$4,$5)`,
         [randomUUID(), JSON.stringify({ user_id: current.userId, token_id: current.tokenId }), JSON.stringify({ input_hash: inputHash, response: { incarnation_id: id, slot_id: slot.id, token_id: current.tokenId, key_version: version } }), input.registration_key, operationKey])
+      // A fresh incarnation is the capacity a waiting request was missing, and it writes no outbox
+      // row of its own. Carry no slot, address or incarnation id in the hint: selection re-reads
+      // all of that under its own locks anyway.
+      await notifyDispatchTick(db, 'capacity')
       return { incarnation_id: id, session_credential: secret }
     })
   }

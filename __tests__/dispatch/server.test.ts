@@ -64,4 +64,42 @@ describe('dispatch tick runner', () => {
     await failing.run()
     expect(events).toHaveLength(3)
   })
+
+  it('runs a woken tick at once when nothing is in flight', async () => {
+    const tick = vi.fn(async () => empty)
+    const runner = createDispatchTickRunner({ tick, log: () => {} })
+    runner.wake()
+    expect(tick).toHaveBeenCalledTimes(1)
+  })
+
+  it('turns any number of wakes during one tick into exactly one follow-up', async () => {
+    const barrier = gate()
+    let calls = 0
+    const tick = vi.fn(async () => { calls++; if (calls === 1) await barrier.opened; return empty })
+    const runner = createDispatchTickRunner({ tick, log: () => {} })
+    const inFlight = runner.run()
+    expect(tick).toHaveBeenCalledTimes(1)
+    // A burst that arrives while the tick holds its transactions never becomes a second
+    // concurrent tick, and never becomes five sequential ones either.
+    for (let i = 0; i < 5; i++) runner.wake()
+    expect(tick).toHaveBeenCalledTimes(1)
+    barrier.open()
+    await inFlight
+    expect(tick).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not wake a stopped runner, before or after the tick in flight', async () => {
+    const barrier = gate()
+    const tick = vi.fn(async () => { await barrier.opened; return empty })
+    const runner = createDispatchTickRunner({ tick, log: () => {} })
+    const inFlight = runner.run()
+    runner.wake()
+    const drained = runner.stop()
+    barrier.open()
+    await Promise.all([inFlight, drained])
+    // The follow-up a wake asked for belongs to a running service, not to a shutting-down one.
+    expect(tick).toHaveBeenCalledTimes(1)
+    runner.wake()
+    expect(tick).toHaveBeenCalledTimes(1)
+  })
 })
