@@ -7,11 +7,17 @@ import {join} from 'node:path'
 import type {AttemptProof,DispatchResult} from '@shared/queue-dispatch.js'
 import type {DispatchActor} from './ports.js'
 import type {DispatchAuth} from './auth.js'
-import {lockArtifactAttempt,verifyArtifactProof,requestActor,artifactHash} from './artifacts.js'
+import {z} from 'zod'
+import {lockArtifactAttempt,verifyArtifactProof,requestActor,artifactHash,insertArtifact,PUBLICATION_RESOLUTION_KEY} from './artifacts.js'
+import {canonicalResult,lifecycleEvent} from './lifecycle.js'
 import {authenticateHistoricalSupervisor} from './stop-evidence.js'
 import {withDispatchRetryClientTransaction,type DispatchStore} from './db.js'
 import {isolatedGit,importBaseBundle,verifyCodeArtifact} from './workspace.js'
 import {DispatchError} from './errors.js'
+/** What an operator saw on the remote. It can only ever close an operation as failed: a remote that
+ * carries our head is a confirmation, and finding that is reconciliation's job, never an attestation's. */
+const resolutionSchema=z.object({version:z.literal(1),operationId:z.string().uuid(),observer:z.string().min(1).max(256),source:z.string().min(1).max(4000),statement:z.string().min(20).max(16000),observedAt:z.string().datetime(),remoteHead:z.string().regex(/^[a-f0-9]{40}$/).nullable(),pullRequest:z.enum(['not_applicable','none_found'])}).strict()
+export type PublicationResolution=z.infer<typeof resolutionSchema>
 export type PublicationReceipt={operationId:string;status:'confirmed'|'failed'|'unknown';branch:string;headSha:string;prUrl:string|null}
 export type PublicationIntent={operationId:string;requestId:string;attemptId:string;repoUrl:string;baseBranch:string;baseSha:string;headSha:string;branch:string;mode:'branch'|'pull_request';expectedRemoteHead:string|null;codeBytes:Uint8Array;baseBytes:Uint8Array;checks:DispatchResult['checks']}
 export interface GuardedPublicationPort{publish(input:PublicationIntent):Promise<PublicationReceipt>;reconcile(input:PublicationIntent):Promise<PublicationReceipt>}
@@ -134,6 +140,26 @@ export function createDispatchPublication(deps:{store:DispatchStore;auth:Dispatc
   try{result=await deps.port.publish(x)}catch{result=receipt(x,'unknown')}
   await storeReceipt(db,result);return result
  }
+ /** The reconciler may never send again, so a SENT operation whose push never happened stays UNKNOWN and holds
+  * its request's reservation forever. This is the audited way out; it sends nothing. */
+ async function resolveUnlocked(db:PoolClient,actor:DispatchActor,operationId:string,actionId:string,value:PublicationResolution):Promise<PublicationReceipt>{
+  if(!/^[A-Za-z0-9_-]{1,128}$/.test(actionId))throw new DispatchError('DISPATCH_INVALID_INPUT')
+  const attestation=resolutionSchema.parse(value),bytes=Buffer.from(canonicalResult(attestation)),sha256=artifactHash(bytes)
+  return withDispatchRetryClientTransaction(db,async db=>{
+   const hint=(await db.query('SELECT attempt_id FROM queue_dispatch_publications WHERE id=$1',[operationId])).rows[0];if(!hint)throw new DispatchError('DISPATCH_NOT_FOUND')
+   const x=await lockArtifactAttempt(db,hint.attempt_id);await deps.auth.authorizeDispatch(actor,x.r.input,'recover',db)
+   const p=(await db.query('SELECT *,created_at<=$2::timestamptz AND $2::timestamptz<=clock_timestamp() AS observed_in_window FROM queue_dispatch_publications WHERE id=$1 FOR UPDATE',[operationId,attestation.observedAt])).rows[0]
+   const key=`${actor.principalKey}:publication-resolution:${actionId}`,old=(await db.query("SELECT payload FROM queue_dispatch_events WHERE request_id=$1 AND type='publication_resolved' AND payload->>'key'=$2",[x.r.id,key])).rows[0]
+   if(old){if(old.payload.sha256!==sha256||old.payload.operation_id!==operationId)throw new DispatchError('DISPATCH_IDEMPOTENCY_CONFLICT');return p.remote_receipt}
+   if(p.state!=='UNKNOWN'||attestation.operationId!==p.id||attestation.remoteHead===p.head_sha||!p.observed_in_window
+    ||attestation.pullRequest!==(p.mode==='pull_request'?'none_found':'not_applicable'))throw new DispatchError('DISPATCH_STATE_CONFLICT')
+   const artifactId=await insertArtifact(db,{requestId:x.r.id,attemptId:x.a.id,key:PUBLICATION_RESOLUTION_KEY,bytes,sha256,actor:{source:'recovery_operator',user_id:actor.userId,principal_key:actor.principalKey}})
+   const result:PublicationReceipt={operationId:p.id,status:'failed',branch:p.branch,headSha:p.head_sha,prUrl:null}
+   await db.query("UPDATE queue_dispatch_publications SET state='FAILED',remote_receipt=$2,updated_at=now() WHERE id=$1",[p.id,result])
+   await lifecycleEvent(db,x.r.id,'publication_resolved',{key,operation_id:p.id,resolution:'failed',artifact_id:artifactId,sha256,observed_at:attestation.observedAt,remote_head:attestation.remoteHead},x.a.id,{service:'dispatch',authorized_by:actor.userId})
+   return result
+  })
+ }
  async function exclusive<T>(requestId:string,fn:(db:PoolClient)=>Promise<T>):Promise<T>{
   const db=await deps.store.connect()
   try{await db.query('SELECT pg_advisory_lock(hashtextextended($1,0))',[`dispatch-publisher:${requestId}`]);return await fn(db)}
@@ -141,5 +167,10 @@ export function createDispatchPublication(deps:{store:DispatchStore;auth:Dispatc
  }
  async function publishDispatchArtifact(actor:DispatchActor,proof:AttemptProof,artifactId:string){return exclusive(proof.request_id,db=>publishUnlocked(db,actor,{proof},artifactId))}
  async function reconcilePublication(operationId:string){const p=(await deps.store.query('SELECT request_id FROM queue_dispatch_publications WHERE id=$1',[operationId])).rows[0];if(!p)throw new DispatchError('DISPATCH_NOT_FOUND');return exclusive(p.request_id,db=>reconcileUnlocked(db,operationId))}
- return {publishDispatchArtifact,publishHistoricalArtifact:(actor:DispatchActor,binding:DispatchStartBinding,artifactId:string)=>exclusive(binding.requestId,db=>publishUnlocked(db,actor,{binding},artifactId)),reconcilePublication,reconcileIncompletePublications}
+ async function resolveUnknownPublication(actor:DispatchActor,operationId:string,actionId:string,value:PublicationResolution){
+  const p=(await deps.store.query('SELECT request_id FROM queue_dispatch_publications WHERE id=$1',[operationId])).rows[0];if(!p)throw new DispatchError('DISPATCH_NOT_FOUND')
+  // Same advisory lock as publish and reconcile, so a resolution can never interleave with a send.
+  return exclusive(p.request_id,db=>resolveUnlocked(db,actor,operationId,actionId,value))
+ }
+ return {resolveUnknownPublication,publishDispatchArtifact,publishHistoricalArtifact:(actor:DispatchActor,binding:DispatchStartBinding,artifactId:string)=>exclusive(binding.requestId,db=>publishUnlocked(db,actor,{binding},artifactId)),reconcilePublication,reconcileIncompletePublications}
 }

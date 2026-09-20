@@ -59,6 +59,7 @@ export function verifyArtifactProof(actor:DispatchActor,proof:AttemptProof,x:Art
  if(proof.request_id!==x.r.id||proof.candidate_id!==x.c.id||proof.generation!==x.c.generation||proof.attempt_id!==x.a.id||proof.incarnation_id!==x.i.id
   ||actor.source!=='bearer'||actor.userId!==x.s.owner_user_id||actor.tokenId!==x.scope.supervisor_token_id||actor.tokenId!==x.s.token_id||!credentialMatches(proof.credential,x.a.credential_hash))return denied()
 }
+export const PUBLICATION_RESOLUTION_KEY='__publication_resolution'
 /** Caller owns request/attempt lock. Immutable bytes and provenance commit together. */
 export async function insertArtifact(db:PoolClient,input:{requestId:string;attemptId:string|null;key:string;bytes:Uint8Array;sha256:string;actor:Record<string,unknown>;binding?:unknown}):Promise<string>{
  const {requestId,attemptId,key,bytes,sha256}=input
@@ -70,7 +71,7 @@ export async function insertArtifact(db:PoolClient,input:{requestId:string;attem
  if(Number(total)+bytes.byteLength>ATTEMPT_MAX_BYTES)throw new DispatchError('DISPATCH_TOO_LARGE')
  if(attemptId!==null){
   // One shared control reserve, never an additional allowance per evidence kind.
-  const controlKeys=[SUPERVISOR_STOP_KEY,'__operator_recovery']
+  const controlKeys=[SUPERVISOR_STOP_KEY,'__operator_recovery',PUBLICATION_RESOLUTION_KEY]
   const control=controlKeys.includes(key)
   const used=(await db.query<{n:string}>('SELECT COALESCE(sum(byte_size),0)::text n FROM queue_dispatch_artifacts WHERE attempt_id=$1 AND (key=ANY($2::text[]))=$3',[attemptId,controlKeys,control])).rows[0].n
   if(Number(used)+bytes.byteLength>(control?STOP_EVIDENCE_MAX_BYTES:ATTEMPT_OUTPUT_MAX_BYTES))throw new DispatchError('DISPATCH_TOO_LARGE')

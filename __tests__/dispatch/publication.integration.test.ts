@@ -82,3 +82,38 @@ it('one publication that cannot be reconciled does not stop the reconciler from 
   expect((await h.dispatch.query('SELECT state FROM queue_dispatch_publications WHERE request_id=$1',[x.proof.request_id])).rows[0].state).toBe('CONFIRMED')
  }finally{await h.close();await rm(root,{recursive:true,force:true})}
 })
+it('an authorized operator settles a publication that reconciliation can never decide, and nothing is sent again',async()=>{
+ const h=await makeDispatchHarness(),root=await mkdtemp(join(tmpdir(),'ip09-resolve-'))
+ try{
+  const x=await codeAttempt(h,root,{free:true,change:true});let sent=0
+  const unknown=(i:PublicationIntent):PublicationReceipt=>({operationId:i.operationId,status:'unknown',branch:i.branch,headSha:i.headSha,prUrl:null})
+  const port={publish:async(i:PublicationIntent)=>{sent++;return unknown(i)},reconcile:async(i:PublicationIntent)=>unknown(i)}
+  const publisher=createDispatchPublication({...x.opts,port,loadBaseBranch:async()=> 'main'}),completion=createDispatchCompletion({...x.opts,publisher})
+  await x.completion.verifyStopEvidence(x.f.actor,x.proof,x.stop)
+  expect(await completion.acceptDispatchResult(x.f.actor,x.proof,x.result)).toMatchObject({accepted:false,reason:'publication_unknown'})
+  await publisher.reconcileIncompletePublications()
+  expect(await completion.acceptDispatchResult(x.f.actor,x.proof,x.result)).toMatchObject({accepted:false,reason:'publication_unknown'})
+  const p=(await h.dispatch.query('SELECT id,head_sha,state FROM queue_dispatch_publications WHERE request_id=$1',[x.proof.request_id])).rows[0];expect(p.state).toBe('UNKNOWN')
+  const attest=(over:Record<string,unknown>={})=>({version:1 as const,operationId:p.id,observer:'Repository operator',source:'git ls-remote output captured from the registered remote',statement:'The request branch does not exist on the remote and no publisher process is running.',observedAt:new Date().toISOString(),remoteHead:null,pullRequest:'not_applicable' as const,...over})
+  // A remote that already carries our head is a confirmation for reconciliation to find, never a failure to attest.
+  await expect(publisher.resolveUnknownPublication(x.f.actor,p.id,randomUUID(),attest({remoteHead:p.head_sha}))).rejects.toThrow('DISPATCH_STATE_CONFLICT')
+  await expect(publisher.resolveUnknownPublication(x.f.actor,p.id,randomUUID(),attest({operationId:randomUUID()}))).rejects.toThrow('DISPATCH_STATE_CONFLICT')
+  await expect(publisher.resolveUnknownPublication(x.f.actor,p.id,randomUUID(),attest({observedAt:new Date(Date.now()+60_000).toISOString()}))).rejects.toThrow('DISPATCH_STATE_CONFLICT')
+  const token=randomUUID();h.trackToken(token);await h.admin.query("INSERT INTO api_tokens(id,user_id,token_hash,kind,scoped_products) VALUES($1,$2,$3,'IMPLEMENTATION',$4)",[token,x.f.otherUser,randomUUID(),[x.f.input.product_id]])
+  await h.admin.query("INSERT INTO product_members(id,product_id,user_id,role,access) VALUES($1,$2,$3,'DEVELOPER','READ_WRITE')",[randomUUID(),x.f.input.product_id,x.f.otherUser])
+  await expect(publisher.resolveUnknownPublication({...x.f.actor,userId:x.f.otherUser,tokenId:token,principalKey:`bearer:${x.f.otherUser}:${token}`},p.id,randomUUID(),attest())).rejects.toThrow('DISPATCH_FORBIDDEN')
+  expect((await h.dispatch.query('SELECT state FROM queue_dispatch_publications WHERE id=$1',[p.id])).rows[0].state).toBe('UNKNOWN')
+  const action=randomUUID(),evidence=attest(),receipt=await publisher.resolveUnknownPublication(x.f.actor,p.id,action,evidence)
+  expect(receipt).toMatchObject({operationId:p.id,status:'failed'})
+  expect(await publisher.resolveUnknownPublication(x.f.actor,p.id,action,evidence)).toEqual(receipt)
+  await expect(publisher.resolveUnknownPublication(x.f.actor,p.id,action,attest({statement:'A different statement under the same action identifier.'}))).rejects.toThrow('DISPATCH_IDEMPOTENCY_CONFLICT')
+  await expect(publisher.resolveUnknownPublication(x.f.actor,p.id,randomUUID(),evidence)).rejects.toThrow('DISPATCH_STATE_CONFLICT')
+  const event=(await h.dispatch.query("SELECT actor,payload FROM queue_dispatch_events WHERE request_id=$1 AND type='publication_resolved'",[x.proof.request_id])).rows
+  expect(event).toHaveLength(1);expect(event[0].payload).toMatchObject({operation_id:p.id,resolution:'failed'});expect(event[0].actor).toMatchObject({authorized_by:x.f.actor.userId})
+  // The request is no longer wedged: the result is accepted as failed and capacity is released.
+  const final=await completion.acceptDispatchResult(x.f.actor,x.proof,x.result);expect(final.accepted).toBe(true)
+  expect((await h.dispatch.query('SELECT state FROM queue_dispatch_requests WHERE id=$1',[x.proof.request_id])).rows[0].state).toBe('FAILED')
+  expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations WHERE candidate_id=$1',[x.proof.candidate_id])).rows[0].released_at).not.toBeNull()
+  expect(sent).toBe(1)
+ }finally{await h.close();await rm(root,{recursive:true,force:true})}
+})
