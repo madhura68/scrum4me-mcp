@@ -19,7 +19,10 @@ export function verifyManagedTask(input:{diff:string;planSnapshot:string;verifyO
  const classification=classifyDiffAgainstPlan({diff:input.diff,plan:input.planSnapshot})
  return {classification,gate:checkVerifyGate(classification.result,input.verifyOnly,input.verifyRequired,input.summary)}
 }
-export type ResultReceipt={accepted:boolean;resultId:string|null;reason:string}
+/** `result` is the canonical result the service actually holds for this request, which is not
+ * always the submitted one: the domain may rewrite the outcome. It is absent only where there
+ * is no canonical result yet, as on an unresolved publication. */
+export type ResultReceipt={accepted:boolean;resultId:string|null;reason:string;result?:DispatchResult}
 export type CompletionDeps={store:DispatchStore;auth:DispatchAuth;publisher?:{publishDispatchArtifact(actor:DispatchActor,proof:AttemptProof,id:string):Promise<{status:'confirmed'|'failed'|'unknown'}>;publishHistoricalArtifact?(actor:DispatchActor,binding:DispatchStartBinding,id:string):Promise<{status:'confirmed'|'failed'|'unknown'}>}}
 export {finishResult} from './lifecycle.js'
 export function createDispatchCompletion(deps:CompletionDeps){
@@ -31,8 +34,8 @@ export function createDispatchCompletion(deps:CompletionDeps){
   const prepared=await withDispatchRetryTransaction(deps.store,async db=>{
    const x=await lockArtifactAttempt(db,attemptId);await verify(db,x);await authenticateHistoricalSupervisor(db,deps.auth,actor,x)
    const old=(await db.query('SELECT * FROM queue_dispatch_results WHERE request_id=$1',[x.r.id])).rows[0]
-   if(old){const event=(await db.query("SELECT payload FROM queue_dispatch_events WHERE request_id=$1 AND attempt_id=$2 AND type='result_accepted'",[x.r.id,x.a.id])).rows[0];if(event?.payload.submitted_hash===submittedHash)return {receipt:{accepted:true,resultId:old.id,reason:'replayed'}}
-    await lifecycleEvent(db,x.r.id,'late_result',{submitted_hash:submittedHash,result:original},x.a.id);return {receipt:{accepted:false,resultId:old.id,reason:'terminal_result'}}}
+   if(old){const event=(await db.query("SELECT payload FROM queue_dispatch_events WHERE request_id=$1 AND attempt_id=$2 AND type='result_accepted'",[x.r.id,x.a.id])).rows[0];if(event?.payload.submitted_hash===submittedHash)return {receipt:{accepted:true,resultId:old.id,reason:'replayed',result:old.payload as DispatchResult}}
+    await lifecycleEvent(db,x.r.id,'late_result',{submitted_hash:submittedHash,result:original},x.a.id);return {receipt:{accepted:false,resultId:old.id,reason:'terminal_result',result:old.payload as DispatchResult}}}
    if(x.c.generation!==x.r.generation||!x.a.stopped_at)throw new DispatchError('DISPATCH_STATE_CONFLICT')
    if(!(await db.query("SELECT 1 FROM queue_dispatch_events WHERE request_id=$1 AND attempt_id=$2 AND type='stop_accepted'",[x.r.id,x.a.id])).rowCount)throw new DispatchError('DISPATCH_STATE_CONFLICT')
    if(artifactHash(canonicalDispatchInput(x.r.input))!==x.r.input_hash)throw new DispatchError('DISPATCH_STATE_CONFLICT')
@@ -89,8 +92,8 @@ export function createDispatchCompletion(deps:CompletionDeps){
   }
   return withDispatchRetryTransaction(deps.store,async db=>{
    const x=await lockArtifactAttempt(db,attemptId);await verify(db,x);await authenticateHistoricalSupervisor(db,deps.auth,actor,x)
-   const old=(await db.query('SELECT id FROM queue_dispatch_results WHERE request_id=$1',[x.r.id])).rows[0]
-   if(old){const event=(await db.query("SELECT payload FROM queue_dispatch_events WHERE request_id=$1 AND attempt_id=$2 AND type='result_accepted'",[x.r.id,x.a.id])).rows[0];if(event?.payload.submitted_hash===submittedHash)return {accepted:true,resultId:old.id,reason:'replayed'};await lifecycleEvent(db,x.r.id,'late_result',{submitted_hash:submittedHash,result:original},x.a.id);return {accepted:false,resultId:old.id,reason:'terminal_result'}}
+   const old=(await db.query('SELECT id,payload FROM queue_dispatch_results WHERE request_id=$1',[x.r.id])).rows[0]
+   if(old){const event=(await db.query("SELECT payload FROM queue_dispatch_events WHERE request_id=$1 AND attempt_id=$2 AND type='result_accepted'",[x.r.id,x.a.id])).rows[0];if(event?.payload.submitted_hash===submittedHash)return {accepted:true,resultId:old.id,reason:'replayed',result:old.payload as DispatchResult};await lifecycleEvent(db,x.r.id,'late_result',{submitted_hash:submittedHash,result:original},x.a.id);return {accepted:false,resultId:old.id,reason:'terminal_result',result:old.payload as DispatchResult}}
    if(x.r.generation!==x.c.generation||await unresolvedPublication(db,x.r.id))throw new DispatchError('DISPATCH_STATE_CONFLICT')
    if(x.r.state==='CANCEL_REQUESTED'){await lifecycleEvent(db,x.r.id,'late_result',{submitted_hash:submittedHash,result:original},x.a.id);result={...result,outcome:'cancelled'}}
    else if(!['CLAIMED','RUNNING'].includes(x.r.state))throw new DispatchError('DISPATCH_STATE_CONFLICT')

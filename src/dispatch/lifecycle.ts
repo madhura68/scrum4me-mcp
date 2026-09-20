@@ -36,7 +36,9 @@ export async function lifecycleView(db:PoolClient,id:string):Promise<DispatchVie
  const r=(await db.query('SELECT r.*,c.route,c.profile_revision_id,c.job_id FROM queue_dispatch_requests r LEFT JOIN queue_dispatch_candidates c ON c.request_id=r.id AND c.generation=r.generation WHERE r.id=$1',[id])).rows[0]
  return {id:r.id,version:String(r.version),state:r.state,action:r.input.action,reason:r.state.toLowerCase(),route:r.route??null,profile_revision_id:r.profile_revision_id??null,job_id:r.job_id??null,executor_label:null,result_id:r.result_id,delivery:'pending',created_at:r.created_at.toISOString()}
 }
-export async function finishResult(db:PoolClient,x:ArtifactAttempt,result:DispatchResult,submittedHash:string):Promise<{accepted:boolean;resultId:string|null;reason:string}>{
+/** The canonical result travels back with the receipt: the domain may rewrite the submitted
+ * outcome, so a supervisor that only learned an id could not know what was actually accepted. */
+export async function finishResult(db:PoolClient,x:ArtifactAttempt,result:DispatchResult,submittedHash:string):Promise<{accepted:boolean;resultId:string|null;reason:string;result:DispatchResult}>{
  const id=await insertResult(db,x.r.id,x.a.id,result,x.r.input.review_documents),outcome=result.outcome.toUpperCase() as 'SUCCEEDED'|'FAILED'|'CANCELLED'
  await transition(db,x.r.id,outcome,id)
  await terminalizeAttempt(db,x,outcome)
@@ -45,7 +47,7 @@ export async function finishResult(db:PoolClient,x:ArtifactAttempt,result:Dispat
   await db.query('UPDATE tasks SET dispatch_request_id=NULL WHERE id=$1 AND dispatch_request_id=$2',[x.r.input.task_id,x.r.id])
  }
  await lifecycleEvent(db,x.r.id,'result_accepted',{result_id:id,submitted_hash:submittedHash},x.a.id)
- return {accepted:true,resultId:id,reason:outcome.toLowerCase()}
+ return {accepted:true,resultId:id,reason:outcome.toLowerCase(),result}
 }
 
 /** An authenticated stop can finish ordinary cancellation without inventing a model report. */
