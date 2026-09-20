@@ -30,8 +30,12 @@ export function createDispatchRecovery(deps:CompletionDeps){
   const a=(await db.query('SELECT * FROM queue_dispatch_artifacts WHERE id=$1 AND request_id=$2 AND attempt_id=$3 AND key=$4',[e.artifact_id,x.r.id,x.a.id,'__operator_recovery'])).rows[0]
   if(!a||artifactHash(a.bytes)!==e.sha256||a.sha256!==e.sha256)return conflict()
   const body=attestationSchema.parse(JSON.parse(Buffer.from(a.bytes).toString('utf8')));await validateHistoricalBinding(db,x,body.binding)
-  if(body.kind!==e.kind||body.observedAt!==e.observed_at||e.attempt_id!==x.a.id||e.incarnation_id!==x.i.id||e.scope_id!==x.a.scope_id||e.profile_sha256!==x.scope.profile_sha256||!x.a.started_at||Date.parse(body.observedAt)<new Date(x.a.started_at).getTime()||Date.parse(body.observedAt)>Date.now())return conflict()
-  if(body.kind==='runtime_rebooted'&&(!body.rebootedAt||body.runtimeBootBefore===body.runtimeBootAfter||Date.parse(body.rebootedAt)<=new Date(x.a.started_at).getTime()||Date.parse(body.rebootedAt)>Date.parse(body.observedAt)))return conflict()
+  // A claimed attempt whose supervisor died before start has no registered scope and no start time.
+  // No start permit was ever issued for it, so its claim bounds the observation instead; validateHistoricalBinding
+  // above already refuses a null scope that carries any start history.
+  const unstarted=x.a.scope_id===null,since=unstarted?x.c.first_claimed_at:x.a.started_at
+  if(body.kind!==e.kind||body.observedAt!==e.observed_at||e.attempt_id!==x.a.id||e.incarnation_id!==x.i.id||e.scope_id!==(unstarted?body.binding.scope.scopeId:x.a.scope_id)||e.profile_sha256!==x.scope.profile_sha256||!since||Date.parse(body.observedAt)<new Date(since).getTime()||Date.parse(body.observedAt)>Date.now())return conflict()
+  if(body.kind==='runtime_rebooted'&&(!body.rebootedAt||body.runtimeBootBefore===body.runtimeBootAfter||Date.parse(body.rebootedAt)<=new Date(since).getTime()||Date.parse(body.rebootedAt)>Date.parse(body.observedAt)))return conflict()
   const staged=(await db.query("SELECT * FROM queue_dispatch_events WHERE request_id=$1 AND attempt_id=$2 AND type='artifact_staged' AND payload->>'artifact_id'=$3 AND actor->>'source'='recovery_operator'",[x.r.id,x.a.id,a.id])).rows
   if(staged.length!==1||staged[0].payload.sha256!==e.sha256||canonicalResult(staged[0].payload.binding)!==canonicalResult(body.binding))return conflict()
   const old=(await db.query("SELECT * FROM queue_dispatch_events WHERE request_id=$1 AND attempt_id=$2 AND type='stop_accepted'",[x.r.id,x.a.id])).rows

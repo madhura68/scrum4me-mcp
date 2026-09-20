@@ -111,3 +111,23 @@ it('enforces one combined control reserve and does not count identical control r
  expect(await x.artifacts.stageSupervisorStop(x.f.actor,{...x.body,sha256:artifactHash(canonicalRuntimeStopObservation(x.body))})).toEqual(x.stop)
  expect((await h.dispatch.query("SELECT count(*)::int n FROM queue_dispatch_artifacts WHERE attempt_id=$1 AND key LIKE '__%'",[x.proof.attempt_id])).rows[0].n).toBe(1)
 })
+async function unstartedUncertain(){
+ const x=await running(h,{prepared:true})
+ await h.dispatch.query("UPDATE queue_dispatch_attempts SET heartbeat_at=now()-interval '121 seconds' WHERE id=$1",[x.proof.attempt_id]);await x.attempts.markExpiredAttempts()
+ expect((await h.dispatch.query('SELECT state,scope_id,started_at FROM queue_dispatch_attempts WHERE id=$1',[x.proof.attempt_id])).rows[0]).toEqual({state:'UNCERTAIN',scope_id:null,started_at:null})
+ const attest=(kind:'operator_attested'|'runtime_rebooted',at:string)=>({version:1 as const,binding:x.body.binding,kind,observer:'Authorized runtime operator',source:'Immutable host inspection log: the supervisor host is gone',statement:'The prepared runtime scope never launched and no execution processes exist.',processesTerminated:true as const,runtimeBootBefore:'vm-before',runtimeBootAfter:kind==='runtime_rebooted'?'vm-after':'vm-before',observedAt:at,...(kind==='runtime_rebooted'?{rebootedAt:at}:{})})
+ return {x,recovery:createDispatchRecovery(x.opts),attest}
+}
+it.each(['operator_attested','runtime_rebooted'] as const)('closes a claimed attempt that never started through %s once its supervisor is gone',async kind=>{
+ const {x,recovery,attest}=await unstartedUncertain()
+ const evidence=await recovery.stageRecoveryEvidence(x.f.actor,attest(kind,new Date().toISOString())),v=await x.requests.getDispatch(x.f.actor,x.proof.request_id)
+ expect((await recovery.recoverDispatch(x.f.actor,v.id,randomUUID(),v.version,evidence,'close_failed')).state).toBe('FAILED')
+ expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations WHERE candidate_id=$1',[x.proof.candidate_id])).rows[0].released_at).not.toBeNull()
+ expect((await h.dispatch.query('SELECT state,stopped_at IS NOT NULL stopped,revoked_at IS NOT NULL revoked FROM queue_dispatch_attempts WHERE id=$1',[x.proof.attempt_id])).rows[0]).toEqual({state:'FAILED',stopped:true,revoked:true})
+})
+it('refuses an attestation that predates the claim of a never-started attempt and retains occupancy',async()=>{
+ const {x,recovery,attest}=await unstartedUncertain()
+ const evidence=await recovery.stageRecoveryEvidence(x.f.actor,attest('operator_attested',new Date(Date.now()-3600_000).toISOString())),v=await x.requests.getDispatch(x.f.actor,x.proof.request_id)
+ await expect(recovery.recoverDispatch(x.f.actor,v.id,randomUUID(),v.version,evidence,'close_failed')).rejects.toThrow('DISPATCH_STATE_CONFLICT')
+ expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations WHERE candidate_id=$1',[x.proof.candidate_id])).rows[0].released_at).toBeNull()
+})
