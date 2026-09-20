@@ -1,3 +1,5 @@
+import {readFileSync} from 'node:fs'
+import {createHash} from 'node:crypto'
 import {afterEach,beforeEach,describe,it,expect,vi} from 'vitest'
 vi.mock('../../src/prisma.js',()=>({prisma:{}}))
 import {requestContext} from '../../src/request-context.js'
@@ -68,6 +70,23 @@ describe('dispatch MCP tools',()=>{
   expect(denied.isError).toBe(true);expect(calls).toHaveLength(1);expect(header('Authorization')).toBe('Bearer user-token')
   vi.stubEnv('S4M_DISPATCH_URL','');calls=[]
   const unconfigured=await asUser(()=>handlers.get_dispatch({request_id:id}));expect(unconfigured.isError).toBe(true);expect(unconfigured.content[0].text).toContain('DISPATCH_NOT_CONFIGURED');expect(calls).toHaveLength(0)
+ })
+})
+
+// The same fixture file, byte-identical, lives in s4m-queue as
+// test/fixtures/dispatch-parity.json. Both sides assert its sha256, so the two
+// repos cannot drift into asserting parity against different bytes.
+describe('MCP/CLI request parity',()=>{
+ it('puts exactly the bytes on the wire that the CLI does for the same request',async()=>{
+  const parity=JSON.parse(readFileSync(new URL('./dispatch-parity.json',import.meta.url),'utf8')) as {mcp_tool_input:Record<string,unknown>;wire_path:string;wire_body:string;idempotency_key:string}
+  await asUser(()=>handlers.dispatch_task(parity.mcp_tool_input))
+  expect(calls[0].url).toBe(`https://dispatch.example.test${parity.wire_path}`)
+  expect(String(calls[0].init.body)).toBe(parity.wire_body)
+  expect(header('Idempotency-Key')).toBe(parity.idempotency_key)
+ })
+ it('holds the same fixture bytes as the s4m-queue repo',()=>{
+  const bytes=readFileSync(new URL('./dispatch-parity.json',import.meta.url))
+  expect(createHash('sha256').update(bytes).digest('hex')).toBe('260bef36caa5bcb90dfe996e4269517acad59ff8caf2844f8ce0df7090f812a0')
  })
 })
 

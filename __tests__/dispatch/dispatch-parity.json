@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "note": "Committed byte-identically in scrum4me-mcp (__tests__/dispatch/) and s4m-queue (test/fixtures/). One logical request, expressed the way each producer takes it, plus the exact bytes both must put on the wire.",
+  "mcp_tool": "dispatch_task",
+  "mcp_tool_input": {
+    "product_id": "cmohrysyj0000rd17clnjy4tc",
+    "objective": "Investigate the failing delivery path",
+    "verification": "Point at the exact log line",
+    "response_format": "Markdown",
+    "reply_to": "mac:jp",
+    "runtime": "CODEX",
+    "access": "read",
+    "environment_keys": ["logs.max2", "logs.mac"],
+    "work_item": { "task_id": "task-1", "story_id": "story-1" },
+    "idempotency_key": "55555555-5555-4555-8555-555555555555"
+  },
+  "cli_request_file": {
+    "reply_to": "mac:jp",
+    "work_item": { "story_id": "story-1", "task_id": "task-1" },
+    "publish": "artifact",
+    "requirements": { "environment_keys": ["logs.max2", "logs.mac"], "access": "read", "runtime": "CODEX" },
+    "response_format": "Markdown",
+    "verification": "Point at the exact log line",
+    "objective": "Investigate the failing delivery path",
+    "action": "free_task",
+    "product_id": "cmohrysyj0000rd17clnjy4tc",
+    "version": 1
+  },
+  "idempotency_key": "55555555-5555-4555-8555-555555555555",
+  "wire_path": "/dispatch/v1/requests",
+  "wire_body": "{\"version\":1,\"product_id\":\"cmohrysyj0000rd17clnjy4tc\",\"action\":\"free_task\",\"objective\":\"Investigate the failing delivery path\",\"verification\":\"Point at the exact log line\",\"response_format\":\"Markdown\",\"requirements\":{\"runtime\":\"CODEX\",\"access\":\"read\",\"environment_keys\":[\"logs.max2\",\"logs.mac\"]},\"publish\":\"artifact\",\"work_item\":{\"task_id\":\"task-1\",\"story_id\":\"story-1\"},\"reply_to\":\"mac:jp\"}"
+}
