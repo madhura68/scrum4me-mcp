@@ -1,6 +1,7 @@
+import {cleanupDispatchDirectory} from './cleanup.js'
 import {execFile} from 'node:child_process'
 import {promisify} from 'node:util'
-import {mkdir,mkdtemp,readFile,writeFile,rm,realpath,lstat,readdir} from 'node:fs/promises'
+import {mkdir,mkdtemp,readFile,writeFile,realpath,lstat,readdir} from 'node:fs/promises'
 import {join,resolve} from 'node:path'
 import {tmpdir} from 'node:os'
 import {randomUUID} from 'node:crypto'
@@ -12,9 +13,10 @@ import {DispatchSourceError} from './sources.js'
 const run=promisify(execFile),oid=/^[a-f0-9]{40}$/,uuid=/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/
 const invalid=():never=>{throw new DispatchError('DISPATCH_INVALID_INPUT')}
 /** Explicit minimal environment drops global/system Git config, SSH, askpass,
- * credentials, alternates and process Git variables. Only preparation may fetch. */
+ * credentials, alternates and process Git variables. Only preparation may fetch.
+ * Temporary repositories must not outlive an awaited command via auto-maintenance. */
 export async function isolatedGitRaw(cwd:string,args:string[],protocols='',httpAuth?:{repoUrl:string;header:string}):Promise<Buffer>{
- try{const {stdout}=await run('git',['-c','core.hooksPath=/dev/null','-c','credential.helper=','-c','protocol.allow=never','-c','core.fsmonitor=false','-c','http.followRedirects=false',...args],{cwd,encoding:'buffer',maxBuffer:ARTIFACT_MAX_BYTES,timeout:60000,env:{PATH:process.env.PATH,HOME:cwd,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_ALLOW_PROTOCOL:protocols,...(httpAuth?{GIT_CONFIG_COUNT:'1',GIT_CONFIG_KEY_0:`http.${httpAuth.repoUrl}.extraHeader`,GIT_CONFIG_VALUE_0:httpAuth.header}:{})}});return stdout}
+ try{const {stdout}=await run('git',['-c','core.hooksPath=/dev/null','-c','credential.helper=','-c','protocol.allow=never','-c','core.fsmonitor=false','-c','maintenance.auto=false','-c','gc.auto=0','-c','gc.autoDetach=false','-c','http.followRedirects=false',...args],{cwd,encoding:'buffer',maxBuffer:ARTIFACT_MAX_BYTES,timeout:60000,env:{PATH:process.env.PATH,HOME:cwd,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0',GIT_ALLOW_PROTOCOL:protocols,...(httpAuth?{GIT_CONFIG_COUNT:'1',GIT_CONFIG_KEY_0:`http.${httpAuth.repoUrl}.extraHeader`,GIT_CONFIG_VALUE_0:httpAuth.header}:{})}});return stdout}
  catch(error){
   const detail=String((error as {stderr?:string}).stderr??'')
   if(/not our ref|couldn't find remote ref|unadvertised object|reference is not a tree/i.test(detail))throw new DispatchSourceError('missing')
@@ -145,5 +147,5 @@ export async function verifyCodeArtifact(bytes:Uint8Array,baseBundle:Uint8Array,
   const actual=await verifyHead(path,expected)
   if(JSON.stringify(actual.files)!==JSON.stringify(data.files)||actual.diff!==data.diff)return invalid()
   return {files:actual.files}
- }finally{await rm(root,{recursive:true,force:true})}
+ }finally{await cleanupDispatchDirectory(root,'verification')}
 }

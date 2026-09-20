@@ -1,8 +1,9 @@
+import {cleanupDispatchDirectory} from './cleanup.js'
 import type {PoolClient} from 'pg'
 import {validateHistoricalBinding} from './historical-binding.js'
 import type {DispatchStartBinding} from '@shared/queue-dispatch-start-permit.js'
 import {randomUUID} from 'node:crypto'
-import {mkdir,mkdtemp,writeFile,rm} from 'node:fs/promises'
+import {mkdir,mkdtemp,writeFile} from 'node:fs/promises'
 import {join} from 'node:path'
 import type {AttemptProof,DispatchResult} from '@shared/queue-dispatch.js'
 import type {DispatchActor} from './ports.js'
@@ -70,7 +71,7 @@ export function createGitPublicationPort(config:{root:string;allowedProtocols:re
    const pr=await created.json() as {html_url?:string;head?:{sha:string}}
    return pr.html_url&&pr.head?.sha===x.headSha?receipt(x,'confirmed',pr.html_url):receipt(x,'unknown')
   }catch{return receipt(x,sent?'unknown':send?'failed':'unknown')}
-  finally{await rm(root,{recursive:true,force:true})}
+  finally{await cleanupDispatchDirectory(root,'publication')}
  }
  return {publish:x=>run(x,true),reconcile:x=>run(x,false)}
 }
