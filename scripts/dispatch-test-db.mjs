@@ -85,7 +85,7 @@ export async function checkDispatchTestTarget(env = process.env) {
 }
 
 /** @param {string} filename */
-function readGeneratedRuntimeEnv(filename) {
+export function readGeneratedRuntimeEnv(filename) {
   /** @type {NodeJS.ProcessEnv} */
   const generated = {}
   for (const line of readFileSync(filename, 'utf8').split('\n')) {
