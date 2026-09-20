@@ -37,6 +37,10 @@ const KIND_TO_PROMPT_PATH: Partial<Record<ClaudeJobKind, string>> = {
   TASK_REVIEW: 'task/review.md',
   DEPLOY: 'deploy/run.md',
   DOCS_AUDIT: 'docs-audit/audit.md',
+  // IDEA-213 managed dispatch. These two run in a sealed container without any
+  // MCP tool, so the prompt — not a completion tool — is the whole contract.
+  QUEUE_TASK: 'queue/task.md',
+  QUEUE_REVIEW: 'queue/review.md',
 }
 
 // Runtime-specifieke overrides. Ontbreekt een (runtime, kind)-override, dan valt de
@@ -47,6 +51,8 @@ const RUNTIME_PROMPT_OVERRIDES: Partial<Record<WorkerRuntime, Partial<Record<Cla
     PR_REVIEW: 'pr/review.codex.md',
     SPEC_REVIEW: 'spec/review.codex.md',
     TASK_REVIEW: 'task/review.codex.md',
+    QUEUE_TASK: 'queue/task.codex.md',
+    QUEUE_REVIEW: 'queue/review.codex.md',
   },
 }
 

@@ -1,4 +1,5 @@
 import { assertUnmanagedJob, managedTaskExecutionsSelect } from '../dispatch/managed-job.js'
+import { buildManagedJobContext, readManagedJobBinding } from '../dispatch/job-context.js'
 // wait_for_job — blokkeert tot een QUEUED ClaudeJob beschikbaar is, claimt 'm
 // atomisch via FOR UPDATE SKIP LOCKED, en retourneert de volledige task-context.
 
@@ -909,7 +910,21 @@ export async function getFullJobContext(
   jobId: string,
   runtime?: WorkerRuntime,
   ownerCtx?: CloneOwnerCtx | null,
+  options?: { managed?: boolean },
 ) {
+  // IDEA-213: the managed branch comes before everything else, so a managed job
+  // is built from the pinned request it was authorized against and never from
+  // the latest Task/Idea/doc graph below.
+  //
+  // It is opt-in because the caller decides which database role is in play. The
+  // managed supervisor has one that may read the dispatch tables; an ordinary
+  // worker does not, and must keep falling through to assertUnmanagedJob, which
+  // refuses the row without ever touching dispatch data.
+  if (options?.managed) {
+    const managedJob = await readManagedJobBinding(jobId)
+    if (managedJob) return buildManagedJobContext(managedJob, runtime)
+  }
+
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     include: {
