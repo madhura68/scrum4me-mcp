@@ -69,6 +69,6 @@ it('tick touches at most 25 request ids and never wires timers on import', async
   const reserve = vi.fn(async () => null), retire = vi.fn(async () => true), waiting = vi.fn(async (limit: number) => Array.from({ length: limit }, (_, i) => String(i)))
   const store = { query: vi.fn(async () => ({ rows: Array.from({ length: 10 }, (_, i) => ({ request_id: String(i) })) })) }
   const tick = createDispatchTick({ store: store as never, selection: { reserveRequest: reserve, retireExpiredCandidate: retire, waitingRequestIds: waiting } as never })
-  expect(await tick()).toEqual({ reserved: 0, retired: 10, uncertain: 0 })
+  expect(await tick()).toEqual({ reserved: 0, retired: 10, uncertain: 0, delivered: 0, deliveryFailed: 0 })
   expect(waiting).toHaveBeenCalledWith(15); expect(reserve).toHaveBeenCalledTimes(15); expect(retire).toHaveBeenCalledTimes(10)
 })
