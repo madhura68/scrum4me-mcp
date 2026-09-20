@@ -1,4 +1,5 @@
 import {projectManagedTaskStatus} from './task-status.js'
+import {writeDispatchOutbox} from './outbox.js'
 import {randomUUID} from 'node:crypto'
 import type {PoolClient} from 'pg'
 import type {DispatchResult,DispatchView} from '@shared/queue-dispatch.js'
@@ -15,7 +16,8 @@ export async function lifecycleEvent(db:PoolClient,requestId:string,type:string,
 }
 export async function transition(db:PoolClient,id:string,state:string,resultId?:string){
  const r=(await db.query('UPDATE queue_dispatch_requests SET state=$2,result_id=COALESCE($3::uuid,result_id),version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[id,state,resultId??null])).rows[0]
- await db.query('INSERT INTO queue_dispatch_outbox(id,request_id,version,payload) VALUES($1,$2,$3,$4)',[randomUUID(),id,r.version,{version:String(r.version),request_id:id,root_message_id:r.root_message_id,reply_message_id:r.reply_message_id,state,result_id:r.result_id}])
+ if(!r)throw new DispatchError('DISPATCH_NOT_FOUND')
+ await writeDispatchOutbox(db,id)
 }
 export async function unresolvedPublication(db:PoolClient,id:string){return !!(await db.query("SELECT 1 FROM queue_dispatch_publications WHERE request_id=$1 AND state IN ('PREPARED','SENT','UNKNOWN')",[id])).rowCount}
 export async function terminalizeAttempt(db:PoolClient,x:ArtifactAttempt,outcome:'SUCCEEDED'|'FAILED'|'CANCELLED'){

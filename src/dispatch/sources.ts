@@ -1,4 +1,5 @@
 import {assertRetryAuthorization} from './retry-authorization.js'
+import {writeDispatchOutbox} from './outbox.js'
 import {randomUUID,sign,type KeyObject} from 'node:crypto'
 import type {DispatchInput,DispatchResult} from '@shared/queue-dispatch.js'
 import {canonicalDispatchInput} from '@shared/queue-dispatch-validation.js'
@@ -121,6 +122,7 @@ export async function rejectUnstartedInTransaction(db:import('pg').PoolClient,re
    const version=(await db.query('UPDATE queue_dispatch_requests SET state=$2,result_id=$3,version=version+1,updated_at=now() WHERE id=$1 RETURNING version::text',[r.id,next,id])).rows[0].version
    if(r.input.action==='task_implementation'&&r.first_claimed_at)await db.query('UPDATE tasks SET dispatch_request_id=NULL WHERE id=$1 AND dispatch_request_id=$2',[r.input.task_id,r.id])
    await db.query("INSERT INTO queue_dispatch_events(id,request_id,type,actor,payload) VALUES($1,$2,'reject_unstarted',$3,$4)",[randomUUID(),r.id,{service:'dispatch'},{reason,result_id:id}])
-   await db.query('INSERT INTO queue_dispatch_outbox(id,request_id,version,payload) VALUES($1,$2,$3,$4)',[randomUUID(),r.id,version,{version,request_id:r.id,root_message_id:r.root_message_id,reply_message_id:r.reply_message_id,state:next,result_id:id}])
+   if(!version)throw new DispatchError('DISPATCH_NOT_FOUND')
+   await writeDispatchOutbox(db,r.id)
 
 }

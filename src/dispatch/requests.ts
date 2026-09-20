@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { writeDispatchOutbox, DELIVERY_FAILED_AFTER } from './outbox.js'
 import type { PoolClient } from 'pg'
 import { DISPATCH_REPLY_UUID_NAMESPACE, dispatchReplyUuidName, type DispatchInput, type DispatchView } from '@shared/queue-dispatch.js'
 import { canonicalDispatchInput, parseDispatchInput } from '@shared/queue-dispatch-validation.js'
@@ -25,7 +26,7 @@ type RequestRow = {
 const selectRequest = `SELECT r.id,r.user_id,r.input,r.input_hash,r.version::text,r.state,r.created_at,r.result_id,
  c.route,c.profile_revision_id,c.job_id,
  (SELECT e.payload->>'reason' FROM queue_dispatch_events e WHERE e.request_id=r.id AND e.type='waiting_reason' ORDER BY e.created_at DESC,e.id DESC LIMIT 1) AS waiting_reason,
- CASE WHEN o.published_at IS NOT NULL THEN 'delivered' ELSE 'pending' END AS delivery
+ CASE WHEN o.published_at IS NOT NULL THEN 'delivered' WHEN o.attempts>=${DELIVERY_FAILED_AFTER} THEN 'failed' ELSE 'pending' END AS delivery
  FROM queue_dispatch_requests r
  LEFT JOIN queue_dispatch_candidates c ON c.request_id=r.id AND c.generation=r.generation
  LEFT JOIN queue_dispatch_outbox o ON o.request_id=r.id AND o.version=r.version`
@@ -112,9 +113,7 @@ export function createDispatchRequests(deps: {
       if (inserted.rowCount) {
         await db.query(`INSERT INTO queue_dispatch_events(id,request_id,type,actor,payload)
           VALUES($1,$2,'submitted',$3::jsonb,$4::jsonb)`, [randomUUID(), id, JSON.stringify(authSource), JSON.stringify({ input_hash: inputHash })])
-        await db.query(`INSERT INTO queue_dispatch_outbox(id,request_id,version,payload)
-          VALUES($1,$2,1,$3::jsonb)`, [randomUUID(), id, JSON.stringify({ version: '1', role: 'ROOT', request_id: id,
-          root_message_id: rootId, reply_message_id: replyId, state: 'WAITING' })])
+        await writeDispatchOutbox(db, id)
       }
       const row = (await db.query<RequestRow>(`${selectRequest} WHERE r.principal_key=$1 AND r.idempotency_key=$2`, [actor.principalKey, key])).rows[0]
       if (row.input_hash !== inputHash) throw new DispatchError('DISPATCH_IDEMPOTENCY_CONFLICT')

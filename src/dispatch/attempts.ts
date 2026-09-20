@@ -1,4 +1,5 @@
 import {assertRetryAuthorization} from './retry-authorization.js'
+import { writeDispatchOutbox } from './outbox.js';
 import { randomUUID, type KeyObject } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import type { AttemptProof, AttemptState, DispatchState, DispatchProfileConfig } from '@shared/queue-dispatch.js';
@@ -81,7 +82,8 @@ async function state(db: PoolClient, r: Request, next: DispatchState) {
     const version = (await db.query<{
         version: string;
     }>('UPDATE queue_dispatch_requests SET state=$2,version=version+1,updated_at=now() WHERE id=$1 RETURNING version::text', [r.id, next])).rows[0].version;
-    await db.query('INSERT INTO queue_dispatch_outbox(id,request_id,version,payload) VALUES($1,$2,$3,$4)', [randomUUID(), r.id, version, { version, request_id: r.id, root_message_id: r.root_message_id, reply_message_id: r.reply_message_id, state: next }]);
+    if (!version) throw new DispatchError('DISPATCH_NOT_FOUND');
+    await writeDispatchOutbox(db, r.id);
     r.state = next;
 }
 export function createDispatchAttempts(deps: {

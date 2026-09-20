@@ -1,4 +1,5 @@
 import {assertRetryAuthorization} from './retry-authorization.js'
+import { writeDispatchOutbox } from './outbox.js'
 import {rejectUnstartedInTransaction} from './sources.js'
 import { randomUUID } from 'node:crypto'
 import type { PoolClient } from 'pg'
@@ -61,7 +62,8 @@ async function event(db: PoolClient, id: string, type: string, payload: Record<s
 }
 async function outbox(db: PoolClient, r: Request, state: string) {
   const updated = (await db.query<{ version: string }>('UPDATE queue_dispatch_requests SET state=$2,version=version+1,updated_at=now() WHERE id=$1 RETURNING version::text', [r.id, state])).rows[0]
-  await db.query('INSERT INTO queue_dispatch_outbox(id,request_id,version,payload) VALUES($1,$2,$3,$4::jsonb)', [randomUUID(), r.id, updated.version, JSON.stringify({ version: updated.version, request_id: r.id, root_message_id: r.root_message_id, reply_message_id: r.reply_message_id, state })])
+  if (!updated) throw new DispatchError('DISPATCH_NOT_FOUND')
+  await writeDispatchOutbox(db, r.id)
 }
 export function createDispatchSelection(deps: { store: DispatchStore; auth: DispatchAuth; enabled: boolean; productAllowlist: readonly string[] }) {
   async function waitingRequestIds(limit = 25): Promise<string[]> {
