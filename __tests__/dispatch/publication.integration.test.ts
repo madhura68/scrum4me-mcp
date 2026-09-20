@@ -67,3 +67,18 @@ it('accepted stop survives expiry while a lost publication response remains occu
   await x.artifacts.assertCleanupReceipt(x.f.actor,x.proof.attempt_id,final.resultId!)
  }finally{await h.close();await rm(root,{recursive:true,force:true})}
 })
+it('one publication that cannot be reconciled does not stop the reconciler from settling the next one',async()=>{
+ const h=await makeDispatchHarness(),root=await mkdtemp(join(tmpdir(),'ip09-batch-'))
+ try{
+  const x=await codeAttempt(h,root,{free:true,change:true});await x.completion.verifyStopEvidence(x.f.actor,x.proof,x.stop)
+  const unknown=(i:PublicationIntent):PublicationReceipt=>({operationId:i.operationId,status:'unknown',branch:i.branch,headSha:i.headSha,prUrl:null})
+  const port={publish:async(i:PublicationIntent)=>unknown(i),reconcile:async(i:PublicationIntent):Promise<PublicationReceipt>=>({...unknown(i),status:'confirmed'})}
+  expect(await createDispatchCompletion({...x.opts,publisher:createDispatchPublication({...x.opts,port,loadBaseBranch:async()=> 'main'})}).acceptDispatchResult(x.f.actor,x.proof,x.result)).toMatchObject({accepted:false,reason:'publication_unknown'})
+  // The scan lists an older operation that can no longer be loaded ahead of the real one.
+  const scan=(sql:unknown)=>typeof sql==='string'&&sql.includes("state IN ('PREPARED','SENT','UNKNOWN')")
+  const store=new Proxy(h.dispatch,{get:(target,key)=>key==='query'?async(sql:unknown,...rest:unknown[])=>{const result=await (target.query as (...a:unknown[])=>Promise<{rows:Array<{id:string}>}>)(sql,...rest);return scan(sql)?{...result,rows:[{id:randomUUID()},...result.rows]}:result}:Reflect.get(target,key,target)})
+  const restarted=createDispatchPublication({...x.opts,store,port,loadBaseBranch:async()=> 'main'})
+  await expect(restarted.reconcileIncompletePublications()).resolves.toEqual({processed:1,failed:1})
+  expect((await h.dispatch.query('SELECT state FROM queue_dispatch_publications WHERE request_id=$1',[x.proof.request_id])).rows[0].state).toBe('CONFIRMED')
+ }finally{await h.close();await rm(root,{recursive:true,force:true})}
+})

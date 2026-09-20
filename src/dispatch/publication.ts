@@ -22,7 +22,9 @@ export function createGitPublicationPort(config:{root:string;allowedProtocols:re
   if(x.branch!==`codex/queue-${x.requestId}`||x.baseBranch===x.branch||!/^[-A-Za-z0-9_./]+$/.test(x.baseBranch)||x.baseBranch.startsWith('-'))throw new DispatchError('DISPATCH_INVALID_INPUT')
   const url=x.repoUrl.startsWith('/')?new URL('file://'+x.repoUrl):new URL(x.repoUrl),protocol=url.protocol.slice(0,-1)
   if(!config.allowedProtocols.includes(protocol)||(protocol!=='file'&&!config.allowedHosts.includes(url.hostname)))throw new DispatchError('DISPATCH_FORBIDDEN')
-  await verifyCodeArtifact(x.codeBytes,x.baseBytes,{repoUrl:x.repoUrl,baseSha:x.baseSha,headSha:x.headSha,branch:x.branch,checks:x.checks})
+  // Verification uses git, tmp space and a timeout; a failure here is a receipt, never an escape from the publisher.
+  try{await verifyCodeArtifact(x.codeBytes,x.baseBytes,{repoUrl:x.repoUrl,baseSha:x.baseSha,headSha:x.headSha,branch:x.branch,checks:x.checks})}
+  catch{return receipt(x,send?'failed':'unknown')}
   // Verified empty Task is a real no-op; no network or PR side effect.
   if(x.baseSha===x.headSha)return receipt(x,'confirmed')
   await mkdir(config.root,{recursive:true,mode:0o700});const root=await mkdtemp(join(config.root,'publication-')),repo=join(root,'repo'),base=join(root,'base.bundle'),code=join(root,'code.bundle')
@@ -93,7 +95,14 @@ export function createDispatchPublication(deps:{store:DispatchStore;auth:Dispatc
   // PREPARED has never crossed the durable send gate. A restart aborts it safely.
   const result=row.state==='PREPARED'?receipt(x,'failed'):await deps.port.reconcile(x);await storeReceipt(db,result);return result
  }
- async function reconcileIncompletePublications(){const rows=(await deps.store.query("SELECT id FROM queue_dispatch_publications WHERE state IN ('PREPARED','SENT','UNKNOWN') ORDER BY created_at LIMIT 25")).rows;for(const row of rows)await reconcilePublication(row.id)}
+ /** One operation that cannot be reconciled must not starve the rest: each stored receipt bumps
+  * updated_at, so ordering by it rotates the batch instead of retrying the same head forever. */
+ async function reconcileIncompletePublications():Promise<{processed:number;failed:number}>{
+  const rows=(await deps.store.query("SELECT id FROM queue_dispatch_publications WHERE state IN ('PREPARED','SENT','UNKNOWN') ORDER BY updated_at,id LIMIT 25")).rows
+  let processed=0,failed=0
+  for(const row of rows)try{await reconcilePublication(row.id);processed++}catch{failed++}
+  return {processed,failed}
+ }
  async function publishUnlocked(db:PoolClient,actor:DispatchActor,authority:{proof:AttemptProof}|{binding:DispatchStartBinding},artifactId:string):Promise<PublicationReceipt>{
   const requestId='proof' in authority?authority.proof.request_id:authority.binding.requestId,attemptId='proof' in authority?authority.proof.attempt_id:authority.binding.attemptId
   const verify=async(db:import('pg').PoolClient,x:Awaited<ReturnType<typeof lockArtifactAttempt>>)=>{if('proof' in authority)verifyArtifactProof(actor,authority.proof,x);else await validateHistoricalBinding(db,x,authority.binding)}

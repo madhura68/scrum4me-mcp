@@ -36,3 +36,12 @@ it('reconciles an actual lost HTTP create response to one draft PR marker withou
   await rm(remote,{recursive:true,force:true})
  }finally{await rm(root,{recursive:true,force:true});await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()))}
 })
+it('reports an unverifiable artifact as a receipt instead of throwing out of the publisher',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'ip09-unverifiable-'))
+ try{
+  const requestId=randomUUID(),port=createGitPublicationPort({root:join(root,'publisher'),allowedProtocols:['file'],allowedHosts:[]})
+  const intent={operationId:randomUUID(),requestId,attemptId:randomUUID(),repoUrl:join(root,'remote.git'),baseBranch:'main',baseSha:'a'.repeat(40),headSha:'b'.repeat(40),branch:`codex/queue-${requestId}`,mode:'branch' as const,expectedRemoteHead:null,codeBytes:Buffer.from('not a code artifact'),baseBytes:new Uint8Array(),checks:[]}
+  // Nothing was sent, so a publish is a definite failure; a reconcile cannot tell and stays unknown.
+  expect((await port.publish(intent)).status).toBe('failed');expect((await port.reconcile(intent)).status).toBe('unknown')
+ }finally{await rm(root,{recursive:true,force:true})}
+})
