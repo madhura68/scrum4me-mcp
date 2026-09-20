@@ -10,7 +10,7 @@
 // snoeien mag alléén op een geslaagde update met count === 0.
 import { prisma } from '../prisma.js'
 import { leaseEntries, releaseLease } from './lease-register.js'
-import { legacyMarkerWhere } from './marked.js'
+import { legacyMarkerWhere, ordinaryDispatchWhere } from './marked.js'
 
 export const LEASE_REFRESH_INTERVAL_MS = 10_000
 
@@ -21,6 +21,7 @@ export async function refreshQueueLeases(): Promise<void> {
         where: {
           id: messageId, status: 'claimed', claimed_by: claimedBy,
           ...legacyMarkerWhere(),
+          ...ordinaryDispatchWhere(),
         },
         data: { claimed_at: new Date() },
       })

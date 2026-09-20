@@ -18,6 +18,18 @@ export const LEGACY_MARKER_SQL = Prisma.sql`
   AND ppe_lease_generation IS NULL
 `
 
+/** IDEA-213: a managed dispatch ROOT or REPLY belongs to the projector. Every ordinary maintenance path skips
+ * it, because the row guard refuses the write and one refused row would roll the whole statement back. The
+ * reply inbox is the deliberate exception and does not use this fragment. */
+export const ORDINARY_DISPATCH_SQL = Prisma.sql`
+  dispatch_request_id IS NULL
+  AND dispatch_projection_version IS NULL
+  AND dispatch_role IS NULL
+`
+export function ordinaryDispatchWhere(): { dispatch_request_id: null; dispatch_projection_version: null; dispatch_role: null } {
+  return { dispatch_request_id: null, dispatch_projection_version: null, dispatch_role: null }
+}
+
 export function legacyMarkerWhere(): Record<(typeof MARKER_COLUMNS)[number], null> {
   return Object.fromEntries(MARKER_COLUMNS.map((column) => [column, null])) as
     Record<(typeof MARKER_COLUMNS)[number], null>

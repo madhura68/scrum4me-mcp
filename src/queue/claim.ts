@@ -6,7 +6,7 @@
 import { prisma } from '../prisma.js'
 import { QUEUE_CHANNEL, envelopeOf } from './notify.js'
 import { QUEUE_REQUEST_TYPES, QUEUE_RESPONSE_TYPES, type QueueModel, type QueueServer } from '@shared/queue-identity.js'
-import { LEGACY_MARKER_SQL } from './marked.js'
+import { LEGACY_MARKER_SQL, ORDINARY_DISPATCH_SQL } from './marked.js'
 
 export const DEFAULT_RECLAIM_AFTER = '4 hours'
 
@@ -65,6 +65,7 @@ export async function claimNextRequest(opts: {
          WHERE to_server = ${opts.server} AND to_model = ${opts.model}
            AND type = ANY(${types}::text[])
            AND ${LEGACY_MARKER_SQL}
+           AND ${ORDINARY_DISPATCH_SQL}
            AND (status = 'pending'
                 OR (status = 'claimed' AND claimed_at < now() - ${reclaim}::interval))
          ORDER BY created_at, id
@@ -142,6 +143,7 @@ export async function rollbackQueueClaim(messageId: string, claimedBy: string): 
        WHERE id = ${messageId}::uuid
          AND status = 'claimed' AND claimed_by = ${claimedBy}
          AND ${LEGACY_MARKER_SQL}
+         AND ${ORDINARY_DISPATCH_SQL}
        RETURNING *
     `
     const row = rows[0]
