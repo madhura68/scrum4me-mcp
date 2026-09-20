@@ -19,7 +19,7 @@ export const idempotencyKey = z.string().uuid().optional().describe('Reuse the s
 export const commonFields = {
   product_id: z.string().min(1), objective: z.string().min(1), verification: z.string().min(1), response_format: z.string().min(1),
   runtime: z.enum(['CLAUDE', 'CODEX']).optional(),
-  work_item: z.object({ task_id: z.string().optional(), story_id: z.string().optional(), pbi_id: z.string().optional() }).optional()
+  work_item: z.object({ task_id: z.string().optional(), story_id: z.string().optional(), pbi_id: z.string().optional() }).strict().optional()
     .describe('A label for traceability only. It never selects the action and grants nothing.'),
   reply_to: z.string().min(1).describe("Your own authorized queue address, e.g. 'mac:jp'; the final answer is delivered there."),
   idempotency_key: idempotencyKey,

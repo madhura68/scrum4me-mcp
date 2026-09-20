@@ -9,7 +9,7 @@ const inputSchema = z.object({
   repository: z.object({ product_id: z.string().min(1), base_sha: z.string().min(1) }).optional().describe('Required for repo_write.'),
   publish: z.enum(['artifact', 'branch', 'pull_request']).optional().describe("Defaults to 'artifact'; read access allows nothing else."),
   task_id: z.string().min(1).optional().describe('An existing Scrum4Me Task to implement. Only this selects task_implementation.'),
-})
+}).strict()
 
 export function registerDispatchTaskTool(server: McpServer) {
   server.registerTool(

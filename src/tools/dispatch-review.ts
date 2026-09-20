@@ -7,7 +7,7 @@ const inputSchema = z.object({
   ...commonFields,
   review_documents: z.object({ version: z.literal(1), items: z.array(documentRef).min(1) })
     .describe('The exact documents to review, each pinned by revision or commit and sha256. The reviewer reads these versions, never the latest.'),
-})
+}).strict()
 
 export function registerDispatchReviewTool(server: McpServer) {
   server.registerTool(

@@ -51,6 +51,30 @@ describe('dispatch MCP tools',()=>{
   await asUser(()=>handlers.dispatch_review({...base,review_documents:documents}))
   expect(body()).toEqual({version:1,...base,action:'review',requirements:{access:'read',environment_keys:[]},publish:'artifact',review_documents:documents})
  })
+ it('refuses an unknown key instead of quietly dropping it, but reads prose as prose',async()=>{
+  // The declared schema is what the SDK validates against. A stripped key is
+  // worse than a refused one: the caller would believe a PPE marker or a
+  // hand-written requirements block had been honoured when it never travelled.
+  for(const name of ['dispatch_task','dispatch_review']){
+   const schema=metas[name].inputSchema as {safeParse:(v:unknown)=>{success:boolean}}
+   for(const bad of [{...base,access:'read',ppe_protocol:'x'},{...base,access:'read',requirements:{access:'read'}}]){
+    expect(schema.safeParse(bad).success).toBe(false)
+   }
+  }
+  // A marker that reaches the handler anyway is still refused by the contract.
+  const smuggled=await asUser(()=>handlers.dispatch_task({...base,access:'read',ppe_protocol:'x'}))
+  expect(smuggled.isError).toBe(true);expect(calls).toHaveLength(0)
+  // Prose is prose: the word is not a marker.
+  const fine=await asUser(()=>handlers.dispatch_task({...base,access:'read',objective:'Check the PPE validation path'}))
+  expect(fine.isError).toBeFalsy();expect(body().objective).toBe('Check the PPE validation path')
+ })
+ it('surfaces an expired or revoked token without retry and without a second identity',async()=>{
+  vi.stubGlobal('fetch',vi.fn(async(url:string,init:RequestInit)=>{calls.push({url,init});return new Response(JSON.stringify({error:'DISPATCH_TOKEN_EXPIRED'}),{status:401})}))
+  const result=await asUser(()=>handlers.dispatch_task({...base,access:'read'}))
+  expect(result.isError).toBe(true);expect(result.content[0].text).toContain('DISPATCH_TOKEN_EXPIRED')
+  expect(result.content[0].text).not.toContain('user-token')
+  expect(calls).toHaveLength(1);expect(header('Authorization')).toBe('Bearer user-token')
+ })
  it('refuses unknown keys and invalid input before any request is sent',async()=>{
   for(const bad of [{...base,access:'read',reply_to:'nowhere'},{...base,access:'read',publish:'branch'},{...base,access:'repo_write'}]){
    const result=await asUser(()=>handlers.dispatch_task(bad));expect(result.isError).toBe(true);expect(result.content[0].text).toContain('DISPATCH_INVALID_INPUT')
