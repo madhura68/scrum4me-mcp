@@ -1,4 +1,4 @@
-import type { PoolClient } from 'pg'
+import type { Pool, PoolClient } from 'pg'
 import type { DispatchProjection, DispatchProjectionMessage } from '@shared/queue-dispatch-projection.js'
 import { QUEUE_CHANNEL } from '../queue/notify.js'
 
@@ -14,7 +14,8 @@ function assertSame(row: Stored | undefined, m: DispatchProjectionMessage, reque
   return row
 }
 const read = async (db: PoolClient, id: string) => (await db.query<Stored>('SELECT id,type,from_server,from_model,to_server,to_model,in_reply_to,status,dispatch_request_id,dispatch_role FROM agent_message WHERE id=$1 FOR UPDATE', [id])).rows[0]
-const notify = (db: PoolClient, m: DispatchProjectionMessage, status: string, previous: string | null) => db.query('SELECT pg_notify($1,$2)', [QUEUE_CHANNEL,
+type Addressed = Pick<DispatchProjectionMessage, 'id' | 'type' | 'from_server' | 'from_model' | 'to_server' | 'to_model' | 'in_reply_to'>
+const notify = (db: PoolClient, m: Addressed, status: string, previous: string | null) => db.query('SELECT pg_notify($1,$2)', [QUEUE_CHANNEL,
   JSON.stringify({ id: m.id, type: m.type, from_server: m.from_server, from_model: m.from_model, to_server: m.to_server, to_model: m.to_model, in_reply_to: m.in_reply_to, status, previous_status: previous })])
 
 /** Projector-only entry: one queue transaction, root before reply, monotone by version. The root is upserted
@@ -52,4 +53,60 @@ export async function applyDispatchProjection(client: PoolClient, projection: Di
     await client.query('ROLLBACK').catch(() => undefined)
     throw error
   }
+}
+
+/** The CLI inbox claims a reply before it acknowledges it, and the ordinary sweep skips managed rows, so a
+ * reader that crashed would hide its answer forever. After the CLI's maximum inbox lease the projector makes
+ * exactly that reply readable again: read-claim fields only, never an execution slot, never a new result. */
+export async function recoverForgottenReplyReads(queue: Pool, olderThan = '4 hours'): Promise<string[]> {
+  const client = await queue.connect()
+  try {
+    await client.query('BEGIN')
+    const rows = (await client.query<Addressed>(`UPDATE agent_message m SET status='pending',claimed_by=NULL,claimed_at=NULL,started_at=NULL
+      FROM (SELECT id FROM agent_message WHERE dispatch_role='REPLY' AND dispatch_request_id IS NOT NULL AND status='claimed'
+              AND claimed_at<now()-$1::interval ORDER BY claimed_at FOR UPDATE SKIP LOCKED) target
+      WHERE m.id=target.id RETURNING m.id,m.type,m.from_server,m.from_model,m.to_server,m.to_model,m.in_reply_to`, [olderThan])).rows
+    for (const row of rows) await notify(client, row, 'pending', 'claimed')
+    await client.query('COMMIT')
+    return rows.map(r => r.id)
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined)
+    throw error
+  } finally { client.release() }
+}
+
+// Explicit, never SELECT *: a column added to one table later must fail here, not silently fall out of history.
+const MESSAGE_COLUMNS = 'id,type,from_server,from_model,to_server,to_model,body,meta,source,status,in_reply_to,error,claimed_by,claimed_at,started_at,finished_at,created_at,idempotency_key,ppe_protocol,ppe_run_id,ppe_operation_key,ppe_payload_sha256,ppe_from_principal,ppe_to_principal,ppe_to_consumer_id,ppe_consumer_generation,ppe_lease_generation,archived_at,dispatch_projection_version,dispatch_request_id,dispatch_role'
+const RECOVERY_EVENTS = ['recovery_action', 'retry_authorized', 'publication_resolved']
+
+/** Terminal retention archives first. One queue transaction per thread copies every message to the archive,
+ * proves each archived row equals its hot row, and only then deletes — reply before root, because the
+ * in_reply_to foreign key would otherwise rewrite the reply. Any difference refuses the whole thread.
+ * Requests that went through recovery keep their thread: it is part of the audit. */
+export async function retainTerminalDispatchThreads(deps: { store: Pool; queue: Pool }, opts: { olderThan: string; limit: number }): Promise<{ archived: number; refused: number }> {
+  if (!Number.isInteger(opts.limit) || opts.limit < 1 || opts.limit > 100) throw new Error('DISPATCH_INVALID_INPUT')
+  const due = (await deps.store.query<{ id: string }>(`SELECT r.id FROM queue_dispatch_requests r
+    WHERE r.state IN ('SUCCEEDED','FAILED','CANCELLED') AND r.updated_at<now()-$1::interval
+      AND NOT EXISTS(SELECT 1 FROM queue_dispatch_events e WHERE e.request_id=r.id AND e.type=ANY($2::text[]))
+      AND NOT EXISTS(SELECT 1 FROM queue_dispatch_outbox o WHERE o.request_id=r.id AND o.published_at IS NULL)
+    ORDER BY r.updated_at,r.id LIMIT $3`, [opts.olderThan, RECOVERY_EVENTS, opts.limit])).rows
+  let archived = 0, refused = 0
+  for (const { id } of due) {
+    const client = await deps.queue.connect()
+    try {
+      await client.query('BEGIN')
+      const hot = (await client.query<{ id: string; status: string }>('SELECT id,status FROM agent_message WHERE dispatch_request_id=$1 FOR UPDATE', [id])).rows
+      // Already retained, or the answer is still unread: nothing to do, and not a refusal.
+      if (!hot.length || hot.some(m => !['done', 'failed', 'cancelled'].includes(m.status))) { await client.query('ROLLBACK'); continue }
+      await client.query(`INSERT INTO agent_message_archive(${MESSAGE_COLUMNS}) SELECT ${MESSAGE_COLUMNS} FROM agent_message WHERE dispatch_request_id=$1 ON CONFLICT (id) DO NOTHING`, [id])
+      const same = (await client.query<{ n: number }>('SELECT count(*)::int n FROM agent_message m JOIN agent_message_archive a ON a.id=m.id WHERE m.dispatch_request_id=$1 AND to_jsonb(a)=to_jsonb(m)', [id])).rows[0].n
+      if (same !== hot.length) throw new Error('DISPATCH_RETENTION_CONFLICT')
+      await client.query("DELETE FROM agent_message WHERE dispatch_request_id=$1 AND dispatch_role='REPLY'", [id])
+      await client.query("DELETE FROM agent_message WHERE dispatch_request_id=$1 AND dispatch_role='ROOT'", [id])
+      await client.query('COMMIT'); archived++
+    } catch {
+      await client.query('ROLLBACK').catch(() => undefined); refused++
+    } finally { client.release() }
+  }
+  return { archived, refused }
 }
