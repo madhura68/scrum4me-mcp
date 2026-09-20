@@ -112,7 +112,10 @@ it('imports the app and entrypoint without connecting, and rejects malformed/ove
     expect((await fetch(url, { method: 'POST', body: 'a'.repeat(256 * 1024 + 1) })).status).toBe(413)
     expect((await fetch(url, { method: 'POST', body: '{}', headers: { 'Content-Encoding': 'gzip' } })).status).toBe(400)
     expect((await fetch(url, { method: 'POST', body: '{}' })).status).toBe(401)
-    expect((await fetch(url.replace('/requests', '/attempts/claim'), { method: 'POST', body: '{}' })).status).toBe(404)
+    // IP-13 wired the remaining matrix routes: they now authenticate first, so an anonymous
+    // call is 401 rather than 404. Only a path outside the matrix is still not found.
+    expect((await fetch(url.replace('/requests', '/attempts/claim'), { method: 'POST', body: '{}' })).status).toBe(401)
+    expect((await fetch(url.replace('/requests', '/attempts/nonsense'), { method: 'POST', body: '{}' })).status).toBe(404)
     expect(pool.totalCount).toBe(0)
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); await pool.end() }
 })

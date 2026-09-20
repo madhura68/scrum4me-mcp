@@ -39,7 +39,8 @@ export async function authenticateExecutorSession(db: PoolClient, auth: Dispatch
     || !credentialMatches(sessionCredential, row.credential_hash)) return forbidden()
   return row
 }
-const productInput = (productId: string): DispatchInput => ({ version: 1, product_id: productId, action: 'free_task', objective: 'Slot authorization', verification: 'Current rights', response_format: 'Markdown', requirements: { access: 'read', environment_keys: [] }, publish: 'artifact', reply_to: 'mac:jp' })
+/** A minimal read-only envelope that carries only the product whose rights are being checked. */
+export const productInput = (productId: string): DispatchInput => ({ version: 1, product_id: productId, action: 'free_task', objective: 'Slot authorization', verification: 'Current rights', response_format: 'Markdown', requirements: { access: 'read', environment_keys: [] }, publish: 'artifact', reply_to: 'mac:jp' })
 export function createDispatchRegistration(deps: { store: DispatchStore; auth: DispatchAuth; credentialKeys: Record<number, Uint8Array>; keyVersion: number }) {
   if (!Number.isInteger(deps.keyVersion) || deps.keyVersion < 1 || !deps.credentialKeys[deps.keyVersion] || Object.values(deps.credentialKeys).some(k => k.byteLength < 32)) throw new DispatchError('DISPATCH_ASSERTION_KEY_INVALID')
   function credential(id: string, slotId: string, tokenId: string, version: number) {
