@@ -58,14 +58,17 @@ export async function applyDispatchProjection(client: PoolClient, projection: Di
 /** The CLI inbox claims a reply before it acknowledges it, and the ordinary sweep skips managed rows, so a
  * reader that crashed would hide its answer forever. After the CLI's maximum inbox lease the projector makes
  * exactly that reply readable again: read-claim fields only, never an execution slot, never a new result. */
-export async function recoverForgottenReplyReads(queue: Pool, olderThan = '4 hours'): Promise<string[]> {
+export async function recoverForgottenReplyReads(queue: Pool, olderThan = '4 hours', limit = 100): Promise<string[]> {
+  // The service calls this from its own tick, so one pass is bounded: a backlog is repaired over
+  // several passes instead of holding one long transaction on the queue.
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error('DISPATCH_INVALID_INPUT')
   const client = await queue.connect()
   try {
     await client.query('BEGIN')
     const rows = (await client.query<Addressed>(`UPDATE agent_message m SET status='pending',claimed_by=NULL,claimed_at=NULL,started_at=NULL
       FROM (SELECT id FROM agent_message WHERE dispatch_role='REPLY' AND dispatch_request_id IS NOT NULL AND status='claimed'
-              AND claimed_at<now()-$1::interval ORDER BY claimed_at FOR UPDATE SKIP LOCKED) target
-      WHERE m.id=target.id RETURNING m.id,m.type,m.from_server,m.from_model,m.to_server,m.to_model,m.in_reply_to`, [olderThan])).rows
+              AND claimed_at<now()-$1::interval ORDER BY claimed_at LIMIT $2 FOR UPDATE SKIP LOCKED) target
+      WHERE m.id=target.id RETURNING m.id,m.type,m.from_server,m.from_model,m.to_server,m.to_model,m.in_reply_to`, [olderThan, limit])).rows
     for (const row of rows) await notify(client, row, 'pending', 'claimed')
     await client.query('COMMIT')
     return rows.map(r => r.id)

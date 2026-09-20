@@ -82,3 +82,19 @@ it('keeps the thread of a request that went through recovery',async()=>{
  expect(await retainTerminalDispatchThreads({store:h.dispatch,queue:projector},{olderThan:'0 seconds',limit:25})).toEqual({archived:0,refused:0})
  expect(await hot(v.id)).toHaveLength(2)
 })
+it('repairs forgotten reply claims in bounded batches',async()=>{
+ const m=await delivered(),twin=randomUUID()
+ // A second managed reply of the same thread, written past the guards exactly like purge() does,
+ // so one call has more than one candidate to choose from.
+ const c=await h.admin.connect()
+ try{await c.query('BEGIN');await c.query("SET LOCAL session_replication_role='replica'")
+  await c.query("INSERT INTO agent_message SELECT (jsonb_populate_record(NULL::agent_message,to_jsonb(m)||jsonb_build_object('id',$2::text))).* FROM agent_message m WHERE m.id=$1",[m.reply,twin])
+  await c.query('COMMIT')}catch(e){await c.query('ROLLBACK');throw e}finally{c.release()}
+ await h.queue.query("UPDATE agent_message SET status='claimed',claimed_by='cli:forgotten',claimed_at=now()-interval '5 hours',started_at=now()-interval '5 hours' WHERE id=ANY($1::uuid[])",[[m.reply,twin]])
+ const first=await recoverForgottenReplyReads(projector,'4 hours',1)
+ expect(first).toHaveLength(1)
+ const second=await recoverForgottenReplyReads(projector,'4 hours',1)
+ expect(second).toHaveLength(1)
+ expect([...first,...second].sort()).toEqual([m.reply,twin].sort())
+ expect(await recoverForgottenReplyReads(projector,'4 hours',1)).toEqual([])
+})

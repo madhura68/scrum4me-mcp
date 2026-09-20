@@ -14,9 +14,10 @@ import { createDispatchCancellation } from './cancel.js'
 import { createDispatchRecovery } from './recovery.js'
 import { createDispatchArtifacts, artifactHash } from './artifacts.js'
 import { createDispatchCompletion, type CompletionDeps } from './completion.js'
+import type { PublicationReceipt, PublicationResolution } from './publication.js'
 import { createDispatchRegistration } from './registration.js'
 import { createDispatchAttempts } from './attempts.js'
-import { createDispatchAdministration, type ProfileCreateInput, type ProfileRevokeInput, type ReplyAddressInput, type SlotDisableInput } from './administration.js'
+import { createDispatchAdministration, type OutboxRepublishInput, type ProfileCreateInput, type ProfileRevokeInput, type ReplyAddressInput, type SlotDisableInput } from './administration.js'
 import type { ExecutorHeartbeat, RegisterExecutorInput, SlotInput } from './client.js'
 import { DispatchError, dispatchHttpStatus } from './errors.js'
 import { isQueueDispatchRequestId } from '@shared/queue-identity.js'
@@ -27,7 +28,7 @@ export type DispatchHttpOperation =
   | 'register' | 'executor_heartbeat' | 'claim' | 'start' | 'reconcile' | 'attempt_heartbeat'
   | 'stop_evidence' | 'result' | 'put_artifact' | 'get_artifact'
   | 'create_profile' | 'revoke_profile' | 'list_profiles' | 'create_slot' | 'disable_slot' | 'reply_address'
-  | 'health'
+  | 'republish_outbox' | 'resolve_publication' | 'health'
 export type DispatchHttpLog = { operation: DispatchHttpOperation; request_id: string | null; status: number; duration_ms: number }
 
 /** Supervisor-facing routes exist only where the deployment actually holds the keys that make
@@ -38,7 +39,12 @@ export type DispatchExecutorKeys = {
 export type DispatchAppDependencies = {
   store: DispatchStore; assertionKeys?: DispatchAssertionKeys; enabled: boolean
   productAllowlist: readonly string[]; log?: (event: DispatchHttpLog) => void
-  executor?: DispatchExecutorKeys; publisher?: CompletionDeps['publisher']
+  executor?: DispatchExecutorKeys; publisher?: DispatchPublisher
+}
+/** Completion only ever publishes; the operator resolution is an extra the configured publisher
+ * brings with it, so a deployment without one simply has no resolve route. */
+export type DispatchPublisher = NonNullable<CompletionDeps['publisher']> & {
+  resolveUnknownPublication?(actor: DispatchActor, operationId: string, actionId: string, value: PublicationResolution): Promise<PublicationReceipt>
 }
 
 const versionAction = z.object({ action_id: z.string(), expected_version: z.string() }).strict()
@@ -83,6 +89,7 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
   const artifacts = createDispatchArtifacts(core)
   const completion = createDispatchCompletion(core)
   const administration = createDispatchAdministration(core)
+  const publisher = deps.publisher
   const registration = deps.executor ? createDispatchRegistration({ ...core, ...deps.executor }) : null
   const health = createDispatchHealth({ store: deps.store })
   const attempts = deps.executor ? createDispatchAttempts({ ...core, ...deps.executor }) : null
@@ -241,6 +248,18 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
     administration.disableSlot(actor, req.params.id, body(read()) as unknown as SlotDisableInput))
   register('post', '/reply-addresses', 'reply_address', json, ({ actor, json: read }) =>
     administration.allowReplyAddress(actor, body(read()) as unknown as ReplyAddressInput))
+  // Queue restore: hand the newest outbox snapshot of every request delivered since the restore
+  // point back to the projector. Audited under the caller's action id like every other operation.
+  register('post', '/outbox/republish', 'republish_outbox', json, ({ actor, json: read }) =>
+    administration.republishOutbox(actor, body(read()) as unknown as OutboxRepublishInput))
+  // The audited way out of a publication reconciliation can never decide. It sends nothing, and
+  // it carries the same authority as recovery: whoever may recover this request may attest here.
+  const resolvePublication = publisher?.resolveUnknownPublication?.bind(publisher)
+  register('post', '/publications/:id/resolve', 'resolve_publication', json, resolvePublication
+    ? ({ actor, req, json: read }) => {
+      const input = parseWith(z.object({ action_id: z.string(), resolution: z.unknown() }).strict(), read())
+      return resolvePublication(actor, req.params.id, input.action_id, input.resolution as PublicationResolution)
+    } : unavailable)
 
   app.use((_req, res) => { res.status(404).json({ error: 'DISPATCH_NOT_FOUND' }) })
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {

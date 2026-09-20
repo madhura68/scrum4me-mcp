@@ -9,9 +9,14 @@ import { createDispatchSources, createPinnedGitFetcher } from './sources.js'
 import { createDispatchDelivery } from './delivery.js'
 import { createDispatchPublication, createGitPublicationPort } from './publication.js'
 import { createDispatchTick, type DispatchTickResult } from './tick.js'
+import { recoverForgottenReplyReads, retainTerminalDispatchThreads } from './projection.js'
 export { createDispatchApp } from './routes.js'
 
 export const DISPATCH_TICK_INTERVAL_MS = 5000
+/** Queue maintenance is hourly-scale work; the selection tick is not its schedule. */
+export const DISPATCH_MAINTENANCE_INTERVAL_MS = 900_000
+/** The CLI inbox lease: only past it is a claimed reply certainly forgotten rather than being read. */
+export const DISPATCH_REPLY_READ_LEASE = '4 hours'
 
 /** Attempt/session credential keys as `<version>:<base64url>`, comma separated, so an old
  * incarnation keeps verifying against the key version it was issued under. */
@@ -39,6 +44,26 @@ function startPermitKey(pem: string | undefined): KeyObject | null {
 }
 function assertionKey(value: string | undefined) {
   return value ? Buffer.from(value, 'utf8') : undefined
+}
+
+/** The tick's own lifecycle, separate from the listener. At most one tick is in flight; a stopped
+ * runner starts no new one and its `stop` resolves only once the tick in flight has finished its
+ * own transactions. A failed tick is logged by error name — never by message — and never stops it. */
+export function createDispatchTickRunner(deps: { tick: () => Promise<DispatchTickResult>; log: (event: Record<string, unknown>) => void }) {
+  let running: Promise<DispatchTickResult> | null = null
+  let stopped = false
+  return {
+    async run(): Promise<void> {
+      if (stopped || running) return
+      running = deps.tick().finally(() => { running = null })
+      const result = await running.catch(error => { deps.log({ tick_failed: error instanceof Error ? error.name : 'unknown' }); return null })
+      if (result) deps.log({ tick: result })
+    },
+    stop(): Promise<unknown> {
+      stopped = true
+      return running?.catch(() => undefined) ?? Promise.resolve()
+    },
+  }
 }
 
 export type DispatchRunningServer = {
@@ -82,6 +107,17 @@ export function startDispatchServer(env: NodeJS.ProcessEnv = process.env): Dispa
     assertionKeys: { workers: assertionKey(env.DISPATCH_WORKERS_ASSERTION_KEY), web: assertionKey(env.DISPATCH_WEB_ASSERTION_KEY) },
     log: event => log(event), publisher,
   })
+  // Queue maintenance needs the projector connection. Repair is always safe, so it runs wherever
+  // delivery runs; retention deletes hot queue rows, so a deployment opts in by naming its period.
+  const retentionDays = Number(env.DISPATCH_RETENTION_DAYS)
+  const retention = Number.isInteger(retentionDays) && retentionDays > 0 ? `${retentionDays} days` : null
+  const maintenance = queue
+    ? {
+      intervalMs: Number(env.DISPATCH_MAINTENANCE_INTERVAL_MS ?? DISPATCH_MAINTENANCE_INTERVAL_MS),
+      recoverReplyReads: (limit: number) => recoverForgottenReplyReads(queue, DISPATCH_REPLY_READ_LEASE, limit),
+      ...(retention ? { retainThreads: (limit: number) => retainTerminalDispatchThreads({ store, queue }, { olderThan: retention, limit }) } : {}),
+    }
+    : undefined
   const dispatchTick = createDispatchTick({
     store,
     selection: createDispatchSelection(core),
@@ -89,30 +125,27 @@ export function startDispatchServer(env: NodeJS.ProcessEnv = process.env): Dispa
     sources: createDispatchSources({ ...core, fetchGit: createPinnedGitFetcher({ host: env.DISPATCH_GIT_HOST ?? '', token: env.DISPATCH_GIT_TOKEN }) }),
     delivery: queue ? createDispatchDelivery({ store, queue }) : undefined,
     publications: publisher,
+    ...(maintenance ? { maintenance } : {}),
     onError: (stage, error) => log({ tick_stage: stage, error: error instanceof Error ? error.name : 'unknown' }),
   })
 
-  let running: Promise<DispatchTickResult> | null = null
-  let stopped = false
-  const runTick = async () => {
-    if (stopped || running) return
-    running = dispatchTick().finally(() => { running = null })
-    const result = await running.catch(error => { log({ tick_failed: error instanceof Error ? error.name : 'unknown' }); return null })
-    if (result) log({ tick: result })
-  }
-  const timer = setInterval(() => { void runTick() }, Number(env.DISPATCH_TICK_INTERVAL_MS ?? DISPATCH_TICK_INTERVAL_MS))
+  const runner = createDispatchTickRunner({ tick: dispatchTick, log })
+  const timer = setInterval(() => { void runner.run() }, Number(env.DISPATCH_TICK_INTERVAL_MS ?? DISPATCH_TICK_INTERVAL_MS))
   timer.unref()
   const server = app.listen(Number(env.DISPATCH_PORT ?? 4319), env.DISPATCH_HOST ?? '127.0.0.1')
 
-  const close = async () => {
+  let closing: Promise<void> | null = null
+  // Shutdown runs once. Both signals are wired, and a listener, a timer and two pools may each be
+  // closed exactly once — a second SIGINT must not turn an orderly shutdown into an error.
+  const close = () => closing ??= (async () => {
     // Order matters. Closing the listener first is what stops new intake, selection and start;
     // the timer stops next so no further selection begins, and the tick in flight is allowed to
     // finish its own transactions. Nothing here touches attempts or reservations: capacity is
     // released by stop evidence, never by a shutdown.
-    stopped = true
+    const drained = runner.stop()
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
     clearInterval(timer)
-    await running?.catch(() => undefined)
+    await drained
     try {
       const open = (await store.query<{ attempt_id: string; scope_id: string | null; state: string }>(
         `SELECT id AS attempt_id,scope_id,state FROM queue_dispatch_attempts
@@ -121,7 +154,7 @@ export function startDispatchServer(env: NodeJS.ProcessEnv = process.env): Dispa
     } catch { log({ shutdown: 'complete', open_scopes: null }) }
     await store.end()
     if (queue) await queue.end()
-  }
+  })()
   return { server, store, tick: dispatchTick, close }
 }
 

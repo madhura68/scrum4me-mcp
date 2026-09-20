@@ -48,6 +48,10 @@ export type ProfileCreateInput = { action_id: string; key: string; product_id: s
 export type ProfileRevokeInput = { action_id: string; reason: string }
 export type SlotDisableInput = { action_id: string; expected_version: string }
 export type ReplyAddressInput = { action_id: string; user_id: string; address: string }
+export type OutboxRepublishInput = { action_id: string; published_after: string }
+export type OutboxRepublishReceipt = { published_after: string; requests: number; request_ids: string[] }
+/** One call is bounded; a larger restore is several calls, each with its own action id and receipt. */
+export const OUTBOX_REPUBLISH_LIMIT = 500
 
 export function createDispatchAdministration(deps: { store: DispatchStore; auth: DispatchAuth }) {
   /** Product-administrator authority over every product the revision can reach, never just the
@@ -191,6 +195,32 @@ export function createDispatchAdministration(deps: { store: DispatchStore; auth:
     })
     return receipt as unknown as { user_id: string; address: string; enabled: boolean }
   }
-  return { createProfile, revokeProfile, listProfiles, disableSlot, allowReplyAddress }
+  /** Queue restore. A queue database restored to an earlier point has lost deliveries the outbox
+   * already marked published, so the newest snapshot of each affected request is handed back to
+   * the projector. It clears a publication marker and nothing else: no execution state, no result,
+   * no older snapshot — the newest one already contains them. The projection itself stays monotone
+   * and version-guarded, so a redelivery can never rewrite an answer a reader already handled.
+   * `published_after` is the restore point; the receipt is the action's durable answer. */
+  async function republishOutbox(actor: DispatchActor, input: OutboxRepublishInput): Promise<OutboxRepublishReceipt> {
+    if (!input || typeof input !== 'object' || keys(input) !== 'action_id,published_after' || !keyValid(input.action_id)
+      || typeof input.published_after !== 'string' || Number.isNaN(Date.parse(input.published_after))) invalid()
+    const publishedAfter = new Date(input.published_after).toISOString()
+    const payloadHash = artifactHash(canonicalResult({ published_after: publishedAfter }))
+    const receipt = await withDispatchOperation(deps.store, { actor, operation: 'republish_outbox', actionId: input.action_id, payloadHash }, async db => {
+      const current = await deps.auth.refreshActor(actor, db)
+      // Redelivery crosses every product, so it takes the one authority that does too. The browser
+      // issuer may read and cancel; it never republishes.
+      if (current.source === 'web') forbidden()
+      if (!(await db.query("SELECT 1 FROM user_roles WHERE user_id=$1 AND role='ADMIN'", [current.userId])).rowCount) forbidden()
+      const rows = (await db.query<{ request_id: string }>(
+        `WITH newest AS (SELECT DISTINCT ON (request_id) id,published_at FROM queue_dispatch_outbox ORDER BY request_id,version DESC)
+         UPDATE queue_dispatch_outbox o SET published_at=NULL,attempts=0,next_attempt_at=now()
+         FROM (SELECT id FROM newest WHERE published_at>=$1::timestamptz ORDER BY id LIMIT ${OUTBOX_REPUBLISH_LIMIT}) target
+         WHERE o.id=target.id RETURNING o.request_id`, [publishedAfter])).rows
+      return { published_after: publishedAfter, requests: rows.length, request_ids: [...rows.map(row => row.request_id)].sort() }
+    })
+    return receipt as unknown as OutboxRepublishReceipt
+  }
+  return { createProfile, revokeProfile, listProfiles, disableSlot, allowReplyAddress, republishOutbox }
 }
 export type DispatchAdministration = ReturnType<typeof createDispatchAdministration>

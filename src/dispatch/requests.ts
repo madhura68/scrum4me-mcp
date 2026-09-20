@@ -138,7 +138,8 @@ function redactReceipt(value: DispatchReceipt): DispatchReceipt {
 /** Outside-request actions share one durable receipt. The callback is DB-only;
  * claim credentials must be reconstructed by IP-06 for the bound incarnation. */
 export async function withDispatchOperation(store: DispatchStore, input: {
-  actor: DispatchActor; operation: 'register' | 'profile' | 'revoke_profile' | 'slot' | 'disable_slot' | 'reply_address'
+  actor: DispatchActor
+  operation: 'register' | 'profile' | 'revoke_profile' | 'slot' | 'disable_slot' | 'reply_address' | 'republish_outbox'
   actionId: string; payloadHash: string
 }, mutate: (db: PoolClient) => Promise<DispatchReceipt>): Promise<DispatchReceipt> {
   validateKey(input.actionId)

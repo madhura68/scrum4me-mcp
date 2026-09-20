@@ -4,6 +4,8 @@ import {randomUUID} from 'node:crypto'
 import {makeDispatchHarness,type DispatchHarness} from './harness.js'
 import {running} from './lifecycle-fixtures.js'
 import {createDispatchDelivery} from '../../src/dispatch/delivery.js'
+import {createDispatchAdministration} from '../../src/dispatch/administration.js'
+import {createDispatchAuth} from '../../src/dispatch/auth.js'
 import {applyDispatchProjection} from '../../src/dispatch/projection.js'
 import {buildDispatchProjection} from '@shared/queue-dispatch-projection.js'
 import {assertDispatchTestUrl} from '../../scripts/dispatch-test-db.mjs'
@@ -91,4 +93,30 @@ it('wakes existing listeners on the ordinary queue channel with the ordinary env
   expect(mine.map(e=>[e.type,e.status,e.previous_status])).toEqual([['task','done',null],['result','pending',null]])
   expect(Object.keys(mine[0]).sort()).toEqual(['from_model','from_server','id','in_reply_to','previous_status','status','to_model','to_server','type'])
  }finally{await listener.query('UNLISTEN *');listener.release()}
+})
+
+it('republishes the newest outbox snapshot per request for a queue restore, once per action, admin only',async()=>{
+ const x=await finished(),delivery=createDispatchDelivery({store:h.dispatch,queue:projector})
+ await delivery.deliverDispatchOutbox(25)
+ const admin=createDispatchAdministration({store:h.dispatch,auth:createDispatchAuth({store:h.dispatch})})
+ const action=randomUUID(),input={action_id:action,published_after:new Date(Date.now()-60_000).toISOString()}
+ // Only a global administrator may replay deliveries across every product.
+ await expect(admin.republishOutbox(x.f.actor,input)).rejects.toMatchObject({code:'DISPATCH_FORBIDDEN'})
+ await h.admin.query("INSERT INTO user_roles(id,user_id,role) VALUES($1,$2,'ADMIN')",[randomUUID(),x.f.actor.userId])
+ const receipt=await admin.republishOutbox(x.f.actor,input)
+ expect(receipt).toMatchObject({requests:1,published_after:input.published_after})
+ const rows=(await h.dispatch.query('SELECT version::text v,published_at,attempts FROM queue_dispatch_outbox WHERE request_id=$1 ORDER BY version',[x.proof.request_id])).rows
+ // Exactly the newest snapshot returns; the superseded ones stay published and are not delivered again.
+ expect(rows.at(-1)).toMatchObject({published_at:null,attempts:0})
+ expect(rows.slice(0,-1).every(r=>r.published_at!==null)).toBe(true)
+ // The receipt is the action's answer: a replay under the same action_id changes nothing again.
+ expect(await admin.republishOutbox(x.f.actor,input)).toEqual(receipt)
+ expect((await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_outbox WHERE request_id=$1 AND published_at IS NULL',[x.proof.request_id])).rows[0].n).toBe(1)
+ await expect(admin.republishOutbox(x.f.actor,{...input,published_after:new Date().toISOString()})).rejects.toMatchObject({code:'DISPATCH_IDEMPOTENCY_CONFLICT'})
+ // And the projector really does deliver it again, without creating a second root or reply.
+ expect(await delivery.deliverDispatchOutbox(25)).toMatchObject({delivered:1,failed:0})
+ expect(await messages(x.proof.request_id)).toHaveLength(2)
+ // A restore point after this delivery has nothing older to replay.
+ expect(await admin.republishOutbox(x.f.actor,{action_id:randomUUID(),published_after:new Date(Date.now()+60_000).toISOString()})).toMatchObject({requests:0})
+ await h.admin.query('DELETE FROM user_roles WHERE user_id=$1',[x.f.actor.userId])
 })

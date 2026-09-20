@@ -63,13 +63,13 @@ describe('fair registered pool ranking', () => {
   })
 })
 
-import { createDispatchTick } from '../../src/dispatch/tick.js'
+import { createDispatchTick, DISPATCH_TICK_MAINTENANCE_LIMIT, DISPATCH_TICK_RETENTION_LIMIT } from '../../src/dispatch/tick.js'
 import { vi } from 'vitest'
 it('tick touches at most 25 request ids and never wires timers on import', async () => {
   const reserve = vi.fn(async () => null), retire = vi.fn(async () => true), waiting = vi.fn(async (limit: number) => Array.from({ length: limit }, (_, i) => String(i)))
   const store = { query: vi.fn(async () => ({ rows: Array.from({ length: 10 }, (_, i) => ({ request_id: String(i) })) })) }
   const tick = createDispatchTick({ store: store as never, selection: { reserveRequest: reserve, retireExpiredCandidate: retire, waitingRequestIds: waiting } as never })
-  expect(await tick()).toEqual({ prepared: 0, reserved: 0, retired: 10, uncertain: 0, publications: 0, publicationsFailed: 0, delivered: 0, deliveryFailed: 0, errors: 0 })
+  expect(await tick()).toEqual({ prepared: 0, reserved: 0, retired: 10, uncertain: 0, publications: 0, publicationsFailed: 0, delivered: 0, deliveryFailed: 0, replyReadsRecovered: 0, threadsArchived: 0, threadsRefused: 0, errors: 0 })
   expect(waiting).toHaveBeenCalledWith(15); expect(reserve).toHaveBeenCalledTimes(15); expect(retire).toHaveBeenCalledTimes(10)
 })
 
@@ -89,10 +89,51 @@ it('prepares sources before selection, bounds the outbox and survives one poison
     delivery: { deliverDispatchOutbox: vi.fn(async (limit: number) => ({ delivered: limit, failed: 0 })) } as never,
     onError: stage => { stages.push(stage) },
   })
-  expect(await tick()).toEqual({ prepared: 2, reserved: 2, retired: 0, uncertain: 0, publications: 2, publicationsFailed: 1, delivered: 100, deliveryFailed: 0, errors: 3 })
+  expect(await tick()).toEqual({ prepared: 2, reserved: 2, retired: 0, uncertain: 0, publications: 2, publicationsFailed: 1, delivered: 100, deliveryFailed: 0, replyReadsRecovered: 0, threadsArchived: 0, threadsRefused: 0, errors: 3 })
   // Preparation runs first and for every waiting request, so selection never sees an unprepared one.
   expect(prepareRequestSources.mock.calls.map(call => call[0])).toEqual(['a', 'b', 'c'])
   expect(prepared).toEqual(['a', 'c'])
   expect(reserved).toEqual(['a', 'b'])
   expect(stages).toEqual(['sources', 'reserve', 'lease'])
+})
+
+it('runs queue maintenance last, bounded, once per interval and never on the selection path', async () => {
+  let clock = 1_000
+  const recoverReplyReads = vi.fn(async (limit: number) => Array.from({ length: Math.min(limit, 2) }, (_, i) => `reply-${i}`))
+  const retainThreads = vi.fn(async (_limit: number) => ({ archived: 3, refused: 1 }))
+  const order: string[] = []
+  const tick = createDispatchTick({
+    store: { query: vi.fn(async () => ({ rows: [] })) } as never,
+    selection: { waitingRequestIds: vi.fn(async () => []), reserveRequest: vi.fn(), retireExpiredCandidate: vi.fn() } as never,
+    delivery: { deliverDispatchOutbox: vi.fn(async () => { order.push('delivery'); return { delivered: 0, failed: 0 } }) } as never,
+    maintenance: {
+      intervalMs: 900_000, now: () => clock,
+      recoverReplyReads: async limit => { order.push('reply_reads'); return recoverReplyReads(limit) },
+      retainThreads: async limit => { order.push('retention'); return retainThreads(limit) },
+    },
+  })
+  expect(await tick()).toMatchObject({ replyReadsRecovered: 2, threadsArchived: 3, threadsRefused: 1 })
+  // Delivery must never wait behind retention, and retention is bounded by its own batch size.
+  expect(order).toEqual(['delivery', 'reply_reads', 'retention'])
+  expect(recoverReplyReads).toHaveBeenCalledWith(DISPATCH_TICK_MAINTENANCE_LIMIT)
+  expect(retainThreads).toHaveBeenCalledWith(DISPATCH_TICK_RETENTION_LIMIT)
+  // The 5s tick is not a maintenance schedule: the next one does nothing until the interval passes.
+  clock += 899_999
+  expect(await tick()).toMatchObject({ replyReadsRecovered: 0, threadsArchived: 0, threadsRefused: 0 })
+  expect(recoverReplyReads).toHaveBeenCalledTimes(1)
+  clock += 1
+  await tick()
+  expect(recoverReplyReads).toHaveBeenCalledTimes(2)
+})
+
+it('keeps a failing maintenance stage inside its own unit and retention optional', async () => {
+  const stages: string[] = []
+  const tick = createDispatchTick({
+    store: { query: vi.fn(async () => ({ rows: [] })) } as never,
+    selection: { waitingRequestIds: vi.fn(async () => []), reserveRequest: vi.fn(), retireExpiredCandidate: vi.fn() } as never,
+    maintenance: { intervalMs: 1, recoverReplyReads: async () => { throw new Error('queue unit failed') } },
+    onError: stage => { stages.push(stage) },
+  })
+  expect(await tick()).toMatchObject({ replyReadsRecovered: 0, threadsArchived: 0, threadsRefused: 0, errors: 1 })
+  expect(stages).toEqual(['maintenance:reply_reads'])
 })

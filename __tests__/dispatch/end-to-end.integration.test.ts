@@ -222,6 +222,7 @@ describe('IP-13 REST matrix wiring', () => {
         ['PUT', '/attempts/artifacts/key'], ['GET', '/artifacts/id'],
         ['POST', '/profiles'], ['POST', '/profiles/id/revoke'], ['GET', '/profiles?product_id=p'],
         ['POST', '/slots'], ['POST', '/slots/id/disable'], ['POST', '/reply-addresses'],
+        ['POST', '/outbox/republish'], ['POST', '/publications/id/resolve'],
       ]
       const statuses: Record<string, number> = {}
       for (const [method, path] of matrix) {

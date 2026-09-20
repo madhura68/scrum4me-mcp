@@ -6,11 +6,28 @@ import type { createDispatchDelivery } from './delivery.js'
 /** Per §2.1 one tick touches at most 25 requests and at most 100 outbox items. */
 export const DISPATCH_TICK_REQUEST_LIMIT = 25
 export const DISPATCH_TICK_OUTBOX_LIMIT = 100
+/** Queue maintenance is hourly-scale work on a five-second tick: both stages are bounded so one
+ * pass can never become a long transaction on the queue, and both are idempotent, so the next
+ * pass finishes what this one left. */
+export const DISPATCH_TICK_MAINTENANCE_LIMIT = 100
+export const DISPATCH_TICK_RETENTION_LIMIT = 25
 
 export type DispatchTickResult = {
   prepared: number; reserved: number; retired: number; uncertain: number
   publications: number; publicationsFailed: number
-  delivered: number; deliveryFailed: number; errors: number
+  delivered: number; deliveryFailed: number
+  replyReadsRecovered: number; threadsArchived: number; threadsRefused: number
+  errors: number
+}
+/** Projector-side repair and retention. Neither carries an actor or grants authority: they only
+ * hand a forgotten reply back to its reader and move a finished thread into the archive, so they
+ * belong to the service's own tick rather than to an operator command. Retention deletes hot
+ * rows, so the deployment opts into it by supplying `retainThreads`; repair is always safe. */
+export type DispatchMaintenance = {
+  intervalMs: number
+  now?: () => number
+  recoverReplyReads: (limit: number) => Promise<string[]>
+  retainThreads?: (limit: number) => Promise<{ archived: number; refused: number }>
 }
 export type DispatchTickDependencies = {
   store: DispatchStore
@@ -19,6 +36,7 @@ export type DispatchTickDependencies = {
   delivery?: ReturnType<typeof createDispatchDelivery>
   sources?: { prepareRequestSources(requestId: string): Promise<void> }
   publications?: { reconcileIncompletePublications(): Promise<{ processed: number; failed: number }> }
+  maintenance?: DispatchMaintenance
   onError?: (stage: string, error: unknown) => void
 }
 
@@ -29,6 +47,7 @@ export type DispatchTickDependencies = {
  * Delivery runs last precisely because projection must never hold up selection or leases. */
 export function createDispatchTick(deps: DispatchTickDependencies) {
   let errors = 0
+  let nextMaintenanceAt = 0
   async function unit<T>(stage: string, fallback: T, run: () => Promise<T>): Promise<T> {
     try { return await run() } catch (error) {
       errors++
@@ -57,7 +76,26 @@ export function createDispatchTick(deps: DispatchTickDependencies) {
     const projected = deps.delivery
       ? await unit('delivery', { delivered: 0, failed: 1 }, () => deps.delivery!.deliverDispatchOutbox(DISPATCH_TICK_OUTBOX_LIMIT))
       : { delivered: 0, failed: 0 }
+    // Maintenance runs last and only when its own interval is due: selection, leases and
+    // delivery never wait behind a repair or an archive pass.
+    let replyReadsRecovered = 0, threadsArchived = 0, threadsRefused = 0
+    const maintenance = deps.maintenance
+    if (maintenance) {
+      const at = (maintenance.now ?? Date.now)()
+      if (at >= nextMaintenanceAt) {
+        nextMaintenanceAt = at + maintenance.intervalMs
+        replyReadsRecovered = (await unit('maintenance:reply_reads', [] as string[],
+          () => maintenance.recoverReplyReads(DISPATCH_TICK_MAINTENANCE_LIMIT))).length
+        const retain = maintenance.retainThreads
+        if (retain) {
+          const retained = await unit('maintenance:retention', { archived: 0, refused: 0 },
+            () => retain(DISPATCH_TICK_RETENTION_LIMIT))
+          threadsArchived = retained.archived; threadsRefused = retained.refused
+        }
+      }
+    }
     return { prepared, reserved, retired, uncertain, publications: publication.processed,
-      publicationsFailed: publication.failed, delivered: projected.delivered, deliveryFailed: projected.failed, errors }
+      publicationsFailed: publication.failed, delivered: projected.delivered, deliveryFailed: projected.failed,
+      replyReadsRecovered, threadsArchived, threadsRefused, errors }
   }
 }
