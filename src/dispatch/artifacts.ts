@@ -110,6 +110,20 @@ export function createDispatchArtifacts(deps:{store:DispatchStore;auth:DispatchA
   if(row.byte_size!==row.bytes.length||artifactHash(row.bytes)!==row.sha256)throw new DispatchError('DISPATCH_STATE_CONFLICT')
   return new Uint8Array(row.bytes)
  }
+ /** The bound attempt's read of its own prepared sources, which is what the REST matrix gives it
+  * beside the requester and the product administrator. A supervisor holds no requester identity,
+  * so without this it could not fetch the very bytes the manifest it just signed names. It reaches
+  * request-level prepared sources only: never another request's, and never any attempt output. */
+ async function loadBoundSourceArtifact(actor:DispatchActor,proof:AttemptProof,id:string):Promise<Uint8Array>{
+  return withDispatchRetryTransaction(deps.store,async db=>{
+   const x=await lockArtifactAttempt(db,proof.attempt_id);verifyArtifactProof(actor,proof,x)
+   await deps.auth.refreshActor(actor,db);await authorizeArtifactAttempt(db,deps.auth,x)
+   const row=(await db.query('SELECT * FROM queue_dispatch_artifacts WHERE id=$1 AND request_id=$2 AND attempt_id IS NULL',[id,x.r.id])).rows[0]
+   if(!row)throw new DispatchError('DISPATCH_NOT_FOUND')
+   if(row.byte_size!==row.bytes.length||artifactHash(row.bytes)!==row.sha256)throw new DispatchError('DISPATCH_STATE_CONFLICT')
+   return new Uint8Array(row.bytes)
+  })
+ }
  async function stageSupervisorStop(actor:DispatchActor,observation:RuntimeStopObservation):Promise<StopEvidence>{
   const {sha256,...body}=observation,canonical=canonicalRuntimeStopObservation(body)
   if(Buffer.byteLength(canonical)>STOP_EVIDENCE_MAX_BYTES)throw new DispatchError('DISPATCH_TOO_LARGE')
@@ -137,6 +151,8 @@ export function createDispatchArtifacts(deps:{store:DispatchStore;auth:DispatchA
    if(!result||!['SUCCEEDED','FAILED','CANCELLED'].includes(x.r.state)||(await db.query("SELECT 1 FROM queue_dispatch_publications WHERE attempt_id=$1 AND state IN ('PREPARED','SENT','UNKNOWN')",[x.a.id])).rowCount||!['SUCCEEDED','FAILED','CANCELLED'].includes(x.a.state)||!x.a.stopped_at||(await db.query('SELECT 1 FROM queue_dispatch_reservations WHERE candidate_id=$1 AND released_at IS NULL',[x.c.id])).rowCount)throw new DispatchError('DISPATCH_STATE_CONFLICT')
   })
  }
- async function downloadArtifact(actor:DispatchActor,id:string){const bytes=await loadAuthorizedArtifact(actor,id);return {bytes,headers:{'Content-Type':'application/octet-stream','Content-Disposition':`attachment; filename="dispatch-${id}.bin"`,'X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'",'X-Content-SHA256':artifactHash(bytes)}}}
- return {storeAttemptArtifact,stageCollectedArtifact,loadAuthorizedArtifact,downloadArtifact,stageSupervisorStop,assertCleanupReceipt}
+ const download=(id:string,bytes:Uint8Array)=>({bytes,headers:{'Content-Type':'application/octet-stream','Content-Disposition':`attachment; filename="dispatch-${id}.bin"`,'X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'",'X-Content-SHA256':artifactHash(bytes)}})
+ async function downloadArtifact(actor:DispatchActor,id:string){return download(id,await loadAuthorizedArtifact(actor,id))}
+ async function downloadBoundSource(actor:DispatchActor,proof:AttemptProof,id:string){return download(id,await loadBoundSourceArtifact(actor,proof,id))}
+ return {storeAttemptArtifact,stageCollectedArtifact,loadAuthorizedArtifact,loadBoundSourceArtifact,downloadArtifact,downloadBoundSource,stageSupervisorStop,assertCleanupReceipt}
 }

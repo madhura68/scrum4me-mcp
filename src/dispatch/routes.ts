@@ -15,6 +15,7 @@ import { createDispatchCancellation } from './cancel.js'
 import { createDispatchRecovery } from './recovery.js'
 import { createDispatchArtifacts, artifactHash } from './artifacts.js'
 import { createAgentGateway } from './agent-gateway.js'
+import { signPreparedSourcesManifest } from './sources.js'
 import { createAgentOutputCapabilities } from './agent-output-capability.js'
 import { createDispatchCompletion, type CompletionDeps } from './completion.js'
 import type { PublicationReceipt, PublicationResolution } from './publication.js'
@@ -30,7 +31,7 @@ export type DispatchHttpOperation =
   | 'submit' | 'read' | 'cancel' | 'recover' | 'recovery_evidence'
   | 'register' | 'executor_heartbeat' | 'claim' | 'start' | 'reconcile' | 'attempt_heartbeat'
   | 'stop_evidence' | 'result' | 'put_artifact' | 'collect_artifact' | 'get_artifact'
-  | 'agent_source' | 'agent_output'
+  | 'agent_source' | 'agent_output' | 'source_manifest'
   | 'recovery_lookup' | 'recovery_stop' | 'recovery_result'
   | 'create_profile' | 'revoke_profile' | 'list_profiles' | 'create_slot' | 'disable_slot' | 'reply_address'
   | 'republish_outbox' | 'resolve_publication' | 'health'
@@ -371,11 +372,24 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
     const artifactId = await refusable(gateway!.stage(token, attemptId, operation, bytes, sha256))
     return { artifact_id: artifactId, sha256, byte_size: bytes.byteLength }
   })
+  // Three readers, exactly as the REST matrix names them: the requester, an authorized product
+  // administrator, and the bound attempt. The third proves itself with its own attempt proof and
+  // reaches only that request's prepared sources — the bytes the signed manifest already names.
   register('get', '/artifacts/:id', 'get_artifact', json, async ({ actor, req, res }) => {
-    const download = await artifacts.downloadArtifact(actor, req.params.id)
+    const download = req.get('X-Dispatch-Attempt-Proof')
+      ? await artifacts.downloadBoundSource(actor, attemptProof(req), req.params.id)
+      : await artifacts.downloadArtifact(actor, req.params.id)
     res.status(200).set(download.headers).end(Buffer.from(download.bytes))
     return undefined
   })
+  // The signed statement of which prepared bytes belong to this attempt. It is a read under the
+  // attempt's own proof; the supervisor hands the envelope to the operator broker, which verifies
+  // the same signature before a single byte is mounted. Absent where no permit key is configured.
+  register('post', '/attempts/sources/manifest', 'source_manifest', json, deps.executor
+    ? ({ actor, json: read }) => {
+      const input = parseWith(z.object({ proof: attemptProofSchema }).strict(), read())
+      return signPreparedSourcesManifest({ store: deps.store, auth }, actor, input.proof, deps.executor!.startPermitPrivateKey)
+    } : unavailable)
   register('post', '/profiles', 'create_profile', json, ({ actor, json: read }) =>
     administration.createProfile(actor, body(read()) as unknown as ProfileCreateInput))
   register('post', '/profiles/:id/revoke', 'revoke_profile', json, ({ actor, req, json: read }) =>
