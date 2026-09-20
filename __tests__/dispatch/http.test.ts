@@ -19,8 +19,10 @@ describe('dispatch transport', () => {
 })
 
 import type { AttemptProof, DispatchInput, DispatchProfileConfig, StopEvidence } from '@shared/queue-dispatch.js'
+import { readFile } from 'node:fs/promises'
 import { Pool } from 'pg'
 import { createDispatchApp } from '../../src/dispatch/routes.js'
+import { DISPATCH_PROTOCOL, DISPATCH_SERVICE_VERSION } from '../../src/dispatch/health.js'
 
 const input: DispatchInput = { version: 1, product_id: 'p', action: 'free_task', objective: 'read', verification: 'report',
   response_format: 'Markdown', requirements: { access: 'read', environment_keys: [] }, publish: 'artifact', reply_to: 'mac:jp' }
@@ -118,6 +120,32 @@ it('imports the app and entrypoint without connecting, and rejects malformed/ove
     expect((await fetch(url.replace('/requests', '/attempts/nonsense'), { method: 'POST', body: '{}' })).status).toBe(404)
     expect(pool.totalCount).toBe(0)
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); await pool.end() }
+})
+
+it('answers an unauthenticated readiness probe without credentials, product data or error text', async () => {
+  const pool = new Pool({ connectionString: 'postgres://probe_user:probe_password@127.0.0.1:1/never_connect' })
+  const app = createDispatchApp({ store: pool, enabled: false, productAllowlist: [] })
+  const server = app.listen(0, '127.0.0.1')
+  try {
+    await new Promise<void>(resolve => server.once('listening', resolve))
+    const port = (server.address() as { port: number }).port
+    const response = await fetch(`http://127.0.0.1:${port}/healthz`)
+    // A probe reports facts; it does not fail. Same convention as `/health` in src/http.ts.
+    expect(response.status).toBe(200)
+    const body = await response.json() as Record<string, unknown>
+    // A database that cannot be reached is simply not ready. The connection error never reaches the body.
+    expect(body).toEqual({ version: DISPATCH_SERVICE_VERSION, protocol: 'dispatch-v1', schema_ready: false, role_ready: false })
+    expect(JSON.stringify(body)).not.toMatch(/probe_password|probe_user|never_connect|127\.0\.0\.1|ECONNREFUSED/)
+    // Cheap: one bounded query per probe window, and nothing is written.
+    expect((await (await fetch(`http://127.0.0.1:${port}/healthz`)).json())).toEqual(body)
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); await pool.end() }
+})
+
+it('keeps the service version bound to the package and the protocol bound to the shared contract', async () => {
+  const pkg = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8')) as { version: string }
+  expect(DISPATCH_SERVICE_VERSION).toBe(pkg.version)
+  const protocol: DispatchProfileConfig['protocol'] = DISPATCH_PROTOCOL
+  expect(protocol).toBe('dispatch-v1')
 })
 
 it('transports the authoritative no-authority claim receipt without inventing execution context',async()=>{

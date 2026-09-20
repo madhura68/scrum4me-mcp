@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { attemptProofSchema, stopEvidenceSchema, parseDispatchResult } from '@shared/queue-dispatch-validation.js'
 import { ARTIFACT_MAX_BYTES } from '@shared/queue-dispatch-sources.js'
 import { createDispatchAuth } from './auth.js'
+import { createDispatchHealth } from './health.js'
 import type { DispatchAssertionKeys } from './assertions.js'
 import type { DispatchStore } from './db.js'
 import type { DispatchActor } from './ports.js'
@@ -26,6 +27,7 @@ export type DispatchHttpOperation =
   | 'register' | 'executor_heartbeat' | 'claim' | 'start' | 'reconcile' | 'attempt_heartbeat'
   | 'stop_evidence' | 'result' | 'put_artifact' | 'get_artifact'
   | 'create_profile' | 'revoke_profile' | 'list_profiles' | 'create_slot' | 'disable_slot' | 'reply_address'
+  | 'health'
 export type DispatchHttpLog = { operation: DispatchHttpOperation; request_id: string | null; status: number; duration_ms: number }
 
 /** Supervisor-facing routes exist only where the deployment actually holds the keys that make
@@ -82,6 +84,7 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
   const completion = createDispatchCompletion(core)
   const administration = createDispatchAdministration(core)
   const registration = deps.executor ? createDispatchRegistration({ ...core, ...deps.executor }) : null
+  const health = createDispatchHealth({ store: deps.store })
   const attempts = deps.executor ? createDispatchAttempts({ ...core, ...deps.executor }) : null
 
   type Context = { actor: DispatchActor; req: Request; res: Response; raw: Buffer; json: () => unknown }
@@ -136,6 +139,13 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
   const register = (method: 'post' | 'get' | 'put', path: string, operation: DispatchHttpOperation, limit: number, fn: Handler) =>
     app[method](`/dispatch/v1${path}`, log(operation), raw(limit), handle(fn, method !== 'get' && operation !== 'put_artifact'))
   const json = 256 * 1024
+
+  /** Readiness. Unauthenticated on purpose — an orchestrator has no dispatch identity — and for
+   * that reason side-effect free, cached for a probe window and limited to build facts. It is
+   * outside `/dispatch/v1`: it is not part of the versioned protocol surface. */
+  app.get('/healthz', log('health'), async (_req, res, next) => {
+    try { res.status(200).json(await health.readiness()) } catch (error) { next(error) }
+  })
 
   register('post', '/requests', 'submit', json, ({ actor, req, json: read }) =>
     requests.submitDispatch(actor, read(), req.get('Idempotency-Key') ?? ''))
