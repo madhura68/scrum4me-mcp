@@ -14,6 +14,9 @@ vi.mock('node:fs/promises',async importOriginal=>{
   return fs.rm(...args)
  }}
 })
+// These fixtures execute dozens of real Git processes plus local HTTP. Under the
+// full parallel suite they exceed Vitest's 5s unit-test default; keep a finite 30s budget.
+const publicationTimeout=30_000
 it.each([false,true])('publishes verified code into an absent request branch and reconciles without overwriting a foreign remote head (cleanup failure: %s)',async cleanupFails=>{
  const warn=vi.spyOn(console,'warn').mockImplementation(()=>{})
  const root=await mkdtemp(join(tmpdir(),'ip09-publish-'))
@@ -36,7 +39,7 @@ it.each([false,true])('publishes verified code into an absent request branch and
    expect(JSON.stringify(warn.mock.calls)).not.toContain('sensitive cleanup details')
   }
  }finally{cleanupFault.enabled=false;warn.mockRestore();for(const path of cleanupFault.paths)await rm(path,{recursive:true,force:true,maxRetries:3});cleanupFault.paths.clear();await rm(root,{recursive:true,force:true,maxRetries:3})}
-})
+},publicationTimeout)
 it('requires explicit protocol/host authority before any remote publication',async()=>{
  const port=createGitPublicationPort({root:join(tmpdir(),'never-created-ip09'),allowedProtocols:['https'],allowedHosts:['git.example.invalid']})
  await expect(port.publish({operationId:randomUUID(),requestId:'x',attemptId:randomUUID(),repoUrl:'https://attacker.invalid/repo.git',baseBranch:'main',baseSha:'a'.repeat(40),headSha:'b'.repeat(40),branch:'codex/queue-x',mode:'branch',expectedRemoteHead:null,codeBytes:new Uint8Array(),baseBytes:new Uint8Array(),checks:[]})).rejects.toThrow('DISPATCH_FORBIDDEN')
@@ -58,7 +61,7 @@ it('reconciles an actual lost HTTP create response to one draft PR marker withou
   try{for(const path of cleanupFault.paths)await rm(path,{recursive:true,force:true,maxRetries:3});cleanupFault.paths.clear();await rm(remote,{recursive:true,force:true,maxRetries:3});await rm(root,{recursive:true,force:true,maxRetries:3})}
   finally{await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()))}
  }
-})
+},publicationTimeout)
 it('reports an unverifiable artifact as a receipt instead of throwing out of the publisher',async()=>{
  const root=await mkdtemp(join(tmpdir(),'ip09-unverifiable-'))
  try{
