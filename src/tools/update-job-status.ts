@@ -1,4 +1,4 @@
-import { assertUnmanagedJob, assertUnmanagedJobId, managedTaskExecutionsSelect } from '../dispatch/managed-job.js'
+import { assertUnmanagedJob, assertUnmanagedJobCleanup, assertUnmanagedJobId, assertUnmanagedJobRow, managedTaskExecutionsSelect } from '../dispatch/managed-job.js'
 // update_job_status — agent rapporteert voortgang: running | done | failed | skipped.
 // Auth: Bearer-token moet matchen claimed_by_token_id van de job.
 // Triggert automatisch een SSE-event naar de UI via pg_notify.
@@ -81,14 +81,16 @@ export async function cleanupWorktreeForTerminalStatus(
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     select: {
-      kind: true, dispatch_request_id: true, dispatch_candidate_id: true, task_executions: managedTaskExecutionsSelect,
-      task: { select: { story_id: true, repo_url: true, dispatch_request_id: true } },
+      kind: true, dispatch_request_id: true, dispatch_candidate_id: true,
+      task: { select: { story_id: true, repo_url: true } },
       sprint_run_id: true,
       sprint_run: { select: { pr_strategy: true } },
     },
   })
 
-  assertUnmanagedJob(job)
+  // Cleanup path: only this job's own markers decide. Its task may have been handed to a managed
+  // dispatch after this job ended, and this still removes nothing but this job's own worktree.
+  assertUnmanagedJobRow(job)
   const repoKey = job?.task?.repo_url ?? null
   const repoRoot = await resolveRepoRoot(productId, repoKey)
   if (!repoRoot) {
@@ -157,7 +159,7 @@ function terminalStatusForCleanup(dbStatus: string): 'done' | 'failed' | 'skippe
 // hook (cwd = worktree) has had its chance to run. No-op if nothing is pending.
 // Ordinary cleanup is best-effort; managed jobs fail before marker/filesystem access.
 export async function runDeferredWorktreeCleanup(jobId: string): Promise<void> {
-  await assertUnmanagedJobId(jobId)
+  await assertUnmanagedJobCleanup(jobId)
   if (!(await isWorktreeCleanupPending(jobId))) return
   try {
     const job = await prisma.claudeJob.findUnique({
@@ -183,7 +185,7 @@ export async function backupPushOnFailure(
   jobId: string,
   branch: string | null | undefined,
 ): Promise<void> {
-  await assertUnmanagedJobId(jobId)
+  await assertUnmanagedJobCleanup(jobId)
   if (!branch) return
   try {
     await maybeBackupPush({

@@ -1,4 +1,4 @@
-import { assertUnmanagedJobId } from '../dispatch/managed-job.js'
+import { assertUnmanagedJobCleanup, assertUnmanagedJobId } from '../dispatch/managed-job.js'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 import { acquireFileLocksOrdered } from './file-lock.js'
@@ -59,7 +59,7 @@ export function registerJobLockReleases(
 export async function releaseLocksOnTerminal(jobId: string): Promise<void> {
   const releases = jobReleases.get(jobId)
   if (!releases) return // idempotent — already released or never locked
-  await assertUnmanagedJobId(jobId)
+  await assertUnmanagedJobCleanup(jobId)
   jobReleases.delete(jobId)
   for (const release of releases) {
     try {

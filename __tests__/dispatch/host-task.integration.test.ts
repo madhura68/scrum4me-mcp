@@ -88,7 +88,11 @@ it('blocks older unbound Task jobs and sprint executions before ordinary effects
  await started()
  for(const id of [oldJob,batchJob]){
   const pr={jobId:id,productId:f.input.product_id,taskId:task,worktreePath:'/nonexistent-dispatch-test',branchName:'feat/old',summary:undefined}
-  for(const operation of [()=>prepareDoneUpdate(id,'feat/old'),()=>backupPushOnFailure(id,'feat/old'),()=>cleanupWorktreeForTerminalStatus(f.input.product_id,id,'done','feat/old'),()=>maybeCreateAutoPr(pr),()=>maybeCreateSprintBatchPr(pr),()=>runDeferredWorktreeCleanup(id),()=>getFullJobContext(id),()=>rollbackClaim(id,null),()=>markJobTerminallyFailed(id,'old'),()=>setupProductWorktrees(id,[f.input.product_id],async()=>{throw Error('unexpected effect')})])await expect(operation()).rejects.toThrow('DISPATCH_MANAGED_ROW')
+  for(const operation of [()=>prepareDoneUpdate(id,'feat/old'),()=>maybeCreateAutoPr(pr),()=>maybeCreateSprintBatchPr(pr),()=>getFullJobContext(id),()=>rollbackClaim(id,null),()=>markJobTerminallyFailed(id,'old'),()=>setupProductWorktrees(id,[f.input.product_id],async()=>{throw Error('unexpected effect')})])await expect(operation()).rejects.toThrow('DISPATCH_MANAGED_ROW')
+  // ST-1590.37: these three only free host resources of THIS job — in-memory locks, its own worktree,
+  // its own branch. They must not refuse because the task has meanwhile been handed to a dispatch,
+  // or the deferred cleanup of an ordinary job that already ended leaks those resources for good.
+  for(const operation of [()=>backupPushOnFailure(id,'feat/old'),()=>cleanupWorktreeForTerminalStatus(f.input.product_id,id,'done','feat/old'),()=>runDeferredWorktreeCleanup(id)])await expect(operation()).resolves.toBeUndefined()
  }
  await expect(h.web.query("UPDATE sprint_task_executions SET status='RUNNING' WHERE id=$1",[execution])).rejects.toMatchObject({code:'42501',message:'DISPATCH_MANAGED_ROW'})
  await expect(h.web.query(`INSERT INTO sprint_task_executions(id,sprint_job_id,task_id,"order",plan_snapshot,verify_required_snapshot,updated_at) VALUES($1,$2,$3,0,'new plan','ALIGNED_OR_PARTIAL',now())`,[randomUUID(),oldJob,task])).rejects.toMatchObject({code:'42501',message:'DISPATCH_MANAGED_ROW'})

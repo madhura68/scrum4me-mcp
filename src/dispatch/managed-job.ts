@@ -13,6 +13,32 @@ export function assertUnmanagedJob(job: ManagedJobMarkers | null | undefined): v
         throw new Error('DISPATCH_MANAGED_ROW');
     }
 }
+/** Job-level markers only: whether THIS job row is itself managed. Deliberately blind to the task
+ * binding, which records who holds the task NOW — an ordinary job that already ended may have had
+ * its task handed to a managed dispatch afterwards, and its own cleanup must still run. */
+export type ManagedJobRowMarkers = Pick<ManagedJobMarkers, 'kind' | 'dispatch_request_id' | 'dispatch_candidate_id'>;
+export function isManagedJobRow(job: ManagedJobRowMarkers | null | undefined): boolean {
+    return job != null && (job.dispatch_request_id != null || job.dispatch_candidate_id != null || ['QUEUE_TASK', 'QUEUE_REVIEW'].includes(job.kind ?? ''));
+}
+export function assertUnmanagedJobRow(job: ManagedJobRowMarkers | null | undefined): void {
+    if (isManagedJobRow(job))
+        throw new Error('DISPATCH_MANAGED_ROW');
+}
+/** Guard for the cleanup path of a job that already ended. Those helpers document that they never
+ * throw, so a failing marker read must not break that promise either: it is logged by error name
+ * and the cleanup proceeds — the host resources it frees (in-memory locks, this job's own worktree,
+ * its own branch) belong to this job alone and are never touched by a managed dispatch. */
+export async function assertUnmanagedJobCleanup(jobId: string): Promise<void> {
+    let job: ManagedJobMarkers | null;
+    try {
+        job = await prisma.claudeJob.findUnique({ where: { id: jobId }, select: { kind: true, dispatch_request_id: true, dispatch_candidate_id: true } });
+    }
+    catch (error) {
+        console.warn(`[managed-job] managed-marker read failed for job ${jobId}: ${(error as { name?: string } | null)?.name ?? 'Error'}`);
+        return;
+    }
+    assertUnmanagedJobRow(job);
+}
 export async function assertUnmanagedJobId(jobId: string): Promise<void> {
     assertUnmanagedJob(await prisma.claudeJob.findUnique({ where: { id: jobId }, select: { task_executions: managedTaskExecutionsSelect, kind: true, dispatch_request_id: true, dispatch_candidate_id: true, task: { select: { dispatch_request_id: true } } } }));
 }

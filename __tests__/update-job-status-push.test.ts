@@ -182,3 +182,18 @@ it('blocks managed failure and done push before invoking external publication',a
   await expect(backupPushOnFailure('managed','codex/request')).rejects.toThrow('DISPATCH_MANAGED_ROW')
   expect(mockPush).not.toHaveBeenCalled();expect(mockBackupPush).not.toHaveBeenCalled()
 })
+
+// ST-1590.37: the cleanup path reads job-level markers of THIS job only. prepareDoneUpdate is not a
+// cleanup path — it publishes — so it keeps refusing on the current task binding.
+it('still backs up the branch of an ended job whose task went managed afterwards',async()=>{
+  mockFindUnique.mockResolvedValue({kind:'TASK_IMPLEMENTATION',dispatch_request_id:null,dispatch_candidate_id:null,task:{dispatch_request_id:'managed-request'},task_executions:[{task:{dispatch_request_id:'managed-request'}}]})
+  await expect(backupPushOnFailure('handed-over','feat/old')).resolves.toBeUndefined()
+  expect(mockBackupPush).toHaveBeenCalledTimes(1)
+  await expect(prepareDoneUpdate('handed-over','feat/old')).rejects.toThrow('DISPATCH_MANAGED_ROW')
+})
+
+it('backs up the branch and never throws when the marker read fails',async()=>{
+  mockFindUnique.mockRejectedValue(Object.assign(new Error('connection refused'),{name:'PrismaClientInitializationError'}))
+  await expect(backupPushOnFailure('db-down','feat/old')).resolves.toBeUndefined()
+  expect(mockBackupPush).toHaveBeenCalledTimes(1)
+})
