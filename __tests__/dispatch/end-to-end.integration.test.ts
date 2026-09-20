@@ -91,6 +91,7 @@ async function startService(f: DispatchHarnessSeed, options: {
   publisherPort?: ReturnType<typeof fakePublisher>['port']
   prepareRepository?: Parameters<typeof createDispatchSources>[0]['prepareRepository']
   queue?: Pool
+  agentOutputKey?: Uint8Array
 } = {}) {
   const auth = createDispatchAuth({ store: h.dispatch })
   const core = { store: h.dispatch, auth, enabled: true, productAllowlist: [f.input.product_id] }
@@ -98,7 +99,7 @@ async function startService(f: DispatchHarnessSeed, options: {
   const publisher = options.publisherPort
     ? createDispatchPublication({ ...core, port: options.publisherPort, loadBaseBranch: async () => 'main' })
     : undefined
-  const app = createDispatchApp({ ...core, executor, publisher })
+  const app = createDispatchApp({ ...core, executor, publisher, ...(options.agentOutputKey ? { agentOutputKey: options.agentOutputKey } : {}) })
   const server = app.listen(0, '127.0.0.1')
   await new Promise<void>(resolve => server.once('listening', resolve))
   cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())))
@@ -219,7 +220,8 @@ describe('IP-13 REST matrix wiring', () => {
         ['POST', '/executors/register'], ['POST', '/executors/heartbeat'],
         ['POST', '/attempts/claim'], ['POST', '/attempts/start'], ['POST', '/attempts/reconcile'],
         ['POST', '/attempts/heartbeat'], ['POST', '/attempts/stop-evidence'], ['POST', '/attempts/result'],
-        ['PUT', '/attempts/artifacts/key'], ['GET', '/artifacts/id'],
+        ['PUT', '/attempts/artifacts/key'], ['PUT', '/attempts/collected/report'], ['GET', '/artifacts/id'],
+        ['POST', '/attempts/recovery/lookup'], ['POST', '/attempts/recovery/stop'], ['POST', '/attempts/recovery/result'],
         ['POST', '/profiles'], ['POST', '/profiles/id/revoke'], ['GET', '/profiles?product_id=p'],
         ['POST', '/slots'], ['POST', '/slots/id/disable'], ['POST', '/reply-addresses'],
         ['POST', '/outbox/republish'], ['POST', '/publications/id/resolve'],
@@ -587,7 +589,9 @@ describe('failure matrix', () => {
     const stored = await service.client.putArtifact('code', { proof, bytes: code.bytes, sha256: code.sha256 })
     await submitStop(service, proof, stopObservation(slot.id, proof, scope))
     const result: DispatchResult = { version: 1, outcome: 'succeeded', summary: 'Implemented', report_markdown: 'Report.', checks: [], code: { base_sha: repo.baseSha, head_sha: code.headSha, branch: code.branch, artifact_id: stored.artifact_id } }
-    expect(await service.client.submitResult({ proof, result })).toEqual({ status: 'late', result_id: null })
+    // No canonical result exists yet, so the receipt carries none: only the reason the service
+    // could not accept one. A supervisor must not turn this into a local completion.
+    expect(await service.client.submitResult({ proof, result })).toEqual({ status: 'late', result_id: null, reason: 'publication_unknown' })
     expect((await h.dispatch.query("SELECT state FROM queue_dispatch_publications WHERE request_id=$1", [submitted.id])).rows).toEqual([{ state: 'UNKNOWN' }])
     expect(await counters(f, submitted.id, runtime, publisher)).toMatchObject({ modelStarts: 1, publishCalls: 1, canonicalResults: 0, replyMessages: 0, slotOccupancy: 1 })
     // Only the reconciler settles it, and it never sends a second publication.
@@ -678,6 +682,262 @@ describe('failure matrix', () => {
     expect(events).toBe(1)
     await s.service.tick()
     expect(await counters(s.f, s.submitted.id, s.runtime)).toMatchObject({ modelStarts: 1, canonicalResults: 0, replyMessages: 0 })
+  })
+})
+
+/** IP-13 supervisor-facing surface. Every case below drives the real HTTP routes with the
+ * exact authority the domain function was written for; none of them reaches into the module. */
+const AGENT_OUTPUT_KEY = Buffer.alloc(32, 2)
+const base64url = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url')
+const bindingOf = (proof: { request_id: string; candidate_id: string; generation: number; attempt_id: string; incarnation_id: string }, scope: RuntimeScope) =>
+  ({ requestId: proof.request_id, candidateId: proof.candidate_id, generation: proof.generation, attemptId: proof.attempt_id, incarnationId: proof.incarnation_id, scope })
+async function putCollected(service: Service, binding: unknown, key: string, bytes: Uint8Array, token = TOKEN) {
+  const response = await fetch(`${service.root}/attempts/collected/${key}`, {
+    method: 'PUT', body: Buffer.from(bytes),
+    headers: {
+      Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream',
+      'X-Content-SHA256': artifactHash(bytes), 'X-Dispatch-Start-Binding': base64url(binding),
+    },
+  })
+  return { status: response.status, body: await response.json() as Record<string, unknown> }
+}
+async function recoveryCall(service: Service, path: 'lookup' | 'stop' | 'result', body: unknown) {
+  const response = await fetch(`${service.root}/attempts/recovery/${path}`, {
+    method: 'POST', headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })
+  return { status: response.status, body: await response.json() as Record<string, unknown> }
+}
+async function agentRead(service: Service, token: string, attemptId: string, key: string) {
+  const response = await fetch(`${service.root}/agent/sources/${key}`, {
+    headers: { 'X-Dispatch-Agent-Token': token, 'X-Dispatch-Attempt-Id': attemptId },
+  })
+  return { status: response.status, text: await response.text() }
+}
+async function agentStage(service: Service, token: string, attemptId: string, key: string, bytes: Uint8Array, extra: Record<string, string> = {}) {
+  const response = await fetch(`${service.root}/agent/outputs/${key}`, {
+    method: 'PUT', body: Buffer.from(bytes),
+    headers: {
+      'Content-Type': 'application/octet-stream', 'X-Content-SHA256': artifactHash(bytes),
+      'X-Dispatch-Agent-Token': token, 'X-Dispatch-Attempt-Id': attemptId, ...extra,
+    },
+  })
+  return { status: response.status, body: await response.json().catch(() => ({})) as Record<string, unknown> }
+}
+function mintAgentToken(proof: { request_id: string; candidate_id: string; generation: number; attempt_id: string; incarnation_id: string }, inputHash: string, input: DispatchInput, ms = 60_000) {
+  return createAgentOutputCapabilities(AGENT_OUTPUT_KEY).mint({
+    binding: { request_id: proof.request_id, candidate_id: proof.candidate_id, generation: proof.generation, attempt_id: proof.attempt_id, incarnation_id: proof.incarnation_id, input_sha256: inputHash, profile_sha256: PROFILE_SHA256 },
+    action: input.action, access: input.requirements.access, attemptDeadlineMs: Date.now() + ms,
+  }, Date.now())
+}
+const inputHashOf = async (id: string) => (await h.dispatch.query<{ input_hash: string }>('SELECT input_hash FROM queue_dispatch_requests WHERE id=$1', [id])).rows[0].input_hash
+/** A second, perfectly valid bearer that simply is not the supervisor token this slot is bound to. */
+async function otherSupervisorToken(f: DispatchHarnessSeed, value: string) {
+  const id = randomUUID()
+  await h.admin.query("INSERT INTO api_tokens(id,user_id,token_hash,kind,scoped_products) VALUES($1,$2,$3,'IMPLEMENTATION',$4::text[])",
+    [id, f.otherUser, createHash('sha256').update(value).digest('hex'), [f.input.product_id]])
+  h.trackToken(id)
+  return value
+}
+
+describe('POST /attempts/result answers with the canonical receipt', () => {
+  it('returns the domain outcome, not only an id, and replays the same canonical result', async () => {
+    const f = await h.seed(); await authorizeToken(f)
+    const documents = await pinnedDocument(f)
+    const slot = await useRoute(f, 'job')
+    await reprofile(f, slot.id, { runtime: 'CODEX', actions: ['review'], access: 'read', publish_modes: ['artifact'] })
+    await h.dispatch.query(`UPDATE queue_dispatch_slots SET config=jsonb_set(config,'{capabilities}','["review"]') WHERE id=$1`, [slot.id])
+    await h.admin.query("UPDATE claude_workers SET capabilities=ARRAY['review'] WHERE user_id=$1", [f.actor.userId])
+    const service = await startService(f), runtime = fakeRuntime()
+    const session = await registerSupervisor(service, slot.id, 'CODEX')
+    const input: DispatchInput = { ...f.input, action: 'review', review_documents: documents }
+    const submitted = await service.client.submitDispatch(input, randomUUID())
+    expect((await service.tick()).reserved).toBe(1)
+    const { proof, scope } = await claimAndStart(service, session, runtime)
+    await readReviewSources(service, proof, input)
+    await submitStop(service, proof, stopObservation(slot.id, proof, scope))
+    const result: DispatchResult = {
+      version: 1, outcome: 'succeeded', summary: 'Reviewed the pinned plan', report_markdown: 'GO on the pinned revision.',
+      checks: [], review: { verdict: 'GO', documents },
+    }
+    const receipt = await service.client.submitResult({ proof, result })
+    expect(receipt.status).toBe('accepted')
+    expect(receipt.reason).toBe('succeeded')
+    expect(receipt.canonical_result).toEqual(result)
+    // The stored canonical payload is what the receipt carried; the supervisor never has to
+    // guess which of the two the service considers authoritative.
+    const stored = (await h.dispatch.query<{ payload: DispatchResult }>('SELECT payload FROM queue_dispatch_results WHERE request_id=$1', [submitted.id])).rows[0].payload
+    expect(receipt.canonical_result).toEqual(stored)
+    const replay = await service.client.submitResult({ proof, result })
+    expect(replay).toMatchObject({ status: 'accepted', result_id: receipt.result_id, reason: 'replayed' })
+    expect(replay.canonical_result).toEqual(receipt.canonical_result)
+    expect(Number((await h.dispatch.query<{ n: string }>('SELECT count(*)::text n FROM queue_dispatch_results WHERE request_id=$1', [submitted.id])).rows[0].n)).toBe(1)
+  })
+
+  it('hands back the rewritten outcome when the domain refuses the submitted one', async () => {
+    const f = await h.seed(); await authorizeToken(f)
+    const documents = await pinnedDocument(f)
+    const slot = await useRoute(f, 'job')
+    await reprofile(f, slot.id, { runtime: 'CODEX', actions: ['review'], access: 'read', publish_modes: ['artifact'] })
+    await h.dispatch.query(`UPDATE queue_dispatch_slots SET config=jsonb_set(config,'{capabilities}','["review"]') WHERE id=$1`, [slot.id])
+    await h.admin.query("UPDATE claude_workers SET capabilities=ARRAY['review'] WHERE user_id=$1", [f.actor.userId])
+    const service = await startService(f), runtime = fakeRuntime()
+    const session = await registerSupervisor(service, slot.id, 'CODEX')
+    const input: DispatchInput = { ...f.input, action: 'review', review_documents: documents }
+    await service.client.submitDispatch(input, randomUUID())
+    await service.tick()
+    const { proof, scope } = await claimAndStart(service, session, runtime)
+    await submitStop(service, proof, stopObservation(slot.id, proof, scope))
+    // A review that never read its pinned source cannot succeed; the service rewrites the
+    // outcome and the supervisor must learn that from the receipt itself.
+    const receipt = await service.client.submitResult({
+      proof, result: { version: 1, outcome: 'succeeded', summary: 'claimed a review', report_markdown: 'GO', checks: [] },
+    })
+    expect(receipt.status).toBe('accepted')
+    expect(receipt.canonical_result).toMatchObject({ outcome: 'failed', summary: 'review_sources_unverified' })
+  })
+})
+
+describe('the child capability gateway is reachable over its own routes', () => {
+  async function capabilityFixture() {
+    const f = await h.seed(); await authorizeToken(f)
+    const documents = await pinnedDocument(f)
+    const slot = await useRoute(f, 'job')
+    await reprofile(f, slot.id, { runtime: 'CODEX', actions: ['review'], access: 'read', publish_modes: ['artifact'] })
+    await h.dispatch.query(`UPDATE queue_dispatch_slots SET config=jsonb_set(config,'{capabilities}','["review"]') WHERE id=$1`, [slot.id])
+    await h.admin.query("UPDATE claude_workers SET capabilities=ARRAY['review'] WHERE user_id=$1", [f.actor.userId])
+    const service = await startService(f, { agentOutputKey: AGENT_OUTPUT_KEY }), runtime = fakeRuntime()
+    const session = await registerSupervisor(service, slot.id, 'CODEX')
+    const input: DispatchInput = { ...f.input, action: 'review', review_documents: documents }
+    const submitted = await service.client.submitDispatch(input, randomUUID())
+    await service.tick()
+    const started = await claimAndStart(service, session, runtime)
+    return { f, slot, service, runtime, session, submitted, input, documents, ...started }
+  }
+
+  it('lets the bounded child read its pinned source and stage a report, with no dispatch identity at all', async () => {
+    const x = await capabilityFixture()
+    const token = mintAgentToken(x.proof, await inputHashOf(x.submitted.id), x.input)
+    const read = await agentRead(x.service, token, x.proof.attempt_id, 'plan')
+    expect(read.status).toBe(200)
+    expect(read.text).toBe('pinned source')
+    const bytes = Buffer.from('# report\n')
+    const staged = await agentStage(x.service, token, x.proof.attempt_id, 'report', bytes)
+    expect(staged.status).toBe(200)
+    expect(staged.body).toMatchObject({ sha256: artifactHash(bytes), byte_size: bytes.byteLength })
+    expect((await h.dispatch.query<{ key: string }>("SELECT key FROM queue_dispatch_artifacts WHERE attempt_id=$1 AND key='report'", [x.proof.attempt_id])).rowCount).toBe(1)
+  })
+
+  it('refuses a wrong, expired, foreign or over-scoped capability and never echoes it back', async () => {
+    const x = await capabilityFixture()
+    const hash = await inputHashOf(x.submitted.id)
+    const token = mintAgentToken(x.proof, hash, x.input)
+    const wrong = await agentRead(x.service, `${token}x`, x.proof.attempt_id, 'plan')
+    expect(wrong.status).toBe(403)
+    expect(wrong.text).not.toContain(token.slice(0, 24))
+    // A token minted for another attempt carries a binding this attempt cannot match.
+    const foreign = mintAgentToken({ ...x.proof, attempt_id: randomUUID() }, hash, x.input)
+    expect((await agentRead(x.service, foreign, x.proof.attempt_id, 'plan')).status).toBe(403)
+    // A read-only review never receives `stage_code` in its operation set.
+    expect((await agentStage(x.service, token, x.proof.attempt_id, 'code', Buffer.from('{}'))).status).toBe(403)
+    // The capability is the whole authority: a bearer alongside it is a second, wider one.
+    expect((await agentStage(x.service, token, x.proof.attempt_id, 'report', Buffer.from('x'), { Authorization: `Bearer ${TOKEN}` })).status).toBe(401)
+    expect((await agentRead(x.service, token, x.proof.attempt_id, 'not-a-source')).status).toBe(403)
+  })
+
+  it('has no capability routes at all where the deployment holds no agent-output key', async () => {
+    const f = await h.seed(); await authorizeToken(f)
+    const service = await startService(f)
+    expect((await agentRead(service, 'agent-output.x.y', randomUUID(), 'plan')).status).toBe(404)
+  })
+})
+
+describe('post-stop collection is original-supervisor authority over its own route', () => {
+  async function stoppedAttempt(options: { access?: 'read' | 'repo_write' } = {}) {
+    const f = await h.seed(); await authorizeToken(f)
+    const slot = await useRoute(f, 'job')
+    const service = await startService(f), runtime = fakeRuntime()
+    const session = await registerSupervisor(service, slot.id, 'CODEX')
+    const input: DispatchInput = { ...f.input, ...(options.access ? { requirements: { ...f.input.requirements, access: options.access } } : {}) }
+    const submitted = await service.client.submitDispatch(input, randomUUID())
+    await service.tick()
+    const { proof, scope } = await claimAndStart(service, session, runtime)
+    await submitStop(service, proof, stopObservation(slot.id, proof, scope))
+    return { f, slot, service, submitted, proof, scope, binding: bindingOf(proof, scope) }
+  }
+
+  it('accepts the collected report after the supervisor\'s own stop revoked the attempt', async () => {
+    const x = await stoppedAttempt()
+    const bytes = Buffer.from('collected after the stop\n')
+    // The same bytes through the live route are refused, because this supervisor's own stop
+    // revoked the attempt that route requires. That is exactly the gap this route closes.
+    await expect(x.service.client.putArtifact('report', { proof: x.proof, bytes, sha256: artifactHash(bytes) })).rejects.toMatchObject({ status: 403 })
+    const staged = await putCollected(x.service, x.binding, 'report', bytes)
+    expect(staged.status).toBe(200)
+    expect(staged.body).toMatchObject({ sha256: artifactHash(bytes), byte_size: bytes.byteLength })
+    const replay = await putCollected(x.service, x.binding, 'report', bytes)
+    expect(replay.body.artifact_id).toBe(staged.body.artifact_id)
+    expect((await putCollected(x.service, x.binding, 'report', Buffer.from('different bytes'))).status).toBe(409)
+  })
+
+  it('refuses a foreign binding, a reserved key and a code artifact a read-only request may not carry', async () => {
+    const x = await stoppedAttempt()
+    const bytes = Buffer.from('collected\n')
+    expect((await putCollected(x.service, { ...x.binding, scope: { ...x.scope, scopeId: randomUUID() } }, 'report', bytes)).status).toBe(409)
+    expect((await putCollected(x.service, x.binding, '__operator_recovery', bytes)).status).toBe(422)
+    expect((await putCollected(x.service, x.binding, 'code', bytes)).status).toBe(403)
+    const other = await otherSupervisorToken(x.f, 'ip13-other-supervisor-token')
+    expect((await putCollected(x.service, x.binding, 'report', bytes, other)).status).toBe(403)
+  })
+})
+
+describe('non-launch recovery has a REST surface bound to its historical binding', () => {
+  it('looks up, accepts a stop and accepts the historical result for a cancelled attempt', async () => {
+    const f = await h.seed(); await authorizeToken(f)
+    const slot = await useRoute(f, 'job')
+    const service = await startService(f), runtime = fakeRuntime()
+    const session = await registerSupervisor(service, slot.id, 'CODEX')
+    const submitted = await service.client.submitDispatch(f.input, randomUUID())
+    await service.tick()
+    const { proof, scope } = await claimAndStart(service, session, runtime)
+    const binding = bindingOf(proof, scope)
+    const key = { requestId: proof.request_id, attemptId: proof.attempt_id, incarnationId: proof.incarnation_id, scope }
+    const pending = await recoveryCall(service, 'lookup', { key })
+    expect(pending.status).toBe(200)
+    expect(pending.body).toEqual({ status: 'pending', binding })
+    // The supervisor's own broker observation, staged and accepted through the one stop route,
+    // is the evidence this recovery submits.
+    const stop = await submitStop(service, proof, stopObservation(slot.id, proof, scope))
+    const receipt = await recoveryCall(service, 'stop', { binding, evidence: stop.evidence })
+    expect(receipt.status).toBe(200)
+    expect(receipt.body.receipt_id).toBe(stop.receipt_id)
+    const result: DispatchResult = { version: 1, outcome: 'failed', summary: 'the child never produced a report', report_markdown: 'No report.', checks: [] }
+    const accepted = await recoveryCall(service, 'result', { binding, result })
+    expect(accepted.status).toBe(200)
+    expect(accepted.body).toMatchObject({ status: 'accepted', result: { outcome: 'failed' } })
+    const again = await recoveryCall(service, 'lookup', { key })
+    expect(again.body).toMatchObject({ status: 'accepted', resultId: accepted.body.resultId })
+    expect(await stateOf(submitted.id)).toBe('FAILED')
+    expect(await openReservations()).toBe(0)
+    expect(runtime.calls.start).toBe(1)
+  })
+
+  it('refuses a foreign binding, another token and an unreadable result', async () => {
+    const f = await h.seed(); await authorizeToken(f)
+    const slot = await useRoute(f, 'job')
+    const service = await startService(f), runtime = fakeRuntime()
+    const session = await registerSupervisor(service, slot.id, 'CODEX')
+    await service.client.submitDispatch(f.input, randomUUID())
+    await service.tick()
+    const { proof, scope } = await claimAndStart(service, session, runtime)
+    const binding = bindingOf(proof, scope)
+    const key = { requestId: proof.request_id, attemptId: proof.attempt_id, incarnationId: proof.incarnation_id, scope }
+    expect((await recoveryCall(service, 'lookup', { key: { ...key, scope: { ...scope, scopeId: randomUUID() } } })).status).toBe(409)
+    expect((await recoveryCall(service, 'result', { binding, result: { version: 1, outcome: 'nonsense' } })).status).toBe(422)
+    const other = await otherSupervisorToken(f, 'ip13-other-recovery-token')
+    const response = await fetch(`${service.root}/attempts/recovery/lookup`, {
+      method: 'POST', headers: { Authorization: `Bearer ${other}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ key }),
+    })
+    expect(response.status).toBe(403)
   })
 })
 

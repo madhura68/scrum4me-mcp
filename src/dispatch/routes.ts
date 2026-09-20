@@ -3,6 +3,7 @@ import { performance } from 'node:perf_hooks'
 import type { KeyObject } from 'node:crypto'
 import { z } from 'zod'
 import { attemptProofSchema, stopEvidenceSchema, parseDispatchResult } from '@shared/queue-dispatch-validation.js'
+import { dispatchStartPermitClaimsSchema } from '@shared/queue-dispatch-start-permit.js'
 import { ARTIFACT_MAX_BYTES } from '@shared/queue-dispatch-sources.js'
 import { createDispatchAuth } from './auth.js'
 import { createDispatchHealth } from './health.js'
@@ -13,6 +14,8 @@ import { createDispatchRequests } from './requests.js'
 import { createDispatchCancellation } from './cancel.js'
 import { createDispatchRecovery } from './recovery.js'
 import { createDispatchArtifacts, artifactHash } from './artifacts.js'
+import { createAgentGateway } from './agent-gateway.js'
+import { createAgentOutputCapabilities } from './agent-output-capability.js'
 import { createDispatchCompletion, type CompletionDeps } from './completion.js'
 import type { PublicationReceipt, PublicationResolution } from './publication.js'
 import { createDispatchRegistration } from './registration.js'
@@ -26,7 +29,9 @@ import { isQueueDispatchRequestId } from '@shared/queue-identity.js'
 export type DispatchHttpOperation =
   | 'submit' | 'read' | 'cancel' | 'recover' | 'recovery_evidence'
   | 'register' | 'executor_heartbeat' | 'claim' | 'start' | 'reconcile' | 'attempt_heartbeat'
-  | 'stop_evidence' | 'result' | 'put_artifact' | 'get_artifact'
+  | 'stop_evidence' | 'result' | 'put_artifact' | 'collect_artifact' | 'get_artifact'
+  | 'agent_source' | 'agent_output'
+  | 'recovery_lookup' | 'recovery_stop' | 'recovery_result'
   | 'create_profile' | 'revoke_profile' | 'list_profiles' | 'create_slot' | 'disable_slot' | 'reply_address'
   | 'republish_outbox' | 'resolve_publication' | 'health'
 export type DispatchHttpLog = { operation: DispatchHttpOperation; request_id: string | null; status: number; duration_ms: number }
@@ -40,6 +45,9 @@ export type DispatchAppDependencies = {
   store: DispatchStore; assertionKeys?: DispatchAssertionKeys; enabled: boolean
   productAllowlist: readonly string[]; log?: (event: DispatchHttpLog) => void
   executor?: DispatchExecutorKeys; publisher?: DispatchPublisher
+  /** HMAC key for the bounded, attempt-scoped capability the child holds. Without it a
+   * deployment simply has no child gateway, and no attempt is ever handed such a token. */
+  agentOutputKey?: Uint8Array
 }
 /** Completion only ever publishes; the operator resolution is an extra the configured publisher
  * brings with it, so a deployment without one simply has no resolve route. */
@@ -53,6 +61,13 @@ const runtimeScope = z.object({
   image_digest: z.string(), profile_sha256: z.string(),
 }).strict()
 const sha256Header = /^[a-f0-9]{64}$/
+/** The immutable identity of one historical attempt and its runtime scope, exactly as the
+ * start permit pinned it. Every non-launch route below is bound to it and to nothing else. */
+const startBindingSchema = dispatchStartPermitClaimsSchema.omit({ version: true, purpose: true, issuedAt: true, expiresAt: true })
+const recoveryKeySchema = startBindingSchema.omit({ candidateId: true, generation: true })
+/** Post-stop collection and the child's staging share one closed key vocabulary; a reserved
+ * `__` control key can never be reached through either. */
+const collectedKeys = { report: 'stage_report', checks: 'stage_checks', code: 'stage_code' } as const
 
 function parseWith<T>(schema: z.ZodType<T>, value: unknown): T {
   const parsed = schema.safeParse(value)
@@ -75,6 +90,22 @@ function contentHash(req: Request, bytes: Buffer) {
   if (!sha256Header.test(sha256) || artifactHash(bytes) !== sha256) throw new DispatchError('DISPATCH_INVALID_INPUT')
   return sha256
 }
+function startBinding(req: Request) {
+  const raw = req.get('X-Dispatch-Start-Binding')
+  if (!raw) throw new DispatchError('DISPATCH_INVALID_INPUT')
+  let value: unknown
+  try { value = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) } catch { throw new DispatchError('DISPATCH_INVALID_INPUT') }
+  return parseWith(startBindingSchema, value)
+}
+/** The capability primitive refuses with a plain error by design; it is a crypto check, not an
+ * HTTP layer. Translating it here keeps the answer a bare code and never the token or a binding. */
+async function refusable<T>(work: Promise<T>): Promise<T> {
+  try { return await work } catch (error) {
+    if (error instanceof DispatchError) throw error
+    if (error instanceof Error && error.message === 'DISPATCH_AGENT_OUTPUT_REFUSED') throw new DispatchError('DISPATCH_FORBIDDEN')
+    throw error
+  }
+}
 const scopeOf = (input: z.infer<typeof runtimeScope>) => ({
   scopeId: input.scope_id, bootId: input.boot_id, imageDigest: input.image_digest, profileSha256: input.profile_sha256,
 })
@@ -93,6 +124,8 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
   const registration = deps.executor ? createDispatchRegistration({ ...core, ...deps.executor }) : null
   const health = createDispatchHealth({ store: deps.store })
   const attempts = deps.executor ? createDispatchAttempts({ ...core, ...deps.executor }) : null
+  const capabilities = deps.agentOutputKey ? createAgentOutputCapabilities(deps.agentOutputKey) : null
+  const gateway = capabilities ? createAgentGateway({ store: deps.store, auth, capabilities }) : null
 
   type Context = { actor: DispatchActor; req: Request; res: Response; raw: Buffer; json: () => unknown }
   type Handler = (ctx: Context) => Promise<unknown>
@@ -143,9 +176,60 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
   /** A route whose service is not configured on this deployment is absent, not broken. */
   const unavailable: Handler = async () => { throw new DispatchError('DISPATCH_NOT_FOUND') }
   // Only the opaque artifact upload and the read routes carry no JSON envelope of their own.
+  const opaque: DispatchHttpOperation[] = ['put_artifact', 'collect_artifact']
   const register = (method: 'post' | 'get' | 'put', path: string, operation: DispatchHttpOperation, limit: number, fn: Handler) =>
-    app[method](`/dispatch/v1${path}`, log(operation), raw(limit), handle(fn, method !== 'get' && operation !== 'put_artifact'))
+    app[method](`/dispatch/v1${path}`, log(operation), raw(limit), handle(fn, method !== 'get' && !opaque.includes(operation)))
   const json = 256 * 1024
+
+  /** The child holds exactly one bounded, attempt-scoped capability and no dispatch identity:
+   * not a bearer, not an assertion, not a supervisor proof. So these two routes resolve no
+   * actor at all — the capability plus the gateway's own fresh database authority is the whole
+   * authorization, exactly as `createAgentGateway` prescribes. A bearer presented alongside it
+   * would be a second and far wider authority, so it is refused rather than ignored. */
+  type CapabilityContext = { req: Request; res: Response; raw: Buffer; token: string; attemptId: string }
+  function capabilityRoute(method: 'get' | 'put', path: string, operation: DispatchHttpOperation, limit: number,
+    fn: (ctx: CapabilityContext) => Promise<unknown>) {
+    const handler: RequestHandler = async (req, res, next) => {
+      try {
+        if (!gateway) throw new DispatchError('DISPATCH_NOT_FOUND')
+        if (req.get('Authorization') || req.get('X-Dispatch-Assertion')) throw new DispatchError('DISPATCH_UNAUTHENTICATED')
+        const token = req.get('X-Dispatch-Agent-Token') ?? ''
+        const attemptId = req.get('X-Dispatch-Attempt-Id') ?? ''
+        if (!token || !isQueueDispatchRequestId(attemptId)) throw new DispatchError('DISPATCH_UNAUTHENTICATED')
+        const value = await fn({ req, res, raw: Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0), token, attemptId })
+        if (res.headersSent) return
+        res.status(200).json(value === undefined ? {} : value)
+      } catch (error) { next(error) }
+    }
+    app[method](`/dispatch/v1${path}`, log(operation), raw(limit), handler)
+  }
+  /** Minted from the attempt the service itself just put into RUNNING, never from caller input,
+   * and bounded by that attempt's own deadline. The supervisor is the only party between the
+   * service and the child, so it carries the token across — it can do nothing else with it. */
+  async function agentToken(proof: z.infer<typeof attemptProofSchema>, profileSha256: string): Promise<string | null> {
+    if (!capabilities) return null
+    try {
+      const row = (await deps.store.query<{ input_hash: string; action: string; access: string; deadline: Date | null }>(
+        `SELECT r.input_hash,r.input->>'action' AS action,r.input->'requirements'->>'access' AS access,
+          a.started_at+make_interval(secs=>(p.config->>'max_duration_seconds')::int) AS deadline
+         FROM queue_dispatch_attempts a
+         JOIN queue_dispatch_candidates c ON c.id=a.candidate_id
+         JOIN queue_dispatch_requests r ON r.id=c.request_id
+         JOIN queue_dispatch_profiles p ON p.id=c.profile_revision_id
+         WHERE a.id=$1 AND a.started_at IS NOT NULL`, [proof.attempt_id])).rows[0]
+      if (!row?.deadline) return null
+      return capabilities.mint({
+        binding: {
+          request_id: proof.request_id, candidate_id: proof.candidate_id, generation: proof.generation,
+          attempt_id: proof.attempt_id, incarnation_id: proof.incarnation_id,
+          input_sha256: row.input_hash, profile_sha256: profileSha256,
+        },
+        action: row.action as 'free_task' | 'review' | 'task_implementation',
+        access: row.access as 'read' | 'repo_write',
+        attemptDeadlineMs: row.deadline.getTime(),
+      }, Date.now())
+    } catch { return null }
+  }
 
   /** Readiness. Unauthenticated on purpose — an orchestrator has no dispatch identity — and for
    * that reason side-effect free, cached for a probe window and limited to build facts. It is
@@ -192,8 +276,16 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
       const input = parseWith(z.object({ incarnation_id: z.string().min(1), session_credential: z.string().min(1), claim_key: z.string() }).strict(), read())
       return attempts.claimDispatchAttempt(actor, input.incarnation_id, input.claim_key, input.session_credential)
     } : unavailable)
+  // The permit is the shared contract and never changes shape. Where a deployment runs a child
+  // gateway, the same answer additively carries the child's own bounded capability, because the
+  // supervisor is the only party that can hand it on before it starts the container.
   register('post', '/attempts/start', 'start', json, attempts
-    ? ({ actor, json: read }) => { const input = parseWith(runtimeScope, read()); return attempts.startDispatchAttempt(actor, input.proof, scopeOf(input)) }
+    ? async ({ actor, json: read }) => {
+      const input = parseWith(runtimeScope, read())
+      const permit = await attempts.startDispatchAttempt(actor, input.proof, scopeOf(input))
+      const token = await agentToken(input.proof, input.profile_sha256)
+      return token ? { ...permit, agent_token: token } : permit
+    }
     : unavailable)
   register('post', '/attempts/reconcile', 'reconcile', json, attempts
     ? async ({ actor, json: read }) => { const input = parseWith(runtimeScope, read()); await attempts.reconcileDispatchAttempt(actor, input.proof, scopeOf(input)); return {} }
@@ -221,11 +313,62 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
     let result
     try { result = parseDispatchResult(input.result) } catch { throw new DispatchError('DISPATCH_INVALID_INPUT') }
     const receipt = await completion.acceptDispatchResult(actor, input.proof, result)
-    return { status: receipt.accepted ? 'accepted' : 'late', result_id: receipt.resultId }
+    // The canonical result travels with the receipt. `acceptDispatchResult` may rewrite the
+    // submitted outcome to failed or cancelled, so an id alone would leave the supervisor
+    // guessing what the service actually accepted. Existing readers of `status`/`result_id`
+    // are untouched, and a replay of the same result answers with the same canonical bytes.
+    return {
+      status: receipt.accepted ? 'accepted' : 'late', result_id: receipt.resultId, reason: receipt.reason,
+      ...(receipt.result ? { canonical_result: receipt.result } : {}),
+    }
   })
   register('put', '/attempts/artifacts/:key', 'put_artifact', ARTIFACT_MAX_BYTES, async ({ actor, req, raw: bytes }) => {
     const sha256 = contentHash(req, bytes)
     const artifactId = await artifacts.storeAttemptArtifact(actor, attemptProof(req), req.params.key, bytes, sha256)
+    return { artifact_id: artifactId, sha256, byte_size: bytes.byteLength }
+  })
+  // Post-stop collection. The stop this very supervisor submitted revoked its own attempt, so
+  // `PUT /attempts/artifacts/:key` refuses the child's output afterwards by design. This is the
+  // route `stageCollectedArtifact` was written for: original-supervisor authority, proved by the
+  // historical binding instead of a live attempt proof, and never a child capability.
+  register('put', '/attempts/collected/:key', 'collect_artifact', ARTIFACT_MAX_BYTES, async ({ actor, req, raw: bytes }) => {
+    const key = req.params.key as keyof typeof collectedKeys
+    if (!Object.hasOwn(collectedKeys, key)) throw new DispatchError('DISPATCH_INVALID_INPUT')
+    const sha256 = contentHash(req, bytes)
+    const artifactId = await artifacts.stageCollectedArtifact(actor, startBinding(req), key, bytes, sha256)
+    return { artifact_id: artifactId, sha256, byte_size: bytes.byteLength }
+  })
+  // Non-launch recovery. Same authenticated original supervisor, same historical binding, but no
+  // AttemptProof and no execution authority anywhere on these three: they exist so a supervisor
+  // whose attempt was cancelled, revoked or never launched can still finish it durably.
+  register('post', '/attempts/recovery/lookup', 'recovery_lookup', json, ({ actor, json: read }) => {
+    const input = parseWith(z.object({ key: recoveryKeySchema }).strict(), read())
+    return recovery.nonLaunchRecovery(actor).lookup(input.key)
+  })
+  register('post', '/attempts/recovery/stop', 'recovery_stop', json, ({ actor, json: read }) => {
+    const input = parseWith(z.object({ binding: startBindingSchema, evidence: stopEvidenceSchema }).strict(), read())
+    return recovery.nonLaunchRecovery(actor).submitStop(input.binding, input.evidence)
+  })
+  register('post', '/attempts/recovery/result', 'recovery_result', json, ({ actor, json: read }) => {
+    const input = parseWith(z.object({ binding: startBindingSchema, result: z.unknown() }).strict(), read())
+    let result
+    try { result = parseDispatchResult(input.result) } catch { throw new DispatchError('DISPATCH_INVALID_INPUT') }
+    return recovery.nonLaunchRecovery(actor).submitResult(input.binding, result)
+  })
+  // The child's own two routes. Bytes in, bytes out, one capability, no identity.
+  capabilityRoute('get', '/agent/sources/:key', 'agent_source', json, async ({ req, res, token, attemptId }) => {
+    const bytes = await refusable(gateway!.readSource(token, attemptId, req.params.key))
+    res.status(200).set({
+      'Content-Type': 'application/octet-stream', 'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "sandbox; default-src 'none'", 'X-Content-SHA256': artifactHash(bytes),
+    }).end(Buffer.from(bytes))
+    return undefined
+  })
+  capabilityRoute('put', '/agent/outputs/:key', 'agent_output', ARTIFACT_MAX_BYTES, async ({ req, raw: bytes, token, attemptId }) => {
+    const operation = collectedKeys[req.params.key as keyof typeof collectedKeys]
+    if (!operation) throw new DispatchError('DISPATCH_INVALID_INPUT')
+    const sha256 = contentHash(req, bytes)
+    const artifactId = await refusable(gateway!.stage(token, attemptId, operation, bytes, sha256))
     return { artifact_id: artifactId, sha256, byte_size: bytes.byteLength }
   })
   register('get', '/artifacts/:id', 'get_artifact', json, async ({ actor, req, res }) => {

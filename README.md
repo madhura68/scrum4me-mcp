@@ -531,6 +531,7 @@ reads it. Values below are shapes and examples only; no real value belongs in th
 | `DISPATCH_CREDENTIAL_KEYS` | dispatch service | secret owner (dispatch only) | Attempt/session credential keys as `<version>:<base64url>`, comma separated, each ≥32 bytes: `1:<base64url>,2:<base64url>`. Never leaves the service |
 | `DISPATCH_CREDENTIAL_KEY_VERSION` | dispatch service | secret owner (dispatch only) | The version new credentials are minted under; must be present in `DISPATCH_CREDENTIAL_KEYS` |
 | `DISPATCH_START_PERMIT_PRIVATE_KEY` | dispatch service | secret owner (dispatch only) | Ed25519 private key, PKCS8 PEM (literal `\n` accepted). Without it there are no executor/attempt routes |
+| `DISPATCH_AGENT_OUTPUT_KEY` | dispatch service | secret owner (dispatch only) | Opt-in. base64url HMAC key, ≥32 bytes, for the bounded attempt-scoped capability the child holds. Absent → no `/agent/*` routes exist and no capability is ever minted. It is not a bearer and grants no MCP tool, no database and no forge access |
 | `DISPATCH_GIT_HOST` | dispatch service | release operator | The single allowed forge host, e.g. `git.example.test`. Publication and pinned source fetches accept no other host |
 | `DISPATCH_GIT_TOKEN` | dispatch service | forge credential owner | Forge token for pinned fetches, push and pull-request creation. Central publisher credential: it is never handed to a supervisor, a runtime image or a model |
 | `DISPATCH_PUBLICATION_ROOT` | dispatch service | host operator | Writable working root for publication. With `DISPATCH_GIT_HOST` absent, delivery stays an artifact and nothing is pushed |
@@ -604,10 +605,44 @@ bounded, caught per unit and run last, on `DISPATCH_MAINTENANCE_INTERVAL_MS`. Re
 reply back that a crashed reader claimed and never acknowledged (after the CLI's four-hour inbox
 lease); retention only runs when `DISPATCH_RETENTION_DAYS` is set.
 
+### Supervisor-facing and child routes
+
+All under `/dispatch/v1`. The first group is the supervisor's; the last is the child's and is the
+only place in the protocol where a caller has no dispatch identity at all.
+
+| Method/path | Authority | Body / headers | Answer |
+|---|---|---|---|
+| `POST /attempts/claim` · `/start` · `/reconcile` · `/heartbeat` | supervisor bearer + session credential or `AttemptProof` | JSON | claim receipt or `null`; start permit; lease |
+| `POST /attempts/stop-evidence` | supervisor bearer + `AttemptProof` | `{proof,evidence}` **or** `{proof,observation}` | `{receipt_id,evidence}`. It never frees capacity on its own |
+| `POST /attempts/result` | supervisor bearer + `AttemptProof` | `{proof,result}` | `{status:'accepted'\|'late', result_id, reason, canonical_result?}` |
+| `PUT /attempts/artifacts/:key` | supervisor bearer + `X-Dispatch-Attempt-Proof` | raw bytes + `X-Content-SHA256` | `{artifact_id,sha256,byte_size}`. Refused once the attempt is revoked |
+| `PUT /attempts/collected/:key` | **original supervisor** bearer + `X-Dispatch-Start-Binding` | raw bytes + `X-Content-SHA256`; `:key` ∈ `report`\|`checks`\|`code` | same receipt. The post-stop path: valid only after this supervisor's own stop was accepted |
+| `POST /attempts/recovery/lookup` · `/stop` · `/result` | **original supervisor** bearer, bound to the historical binding | `{key}` / `{binding,evidence}` / `{binding,result}` | `RecoveryState`; `{receipt_id}`; `RecoveryState`. No execution authority anywhere on these three |
+| `GET /agent/sources/:key` | child capability only | `X-Dispatch-Agent-Token`, `X-Dispatch-Attempt-Id` | exact source bytes + `X-Content-SHA256` |
+| `PUT /agent/outputs/:key` | child capability only | as above + raw bytes and `X-Content-SHA256` | `{artifact_id,sha256,byte_size}` |
+
+`canonical_result` is what the service actually holds. `acceptDispatchResult` may rewrite a
+submitted `succeeded` to `failed` or `cancelled`, so a supervisor must complete on the canonical
+result and never on the one it sent. It is absent exactly where no canonical result exists yet —
+an unresolved publication answers `{status:'late', result_id:null, reason:'publication_unknown'}`.
+A replay of the same result answers with the same `result_id` and the same canonical bytes.
+
+The child's capability is minted by the service at `POST /attempts/start` and returned beside the
+permit as `agent_token`, so the supervisor can place it in the container before it starts. It is
+attempt-scoped, expires at `min(now+5min, the attempt deadline)`, and its operation set is derived
+from the request: `stage_code` only for a non-review `repo_write` request. The two `/agent` routes
+refuse a bearer or a workers assertion presented alongside it, because that would be a second and
+far wider authority; the gateway re-derives full database authority on every single call.
+
 ### Known limitations
 
 Measured on this build; none of these is scheduled work in IP-14.
 
+- **Nothing places `agent_token` in a child yet.** The service mints and accepts the capability,
+  but the scrum4me-docker supervisor does not pass it into the container environment, so no child
+  has used `/agent/*` outside tests. The read-only artifact profile does not need it: the child
+  writes its `result.json` to `/output` and the supervisor stages it through
+  `PUT /attempts/collected/:key` after the stop.
 - **No NOTIFY producer.** The service relies on its tick alone. A queue-side `NOTIFY` on dispatch
   state changes was part of the plan and is not implemented; delivery latency is therefore bounded
   by `DISPATCH_TICK_INTERVAL_MS`.

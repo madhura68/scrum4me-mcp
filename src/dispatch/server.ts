@@ -102,8 +102,13 @@ export function startDispatchServer(env: NodeJS.ProcessEnv = process.env): Dispa
     })
     : undefined
 
+  // The child gateway exists only where an operator configured its own HMAC key. Without one
+  // no capability is ever minted and the two `/agent` routes are simply not there.
+  const agentOutputKey = env.DISPATCH_AGENT_OUTPUT_KEY && Buffer.from(env.DISPATCH_AGENT_OUTPUT_KEY, 'base64url').byteLength >= 32
+    ? Buffer.from(env.DISPATCH_AGENT_OUTPUT_KEY, 'base64url')
+    : undefined
   const app = createDispatchApp({
-    store, enabled, productAllowlist, executor,
+    store, enabled, productAllowlist, executor, ...(agentOutputKey ? { agentOutputKey } : {}),
     assertionKeys: { workers: assertionKey(env.DISPATCH_WORKERS_ASSERTION_KEY), web: assertionKey(env.DISPATCH_WEB_ASSERTION_KEY) },
     log: event => log(event), publisher,
   })
