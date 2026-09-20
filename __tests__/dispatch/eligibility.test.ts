@@ -72,3 +72,27 @@ it('tick touches at most 25 request ids and never wires timers on import', async
   expect(await tick()).toEqual({ prepared: 0, reserved: 0, retired: 10, uncertain: 0, publications: 0, publicationsFailed: 0, delivered: 0, deliveryFailed: 0, errors: 0 })
   expect(waiting).toHaveBeenCalledWith(15); expect(reserve).toHaveBeenCalledTimes(15); expect(retire).toHaveBeenCalledTimes(10)
 })
+
+it('prepares sources before selection, bounds the outbox and survives one poisoned unit per stage', async () => {
+  const waiting = vi.fn(async () => ['a', 'b', 'c'])
+  const prepared: string[] = []
+  const reserved: string[] = []
+  const prepareRequestSources = vi.fn(async (id: string) => { if (id === 'b') throw new Error('source unit failed'); prepared.push(id) })
+  const reserveRequest = vi.fn(async (id: string) => { if (id === 'c') throw new Error('reserve unit failed'); reserved.push(id); return id })
+  const stages: string[] = []
+  const tick = createDispatchTick({
+    store: { query: vi.fn(async () => ({ rows: [] })) } as never,
+    selection: { waitingRequestIds: waiting, reserveRequest, retireExpiredCandidate: vi.fn() } as never,
+    attempts: { markExpiredAttempts: vi.fn(async () => { throw new Error('lease unit failed') }) } as never,
+    sources: { prepareRequestSources } as never,
+    publications: { reconcileIncompletePublications: vi.fn(async () => ({ processed: 2, failed: 1 })) },
+    delivery: { deliverDispatchOutbox: vi.fn(async (limit: number) => ({ delivered: limit, failed: 0 })) } as never,
+    onError: stage => { stages.push(stage) },
+  })
+  expect(await tick()).toEqual({ prepared: 2, reserved: 2, retired: 0, uncertain: 0, publications: 2, publicationsFailed: 1, delivered: 100, deliveryFailed: 0, errors: 3 })
+  // Preparation runs first and for every waiting request, so selection never sees an unprepared one.
+  expect(prepareRequestSources.mock.calls.map(call => call[0])).toEqual(['a', 'b', 'c'])
+  expect(prepared).toEqual(['a', 'c'])
+  expect(reserved).toEqual(['a', 'b'])
+  expect(stages).toEqual(['sources', 'reserve', 'lease'])
+})

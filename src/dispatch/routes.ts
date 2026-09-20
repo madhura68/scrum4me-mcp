@@ -111,7 +111,9 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
         })
         if (res.headersSent) return
         if (value && typeof value === 'object' && 'id' in value && typeof value.id === 'string' && isQueueDispatchRequestId(value.id)) res.locals.dispatchRequestId = value.id
-        res.status(200).json(value ?? {})
+        // `null` is a real answer — "no work for you" on a claim — so only an absent value
+        // becomes an empty object. Collapsing null here would hand the client a receipt shape.
+        res.status(200).json(value === undefined ? {} : value)
       } catch (error) { next(error) }
     }
   }
@@ -184,9 +186,18 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
       const input = parseWith(z.object({ proof: attemptProofSchema, scope_id: z.string() }).strict(), read())
       return attempts.renewDispatchAttempt(actor, input.proof, input.scope_id)
     } : unavailable)
-  register('post', '/attempts/stop-evidence', 'stop_evidence', json, ({ actor, json: read }) => {
-    const input = parseWith(z.object({ proof: attemptProofSchema, evidence: stopEvidenceSchema }).strict(), read())
-    return completion.submitStop(actor, input.proof, input.evidence)
+  // Two shapes, one meaning. A supervisor that already staged its observation submits the
+  // resulting StopEvidence; one that has only the broker's raw observation submits that instead
+  // and the service stages it under the reserved control key first. The observation cannot be
+  // uploaded through PUT /attempts/artifacts, which refuses reserved `__` keys by design.
+  register('post', '/attempts/stop-evidence', 'stop_evidence', json, async ({ actor, json: read }) => {
+    const input = parseWith(z.union([
+      z.object({ proof: attemptProofSchema, evidence: stopEvidenceSchema }).strict(),
+      z.object({ proof: attemptProofSchema, observation: z.unknown() }).strict(),
+    ]), read())
+    const evidence = 'evidence' in input ? input.evidence
+      : await artifacts.stageSupervisorStop(actor, input.observation as Parameters<typeof artifacts.stageSupervisorStop>[1])
+    return { ...await completion.submitStop(actor, input.proof, evidence), evidence }
   })
   register('post', '/attempts/result', 'result', json, async ({ actor, json: read }) => {
     const input = parseWith(z.object({ proof: attemptProofSchema, result: z.unknown() }).strict(), read())
