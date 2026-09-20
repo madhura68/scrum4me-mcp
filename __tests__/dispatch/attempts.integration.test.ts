@@ -72,6 +72,19 @@ describe('durable claim and start authority',()=>{
   expect((await requests.getDispatch(f.actor,r.id)).state).toBe('RUNNING')
   expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations')).rows).toEqual([{released_at:null}])
  })
+ // The shared state table (lib/queue-dispatch-state.ts) permits CLAIMED -> lease_lost -> UNCERTAIN ->
+ // resume_same_attempt -> RUNNING, a path that never passes 'start' and therefore never issues a start
+ // permit. Refusing that resume is the consumer's job; this pins that the refusal is here.
+ it('refuses to resume an attempt that never started',async()=>{
+  const {r,context}=await claimed()
+  await h.dispatch.query("UPDATE queue_dispatch_attempts SET heartbeat_at=now()-interval '121 seconds' WHERE id=$1",[context.proof.attempt_id])
+  expect(await attempts.markExpiredAttempts()).toBe(1)
+  expect((await h.dispatch.query('SELECT state,started_at,scope_id FROM queue_dispatch_attempts WHERE id=$1',[context.proof.attempt_id])).rows[0]).toMatchObject({state:'UNCERTAIN',started_at:null,scope_id:null})
+  expect((await requests.getDispatch(f.actor,r.id)).state).toBe('UNCERTAIN')
+  await expect(attempts.reconcileDispatchAttempt(f.actor,context.proof,scope)).rejects.toThrow('DISPATCH_STATE_CONFLICT')
+  expect((await requests.getDispatch(f.actor,r.id)).state).toBe('UNCERTAIN')
+  expect((await h.dispatch.query("SELECT count(*)::int n FROM queue_dispatch_events WHERE type='resume_same_attempt'")).rows[0].n).toBe(0)
+ })
  it('never lets a second incarnation inherit an uncertain attempt',async()=>{
   const {r,context}=await claimed()
   await h.dispatch.query("UPDATE queue_dispatch_attempts SET heartbeat_at=now()-interval '121 seconds' WHERE id=$1",[context.proof.attempt_id])
