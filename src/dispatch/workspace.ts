@@ -71,12 +71,17 @@ export function createDispatchWorkspace(deps:{root:string;loadRepository:(produc
   await isolatedGit(path,['checkout','--no-recurse-submodules','-b',branch,repository.base_sha])
   return {path,branch,baseSha:repository.base_sha}
  }
+ /** The pinned base leaves as bytes, so the checkout it came from is a temporary of this call
+  * alone: it is removed on every path, and the root therefore stays bounded by what is running
+  * rather than by everything that ever ran. */
  async function prepareRepositorySource(input:DispatchInput,requestId:string,snapshot:Record<string,unknown>){
   const x=await prepareDispatchWorkspace({...input,requestId,snapshot},randomUUID())
-  const bundle=join(x.path,'.git','dispatch-base.bundle')
-  await isolatedGit(x.path,['bundle','create',bundle,'HEAD'])
-  const st=await lstat(bundle);if(st.size>ARTIFACT_MAX_BYTES)throw new DispatchError('DISPATCH_TOO_LARGE')
-  return {bytes:new Uint8Array(await readFile(bundle)),repoUrl:await isolatedGit(x.path,['remote','get-url','origin']),baseSha:x.baseSha}
+  try{
+   const bundle=join(x.path,'.git','dispatch-base.bundle')
+   await isolatedGit(x.path,['bundle','create',bundle,'HEAD'])
+   const st=await lstat(bundle);if(st.size>ARTIFACT_MAX_BYTES)throw new DispatchError('DISPATCH_TOO_LARGE')
+   return {bytes:new Uint8Array(await readFile(bundle)),repoUrl:await isolatedGit(x.path,['remote','get-url','origin']),baseSha:x.baseSha}
+  }finally{await cleanupDispatchDirectory(x.path,'preparation')}
  }
  return {prepareDispatchWorkspace,prepareRepositorySource}
 }

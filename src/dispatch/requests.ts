@@ -76,6 +76,9 @@ async function validateDocumentPins(db: PoolClient, input: DispatchInput) {
 }
 export function createDispatchRequests(deps: {
   store: DispatchStore; auth: DispatchAuth; enabled: boolean; productAllowlist: readonly string[]
+  /** Whether this deployment holds a repository source producer. Explicitly `false` refuses an
+   * intake that would need one; omitted leaves that verdict to source preparation, as before. */
+  repositorySources?: boolean
 }) {
   async function getDispatch(actor: DispatchActor, id: string): Promise<DispatchView> {
     if (!isQueueDispatchRequestId(id)) throw new DispatchError('DISPATCH_NOT_FOUND')
@@ -91,6 +94,11 @@ export function createDispatchRequests(deps: {
     const input = parse(value); validateKey(key)
     await deps.auth.authorizeDispatch(actor, input, 'submit')
     if (!deps.enabled || !deps.productAllowlist.includes(input.product_id)) throw new DispatchError('DISPATCH_NOT_FOUND')
+    // Every repo_write request pins a repository, and without a producer for it the first tick
+    // would fail the request the moment after the requester was told it had been accepted. That
+    // part of the feature is simply not deployed here, which is the same answer intake already
+    // gives for a disabled feature: refuse now, write nothing.
+    if (deps.repositorySources === false && input.requirements.repository) throw new DispatchError('DISPATCH_NOT_FOUND')
     const inputHash = createHash('sha256').update(canonicalDispatchInput(input), 'utf8').digest('hex')
     return withDispatchRetryTransaction(deps.store, async db => {
       await deps.auth.authorizeDispatch(actor, input, 'submit', db)

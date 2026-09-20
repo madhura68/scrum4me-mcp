@@ -2,7 +2,7 @@ import {rm} from 'node:fs/promises'
 
 /** Temporary resources are secondary to the verified result or primary error.
  * Node retries transient recursive-removal failures with bounded linear backoff. */
-export async function cleanupDispatchDirectory(root:string,phase:'verification'|'publication'):Promise<void>{
+export async function cleanupDispatchDirectory(root:string,phase:'verification'|'publication'|'preparation'):Promise<void>{
  try{await rm(root,{recursive:true,force:true,maxRetries:3,retryDelay:100})}
  catch(error){
   // Never include filesystem paths, Git output or arbitrary error messages.

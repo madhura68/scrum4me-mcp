@@ -1,4 +1,10 @@
 import { afterEach, beforeEach, expect, it } from 'vitest'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, mkdtemp, readdir, realpath, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { makeDispatchHarness, type DispatchHarness } from './harness.js'
 import { running } from './lifecycle-fixtures.js'
 import { startDispatchServer, type DispatchRunningServer } from '../../src/dispatch/server.js'
@@ -35,6 +41,87 @@ async function start(env: Record<string, string>) {
   await new Promise<void>(resolve => service.server.once('listening', resolve))
   return { service, url: `http://127.0.0.1:${(service.server.address() as { port: number }).port}` }
 }
+
+const exec = promisify(execFile)
+const gitEnv = { PATH: process.env.PATH, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_AUTHOR_NAME: 'Runtime', GIT_AUTHOR_EMAIL: 'runtime@example.invalid',
+  GIT_COMMITTER_NAME: 'Runtime', GIT_COMMITTER_EMAIL: 'runtime@example.invalid' }
+const git = async (cwd: string, ...args: string[]) => (await exec('git', args, { cwd, env: gitEnv })).stdout.trim()
+
+/** The pinned base a repo_write request needs, as a LOCAL bare repository reached over `file://`:
+ * no forge, no network and no credential anywhere, but the service's own producer code path. */
+async function bareRepository() {
+  const dir = await mkdtemp(join(tmpdir(), 'dispatch-runtime-forge-'))
+  const bare = join(dir, 'fixture.git'), seed = join(dir, 'seed')
+  await mkdir(bare); await mkdir(seed)
+  await git(bare, 'init', '--bare', '--template=', '--initial-branch=main')
+  // Local fixture only: the producer fetches the pinned base by its exact object id.
+  await git(bare, 'config', 'uploadpack.allowAnySHA1InWant', 'true')
+  await git(seed, 'init', '--template=', '--initial-branch=main')
+  await writeFile(join(seed, 'base.txt'), 'pinned base\n')
+  await git(seed, 'add', '.'); await git(seed, 'commit', '-m', 'base')
+  const baseSha = await git(seed, 'rev-parse', 'HEAD')
+  await git(seed, 'remote', 'add', 'origin', bare)
+  await git(seed, 'push', 'origin', 'main')
+  return { url: `file://${bare}`, baseSha }
+}
+
+/** One seeded product whose registered repository is that local bare repo, plus a real bearer for it. */
+async function repoWriteFixture() {
+  const forge = await bareRepository()
+  const seed = await h.seed()
+  const token = `runtime-${randomUUID().replaceAll('-', '')}`
+  await h.admin.query('UPDATE api_tokens SET token_hash=$1 WHERE id=$2',
+    [createHash('sha256').update(token).digest('hex'), seed.actor.tokenId])
+  const productId = seed.input.product_id
+  await h.admin.query('UPDATE products SET repo_url=$2 WHERE id=$1', [productId, forge.url])
+  const input = { ...seed.input, objective: 'Change exactly the one file the fixture pins.',
+    publish: 'branch',
+    requirements: { access: 'repo_write', environment_keys: [], repository: { product_id: productId, base_sha: forge.baseSha } } }
+  return { forge, productId, token, input }
+}
+const submit = (url: string, token: string, input: unknown) => fetch(`${url}/dispatch/v1/requests`, {
+  method: 'POST',
+  headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() },
+  body: JSON.stringify(input),
+})
+
+it('prepares the pinned repository source when a workspace root is configured', async () => {
+  const { forge, productId, token, input } = await repoWriteFixture()
+  const workspaceRoot = await realpath(await mkdtemp(join(tmpdir(), 'dispatch-runtime-workspace-')))
+  const { service, url } = await start({
+    DISPATCH_ENABLED: '1', DISPATCH_PRODUCT_ALLOWLIST: productId, DISPATCH_TICK_INTERVAL_MS: '3600000',
+    DISPATCH_WORKSPACE_ROOT: workspaceRoot, DISPATCH_GIT_PROTOCOLS: 'file',
+  })
+  const submitted = await submit(url, token, input)
+  expect(submitted.status).toBe(200)
+  const { id } = await submitted.json() as { id: string }
+
+  // The entrypoint's own tick, driven explicitly: preparation is the stage under test, not the timer.
+  expect(await service.tick!()).toMatchObject({ prepared: 1, errors: 0 })
+  const sources = (await h.dispatch.query<{ key: string }>(
+    'SELECT key FROM queue_dispatch_artifacts WHERE request_id=$1 AND attempt_id IS NULL ORDER BY key', [id])).rows.map(r => r.key)
+  expect(sources).toContain('__repository_base')
+  // The pin is persisted as the service observed it, not as the requester claimed it.
+  const prepared = (await h.dispatch.query<{ payload: { repository: { productId: string; repoUrl: string; baseSha: string } | null } }>(
+    "SELECT payload FROM queue_dispatch_events WHERE request_id=$1 AND type='sources_prepared'", [id])).rows[0]
+  expect(prepared.payload.repository).toMatchObject({ productId, repoUrl: forge.url, baseSha: forge.baseSha })
+  expect((await h.dispatch.query('SELECT sources_ready_at FROM queue_dispatch_requests WHERE id=$1', [id])).rows[0].sources_ready_at).not.toBeNull()
+  // Nothing of the request's working tree outlives its own preparation.
+  expect(await readdir(workspaceRoot)).toEqual([])
+})
+
+it('refuses a repo_write request at intake when no workspace root is configured', async () => {
+  const { productId, token, input } = await repoWriteFixture()
+  const { url } = await start({ DISPATCH_ENABLED: '1', DISPATCH_PRODUCT_ALLOWLIST: productId, DISPATCH_TICK_INTERVAL_MS: '3600000' })
+  // A read request on the same deployment is untouched; only the one that would need a producer is refused.
+  expect((await submit(url, token, { ...input, publish: 'artifact', requirements: { access: 'read', environment_keys: [] } })).status).toBe(200)
+  expect((await submit(url, token, input)).status).toBe(404)
+  // No half state: the refused request left no row behind at all.
+  const rows = (await h.dispatch.query<{ input: { requirements: { access: string } } }>(
+    'SELECT input FROM queue_dispatch_requests WHERE product_id=$1', [productId])).rows
+  expect(rows.map(r => r.input.requirements.access)).toEqual(['read'])
+})
 
 it('starts its timer only when the entrypoint is called, and shuts down without touching capacity', async () => {
   const x = await running(h)

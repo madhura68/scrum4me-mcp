@@ -6,6 +6,7 @@ import { createDispatchAuth } from './auth.js'
 import { createDispatchSelection } from './selection.js'
 import { createDispatchAttempts } from './attempts.js'
 import { createDispatchSources, createPinnedGitFetcher } from './sources.js'
+import { createDispatchWorkspace } from './workspace.js'
 import { createDispatchDelivery } from './delivery.js'
 import { createDispatchPublication, createGitPublicationPort } from './publication.js'
 import { createDispatchTick, type DispatchTickResult } from './tick.js'
@@ -102,13 +103,29 @@ export function startDispatchServer(env: NodeJS.ProcessEnv = process.env): Dispa
     })
     : undefined
 
+  // A repo_write request needs its pinned base prepared before anything can be reserved, and
+  // that producer needs a writable workspace root plus a reachable repository. It reuses the
+  // one central forge host and token the publisher already reads — there is no second
+  // credential path — and every checkout it makes is removed again at the end of the request.
+  const gitProtocols = (env.DISPATCH_GIT_PROTOCOLS ?? 'https').split(',').map(value => value.trim()).filter(Boolean)
+  const workspaceRoot = env.DISPATCH_WORKSPACE_ROOT?.trim()
+  const workspace = workspaceRoot && (gitHost || !gitProtocols.includes('https'))
+    ? createDispatchWorkspace({
+      root: workspaceRoot, allowedProtocols: gitProtocols, allowedHosts: gitHost ? [gitHost] : [],
+      loadRepository: async productId => (await store.query<{ repo_url: string | null }>(
+        'SELECT repo_url FROM products WHERE id=$1', [productId])).rows[0]?.repo_url ?? null,
+      gitAuthHeader: async () => env.DISPATCH_GIT_TOKEN ? `Authorization: token ${env.DISPATCH_GIT_TOKEN}` : null,
+    })
+    : null
+
   // The child gateway exists only where an operator configured its own HMAC key. Without one
   // no capability is ever minted and the two `/agent` routes are simply not there.
   const agentOutputKey = env.DISPATCH_AGENT_OUTPUT_KEY && Buffer.from(env.DISPATCH_AGENT_OUTPUT_KEY, 'base64url').byteLength >= 32
     ? Buffer.from(env.DISPATCH_AGENT_OUTPUT_KEY, 'base64url')
     : undefined
   const app = createDispatchApp({
-    store, enabled, productAllowlist, executor, ...(agentOutputKey ? { agentOutputKey } : {}),
+    store, enabled, productAllowlist, executor, repositorySources: Boolean(workspace),
+    ...(agentOutputKey ? { agentOutputKey } : {}),
     assertionKeys: { workers: assertionKey(env.DISPATCH_WORKERS_ASSERTION_KEY), web: assertionKey(env.DISPATCH_WEB_ASSERTION_KEY) },
     log: event => log(event), publisher,
   })
@@ -127,7 +144,10 @@ export function startDispatchServer(env: NodeJS.ProcessEnv = process.env): Dispa
     store,
     selection: createDispatchSelection(core),
     attempts: executor ? createDispatchAttempts({ ...core, ...executor }) : undefined,
-    sources: createDispatchSources({ ...core, fetchGit: createPinnedGitFetcher({ host: env.DISPATCH_GIT_HOST ?? '', token: env.DISPATCH_GIT_TOKEN }) }),
+    sources: createDispatchSources({
+      ...core, fetchGit: createPinnedGitFetcher({ host: env.DISPATCH_GIT_HOST ?? '', token: env.DISPATCH_GIT_TOKEN }),
+      ...(workspace ? { prepareRepository: workspace.prepareRepositorySource } : {}),
+    }),
     delivery: queue ? createDispatchDelivery({ store, queue }) : undefined,
     publications: publisher,
     ...(maintenance ? { maintenance } : {}),

@@ -49,6 +49,9 @@ export type DispatchAppDependencies = {
   /** HMAC key for the bounded, attempt-scoped capability the child holds. Without it a
    * deployment simply has no child gateway, and no attempt is ever handed such a token. */
   agentOutputKey?: Uint8Array
+  /** Whether this deployment holds a repository source producer; see `createDispatchRequests`.
+   * The production entrypoint always states it, so intake can refuse what it cannot prepare. */
+  repositorySources?: boolean
 }
 /** Completion only ever publishes; the operator resolution is an extra the configured publisher
  * brings with it, so a deployment without one simply has no resolve route. */
