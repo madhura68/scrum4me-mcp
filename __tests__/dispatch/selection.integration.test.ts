@@ -168,7 +168,8 @@ describe('shared Task locking', () => {
       if (jobs[0].dispatch_request_id === r.id) {
         expect(outcomes[0]).toMatchObject({status:'fulfilled',value:r.id})
         expect(outcomes[1].status).toBe('rejected')
-        if(outcomes[1].status==='rejected') expect(String(outcomes[1].reason)).toMatch(/actieve job/)
+        // Depending on the interleaving the ordinary handler loses at its own active-job check or at the Task guard.
+        if(outcomes[1].status==='rejected') expect(String(outcomes[1].reason)).toMatch(/actieve job|DISPATCH_MANAGED_ROW/)
       } else {
         expect(outcomes[1].status).toBe('fulfilled')
         expect(outcomes[0]).toMatchObject({status:'fulfilled',value:null})
