@@ -60,6 +60,10 @@ import { registerCreateIdeaTool } from './tools/create-idea.js'
 import { registerListIdeasTool } from './tools/list-ideas.js'
 import { registerUpdateIdeaTool } from './tools/update-idea.js'
 import { registerDispatchJobTool } from './tools/dispatch-job.js'
+import { registerDispatchTaskTool } from './tools/dispatch-task.js'
+import { registerDispatchReviewTool } from './tools/dispatch-review.js'
+import { registerGetDispatchTool } from './tools/get-dispatch.js'
+import { registerCancelDispatchTool } from './tools/cancel-dispatch.js'
 import { registerGetJobStatusTool } from './tools/get-job-status.js'
 import { registerGetReviewTool } from './tools/get-review.js'
 import { registerListIdeaQuestionsTool } from './tools/list-idea-questions.js'
@@ -150,6 +154,13 @@ export function registerSharedTools(server: McpServer): void {
   registerListIdeasTool(server)
   registerUpdateIdeaTool(server)
   registerDispatchJobTool(server)
+  // IDEA-213: automatic queue dispatch. These four authorize purely on the
+  // caller's token against the central dispatch service — no host identity and
+  // no local filesystem — so both the HTTP server and stdio serve them.
+  registerDispatchTaskTool(server)
+  registerDispatchReviewTool(server)
+  registerGetDispatchTool(server)
+  registerCancelDispatchTool(server)
   registerGetJobStatusTool(server)
   registerGetReviewTool(server)
   // Question-channel: copilot can list + answer open idea questions
