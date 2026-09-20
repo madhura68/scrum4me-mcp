@@ -31,9 +31,15 @@ export function createDispatchCancellation(deps:{store:DispatchStore;auth:Dispat
     const payload:DispatchResult={version:1,outcome:'cancelled',summary:'Cancelled by requester',report_markdown:'The requester cancelled this execution.',checks:[]}
     if(a){
      const x=await lockArtifactAttempt(db,a.id)
-     await db.query("UPDATE queue_dispatch_attempts SET state='CANCEL_REQUESTED',revoked_at=COALESCE(revoked_at,now()) WHERE id=$1",[a.id])
-     await transition(db,id,'CANCEL_REQUESTED')
-     await lifecycleEvent(db,id,'cancel_requested',{stop_required:true},a.id)
+     // Requesting the stop is idempotent per request, not per action id: a second cancel carrying a
+     // fresh action id must not repeat the transition, bump the version and write another outbox row.
+     // The candidate travels with the attempt, exactly as cancelForStop moves it.
+     if(r.state!=='CANCEL_REQUESTED'){
+      await db.query("UPDATE queue_dispatch_attempts SET state='CANCEL_REQUESTED',revoked_at=COALESCE(revoked_at,now()) WHERE id=$1",[a.id])
+      await db.query("UPDATE queue_dispatch_candidates SET state='CANCEL_REQUESTED' WHERE id=$1",[c.id])
+      await transition(db,id,'CANCEL_REQUESTED')
+      await lifecycleEvent(db,id,'cancel_requested',{stop_required:true},a.id)
+     }
      // A genuine accepted stop can finish cancellation only after publication reconciliation.
      const pending=await db.query("SELECT 1 FROM queue_dispatch_publications WHERE request_id=$1 AND state IN ('PREPARED','SENT','UNKNOWN')",[id])
      if(x.a.stopped_at&&!pending.rowCount)await finishResult(db,x,payload,artifactHash(canonicalResult(payload)))

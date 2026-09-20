@@ -117,3 +117,18 @@ it('an authorized operator settles a publication that reconciliation can never d
   expect(sent).toBe(1)
  }finally{await h.close();await rm(root,{recursive:true,force:true})}
 })
+
+// ST-1590.38 (a): a corrupt bundle makes git fail, which surfaced as a DispatchSourceError. That is
+// not a DispatchError, so it escaped accept() as a 500 and left the request RUNNING until someone
+// cancelled it by hand. It belongs to the attempt and must come back as a failed result.
+it('turns a failed code verification into a failed result instead of leaving the request running',async()=>{
+ const h=await makeDispatchHarness(),root=await mkdtemp(join(tmpdir(),'m14-verify-'))
+ try{
+  const x=await codeAttempt(h,root,{free:true,change:true,corruptBundle:true});await x.completion.verifyStopEvidence(x.f.actor,x.proof,x.stop)
+  const receipt=await x.completion.acceptDispatchResult(x.f.actor,x.proof,x.result)
+  expect(receipt).toMatchObject({accepted:true,reason:'failed'})
+  expect(receipt.result?.outcome).toBe('failed')
+  expect((await h.dispatch.query('SELECT state FROM queue_dispatch_requests WHERE id=$1',[x.proof.request_id])).rows[0].state).toBe('FAILED')
+  expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations WHERE candidate_id=$1',[x.proof.candidate_id])).rows[0].released_at).not.toBeNull()
+ }finally{await h.close();await rm(root,{recursive:true,force:true})}
+})

@@ -80,6 +80,10 @@ it('locks the task before duplicate check and job creation in the same transacti
 })
 it('rejects a public Task dispatch binding before creating a job or sending notification',async()=>{
  mockTask.mockResolvedValue({...baseTask,dispatch_request_id:'active-host-request'})
- await expect(dispatchTaskImplementation({taskId:'t1',productId:'prod-1',userId:'u1'})).rejects.toThrow('DISPATCH_MANAGED_ROW')
+ // ST-1590.38 (c): whoever holds the Task, the requester reads the active-job message, never the
+ // bare guard code.
+ const reason=await dispatchTaskImplementation({taskId:'t1',productId:'prod-1',userId:'u1'}).then(()=>null,(error:unknown)=>String(error))
+ expect(reason).toMatch(/actieve job/)
+ expect(reason).not.toMatch(/DISPATCH_MANAGED_ROW/)
  expect(mockCreate).not.toHaveBeenCalled()
 })

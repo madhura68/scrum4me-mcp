@@ -5,6 +5,27 @@ import { getJobConfigSnapshot } from './snapshot.js'
 import { notifyJobEnqueued } from './notify.js'
 import { DispatchError } from './errors.js'
 
+// The Task is exclusive, so whoever holds it — an ordinary job or a managed dispatch — the requester
+// reads the same sentence. A managed holder shows up two ways: on the Task row this transaction
+// locks, or, when the managed side commits while this transaction runs, as the Task guard refusing
+// the INSERT from inside PostgreSQL. Never let that bare code reach the user.
+const TASK_BUSY = 'Er loopt al een actieve job voor deze task'
+
+/** Prisma 7 driver adapters hand back the driver's own error (a DriverAdapterError whose cause
+ * carries SQLSTATE and message); engine fields such as meta.target no longer exist. Match on
+ * SQLSTATE 42501 plus the guard's message, walking the cause chain, and on nothing else. */
+export function isManagedTaskRefusal(error: unknown): boolean {
+  const seen = new Set<object>()
+  const walk = (value: unknown): boolean => {
+    if (value === null || typeof value !== 'object' || seen.has(value)) return false
+    seen.add(value)
+    const e = value as { code?: unknown; message?: unknown; cause?: unknown }
+    if (e.code === '42501' && String(e.message ?? '').includes('DISPATCH_MANAGED_ROW')) return true
+    return walk(e.cause)
+  }
+  return walk(error)
+}
+
 export async function dispatchTaskImplementation(opts: {
   taskId: string
   productId: string
@@ -16,7 +37,7 @@ export async function dispatchTaskImplementation(opts: {
     productId: opts.productId,
     taskId: opts.taskId,
   }, db)
-  const job = await db.$transaction(async tx => {
+  const enqueue = () => db.$transaction(async tx => {
     // Same Task-first lock as managed enqueue; includes duplicate check + create.
     await tx.$queryRaw`SELECT id FROM tasks WHERE id=${opts.taskId} FOR UPDATE`
     const task = await tx.task.findUnique({
@@ -26,7 +47,7 @@ export async function dispatchTaskImplementation(opts: {
     if (!task || task.story.product_id !== opts.productId) {
       throw new DispatchError(`Task ${opts.taskId} not found in this product`)
     }
-    if (task.dispatch_request_id != null) throw new DispatchError('DISPATCH_MANAGED_ROW')
+    if (task.dispatch_request_id != null) throw new DispatchError(`${TASK_BUSY} (managed dispatch ${task.dispatch_request_id}).`)
     if (task.status !== 'TO_DO') {
       throw new DispatchError(`Task heeft status ${task.status}; alleen TO_DO is dispatchbaar.`)
     }
@@ -34,7 +55,7 @@ export async function dispatchTaskImplementation(opts: {
       where: { task_id: opts.taskId, status: { in: ['QUEUED', 'CLAIMED', 'RUNNING'] } },
       select: { id: true },
     })
-    if (existing) throw new DispatchError(`Er loopt al een actieve job voor deze task (${existing.id}).`)
+    if (existing) throw new DispatchError(`${TASK_BUSY} (${existing.id}).`)
 
     return tx.claudeJob.create({
       data: {
@@ -49,6 +70,12 @@ export async function dispatchTaskImplementation(opts: {
       select: { id: true },
     })
   })
+  let job: { id: string }
+  try { job = await enqueue() }
+  catch (error) {
+    if (!isManagedTaskRefusal(error)) throw error
+    throw new DispatchError(`${TASK_BUSY} (managed dispatch).`)
+  }
   await (dependencies.notify ?? notifyJobEnqueued)({
     job_id: job.id, user_id: opts.userId, product_id: opts.productId, kind: 'TASK_IMPLEMENTATION',
   })

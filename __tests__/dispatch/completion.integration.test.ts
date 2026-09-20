@@ -157,3 +157,19 @@ it('keeps webissuer cancellation of its own request available',async()=>{
  const x=await running(),actor={...x.f.actor,source:'web' as const,tokenId:null,principalKey:`web:${x.f.actor.userId}`},v=await x.requests.getDispatch(x.f.actor,x.proof.request_id)
  expect((await x.cancel.cancelDispatch(actor,v.id,randomUUID(),v.version)).state).toBe('CANCEL_REQUESTED')
 })
+
+// ST-1590.38 (b): requesting a stop is idempotent per request, not per action id. A second cancel
+// carrying a fresh action id repeated the transition, bumped the version and wrote another outbox
+// row. The candidate state travels with the attempt, exactly as cancelForStop moves it.
+it('keeps a second cancel with a fresh action id idempotent and moves the candidate along',async()=>{
+ const x=await running()
+ const v=await x.requests.getDispatch(x.f.actor,x.proof.request_id)
+ expect((await x.cancel.cancelDispatch(x.f.actor,v.id,randomUUID(),v.version)).state).toBe('CANCEL_REQUESTED')
+ expect((await h.dispatch.query('SELECT state FROM queue_dispatch_candidates WHERE id=$1',[x.proof.candidate_id])).rows[0].state).toBe('CANCEL_REQUESTED')
+ const after=await x.requests.getDispatch(x.f.actor,v.id)
+ const outbox=(await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_outbox WHERE request_id=$1',[v.id])).rows[0].n
+ const second=await x.cancel.cancelDispatch(x.f.actor,v.id,randomUUID(),after.version)
+ expect(second).toMatchObject({state:'CANCEL_REQUESTED',version:after.version})
+ expect((await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_outbox WHERE request_id=$1',[v.id])).rows[0].n).toBe(outbox)
+ expect((await h.dispatch.query("SELECT count(*)::int n FROM queue_dispatch_events WHERE request_id=$1 AND type='cancel_requested'",[v.id])).rows[0].n).toBe(1)
+})

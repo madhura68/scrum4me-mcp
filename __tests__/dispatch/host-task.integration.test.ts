@@ -43,7 +43,7 @@ async function reserved(){const r=await requests.submitDispatch(f.actor,input,'h
 async function started(){const r=await reserved();const receipt=await attempts.claimDispatchAttempt(f.actor,session.incarnation_id,'task-claim',session.session_credential);expect(receipt?.authority).toBe('prepare');if(!receipt?.context)throw Error('missing host task');await attempts.startDispatchAttempt(f.actor,receipt.context.proof,scope);return r}
 it('excludes ordinary enqueue after actual host Task reserve, claim and start',async()=>{
  await started();expect((await h.dispatch.query('SELECT count(*)::int n FROM claude_jobs')).rows[0].n).toBe(0)
- await expect(ordinary()).rejects.toThrow('DISPATCH_MANAGED_ROW')
+ await expect(ordinary()).rejects.toThrow(/actieve job/) // ST-1590.38 (c): the user message, never the bare guard code.
 })
 it('refuses general Task status mutation while the host owns its Task',async()=>{
  await started();const result=await handleUpdateTaskStatus({task_id:task,status:'in_progress'})
@@ -74,7 +74,7 @@ it('never releases host Task binding when heartbeat or maximum duration expires'
  await h.dispatch.query("UPDATE queue_dispatch_attempts SET started_at=now()-interval '301 seconds' WHERE candidate_id IN (SELECT id FROM queue_dispatch_candidates WHERE request_id=$1)",[r.id])
  await attempts.markExpiredAttempts()
  expect((await requests.getDispatch(f.actor,r.id)).state).toBe('CANCEL_REQUESTED')
- await expect(ordinary()).rejects.toThrow('DISPATCH_MANAGED_ROW')
+ await expect(ordinary()).rejects.toThrow(/actieve job/) // ST-1590.38 (c): the user message, never the bare guard code.
  await expect(h.web.query('UPDATE tasks SET dispatch_request_id=NULL WHERE id=$1',[task])).rejects.toMatchObject({code:'42501'})
  await expect(h.dispatch.query('UPDATE tasks SET dispatch_request_id=NULL WHERE id=$1',[task])).rejects.toMatchObject({code:'42501'})
 })

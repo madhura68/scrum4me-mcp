@@ -72,8 +72,17 @@ export function createDispatchCompletion(deps:CompletionDeps){
   if(prepared.receipt)return prepared.receipt
   let result=prepared.result!,verification:ReturnType<typeof verifyManagedTask>|undefined
   if(prepared.code){
-   await verifyCodeArtifact(prepared.code.bytes,prepared.code.base,prepared.code.expected)
-   if(prepared.action==='task_implementation'){
+   let verified=true
+   // A malformed bundle, an overflowing git invocation or an unreadable artifact is this attempt's
+   // failure, not the service's: it must come back as a failed result through finishResult instead
+   // of a 500 that leaves the request RUNNING until someone cancels it by hand. A DispatchError is
+   // a deliberate verdict on the submission and keeps its own status.
+   try{await verifyCodeArtifact(prepared.code.bytes,prepared.code.base,prepared.code.expected)}
+   catch(error){
+    if(error instanceof DispatchError)throw error
+    verified=false;result={...result,outcome:'failed',summary:'code_verification_failed',review:undefined}
+   }
+   if(verified&&prepared.action==='task_implementation'){
     const snapshot=prepared.code.snapshot
     verification=verifyManagedTask({diff:JSON.parse(Buffer.from(prepared.code.bytes).toString('utf8')).diff,planSnapshot:String(snapshot.implementation_plan??''),verifyOnly:snapshot.verify_only===true,verifyRequired:snapshot.verify_required as VerifyRequired,summary:result.summary})
     if(!verification.gate.allowed)result={...result,outcome:'failed',summary:verification.gate.error}

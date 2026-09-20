@@ -138,7 +138,7 @@ describe('managed host identity and exact worker binding', () => {
 
 import { PrismaClient } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
-import { dispatchTaskImplementation } from '../../src/lib/dispatch/task-implementation.js'
+import { dispatchTaskImplementation, isManagedTaskRefusal } from '../../src/lib/dispatch/task-implementation.js'
 async function explicitTask() {
   const pbi = crypto.randomUUID(), story = crypto.randomUUID(), task = crypto.randomUUID(), profileId = crypto.randomUUID()
   await h.admin.query("UPDATE products SET repo_url='https://forge.test/repo.git' WHERE id=$1", [f.input.product_id])
@@ -168,12 +168,35 @@ describe('shared Task locking', () => {
       if (jobs[0].dispatch_request_id === r.id) {
         expect(outcomes[0]).toMatchObject({status:'fulfilled',value:r.id})
         expect(outcomes[1].status).toBe('rejected')
-        // Depending on the interleaving the ordinary handler loses at its own active-job check or at the Task guard.
-        if(outcomes[1].status==='rejected') expect(String(outcomes[1].reason)).toMatch(/actieve job|DISPATCH_MANAGED_ROW/)
+        // Whichever refusal the interleaving produces, the requester reads the same message.
+        if(outcomes[1].status==='rejected'){
+          expect(String(outcomes[1].reason)).toMatch(/actieve job/)
+          expect(String(outcomes[1].reason)).not.toMatch(/DISPATCH_MANAGED_ROW/)
+        }
       } else {
         expect(outcomes[1].status).toBe('fulfilled')
         expect(outcomes[0]).toMatchObject({status:'fulfilled',value:null})
       }
+    } finally { await db.$disconnect() }
+  })
+  // ST-1590.38 (c): the ordinary enqueue path must never hand the user the bare guard code, neither
+  // from the Task row it reads nor from the Task guard raising inside PostgreSQL.
+  it('refuses an ordinary enqueue for a managed Task with the active-job message', async () => {
+    const input = await explicitTask(), r = await requests.submitDispatch(f.actor, input, 'task-busy')
+    expect(await selection.reserveNextRequest()).toBe(r.id)
+    const db = new PrismaClient({ adapter: new PrismaPg(h.web) })
+    try {
+      const reason = await dispatchTaskImplementation({ taskId: input.task_id, productId: input.product_id, userId: f.actor.userId }, { db, notify: async () => { } }).then(() => null, (e: unknown) => String(e))
+      expect(reason).toMatch(/actieve job/)
+      expect(reason).not.toMatch(/DISPATCH_MANAGED_ROW/)
+      // The same message covers the refusal PostgreSQL itself raises when the managed side commits
+      // mid-transaction. Measured against the real Prisma 7 driver-adapter error, not a mock.
+      const raw = await db.claudeJob.create({ data: { user_id: f.actor.userId, product_id: input.product_id, task_id: input.task_id, kind: 'TASK_IMPLEMENTATION', status: 'QUEUED', source: 'COPILOT' }, select: { id: true } }).then(() => null, (e: unknown) => e)
+      expect(raw).not.toBeNull()
+      expect((raw as { code?: unknown }).code).toBeUndefined()
+      expect(isManagedTaskRefusal(raw)).toBe(true)
+      expect(isManagedTaskRefusal(new Error('DISPATCH_MANAGED_ROW'))).toBe(false)
+      expect(isManagedTaskRefusal({ code: '42501', message: 'permission denied for table tasks' })).toBe(false)
     } finally { await db.$disconnect() }
   })
   it('keeps the accepted Task plan when the live plan changes', async () => {
