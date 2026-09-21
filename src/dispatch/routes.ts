@@ -151,6 +151,9 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
         const actor = await auth.resolveDispatchActor({
           authorization: req.get('Authorization'), assertion: req.get('X-Dispatch-Assertion'),
           method: req.method, path: req.originalUrl, rawBody: bytes,
+          // Bound into the assertion's signed bytes: submit signs its real key, every other route
+          // signs (and is checked against) the empty string its absent header decodes to.
+          idempotencyKey: req.get('Idempotency-Key') ?? '',
         })
         const value = await fn({
           actor, req, res, raw: bytes,

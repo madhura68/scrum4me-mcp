@@ -102,5 +102,5 @@ it('actual generic control bearer authentication refuses a child output capabili
  const id='11111111-1111-4111-8111-111111111111',now=Date.now()
  const token=createAgentOutputCapabilities(Buffer.alloc(32,65)).mint({binding:{request_id:id,candidate_id:id,generation:1,attempt_id:id,incarnation_id:id,input_sha256:'a'.repeat(64),profile_sha256:'b'.repeat(64)},action:'review',access:'read',attemptDeadlineMs:now+1000},now)
  const auth=createDispatchAuth({store:h.dispatch})
- for(const path of ['/attempts/claim','/attempts/start','/attempts/result','/requests/cancel','/requests/recover'])await expect(auth.resolveDispatchActor({method:'POST',path,rawBody:Buffer.from('{}'),authorization:`Bearer ${token}`})).rejects.toThrow('DISPATCH_UNAUTHENTICATED')
+ for(const path of ['/attempts/claim','/attempts/start','/attempts/result','/requests/cancel','/requests/recover'])await expect(auth.resolveDispatchActor({method:'POST',path,rawBody:Buffer.from('{}'),authorization:`Bearer ${token}`,idempotencyKey:''})).rejects.toThrow('DISPATCH_UNAUTHENTICATED')
 })

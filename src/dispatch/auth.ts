@@ -7,7 +7,7 @@ import { DispatchError } from './errors.js'
 
 export type DispatchOperation = 'read' | 'submit' | 'cancel' | 'claim' | 'start' | 'publish' | 'recover' | 'profile'
 type Db = Pool | PoolClient
-export type DispatchAuthRequest = AssertionRequest & { authorization?: string; assertion?: string }
+export type DispatchAuthRequest = AssertionRequest & { authorization?: string; assertion?: string; idempotencyKey: string }
 type TokenRow = { id: string; user_id: string; kind: string; scoped_products: string[]; scoped_repos: string[] }
 const forbidden = (): never => { throw new DispatchError('DISPATCH_FORBIDDEN') }
 const unauthenticated = (): never => { throw new DispatchError('DISPATCH_UNAUTHENTICATED') }

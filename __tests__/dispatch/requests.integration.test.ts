@@ -9,7 +9,7 @@ let f: DispatchHarnessSeed
 let auth: ReturnType<typeof createDispatchAuth>
 let requests: ReturnType<typeof createDispatchRequests>
 const token = 'dispatch-test-token'
-const incoming = () => ({ authorization: `Bearer ${token}`, method: 'POST', path: '/dispatch/v1/requests', rawBody: Buffer.alloc(0) })
+const incoming = () => ({ authorization: `Bearer ${token}`, method: 'POST', path: '/dispatch/v1/requests', rawBody: Buffer.alloc(0), idempotencyKey: '' })
 beforeEach(async () => {
   h = await makeDispatchHarness(); f = await h.seed()
   await h.admin.query('UPDATE api_tokens SET token_hash=$1 WHERE id=$2', [createHash('sha256').update(token).digest('hex'), f.actor.tokenId])
@@ -197,7 +197,7 @@ it('runs client→HTTP→real authorization→DB and authenticates exact workers
     const malformed = await fetch(`${root}/requests`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: '{}' })
     expect(malformed.status).toBe(422)
     const rawBody = Buffer.from(JSON.stringify(f.input)); const path = '/dispatch/v1/requests'
-    const assertion = () => signDispatchAssertion({ issuer: 'scrum4me-workers', userId: f.actor.userId, jti: randomUUID(), method: 'POST', path, rawBody, key: workersKey })
+    const assertion = () => signDispatchAssertion({ issuer: 'scrum4me-workers', userId: f.actor.userId, jti: randomUUID(), method: 'POST', path, rawBody, key: workersKey, idempotencyKey: 'workers' })
     const submit = (body: Buffer, signed = assertion()) => fetch(`${root}/requests`, { method: 'POST', headers: { 'X-Dispatch-Assertion': signed, 'Idempotency-Key': 'workers' }, body })
     expect((await submit(rawBody)).status).toBe(403)
     await h.admin.query("INSERT INTO user_roles(id,user_id,role) VALUES($1,$2,'ADMIN')", [randomUUID(), f.actor.userId])
@@ -205,10 +205,13 @@ it('runs client→HTTP→real authorization→DB and authenticates exact workers
     const one = await first.json()
     expect(await (await submit(rawBody)).json()).toEqual(one)
     expect((await submit(Buffer.from(` ${rawBody.toString()}`))).status).toBe(401)
-    const web = signDispatchAssertion({ issuer: 'scrum4me-web', userId: f.actor.userId, jti: 'web', method: 'POST', path, rawBody, key: webKey })
+    // Replay defence: the same assertion presented with a fresh Idempotency-Key would previously
+    // have minted a second request; the signed key must now match the header or intake refuses.
+    expect((await fetch(`${root}/requests`, { method: 'POST', headers: { 'X-Dispatch-Assertion': assertion(), 'Idempotency-Key': 'replayed' }, body: rawBody })).status).toBe(401)
+    const web = signDispatchAssertion({ issuer: 'scrum4me-web', userId: f.actor.userId, jti: 'web', method: 'POST', path, rawBody, key: webKey, idempotencyKey: 'workers' })
     expect((await submit(rawBody, web)).status).toBe(403)
     const readPath = `/dispatch/v1/requests/${view.id}`
-    const readAssertion = signDispatchAssertion({ issuer: 'scrum4me-web', userId: f.actor.userId, jti: 'read-web', method: 'GET', path: readPath, rawBody: Buffer.alloc(0), key: webKey })
+    const readAssertion = signDispatchAssertion({ issuer: 'scrum4me-web', userId: f.actor.userId, jti: 'read-web', method: 'GET', path: readPath, rawBody: Buffer.alloc(0), key: webKey, idempotencyKey: '' })
     expect((await fetch(`${root}/requests/${view.id}`, { headers: { 'X-Dispatch-Assertion': readAssertion } })).status).toBe(200)
     await h.admin.query('DELETE FROM user_roles WHERE user_id=$1', [f.actor.userId])
     expect((await submit(rawBody)).status).toBe(403)
