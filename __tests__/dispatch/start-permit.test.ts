@@ -14,7 +14,9 @@ describe('Ed25519 broker start authorization',()=>{
  it('rejects tampering, alternate keys, noncanonical encodings and outer expiry substitution',()=>{
   for(const permit of [{...fixture.permit,permitId:fixture.permit.permitId+'a'},{...fixture.permit,expiresAt:'2026-09-15T12:00:06.000Z'},signed({...fixture.claims,scope:{...fixture.claims.scope,scopeId:'other'}}),signed({...fixture.claims,purpose:'attempt'}),signed({...fixture.claims,extra:1})])expect(()=>verifyStartPermit(permit,publicKey,binding,now)).toThrow('DISPATCH_START_PERMIT_REFUSED')
   expect(()=>verifyStartPermit(fixture.permit,generateKeyPairSync('ed25519').publicKey,binding,now)).toThrow()
-  expect(()=>verifyStartPermit(fixture.permit,publicKey,binding,now-1)).toThrow()
+  // m10: a permit read as issued in the future is tolerated within START_PERMIT_CLOCK_SKEW_MS (5000ms);
+  // beyond that bounded skew (5001ms lead) it is still refused. Mirrors scrum4me-shared's own boundary.
+  expect(()=>verifyStartPermit(fixture.permit,publicKey,binding,now-5001)).toThrow()
   expect(()=>verifyStartPermit(fixture.permit,publicKey,binding,now+5000)).toThrow()
  })
  it('does not accept symmetric or signing keys as pinned public verification keys',()=>{
