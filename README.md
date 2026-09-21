@@ -314,6 +314,24 @@ There are deliberately two metadata contracts:
   merge commit**. Only push CI on `main` may create and publish this final
   metadata.
 
+### Merge and documentation-audit procedure
+
+Before merging, update the candidate branch with the current `main` and rerun
+candidate CI on that exact head. Use a two-parent merge commit whose first parent
+is the previous `main` and whose tree equals the reviewed second parent. A stale
+candidate that gains changes during the merge must be updated and tested again.
+Direct commits, squash merges and rebases onto `main` do not meet this release
+contract; do not weaken the guards to accept them.
+
+Documentation audits must also enter through a reviewed PR. The audit child only
+commits allowed Markdown and hands off its result. The runner validates the
+changes, publishes an audit branch and opens or reconciles its PR; it never
+merges automatically. Audit completion means the proposal was delivered, not
+released. DB document synchronization happens after merge through the normal
+sync route, never from the unreviewed audit checkout. Roll this prompt out with
+the `scrum4me-docker` audit-PR publisher; the former direct-push runner does not
+implement this contract.
+
 Both collectors are fail-closed over exact Node 24.19.0, the complete clean
 checkout, every initialized recursive submodule and the committed generated
 schema. `collectReleaseMetadata` retains injected Git/filesystem/gate
