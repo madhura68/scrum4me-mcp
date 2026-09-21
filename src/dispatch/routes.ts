@@ -40,7 +40,13 @@ export type DispatchHttpLog = { operation: DispatchHttpOperation; request_id: st
 /** Supervisor-facing routes exist only where the deployment actually holds the keys that make
  * their authority verifiable. Without them the executor/attempt routes are simply not there. */
 export type DispatchExecutorKeys = {
-  credentialKeys: Record<number, Uint8Array>; keyVersion: number; startPermitPrivateKey: KeyObject
+  credentialKeys: Record<number, Uint8Array>; keyVersion: number
+  /** The start-permit signing key and the `kid` that names it inside every issued permit. */
+  startPermitPrivateKey: KeyObject; startPermitKeyId: string
+  /** The prepared-sources manifest signs under its OWN key and kid, distinct from the permit.
+   * Both are present or both absent: without them the manifest route stays `unavailable` rather
+   * than silently falling back to the permit key. */
+  sourceManifestPrivateKey?: KeyObject; sourceManifestKeyId?: string
 }
 export type DispatchAppDependencies = {
   store: DispatchStore; assertionKeys?: DispatchAssertionKeys; enabled: boolean
@@ -67,7 +73,7 @@ const runtimeScope = z.object({
 const sha256Header = /^[a-f0-9]{64}$/
 /** The immutable identity of one historical attempt and its runtime scope, exactly as the
  * start permit pinned it. Every non-launch route below is bound to it and to nothing else. */
-const startBindingSchema = dispatchStartPermitClaimsSchema.omit({ version: true, purpose: true, issuedAt: true, expiresAt: true })
+const startBindingSchema = dispatchStartPermitClaimsSchema.omit({ version: true, purpose: true, kid: true, issuedAt: true, expiresAt: true })
 const recoveryKeySchema = startBindingSchema.omit({ candidateId: true, generation: true })
 /** Post-stop collection and the child's staging share one closed key vocabulary; a reserved
  * `__` control key can never be reached through either. */
@@ -399,11 +405,12 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
   })
   // The signed statement of which prepared bytes belong to this attempt. It is a read under the
   // attempt's own proof; the supervisor hands the envelope to the operator broker, which verifies
-  // the same signature before a single byte is mounted. Absent where no permit key is configured.
-  register('post', '/attempts/sources/manifest', 'source_manifest', json, deps.executor
+  // the same signature before a single byte is mounted. It signs under the manifest's OWN key and
+  // kid; absent where no manifest key is configured (never a fallback to the permit key).
+  register('post', '/attempts/sources/manifest', 'source_manifest', json, deps.executor?.sourceManifestPrivateKey && deps.executor.sourceManifestKeyId
     ? ({ actor, json: read }) => {
       const input = parseWith(z.object({ proof: attemptProofSchema }).strict(), read())
-      return signPreparedSourcesManifest({ store: deps.store, auth }, actor, input.proof, deps.executor!.startPermitPrivateKey)
+      return signPreparedSourcesManifest({ store: deps.store, auth }, actor, input.proof, deps.executor!.sourceManifestPrivateKey!, deps.executor!.sourceManifestKeyId!)
     } : unavailable)
   register('post', '/profiles', 'create_profile', json, ({ actor, json: read }) =>
     administration.createProfile(actor, body(read()) as unknown as ProfileCreateInput))

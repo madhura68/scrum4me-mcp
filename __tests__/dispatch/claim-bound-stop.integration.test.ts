@@ -28,7 +28,7 @@ it('closes a claimed-never-scoped attempt through claim-bound stop evidence and 
   const r=await createDispatchRequests(opts).submitDispatch(requester,f.input,randomUUID())
   await createDispatchSources({...opts,fetchGit:async()=>({ok:false,reason:'network'})}).prepareRequestSources(r.id)
   await createDispatchSelection(opts).reserveRequest(r.id)
-  const claimed=await createDispatchAttempts({...opts,credentialKeys:{1:Buffer.alloc(32,8)},keyVersion:1,startPermitPrivateKey:generateKeyPairSync('ed25519').privateKey}).claimDispatchAttempt(f.actor,session.incarnation_id,'claim-bound',session.session_credential)
+  const claimed=await createDispatchAttempts({...opts,credentialKeys:{1:Buffer.alloc(32,8)},keyVersion:1,startPermitPrivateKey:generateKeyPairSync('ed25519').privateKey,startPermitKeyId:'permit-test'}).claimDispatchAttempt(f.actor,session.incarnation_id,'claim-bound',session.session_credential)
   if(!claimed?.context)throw Error('claim required')
   const p=claimed.context.proof
   const completion=createDispatchCompletion(opts)
@@ -83,7 +83,7 @@ it('refuses a claim-bound stop for an attempt that entered a scope',async()=>{
   const r=await createDispatchRequests(opts).submitDispatch(f.actor,f.input,randomUUID())
   await createDispatchSources({...opts,fetchGit:async()=>({ok:false,reason:'network'})}).prepareRequestSources(r.id)
   await createDispatchSelection(opts).reserveRequest(r.id)
-  const claimed=await createDispatchAttempts({...opts,credentialKeys:{1:Buffer.alloc(32,8)},keyVersion:1,startPermitPrivateKey:generateKeyPairSync('ed25519').privateKey}).claimDispatchAttempt(f.actor,session.incarnation_id,'scoped-claim',session.session_credential)
+  const claimed=await createDispatchAttempts({...opts,credentialKeys:{1:Buffer.alloc(32,8)},keyVersion:1,startPermitPrivateKey:generateKeyPairSync('ed25519').privateKey,startPermitKeyId:'permit-test'}).claimDispatchAttempt(f.actor,session.incarnation_id,'scoped-claim',session.session_credential)
   if(!claimed?.context)throw Error('claim required')
   const p=claimed.context.proof
   // A scope was entered — the exact case that must NOT use the claim-bound path.

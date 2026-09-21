@@ -2,7 +2,7 @@ import type {ArtifactAttempt} from './artifacts.js'
 import {dispatchStartPermitClaimsSchema,type DispatchStartBinding} from '@shared/queue-dispatch-start-permit.js'
 import {canonicalResult} from './lifecycle.js'
 import {DispatchError} from './errors.js'
-const bindingSchema=dispatchStartPermitClaimsSchema.omit({version:true,purpose:true,issuedAt:true,expiresAt:true})
+const bindingSchema=dispatchStartPermitClaimsSchema.omit({version:true,purpose:true,kid:true,issuedAt:true,expiresAt:true})
 const conflict=():never=>{throw new DispatchError('DISPATCH_STATE_CONFLICT')}
 export async function validateHistoricalBinding(db:import('pg').PoolClient,x:ArtifactAttempt,b:DispatchStartBinding){
  bindingSchema.parse(b)

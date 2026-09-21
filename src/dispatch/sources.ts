@@ -7,6 +7,7 @@ import {decideDispatchTransition} from '@shared/queue-dispatch-state.js'
 import {readPinnedDocument,type DocumentSourcePorts,type DocumentFailureReason,type RevisionRecord} from '@shared/queue-document-reader.js'
 import {MARKDOWN_PREVIEW_MAX_BYTES} from '@shared/markdown-profile.js'
 import {REPOSITORY_SOURCE_KEY,canonicalPreparedSourcesManifest,type SourceArtifact,type SignedPreparedSourcesManifest} from '@shared/queue-dispatch-sources.js'
+import {dispatchKeyIdSchema} from '@shared/queue-dispatch-start-permit.js'
 import type {DispatchActor} from './ports.js'
 import type {DispatchAuth} from './auth.js'
 import {withDispatchRetryTransaction,type DispatchStore} from './db.js'
@@ -96,19 +97,20 @@ export function createDispatchSources(deps:{store:DispatchStore;auth:DispatchAut
   }).catch(async error=>{if(error instanceof DispatchError&&['DISPATCH_FORBIDDEN','DISPATCH_UNAUTHENTICATED'].includes(error.code)){await rejectUnstarted(requestId,'authorization_unavailable');return}throw error})
  }
  const rejectUnstarted=(requestId:string,reason:string)=>withDispatchRetryTransaction(deps.store,db=>rejectUnstartedInTransaction(db,requestId,reason))
- const preparedManifest=(actor:DispatchActor,proof:AttemptProof,key:KeyObject)=>signPreparedSourcesManifest(deps,actor,proof,key)
+ const preparedManifest=(actor:DispatchActor,proof:AttemptProof,key:KeyObject,kid:string)=>signPreparedSourcesManifest(deps,actor,proof,key,kid)
  return {readDispatchSources,prepareRequestSources,rejectUnstarted,preparedManifest}
 }
 
 /** The signed statement of exactly which prepared bytes belong to one live attempt. It is a
  * read: it commits nothing, it mints no authority, and its domain separation lives inside the
- * signed bytes, so the same key that signs start permits signs this without widening either. */
-export async function signPreparedSourcesManifest(deps:{store:DispatchStore;auth:DispatchAuth},actor:DispatchActor,proof:AttemptProof,key:KeyObject):Promise<SignedPreparedSourcesManifest>{
- if(key.type!=='private'||key.asymmetricKeyType!=='ed25519')throw new DispatchError('DISPATCH_INVALID_INPUT')
+ * signed bytes. It carries its OWN `kid` (a distinct key from the start permit), so a verifier
+ * selects the manifest key by that kid and the two keys rotate independently. */
+export async function signPreparedSourcesManifest(deps:{store:DispatchStore;auth:DispatchAuth},actor:DispatchActor,proof:AttemptProof,key:KeyObject,kid:string):Promise<SignedPreparedSourcesManifest>{
+ if(key.type!=='private'||key.asymmetricKeyType!=='ed25519'||!dispatchKeyIdSchema.safeParse(kid).success)throw new DispatchError('DISPATCH_INVALID_INPUT')
  return withDispatchRetryTransaction(deps.store,async db=>{const x=await lockArtifactAttempt(db,proof.attempt_id);verifyArtifactProof(actor,proof,x);await deps.auth.refreshActor(actor,db);await authorizeArtifactAttempt(db,deps.auth,x)
   const prepared=(await db.query("SELECT payload FROM queue_dispatch_events WHERE request_id=$1 AND type='sources_prepared'",[x.r.id])).rows
   if(prepared.length!==1)throw new DispatchError('DISPATCH_STATE_CONFLICT')
-  const manifest=canonicalPreparedSourcesManifest({version:1,purpose:'dispatch-prepared-sources',binding:{requestId:x.r.id,candidateId:x.c.id,generation:x.c.generation,attemptId:x.a.id,incarnationId:x.i.id},inputSha256:x.r.input_hash,profileSha256:x.p.sha256,...prepared[0].payload})
+  const manifest=canonicalPreparedSourcesManifest({version:1,purpose:'dispatch-prepared-sources',kid,binding:{requestId:x.r.id,candidateId:x.c.id,generation:x.c.generation,attemptId:x.a.id,incarnationId:x.i.id},inputSha256:x.r.input_hash,profileSha256:x.p.sha256,...prepared[0].payload})
   return {manifest,signature:sign(null,Buffer.from(manifest),key).toString('base64url')}
  })
 }

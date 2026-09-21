@@ -10,7 +10,7 @@ import {canonicalResult,lifecycleEvent,transition,terminalizeAttempt,lifecycleVi
 import {finishResult,createDispatchCompletion,type CompletionDeps} from './completion.js'
 import {withDispatchRetryTransaction,type DispatchStore} from './db.js'
 import {DispatchError} from './errors.js'
-const bindingSchema=dispatchStartPermitClaimsSchema.omit({version:true,purpose:true,issuedAt:true,expiresAt:true})
+const bindingSchema=dispatchStartPermitClaimsSchema.omit({version:true,purpose:true,kid:true,issuedAt:true,expiresAt:true})
 const attestationSchema=z.object({version:z.literal(1),binding:bindingSchema,kind:z.enum(['operator_attested','runtime_rebooted']),observedAt:z.string().datetime(),observer:z.string().min(1).max(256),source:z.string().min(1).max(4000),statement:z.string().min(20).max(16000),processesTerminated:z.literal(true),runtimeBootBefore:z.string().min(1).max(256),runtimeBootAfter:z.string().min(1).max(256),rebootedAt:z.string().datetime().optional()}).strict()
 export type RecoveryAttestation=z.infer<typeof attestationSchema>
 export type RecoveryScopeKey={requestId:string;attemptId:string;incarnationId:string;scope:DispatchStartBinding['scope']}

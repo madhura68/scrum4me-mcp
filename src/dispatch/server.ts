@@ -1,4 +1,5 @@
 import { createPrivateKey, type KeyObject } from 'node:crypto'
+import { dispatchKeyIdSchema } from '@shared/queue-dispatch-start-permit.js'
 import { pathToFileURL } from 'node:url'
 import { Client } from 'pg'
 import { createDispatchStore, type DispatchStore } from './db.js'
@@ -23,7 +24,7 @@ export const DISPATCH_REPLY_READ_LEASE = '4 hours'
 
 /** Attempt/session credential keys as `<version>:<base64url>`, comma separated, so an old
  * incarnation keeps verifying against the key version it was issued under. */
-export function parseDispatchCredentialKeys(raw: string | undefined, version: string | undefined): Omit<DispatchExecutorKeys, 'startPermitPrivateKey'> | null {
+export function parseDispatchCredentialKeys(raw: string | undefined, version: string | undefined): Pick<DispatchExecutorKeys, 'credentialKeys' | 'keyVersion'> | null {
   if (!raw || !version) return null
   const keyVersion = Number(version)
   if (!Number.isInteger(keyVersion) || keyVersion < 1) return null
@@ -44,6 +45,11 @@ function startPermitKey(pem: string | undefined): KeyObject | null {
     const key = createPrivateKey(pem.includes('\\n') ? pem.replaceAll('\\n', '\n') : pem)
     return key.asymmetricKeyType === 'ed25519' ? key : null
   } catch { return null }
+}
+/** A signing key id from the operator env: bounded ASCII with no `:`/`,` so it survives the
+ * verifier's comma/colon-delimited keyset. Read exactly as the private key is read today. */
+function keyId(value: string | undefined): string | null {
+  return value && dispatchKeyIdSchema.safeParse(value).success ? value : null
 }
 function assertionKey(value: string | undefined) {
   return value ? Buffer.from(value, 'utf8') : undefined
@@ -95,8 +101,18 @@ export function startDispatchServer(env: NodeJS.ProcessEnv = process.env): Dispa
   const enabled = env.DISPATCH_ENABLED === '1'
   const productAllowlist = (env.DISPATCH_PRODUCT_ALLOWLIST ?? '').split(',').map(id => id.trim()).filter(Boolean)
   const permit = startPermitKey(env.DISPATCH_START_PERMIT_PRIVATE_KEY)
+  const permitKid = keyId(env.DISPATCH_START_PERMIT_KEY_ID)
   const credentials = parseDispatchCredentialKeys(env.DISPATCH_CREDENTIAL_KEYS, env.DISPATCH_CREDENTIAL_KEY_VERSION)
-  const executor = credentials && permit ? { ...credentials, startPermitPrivateKey: permit } : undefined
+  // The manifest signs under its OWN key + kid, distinct from the permit. Both present or the
+  // manifest route stays unavailable; there is no silent fallback to the permit key.
+  const manifestKey = startPermitKey(env.DISPATCH_SOURCE_MANIFEST_PRIVATE_KEY)
+  const manifestKid = keyId(env.DISPATCH_SOURCE_MANIFEST_KEY_ID)
+  const manifest = manifestKey && manifestKid ? { sourceManifestPrivateKey: manifestKey, sourceManifestKeyId: manifestKid } : undefined
+  // The permit routes exist only where the permit key AND its kid are configured together; the kid
+  // is now part of every issued permit, so a key without a kid is an unconfigured signer.
+  const executor = credentials && permit && permitKid
+    ? { ...credentials, startPermitPrivateKey: permit, startPermitKeyId: permitKid, ...manifest }
+    : undefined
   const log = (event: Record<string, unknown>) => process.stdout.write(`${JSON.stringify(event)}\n`)
   const auth = createDispatchAuth({ store })
   const core = { store, auth, enabled, productAllowlist }

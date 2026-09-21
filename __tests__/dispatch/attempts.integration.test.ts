@@ -20,7 +20,7 @@ beforeEach(async()=>{
  session=await registration.registerDispatchExecutor(f.actor,{slot_id:f.jobSlot.id,registration_key:'test',boot_id:scope.bootId,runtime:'CODEX',image_digest:scope.imageDigest,profile_sha256:scope.profileSha256})
  selection=createDispatchSelection({store:h.dispatch,auth,enabled:true,productAllowlist:[f.input.product_id]})
  requests=createDispatchRequests({store:h.dispatch,auth,enabled:true,productAllowlist:[f.input.product_id]})
- attempts=createDispatchAttempts({store:h.dispatch,auth,enabled:true,productAllowlist:[f.input.product_id],credentialKeys:{1:Buffer.alloc(32,8)},keyVersion:1,startPermitPrivateKey:permitKeys.privateKey})
+ attempts=createDispatchAttempts({store:h.dispatch,auth,enabled:true,productAllowlist:[f.input.product_id],credentialKeys:{1:Buffer.alloc(32,8)},keyVersion:1,startPermitPrivateKey:permitKeys.privateKey,startPermitKeyId:'permit-test'})
 })
 afterEach(async()=>{await h?.close()})
 async function reserve(){const r=await requests.submitDispatch(f.actor,f.input,randomUUID());await selection.reserveRequest(r.id);return r}
@@ -52,7 +52,7 @@ describe('durable claim and start authority',()=>{
  it('issues a five-second scope-bound permit and retries only the same started scope',async()=>{
   const {context}=await claimed();const before=Date.now(),permit=await attempts.startDispatchAttempt(f.actor,context.proof,scope)
   expect(Date.parse(permit.expiresAt)).toBeGreaterThan(before+4000);expect(Date.parse(permit.expiresAt)).toBeLessThan(Date.now()+5100)
-  expect(verifyStartPermit(permit,permitKeys.publicKey,{requestId:context.proof.request_id,candidateId:context.proof.candidate_id,generation:context.proof.generation,attemptId:context.proof.attempt_id,incarnationId:context.proof.incarnation_id,scope},Date.now()).scope).toEqual(scope)
+  expect(verifyStartPermit(permit,[{kid:'permit-test',publicKey:permitKeys.publicKey}],{requestId:context.proof.request_id,candidateId:context.proof.candidate_id,generation:context.proof.generation,attemptId:context.proof.attempt_id,incarnationId:context.proof.incarnation_id,scope},Date.now()).scope).toEqual(scope)
   await expect(attempts.startDispatchAttempt(f.actor,context.proof,{...scope,scopeId:'container-2'})).rejects.toThrow('DISPATCH_STATE_CONFLICT')
   expect((await claim())?.authority).toBe('existing_scope')
   await expect(attempts.startDispatchAttempt(f.actor,context.proof,scope)).resolves.toHaveProperty('permitId')

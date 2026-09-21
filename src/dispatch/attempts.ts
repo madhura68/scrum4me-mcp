@@ -94,9 +94,10 @@ export function createDispatchAttempts(deps: {
     credentialKeys: Record<number, Uint8Array>;
     keyVersion: number;
     startPermitPrivateKey: KeyObject;
+    startPermitKeyId: string;
 }) {
     const credentials = createAttemptCredentials(deps);
-    const signPermit = createStartPermitSigner(deps.startPermitPrivateKey);
+    const signPermit = createStartPermitSigner(deps.startPermitPrivateKey, deps.startPermitKeyId);
     async function incarnation(db: PoolClient, id: string) { return (await db.query<Incarnation>('SELECT i.*,s.owner_user_id,s.token_id,s.enabled FROM queue_dispatch_incarnations i JOIN queue_dispatch_slots s ON s.id=i.slot_id WHERE i.id=$1', [id])).rows[0]; }
     async function lock(db: PoolClient, requestId: string, candidateId: string, attemptId: string): Promise<Locked> {
         const r = (await db.query<Request>('SELECT * FROM queue_dispatch_requests WHERE id=$1 FOR UPDATE', [requestId])).rows[0];

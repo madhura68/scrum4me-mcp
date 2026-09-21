@@ -95,7 +95,7 @@ async function startService(f: DispatchHarnessSeed, options: {
 } = {}) {
   const auth = createDispatchAuth({ store: h.dispatch })
   const core = { store: h.dispatch, auth, enabled: true, productAllowlist: [f.input.product_id] }
-  const executor = { credentialKeys: { 1: Buffer.alloc(32, 7) }, keyVersion: 1, startPermitPrivateKey: generateKeyPairSync('ed25519').privateKey }
+  const executor = { credentialKeys: { 1: Buffer.alloc(32, 7) }, keyVersion: 1, startPermitPrivateKey: generateKeyPairSync('ed25519').privateKey, startPermitKeyId: 'permit-test' }
   const publisher = options.publisherPort
     ? createDispatchPublication({ ...core, port: options.publisherPort, loadBaseBranch: async () => 'main' })
     : undefined
@@ -208,7 +208,7 @@ describe('IP-13 REST matrix wiring', () => {
   it('serves every REST-matrix route instead of falling through to the not-found handler', async () => {
     const app = createDispatchApp({
       store: h.dispatch, enabled: true, productAllowlist: [],
-      executor: { credentialKeys: { 1: Buffer.alloc(32, 7) }, keyVersion: 1, startPermitPrivateKey: generateKeyPairSync('ed25519').privateKey },
+      executor: { credentialKeys: { 1: Buffer.alloc(32, 7) }, keyVersion: 1, startPermitPrivateKey: generateKeyPairSync('ed25519').privateKey, startPermitKeyId: 'permit-test' },
     })
     const server = app.listen(0, '127.0.0.1')
     try {

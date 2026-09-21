@@ -23,7 +23,7 @@ const scope={scopeId:'host-task',bootId:'boot-host',imageDigest:`sha256:${'a'.re
 beforeEach(async()=>{
  h=await makeDispatchHarness();f=await h.seed();holder.db=new PrismaClient({adapter:new PrismaPg(h.web)});holder.actor={userId:f.actor.userId,tokenId:f.actor.tokenId!}
  const auth=createDispatchAuth({store:h.dispatch}),opts={store:h.dispatch,auth,enabled:true,productAllowlist:[f.input.product_id]}
- selection=createDispatchSelection(opts);requests=createDispatchRequests(opts);attempts=createDispatchAttempts({...opts,credentialKeys:{1:Buffer.alloc(32,8)},keyVersion:1,startPermitPrivateKey:generateKeyPairSync('ed25519').privateKey})
+ selection=createDispatchSelection(opts);requests=createDispatchRequests(opts);attempts=createDispatchAttempts({...opts,credentialKeys:{1:Buffer.alloc(32,8)},keyVersion:1,startPermitPrivateKey:generateKeyPairSync('ed25519').privateKey,startPermitKeyId:'permit-test'})
  const pbi=randomUUID(),story=randomUUID(),profileId=randomUUID();task=randomUUID()
  await h.admin.query("UPDATE products SET repo_url='https://forge.test/repo.git' WHERE id=$1",[f.input.product_id])
  await h.admin.query("INSERT INTO pbis(id,product_id,code,title,priority,sort_order,updated_at) VALUES($1,$2,'PBI-1','PBI',1,1,now())",[pbi,f.input.product_id])
