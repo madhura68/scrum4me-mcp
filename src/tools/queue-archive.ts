@@ -7,7 +7,7 @@ import { QUEUE_TERMINAL_STATUSES } from '@shared/queue-identity.js'
 
 const inputSchema = z.object({ message_id: z.string().uuid() })
 
-interface SubtreeRow { id: string; status: string; archived_at: Date | null }
+interface SubtreeRow { id: string; status: string; archived_at: Date | null; dispatch_request_id: string | null }
 
 /**
  * Recursive subtree (rij + alle transitieve replies), FOR UPDATE gelockt
@@ -23,9 +23,53 @@ async function lockSubtree(tx: unknown, messageId: string): Promise<SubtreeRow[]
       UNION
       SELECT child.id FROM agent_message child JOIN subtree parent ON child.in_reply_to = parent.id
     )
-    SELECT id, status, archived_at FROM agent_message
+    SELECT id, status, archived_at, dispatch_request_id FROM agent_message
      WHERE id IN (SELECT id FROM subtree)
      FOR UPDATE`
+}
+
+const terminal = (r: SubtreeRow) => (QUEUE_TERMINAL_STATUSES as readonly string[]).includes(r.status)
+/** IDEA-213: on a managed row an ordinary role may change archived_at only once that row is terminal. A thread
+ * that holds a managed row is therefore archived or unarchived as a whole or not at all — refused here, before
+ * any write, instead of failing halfway on the row guard. */
+function managedBlock(rows: SubtreeRow[]): string | null {
+  const active = rows.some((r) => r.dispatch_request_id != null) ? rows.find((r) => !terminal(r)) : undefined
+  return active ? `QUEUE_MANAGED_NOT_TERMINAL: subtree row ${active.id} has status '${active.status}' — a managed dispatch thread changes its archive state only as a whole, once every message is terminal` : null
+}
+
+export async function archiveQueueSubtree(message_id: string) {
+  return prisma.$transaction(async (tx) => {
+    const rows = await lockSubtree(tx, message_id)
+    if (rows.length === 0) return toolError(`QUEUE_NOT_FOUND: message ${message_id} does not exist`)
+    const managed = managedBlock(rows)
+    if (managed) return toolError(managed)
+    const blocking = rows.find((r) => !terminal(r))
+    if (blocking) {
+      return toolError(
+        `QUEUE_NOT_TERMINAL: subtree row ${blocking.id} has status '${blocking.status}' — only terminal messages can be archived`,
+      )
+    }
+    const ids = rows.map((r) => r.id)
+    const upd = await (tx as typeof prisma).agentMessage.updateMany({
+      where: { id: { in: ids }, archived_at: null },
+      data: { archived_at: new Date() },
+    })
+    return toolJson({ message_id, total: ids.length, archived: upd.count })
+  })
+}
+export async function unarchiveQueueSubtree(message_id: string) {
+  return prisma.$transaction(async (tx) => {
+    const rows = await lockSubtree(tx, message_id)
+    if (rows.length === 0) return toolError(`QUEUE_NOT_FOUND: message ${message_id} does not exist`)
+    const managed = managedBlock(rows)
+    if (managed) return toolError(managed)
+    const ids = rows.map((r) => r.id)
+    const upd = await (tx as typeof prisma).agentMessage.updateMany({
+      where: { id: { in: ids }, archived_at: { not: null } },
+      data: { archived_at: null },
+    })
+    return toolJson({ message_id, total: ids.length, unarchived: upd.count })
+  })
 }
 
 export function registerQueueArchiveTools(server: McpServer) {
@@ -43,24 +87,7 @@ export function registerQueueArchiveTools(server: McpServer) {
     async ({ message_id }) =>
       withToolErrors(async () => {
         await requireWriteAccess()
-        return prisma.$transaction(async (tx) => {
-          const rows = await lockSubtree(tx, message_id)
-          if (rows.length === 0) return toolError(`QUEUE_NOT_FOUND: message ${message_id} does not exist`)
-          const blocking = rows.find(
-            (r) => !(QUEUE_TERMINAL_STATUSES as readonly string[]).includes(r.status),
-          )
-          if (blocking) {
-            return toolError(
-              `QUEUE_NOT_TERMINAL: subtree row ${blocking.id} has status '${blocking.status}' — only terminal messages can be archived`,
-            )
-          }
-          const ids = rows.map((r) => r.id)
-          const upd = await (tx as typeof prisma).agentMessage.updateMany({
-            where: { id: { in: ids }, archived_at: null },
-            data: { archived_at: new Date() },
-          })
-          return toolJson({ message_id, total: ids.length, archived: upd.count })
-        })
+        return archiveQueueSubtree(message_id)
       }),
   )
 
@@ -77,16 +104,7 @@ export function registerQueueArchiveTools(server: McpServer) {
     async ({ message_id }) =>
       withToolErrors(async () => {
         await requireWriteAccess()
-        return prisma.$transaction(async (tx) => {
-          const rows = await lockSubtree(tx, message_id)
-          if (rows.length === 0) return toolError(`QUEUE_NOT_FOUND: message ${message_id} does not exist`)
-          const ids = rows.map((r) => r.id)
-          const upd = await (tx as typeof prisma).agentMessage.updateMany({
-            where: { id: { in: ids }, archived_at: { not: null } },
-            data: { archived_at: null },
-          })
-          return toolJson({ message_id, total: ids.length, unarchived: upd.count })
-        })
+        return unarchiveQueueSubtree(message_id)
       }),
   )
 }

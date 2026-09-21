@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('../src/prisma.js', () => ({
   prisma: {
+    $transaction: vi.fn(),
+    $queryRaw: vi.fn().mockResolvedValue([{ id: 't1' }]),
     task: { findUnique: vi.fn() },
     claudeJob: {
       create: vi.fn().mockResolvedValue({ id: 'job-1' }),
@@ -26,6 +28,7 @@ const baseTask = { id: 't1', status: 'TO_DO', story: { product_id: 'prod-1' } }
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(prisma.$transaction).mockImplementation(async (fn: unknown) => (fn as (tx: typeof prisma) => Promise<unknown>)(prisma))
   mockCreate.mockResolvedValue({ id: 'job-1' })
   mockFindFirst.mockResolvedValue(null)
   mockTask.mockResolvedValue(baseTask)
@@ -65,4 +68,22 @@ describe('dispatchTaskImplementation', () => {
       }),
     }))
   })
+})
+
+it('locks the task before duplicate check and job creation in the same transaction', async () => {
+  await dispatchTaskImplementation({ taskId: 't1', productId: 'prod-1', userId: 'u1' })
+  expect(prisma.$transaction).toHaveBeenCalledOnce()
+  const lock = vi.mocked(prisma.$queryRaw)
+  expect(lock.mock.calls[0][0].toString()).toContain('FOR UPDATE')
+  expect(lock.mock.invocationCallOrder[0]).toBeLessThan(mockFindFirst.mock.invocationCallOrder[0])
+  expect(mockFindFirst.mock.invocationCallOrder[0]).toBeLessThan(mockCreate.mock.invocationCallOrder[0])
+})
+it('rejects a public Task dispatch binding before creating a job or sending notification',async()=>{
+ mockTask.mockResolvedValue({...baseTask,dispatch_request_id:'active-host-request'})
+ // ST-1590.38 (c): whoever holds the Task, the requester reads the active-job message, never the
+ // bare guard code.
+ const reason=await dispatchTaskImplementation({taskId:'t1',productId:'prod-1',userId:'u1'}).then(()=>null,(error:unknown)=>String(error))
+ expect(reason).toMatch(/actieve job/)
+ expect(reason).not.toMatch(/DISPATCH_MANAGED_ROW/)
+ expect(mockCreate).not.toHaveBeenCalled()
 })

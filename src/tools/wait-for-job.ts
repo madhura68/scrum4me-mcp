@@ -1,3 +1,5 @@
+import { assertUnmanagedJob, managedTaskExecutionsSelect } from '../dispatch/managed-job.js'
+import { buildManagedJobContext, readManagedJobBinding } from '../dispatch/job-context.js'
 // wait_for_job — blokkeert tot een QUEUED ClaudeJob beschikbaar is, claimt 'm
 // atomisch via FOR UPDATE SKIP LOCKED, en retourneert de volledige task-context.
 
@@ -12,6 +14,7 @@ import * as path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { prisma } from '../prisma.js'
+import { managedWorkerPollScope } from '../presence/worker-mode.js'
 import {
   cloneRepoOnDemand,
   TerminalJobError,
@@ -172,8 +175,9 @@ export async function markJobTerminallyFailed(jobId: string, reason: string): Pr
   const trimmed = reason.slice(0, 2000)
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
-    select: { kind: true, sprint_run_id: true },
+    select: { kind: true, sprint_run_id: true, dispatch_request_id: true, dispatch_candidate_id: true, task_executions: managedTaskExecutionsSelect, task: { select: { dispatch_request_id: true } } },
   })
+  assertUnmanagedJob(job)
   await prisma.claudeJob.update({
     where: { id: jobId },
     data: { status: 'FAILED', finished_at: new Date(), error: trimmed },
@@ -244,6 +248,7 @@ export async function rollbackClaim(
       UPDATE claude_jobs
       SET lease_until = NOW() + INTERVAL '2 minutes'
       WHERE id = ${jobId}
+        AND dispatch_request_id IS NULL
         AND claimed_by_token_id = ${owner.tokenId}
         AND worker_instance_id = ${owner.instanceId}
         AND status IN ('CLAIMED', 'RUNNING')
@@ -257,13 +262,14 @@ export async function rollbackClaim(
   const job = (await prisma.claudeJob?.findUnique({
     where: { id: jobId },
     select: {
-      kind: true,
+      kind: true, dispatch_request_id: true, dispatch_candidate_id: true, task_executions: managedTaskExecutionsSelect,
       product_id: true,
       branch: true,
-      task: { select: { repo_url: true } },
+      task: { select: { repo_url: true, dispatch_request_id: true } },
     },
   })) ?? null
 
+  assertUnmanagedJob(job)
   // Spec §3.2.2: vangnet-push terwijl de job nog van A is.
   if (job?.branch) {
     await maybeBackupPush({
@@ -319,6 +325,7 @@ export async function rollbackClaim(
         SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL,
             plan_snapshot = NULL, worker_instance_id = NULL, lease_until = NULL
         WHERE id = ${jobId}
+        AND dispatch_request_id IS NULL
           AND claimed_by_token_id = ${owner.tokenId}
           AND worker_instance_id = ${owner.instanceId}
           AND status IN ('CLAIMED', 'RUNNING')
@@ -328,6 +335,7 @@ export async function rollbackClaim(
         SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL,
             plan_snapshot = NULL, worker_instance_id = NULL, lease_until = NULL
         WHERE id = ${jobId}
+        AND dispatch_request_id IS NULL
       `
   if (requeued === 0) claimLog('rollback.final_update_lost_ownership', { jobId })
 }
@@ -459,225 +467,10 @@ const MAX_WAIT_SECONDS = 600
 const POLL_INTERVAL_MS = 5_000
 const STALE_CLAIMED_INTERVAL = "30 minutes"
 
-export type ClaimFilterInput = {
-  runtime: WorkerRuntime
-  hasProductScope: boolean
-  capabilities?: string[]
-}
-
-export type ClaimSqlFilterInput =
-  | (ClaimFilterInput & { userId: string; hasProductScope: false; productId?: undefined })
-  | (ClaimFilterInput & { userId: string; hasProductScope: true; productId: string })
-
-const CLAIMABLE_STANDALONE_KINDS = "('IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'IDEA_MAKE_SPEC', 'IDEA_REVISE_SPEC', 'IDEA_CHAT', 'PLAN_CHAT', 'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW')"
-
-const CLAIMABLE_JOB_KIND_FILTER = `AND (
-              (cj.kind IN ${CLAIMABLE_STANDALONE_KINDS} AND cj.source <> 'ORCHESTRATOR')
-              OR (cj.kind = 'DEPLOY' AND cj.source IN ('SYSTEM', 'MANUAL'))
-              OR (cj.kind = 'DOCS_AUDIT' AND cj.source IN ('SYSTEM', 'MANUAL'))
-              OR (cj.kind = 'PLAN_CHAT'
-                  AND cj.source = 'ORCHESTRATOR'
-                  AND cj.task_id IS NULL
-                  AND cj.idea_id IS NULL
-                  AND cj.sprint_run_id IS NULL)
-              OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source IN ('MANUAL', 'COPILOT'))
-              OR (cj.kind IN ('TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION')
-                  AND cj.sprint_run_id IS NOT NULL
-                  AND sr.status IN ('QUEUED', 'RUNNING'))
-            )`
-
-export function buildClaimableJobWhereClause(input: ClaimFilterInput): string {
-  const productScope = input.hasProductScope ? 'AND cj.product_id = ${productId}' : ''
-
-  // M17 (opus plan-review): een worker met exact ['deploy'] is een dedicated
-  // deploy-worker — hard beperken tot DEPLOY. Sluit de NULL-capability-tak
-  // uit zodat hij nooit idea/plan-chat-jobs (capability NULL) kan claimen.
-  // Workers met éxtra capabilities naast 'deploy' (bv. ['deploy','review'])
-  // vallen bewust terug op het generieke pad — volledige deploy-only-isolatie
-  // geldt alleen voor exact ['deploy'] (dedicated worker).
-  const deployOnly =
-    (input.capabilities ?? []).length === 1 && input.capabilities?.[0] === 'deploy'
-  if (deployOnly) {
-    return `
-          WHERE cj.user_id = \${userId}
-            ${productScope}
-            AND cj.runtime = '${input.runtime}'
-            AND cj.status = 'QUEUED'
-            AND cj.required_capability = 'deploy'
-            AND cj.kind = 'DEPLOY'
-            AND cj.source IN ('SYSTEM', 'MANUAL')
-  `
-  }
-
-  // M19 (codex-review): een worker met exact ['docs_audit'] is een dedicated
-  // docs-worker — hard beperken tot DOCS_AUDIT en de NULL-capability-tak
-  // uitsluiten, zodat hij (met FORGEJO_TOKEN + Edit/Write/Bash) nooit een
-  // idea/plan-chat-job kan claimen. Byte-symmetrisch met deployOnly.
-  const docsAuditOnly =
-    (input.capabilities ?? []).length === 1 && input.capabilities?.[0] === 'docs_audit'
-  if (docsAuditOnly) {
-    return `
-          WHERE cj.user_id = \${userId}
-            ${productScope}
-            AND cj.runtime = '${input.runtime}'
-            AND cj.status = 'QUEUED'
-            AND cj.required_capability = 'docs_audit'
-            AND cj.kind = 'DOCS_AUDIT'
-            AND cj.source IN ('SYSTEM', 'MANUAL')
-  `
-  }
-
-  const capabilityFilter = input.capabilities && input.capabilities.length > 0
-    ? 'AND (cj.required_capability IS NULL OR cj.required_capability = ANY(${capabilities}::text[]))'
-    : 'AND cj.required_capability IS NULL'
-  return `
-          WHERE cj.user_id = \${userId}
-            ${productScope}
-            AND cj.runtime = '${input.runtime}'
-            AND cj.status = 'QUEUED'
-            ${capabilityFilter}
-            ${CLAIMABLE_JOB_KIND_FILTER}
-  `
-}
-
-export function buildClaimableJobWhereFragment(input: ClaimSqlFilterInput): Prisma.Sql {
-  const productScope = input.hasProductScope
-    ? Prisma.sql`AND cj.product_id = ${input.productId}`
-    : Prisma.empty
-  const capabilities = input.capabilities ?? []
-
-  // M17 (opus plan-review): een worker met exact ['deploy'] is een dedicated
-  // deploy-worker — hard beperken tot DEPLOY. Sluit de NULL-capability-tak
-  // uit zodat hij nooit idea/plan-chat-jobs (capability NULL) kan claimen.
-  // Workers met éxtra capabilities naast 'deploy' (bv. ['deploy','review'])
-  // vallen bewust terug op het generieke pad — volledige deploy-only-isolatie
-  // geldt alleen voor exact ['deploy'] (dedicated worker).
-  const deployOnly = capabilities.length === 1 && capabilities[0] === 'deploy'
-  if (deployOnly) {
-    return Prisma.sql`
-          WHERE cj.user_id = ${input.userId}
-            ${productScope}
-            AND cj.runtime = ${input.runtime}::"AgentRuntime"
-            AND cj.status = 'QUEUED'
-            AND cj.required_capability = 'deploy'
-            AND cj.kind = 'DEPLOY'
-            AND cj.source IN ('SYSTEM', 'MANUAL')
-  `
-  }
-
-  // M19 (codex-review): docs_audit-only-isolatie, byte-symmetrisch met deployOnly.
-  const docsAuditOnly = capabilities.length === 1 && capabilities[0] === 'docs_audit'
-  if (docsAuditOnly) {
-    return Prisma.sql`
-          WHERE cj.user_id = ${input.userId}
-            ${productScope}
-            AND cj.runtime = ${input.runtime}::"AgentRuntime"
-            AND cj.status = 'QUEUED'
-            AND cj.required_capability = 'docs_audit'
-            AND cj.kind = 'DOCS_AUDIT'
-            AND cj.source IN ('SYSTEM', 'MANUAL')
-  `
-  }
-
-  const capabilityFilter = capabilities.length > 0
-    ? Prisma.sql`AND (cj.required_capability IS NULL OR cj.required_capability = ANY(${capabilities}::text[]))`
-    : Prisma.sql`AND cj.required_capability IS NULL`
-
-  return Prisma.sql`
-          WHERE cj.user_id = ${input.userId}
-            ${productScope}
-            AND cj.runtime = ${input.runtime}::"AgentRuntime"
-            AND cj.status = 'QUEUED'
-            ${capabilityFilter}
-            ${Prisma.raw(CLAIMABLE_JOB_KIND_FILTER)}
-  `
-}
-
-export type HigherTierIdleInput = {
-  selfUserId: string
-  selfInstanceId: string
-  selfRuntime: WorkerRuntime
-  selfCapability: 'HIGH_P' | 'MEDIUM_P' | 'LOW_P' | null
-}
-
-/**
- * Returns a SQL fragment that the caller appends inside the WHERE-clause of a
- * claim query. Excludes claims when another alive idle worker with strictly
- * higher capability exists for the same user + runtime — but only if that
- * worker could itself claim the candidate job (see claimability-guard below).
- *
- * Known residual: the guard cannot mirror per-call product-scoping — a peer
- * that only polls product P1 still counts as blocker for a P2 job, because
- * claude_workers persists no product_id at registration. Accepted for now;
- * dedicated workers should poll unscoped.
- *
- * Priority mapping (NOT the enum ordinal — see below):
- *   HIGH_P   = 3
- *   MEDIUM_P = 2
- *   LOW_P    = 1
- *
- * Why explicit CASE instead of `w.capability > selfCapability`:
- * The WorkerCapability enum is declared HIGH_P, MEDIUM_P, LOW_P (descending
- * priority), which gives Postgres-ordinals HIGH_P=1, MEDIUM_P=2, LOW_P=3 —
- * exactly inverted vs. semantic priority. A direct `>` comparison therefore
- * finds LOWER-tier workers, not higher ones (the 2026-06-08 canary bug; see
- * docs/superpowers/plans/2026-06-08-tier-preference-enum-ordinal-fix.md).
- *
- * Null-capability semantics: if either self or peer has NULL capability, the
- * CASE evaluates to NULL (no WHEN matched) and the comparison drops the row —
- * preserving the pre-fix "legacy worker without capability blocks no-one"
- * behaviour. Note: the call-site in tryClaimJob also bypasses this fragment
- * entirely when selfCapability === null (see wait-for-job.ts ~L586), so
- * active legacy NULL workers can still first-come claim until rollout
- * populates capability everywhere.
- *
- * Claimability-guard (M17 E2E-vondst 2026-07-04, tier-deadlock): een
- * hogere-tier idle peer telt alleen als die de kandidaat-job (cj, uit de
- * omvattende claim-query) zélf zou kunnen claimen. Zonder deze guard defereert
- * een dedicated deploy-worker met tier LOW_P eeuwig naar idle HIGH_P-workers
- * zonder 'deploy'-capability — de DEPLOY-job blijft dan QUEUED terwijl
- * iedereen "netjes wacht". De twee takken spiegelen de twee claim-paden in
- * buildClaimableJobWhereFragment: exact-['deploy'] peers claimen uitsluitend
- * DEPLOY (deployOnly-pad), overige peers claimen NULL-capability-jobs of jobs
- * waarvan required_capability in hun capabilities zit (generiek pad; lege
- * capabilities ⇒ ANY(leeg)=false ⇒ alleen NULL-jobs).
- */
-export function buildHigherTierIdleFragment(input: HigherTierIdleInput): Prisma.Sql {
-  return Prisma.sql`
-    AND NOT EXISTS (
-      SELECT 1 FROM claude_workers w
-      LEFT JOIN users u ON u.id = w.user_id
-      WHERE w.user_id = ${input.selfUserId}
-        AND w.runtime = ${input.selfRuntime}::"AgentRuntime"
-        AND w.instance_id <> ${input.selfInstanceId}
-        AND CASE w.capability
-              WHEN 'HIGH_P' THEN 3
-              WHEN 'MEDIUM_P' THEN 2
-              WHEN 'LOW_P' THEN 1
-            END
-          > CASE ${input.selfCapability}::"WorkerCapability"
-              WHEN 'HIGH_P' THEN 3
-              WHEN 'MEDIUM_P' THEN 2
-              WHEN 'LOW_P' THEN 1
-            END
-        AND CASE
-              WHEN w.capabilities = ARRAY['deploy']::text[]
-                THEN cj.kind = 'DEPLOY'
-                 AND cj.required_capability = 'deploy'
-                 AND cj.source IN ('SYSTEM', 'MANUAL')
-              ELSE cj.required_capability IS NULL
-                OR cj.required_capability = ANY(w.capabilities)
-            END
-        AND w.last_seen_at > NOW() - INTERVAL '30 seconds'
-        AND (w.last_quota_pct IS NULL OR w.last_quota_pct >= COALESCE(u.min_quota_pct, 0))
-        AND NOT EXISTS (
-          SELECT 1 FROM claude_jobs k
-          WHERE k.worker_instance_id = w.instance_id
-            AND k.status IN ('CLAIMED','RUNNING')
-        )
-    )
-  `
-}
+// Single source shared with managed selection; preserve public legacy imports.
+export { buildClaimableJobWhereClause, buildClaimableJobWhereFragment, buildHigherTierIdleFragment } from '../dispatch/eligibility.js'
+import { buildClaimableJobWhereFragment, buildHigherTierIdleFragment } from '../dispatch/eligibility.js'
+export type { ClaimFilterInput, ClaimSqlFilterInput, HigherTierIdleInput } from '../dispatch/eligibility.js'
 
 const inputSchema = z.object({
   product_id: z.string().min(1).optional(),
@@ -709,6 +502,7 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
         finished_at = NOW(),
         error = ${STALE_ERROR_MSG}
     WHERE user_id = ${userId}
+      AND dispatch_request_id IS NULL
       AND status IN ('CLAIMED', 'RUNNING')
       AND retry_count >= 2
       AND (
@@ -729,6 +523,7 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
           worker_instance_id = NULL,
           retry_count = retry_count + 1
       WHERE user_id = ${userId}
+      AND dispatch_request_id IS NULL
         AND status IN ('CLAIMED', 'RUNNING')
         AND retry_count < 2
         AND (
@@ -848,6 +643,9 @@ export async function tryClaimJob(
   capabilities: string[] = [],
   capability: 'HIGH_P' | 'MEDIUM_P' | 'LOW_P' | null = null,
 ): Promise<string | null> {
+  // Managed-only bootstrap identities never participate in the ordinary loop,
+  // including legacy NULL-tier callers that bypass the peer-priority clause.
+  if (managedWorkerPollScope.test(instanceId)) return null
   // Atomic claim in a single transaction — also captures plan_snapshot from task.
   //
   // PBI-50: claim-filter discrimineert via cj.kind:
@@ -1112,10 +910,25 @@ export async function getFullJobContext(
   jobId: string,
   runtime?: WorkerRuntime,
   ownerCtx?: CloneOwnerCtx | null,
+  options?: { managed?: boolean },
 ) {
+  // IDEA-213: the managed branch comes before everything else, so a managed job
+  // is built from the pinned request it was authorized against and never from
+  // the latest Task/Idea/doc graph below.
+  //
+  // It is opt-in because the caller decides which database role is in play. The
+  // managed supervisor has one that may read the dispatch tables; an ordinary
+  // worker does not, and must keep falling through to assertUnmanagedJob, which
+  // refuses the row without ever touching dispatch data.
+  if (options?.managed) {
+    const managedJob = await readManagedJobBinding(jobId)
+    if (managedJob) return buildManagedJobContext(managedJob, runtime)
+  }
+
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     include: {
+      task_executions: managedTaskExecutionsSelect,
       task: {
         include: {
           story: {
@@ -1190,6 +1003,7 @@ export async function getFullJobContext(
     },
   })
   if (!job) return null
+  assertUnmanagedJob(job)
 
   // JobKindConfig (fase 3): live / DB-leading per-kind config, vers op
   // claim-time geresolved. Best-effort lookup (zoals buildDocIndex hieronder):

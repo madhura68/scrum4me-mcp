@@ -1,3 +1,4 @@
+import { assertUnmanagedJob, assertUnmanagedJobCleanup, assertUnmanagedJobId, assertUnmanagedJobRow, managedTaskExecutionsSelect } from '../dispatch/managed-job.js'
 // update_job_status — agent rapporteert voortgang: running | done | failed | skipped.
 // Auth: Bearer-token moet matchen claimed_by_token_id van de job.
 // Triggert automatisch een SSE-event naar de UI via pg_notify.
@@ -80,12 +81,16 @@ export async function cleanupWorktreeForTerminalStatus(
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     select: {
+      kind: true, dispatch_request_id: true, dispatch_candidate_id: true,
       task: { select: { story_id: true, repo_url: true } },
       sprint_run_id: true,
       sprint_run: { select: { pr_strategy: true } },
     },
   })
 
+  // Cleanup path: only this job's own markers decide. Its task may have been handed to a managed
+  // dispatch after this job ended, and this still removes nothing but this job's own worktree.
+  assertUnmanagedJobRow(job)
   const repoKey = job?.task?.repo_url ?? null
   const repoRoot = await resolveRepoRoot(productId, repoKey)
   if (!repoRoot) {
@@ -152,8 +157,9 @@ function terminalStatusForCleanup(dbStatus: string): 'done' | 'failed' | 'skippe
 // using the same sibling-aware logic. Called by the worker runner AFTER the
 // agent's Claude process has exited — i.e. after the PostToolUse usage-capture
 // hook (cwd = worktree) has had its chance to run. No-op if nothing is pending.
-// Best-effort: never throws.
+// Ordinary cleanup is best-effort; managed jobs fail before marker/filesystem access.
 export async function runDeferredWorktreeCleanup(jobId: string): Promise<void> {
+  await assertUnmanagedJobCleanup(jobId)
   if (!(await isWorktreeCleanupPending(jobId))) return
   try {
     const job = await prisma.claudeJob.findUnique({
@@ -179,6 +185,7 @@ export async function backupPushOnFailure(
   jobId: string,
   branch: string | null | undefined,
 ): Promise<void> {
+  await assertUnmanagedJobCleanup(jobId)
   if (!branch) return
   try {
     await maybeBackupPush({
@@ -211,6 +218,7 @@ export async function prepareDoneUpdate(
   //      voor STORY met sibling-reuse.
   //   3. Legacy fallback feat/job-<8> — alleen voor jobs zonder DB-branch
   //      (zou niet moeten voorkomen na PBI-50).
+  await assertUnmanagedJobId(jobId)
   let resolvedBranch = branch
   if (!resolvedBranch) {
     const dbJob = await prisma.claudeJob.findUnique({
@@ -270,69 +278,8 @@ export async function prepareDoneUpdate(
   }
 }
 
-export type VerifyRequired = 'ALIGNED' | 'ALIGNED_OR_PARTIAL' | 'ANY'
-
-const SUMMARY_MIN_LENGTH = 20
-
-/**
- * Validate whether a CLAIMED/RUNNING job can transition to DONE based on its
- * verify_result + the task's verify_required level.
- *
- * Decision matrix:
- *   verifyResult=null        → reject (run verify_task_against_plan first)
- *   EMPTY  + !verify_only    → reject
- *   EMPTY  + verify_only     → allowed
- *   ALIGNED                  → always allowed
- *   PARTIAL/DIVERGENT
- *     required=ALIGNED       → reject (strict task)
- *     required=ALIGNED_OR_PARTIAL → require non-empty summary explaining drift
- *     required=ANY           → allowed (refactor/multi-file edit)
- */
-export function checkVerifyGate(
-  verifyResult: string | null,
-  verifyOnly: boolean,
-  verifyRequired: VerifyRequired = 'ALIGNED_OR_PARTIAL',
-  summary: string | undefined = undefined,
-): { allowed: true } | { allowed: false; error: string } {
-  if (verifyResult === null) {
-    return {
-      allowed: false,
-      error: 'Roep eerst verify_task_against_plan aan voordat je DONE markeert.',
-    }
-  }
-  if (verifyResult === 'EMPTY') {
-    if (verifyOnly) return { allowed: true }
-    return {
-      allowed: false,
-      error:
-        'Plan-vs-implementatie verify gaf EMPTY. Geen wijzigingen gedetecteerd. ' +
-        'Markeer de task als verify_only of pas de implementatie aan.',
-    }
-  }
-  if (verifyResult === 'ALIGNED') return { allowed: true }
-
-  // PARTIAL or DIVERGENT
-  if (verifyRequired === 'ANY') return { allowed: true }
-  if (verifyRequired === 'ALIGNED') {
-    return {
-      allowed: false,
-      error:
-        `Plan vereist ALIGNED maar verify gaf ${verifyResult}. ` +
-        `Pas de implementatie aan zodat alle plan-paden zijn afgedekt, ` +
-        `of stel verify_required in op ALIGNED_OR_PARTIAL/ANY.`,
-    }
-  }
-  // verifyRequired === 'ALIGNED_OR_PARTIAL': vereist summary
-  if (!summary || summary.trim().length < SUMMARY_MIN_LENGTH) {
-    return {
-      allowed: false,
-      error:
-        `Verify gaf ${verifyResult}. Geef een summary (≥${SUMMARY_MIN_LENGTH} chars) die uitlegt ` +
-        `waarom de implementatie afwijkt van het plan, of stel verify_required in op ANY.`,
-    }
-  }
-  return { allowed: true }
-}
+export {checkVerifyGate, type VerifyRequired} from '../verify/gate.js'
+import {checkVerifyGate, type VerifyRequired} from '../verify/gate.js'
 
 // PBI-50 F4-T1: aggregate verify-gate voor SPRINT_IMPLEMENTATION DONE.
 // Bron: alleen SprintTaskExecution-rows voor deze job. Per row:
@@ -547,12 +494,15 @@ export async function maybeCreateAutoPr(opts: {
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     select: {
+      kind: true, dispatch_request_id: true, dispatch_candidate_id: true, task_executions: managedTaskExecutionsSelect,
+      task: { select: { dispatch_request_id: true } },
       sprint_run_id: true,
       sprint_run: {
         select: { id: true, pr_strategy: true, sprint: { select: { sprint_goal: true } } },
       },
     },
   })
+  assertUnmanagedJob(job)
 
   const task = await prisma.task.findUnique({
     where: { id: taskId },
@@ -662,12 +612,15 @@ export async function maybeCreateSprintBatchPr(opts: {
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
     select: {
+      kind: true, dispatch_request_id: true, dispatch_candidate_id: true, task_executions: managedTaskExecutionsSelect,
+      task: { select: { dispatch_request_id: true } },
       sprint_run_id: true,
       sprint_run: {
         select: { id: true, sprint: { select: { sprint_goal: true } } },
       },
     },
   })
+  assertUnmanagedJob(job)
   if (!job?.sprint_run) return null
 
   // Resume-pad: oude SprintRun heeft mogelijk al een PR via vorige run-job.
@@ -917,6 +870,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           where: { id: job_id },
           select: {
             id: true,
+            dispatch_request_id: true, dispatch_candidate_id: true, task_executions: managedTaskExecutionsSelect,
             status: true,
             claimed_at: true,
             started_at: true,
@@ -933,11 +887,12 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             created_at: true,
             chat_cutoff_message_id: true,
             chat_cutoff_at: true,
-            task: { select: { verify_only: true, verify_required: true } },
+            task: { select: { verify_only: true, verify_required: true, dispatch_request_id: true } },
           },
         })
 
         if (!job) return toolError(`Job ${job_id} not found`)
+        assertUnmanagedJob(job)
         if (job.claimed_by_token_id !== tokenId) {
           return toolError('PERMISSION_DENIED: This job was not claimed by your token')
         }

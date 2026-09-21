@@ -2,9 +2,11 @@
   "//": "Typecheckt de testbestanden. De basis-tsconfig include't alleen src/**/*, dus zonder deze config wordt géén enkel testbestand getypecheckt — en vitest transpileert zonder typecheck, waardoor een typefout in een test ongemerkt groen bleef. Draait via `npm run typecheck:tests`, wired op `pretest`, dus zowel `npm test` lokaal als de CI-stap `npm run test` gaan hier doorheen. src/ komt transitief mee via de imports van de tests; `npm run typecheck` dekt src/ volledig.",
   "extends": "./tsconfig.json",
   "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
     "noEmit": true,
     "rootDir": "."
   },
-  "include": ["__tests__/**/*"],
+  "include": ["__tests__/**/*", "scripts/dispatch-test-db.mjs"],
   "exclude": ["node_modules", "dist", "vendor"]
 }

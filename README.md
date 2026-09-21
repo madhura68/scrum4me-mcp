@@ -42,6 +42,10 @@ activity and create todos via native tool calls instead of curl.
 | `update_issue` | Append research or resolution prose (timestamped, attributed to `authored_by` or the token user), change status/severity, or link a PBI or idea. Closing requires a resolution **code** in `resolution` (`fixed`, `wont_fix`, `duplicate`, `cannot_reproduce`, `invalid`) alongside `status=closed` — the prose explanation goes in `append_resolution`, and both may be sent in one call. A closed issue can only reopen to `investigating` | no |
 | `list_issues` | List a product's or system's issues (max 50, most-recently-seen first); closed issues are excluded unless `include_closed` is set | n/a |
 | `get_issue` | Fetch one issue with its research, resolution, links, and the last 50 log entries | n/a |
+| `dispatch_task` | IDEA-213 automatic dispatch: hand a task to the central dispatch service, which picks a job worker or a registered host agent and delivers one final answer to `reply_to`. Without `task_id` this is a free task; an explicit `task_id` — and nothing else, `work_item` included — selects `task_implementation`. Needs `S4M_DISPATCH_URL` plus the caller's own bearer; there is no service identity to fall back on | no |
+| `dispatch_review` | IDEA-213 automatic dispatch: review of documents pinned by revision/commit and sha256, always read-only, always answered with exactly one verdict. An unpinned reference is refused before the request leaves the host | no |
+| `get_dispatch` | IDEA-213: read-only state, route, reason and delivery of one dispatch request you may see | n/a |
+| `cancel_dispatch` | IDEA-213: cancel a dispatch request under the `expected_version` you last read. Before the first claim it completes at once; afterwards it requests a stop and the request finishes once termination is proven | no |
 | `queue_push` | s4m-queue (stdio-only): send a `task`/`info`/`review_request` message to another agent or human (`<server>:<model>`, or `scrum4us-job:<jobid>` for the M30 job namespace); returns `message_id` as the reply handle, plus an optional `presence` block telling the sender whether the destination address is listening, busy or away (best-effort: omitted on any read error and for job-namespace destinations). Optional `sprint_id`/`story_id`/`task_id` link the message to a Scrum4Me work item — the tool derives the full hierarchy via the story and stores it canonically as `meta.work_item` (inconsistent or unknown ids are rejected). Pinned review material travels as `meta.review_documents` (a sibling of `meta.task`, `version: 1` plus `items` of `source: 'product_doc' \| 'git'`); the block is schema-validated before insert and a `review_documents` nested inside `meta.task` is rejected instead of silently stripped | yes |
 | `queue_wait_reply` | s4m-queue: fetch replies to your own `queue_push` requests, filtered by `in_reply_to`; `wait_seconds` `0` = non-blocking, default `300` blocks until the first reply (timeout is not an error) | yes |
 | `queue_next` | s4m-queue: claim the next request addressed to you (FIFO); returns the message plus a `claim_token` to pass to `queue_done`/`queue_fail`. Execute within `meta.task.cwd` | yes |
@@ -515,6 +519,191 @@ Minimale agent-prompt (geen CLAUDE.md-context nodig):
 ## Web-push integration
 
 When `INTERNAL_PUSH_URL` and `INTERNAL_PUSH_SECRET` are set, the MCP server fires a fire-and-forget push notification to the main-app's internal endpoint (`/api/internal/push/send`) on two events: when `ask_user_question` creates a new question (tag `claude-q-<id>`), and when `update_job_status` transitions a job to `done` or `failed` (tag `job-<id>`). Both calls are wrapped in a 5 s `AbortController` timeout and a `try/catch` so a push failure never interrupts the tool response. Omitting the env vars disables the feature entirely. The `INTERNAL_PUSH_SECRET` value must match the one configured in the main-app; generate a fresh secret with `openssl rand -hex 32`.
+
+## Queue dispatch service (IDEA-213)
+
+`npm run start:dispatch` runs the central dispatch service (`src/dispatch/server.ts`). Importing
+that module starts nothing: the listener, the tick timer and both connection pools come into
+existence in `startDispatchServer` and only there. The feature ships **off** — without
+`DISPATCH_ENABLED=1` and an allowlisted product nothing is selected, and without credential keys
+and a start permit the executor and attempt routes are not there at all (404, not 403).
+
+### Environment
+
+Every variable the dispatch code actually reads, with who provisions the value and which process
+reads it. Values below are shapes and examples only; no real value belongs in this repository.
+
+| Variable | Read by | Provisioned by | Meaning |
+|---|---|---|---|
+| `DISPATCH_DATABASE_URL` | dispatch service | DB operator (role `scrum4me_dispatch`) | Required. Dispatch database as the limited contract role — never the migration owner. `postgres://…` |
+| `DISPATCH_QUEUE_DATABASE_URL` | dispatch service | DB operator (role `s4m_dispatch_projector`) | Queue database for delivery and queue maintenance. Absent → no projection, no repair, no retention; execution keeps working |
+| `DISPATCH_ENABLED` | dispatch service | release operator | `1` enables intake and selection. Anything else keeps the service read/cancel/recover only. Set **last** in a rollout |
+| `DISPATCH_PRODUCT_ALLOWLIST` | dispatch service | release operator | Comma-separated product ids that may dispatch. Empty means none |
+| `DISPATCH_HOST` | dispatch service | host operator | Listen address, default `127.0.0.1`. TLS ingress terminates in front of it |
+| `DISPATCH_PORT` | dispatch service | host operator | Listen port, default `4319` |
+| `DISPATCH_TICK_INTERVAL_MS` | dispatch service | host operator | Selection tick, default `5000`. It is the safety net under the `dispatch_tick` NOTIFY, not a replacement for it: a lost notification costs at most this much latency |
+| `DISPATCH_MAINTENANCE_INTERVAL_MS` | dispatch service | host operator | Queue repair/retention interval, default `900000`. Not the selection tick |
+| `DISPATCH_RETENTION_DAYS` | dispatch service | release operator | Opt-in. Whole days after which a terminal, acknowledged, non-recovered thread is archived and removed from the hot queue. Unset → no retention pass runs |
+| `DISPATCH_WORKERS_ASSERTION_KEY` | dispatch service **and** scrum4me-workers | secret owner (shared with workers) | Shared secret, ≥32 bytes UTF-8, byte-identical on both sides |
+| `DISPATCH_WEB_ASSERTION_KEY` | dispatch service **and** Scrum4Me web | secret owner (shared with the web app) | Shared secret, ≥32 bytes UTF-8, byte-identical on both sides. The web issuer may read and cancel only |
+| `DISPATCH_CREDENTIAL_KEYS` | dispatch service | secret owner (dispatch only) | Attempt/session credential keys as `<version>:<base64url>`, comma separated, each ≥32 bytes: `1:<base64url>,2:<base64url>`. Never leaves the service |
+| `DISPATCH_CREDENTIAL_KEY_VERSION` | dispatch service | secret owner (dispatch only) | The version new credentials are minted under; must be present in `DISPATCH_CREDENTIAL_KEYS` |
+| `DISPATCH_START_PERMIT_PRIVATE_KEY` | dispatch service | secret owner (dispatch only) | Ed25519 private key, PKCS8 PEM (literal `\n` accepted). Without it there are no executor/attempt routes |
+| `DISPATCH_START_PERMIT_KEY_ID` | dispatch service | secret owner (dispatch only) | The key id carried by every issued permit. Part of the executor condition alongside the private key and the credential keys: a private key without a kid is an unconfigured signer, so the executor/attempt routes stay absent. Bounded ASCII, no `:` or `,` |
+| `DISPATCH_SOURCE_MANIFEST_PRIVATE_KEY` | dispatch service | secret owner (dispatch only) | Ed25519 private key, PKCS8 PEM, for the prepared-source manifest. Its own signer, distinct from the permit key — no fallback to the permit key. Needs `DISPATCH_SOURCE_MANIFEST_KEY_ID` too or the manifest route stays unavailable |
+| `DISPATCH_SOURCE_MANIFEST_KEY_ID` | dispatch service | secret owner (dispatch only) | The key id for the manifest signer above. Both key and kid must be present or the prepared-source-manifest route stays unavailable. Bounded ASCII, no `:` or `,` |
+| `DISPATCH_AGENT_OUTPUT_KEY` | dispatch service | secret owner (dispatch only) | Opt-in. base64url HMAC key, ≥32 bytes, for the bounded attempt-scoped capability the child holds. Absent → no `/agent/*` routes exist and no capability is ever minted. It is not a bearer and grants no MCP tool, no database and no forge access |
+| `DISPATCH_GIT_HOST` | dispatch service | release operator | The single allowed forge host, e.g. `git.example.test`. Publication and pinned source fetches accept no other host |
+| `DISPATCH_WORKSPACE_ROOT` | dispatch service | host operator | Writable root the repository source producer checks a pinned base out in, mode `0700`, one directory per request and removed again when that request's base has been bundled. Absent → no producer, and intake **refuses** every request that pins a repository with `404` instead of accepting one the first tick would fail |
+| `DISPATCH_GIT_PROTOCOLS` | dispatch service | release operator | Comma-separated URL schemes the producer may fetch a pinned base over, default `https`. `https` also requires `DISPATCH_GIT_HOST`, and only registered `Product.repo_url` values are ever reached. `file` exists for an isolated local fixture repository on a disposable cluster and belongs on no shared host; publication stays `https` regardless |
+| `DISPATCH_GIT_TOKEN` | dispatch service | forge credential owner | Forge token for pinned fetches, push and pull-request creation. Central publisher credential: it is never handed to a supervisor, a runtime image or a model |
+| `DISPATCH_PUBLICATION_ROOT` | dispatch service | host operator | Writable working root for publication. With `DISPATCH_GIT_HOST` absent, delivery stays an artifact and nothing is pushed |
+| `DISPATCH_BASE_BRANCH` | dispatch service | release operator | Single default base branch, default `main`. It is not per product |
+| `PATH` | dispatch service | host operator | Inherited by the isolated `git` subprocesses; `git` must be on it. Nothing else of the service environment is passed to them |
+| `S4M_DISPATCH_URL` | MCP dispatch tools, s4m-queue CLI, workers, web | host operator | Base URL of the service, e.g. `https://dispatch.example.test/dispatch/v1` |
+| `SCRUM4ME_TOKEN` | MCP tools in stdio mode | the calling user | The caller's own bearer. There is deliberately no service identity to fall back on: in HTTP mode the request's own bearer is used |
+
+Rotation: add the new key to `DISPATCH_CREDENTIAL_KEYS` and point
+`DISPATCH_CREDENTIAL_KEY_VERSION` at it. **Old versions stay in the list until every attempt that
+was issued under them has been retired**, because a running incarnation keeps verifying against
+its own key version. Removing a version early invalidates live credentials silently and frees
+slots that are still occupied; retire or recover those attempts first.
+
+### Readiness
+
+`GET /healthz` (outside `/dispatch/v1`, unauthenticated, side-effect free, cached for one second):
+
+```console
+$ curl -s http://127.0.0.1:4319/healthz
+{"version":"1.1.0","protocol":"dispatch-v1","schema_ready":true,"role_ready":true}
+```
+
+Four facts and nothing else — no credentials, no DSN, no product or request data. `schema_ready`
+means the running role sees the whole durable dispatch schema; `role_ready` means the connection
+is the contract role `scrum4me_dispatch` and carries no SUPERUSER, BYPASSRLS, CREATEROLE or
+CREATEDB flag, the same thing the consumer preflight proves from the other side. It answers
+**200 whatever the answer is**, like `/health` in `src/http.ts`: an unreachable database reads
+`"schema_ready":false,"role_ready":false` and never carries the connection error. A health check
+must therefore test the two booleans, not the status code.
+
+### Operator entries
+
+Both take the caller's own bearer and are recorded under `action_id` in `queue_dispatch_events`,
+so a repeat of the same action returns the first receipt instead of acting twice.
+
+*Queue restore* — after restoring the queue database to an earlier point, hand the newest outbox
+snapshot of every request delivered since that point back to the projector:
+
+```console
+$ curl -sX POST "$S4M_DISPATCH_URL/outbox/republish" -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d '{"action_id":"<fresh-uuid>","published_after":"<restore-point-ISO-8601>"}'
+```
+
+Global `ADMIN` only (never the web issuer), at most 500 requests per call — repeat with a **new**
+`action_id` until `requests` is `0`. It clears a publication marker and nothing else; the
+projection stays monotone and version-guarded, so a redelivery never rewrites an answer a reader
+already handled.
+
+*Publication that reconciliation can never decide* — a `SENT` publication whose push may or may
+not have happened stays `UNKNOWN` and holds its request's reservation. The audited way out sends
+nothing and can only close the operation as failed:
+
+```console
+$ curl -sX POST "$S4M_DISPATCH_URL/publications/<operation-id>/resolve" \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"action_id":"<fresh-uuid>","resolution":{"version":1,"operationId":"<operation-id>",
+         "observer":"<who looked>","source":"<how it was observed>",
+         "statement":"<what was seen, at least 20 characters>",
+         "observedAt":"<ISO-8601 within the operation window>",
+         "remoteHead":null,"pullRequest":"not_applicable"}}'
+```
+
+Same authority as recovery on that request. A remote that already carries our head is a
+confirmation for reconciliation to find, not something to attest: that is refused. The route
+exists only where the deployment configured a publisher.
+
+### The tick, and what wakes it
+
+The service advances on two things: its own interval, `DISPATCH_TICK_INTERVAL_MS`, and a
+`NOTIFY` on `dispatch_tick` in the dispatch database. The producer is the service's own
+transactions — no database trigger, and therefore no migration. Two emit points cover every
+event-driven stage: the outbox write that every durable request transition passes through
+(intake, reservation, retirement, cancel, recovery, completion) and a newly registered
+incarnation, which is the capacity a waiting request was missing. Candidate deadlines and attempt
+leases are elapsed time; nothing can wake those early. The payload is
+`{"v":1,"reason":"request"|"capacity","request_id":<uuid|null>}` — ids only, no secret and no
+product content, because the tick re-reads every authoritative row under its own locks anyway.
+`LISTEN`/`NOTIFY` need no grant in PostgreSQL, so the limited `scrum4me_dispatch` role uses the
+channel as it is.
+
+The consumer is a `pg.Client` of its own, never a pool member, because a `LISTEN` session holds
+its backend for as long as it lives. A burst inside a 25 ms window costs exactly one early tick,
+and a notification arriving during a tick becomes exactly one follow-up — never a second
+concurrent tick. **The notification is a hint and the interval is the guarantee:** a lost
+notification, a dropped session or a restart costs latency and nothing else, and the listener
+reconnects on its own with bounded exponential backoff. Shutdown closes it first, so nothing asks
+for another tick and its connection is closed while the database is still reachable.
+
+Queue repair and retention need no operator command: they are stages of the service's own tick,
+bounded, caught per unit and run last, on `DISPATCH_MAINTENANCE_INTERVAL_MS`. Repair hands a
+reply back that a crashed reader claimed and never acknowledged (after the CLI's four-hour inbox
+lease); retention only runs when `DISPATCH_RETENTION_DAYS` is set.
+
+### Supervisor-facing and child routes
+
+All under `/dispatch/v1`. The first group is the supervisor's; the last is the child's and is the
+only place in the protocol where a caller has no dispatch identity at all.
+
+| Method/path | Authority | Body / headers | Answer |
+|---|---|---|---|
+| `POST /attempts/claim` · `/start` · `/reconcile` · `/heartbeat` | supervisor bearer + session credential or `AttemptProof` | JSON | claim receipt or `null`; start permit; lease |
+| `POST /attempts/stop-evidence` | supervisor bearer + `AttemptProof` | `{proof,evidence}` **or** `{proof,observation}` | `{receipt_id,evidence}`. It never frees capacity on its own |
+| `POST /attempts/result` | supervisor bearer + `AttemptProof` | `{proof,result}` | `{status:'accepted'\|'late', result_id, reason, canonical_result?}` |
+| `PUT /attempts/artifacts/:key` | supervisor bearer + `X-Dispatch-Attempt-Proof` | raw bytes + `X-Content-SHA256` | `{artifact_id,sha256,byte_size}`. Refused once the attempt is revoked |
+| `PUT /attempts/collected/:key` | **original supervisor** bearer + `X-Dispatch-Start-Binding` | raw bytes + `X-Content-SHA256`; `:key` ∈ `report`\|`checks`\|`code` | same receipt. The post-stop path: valid only after this supervisor's own stop was accepted |
+| `POST /attempts/recovery/lookup` · `/stop` · `/result` | **original supervisor** bearer, bound to the historical binding | `{key}` / `{binding,evidence}` / `{binding,result}` | `RecoveryState`; `{receipt_id}`; `RecoveryState`. No execution authority anywhere on these three |
+| `GET /agent/sources/:key` | child capability only | `X-Dispatch-Agent-Token`, `X-Dispatch-Attempt-Id` | exact source bytes + `X-Content-SHA256` |
+| `PUT /agent/outputs/:key` | child capability only | as above + raw bytes and `X-Content-SHA256` | `{artifact_id,sha256,byte_size}` |
+
+`canonical_result` is what the service actually holds. `acceptDispatchResult` may rewrite a
+submitted `succeeded` to `failed` or `cancelled`, so a supervisor must complete on the canonical
+result and never on the one it sent. It is absent exactly where no canonical result exists yet —
+an unresolved publication answers `{status:'late', result_id:null, reason:'publication_unknown'}`.
+A replay of the same result answers with the same `result_id` and the same canonical bytes.
+
+The child's capability is minted by the service at `POST /attempts/start` and returned beside the
+permit as `agent_token`, so the supervisor can place it in the container before it starts. It is
+attempt-scoped, expires at `min(now+5min, the attempt deadline)`, and its operation set is derived
+from the request: `stage_code` only for a non-review `repo_write` request. The two `/agent` routes
+refuse a bearer or a workers assertion presented alongside it, because that would be a second and
+far wider authority; the gateway re-derives full database authority on every single call.
+
+### Known limitations
+
+Measured on this build; none of these is scheduled work in IP-14.
+
+- **Nothing places `agent_token` in a child yet.** The service mints and accepts the capability,
+  but the scrum4me-docker supervisor does not pass it into the container environment, so no child
+  has used `/agent/*` outside tests. The read-only artifact profile does not need it: the child
+  writes its `result.json` to `/output` and the supervisor stages it through
+  `PUT /attempts/collected/:key` after the stop.
+- **`GET /artifacts/:id` ignores the bound-attempt proof.** Only the requester or a product
+  administrator can read an artifact; a supervisor holding a valid attempt proof cannot.
+- `queue_dispatch_reply_addresses` must be populated through `POST /reply-addresses` before anyone
+  can submit, and the workers principal needs a global `ADMIN` role.
+- `createSlot` writes version `'1'` unconditionally.
+- The generated-contract check of s4m-queue
+  (`node scripts/generate-dispatch-contract.mjs --check --source <shared checkout>`) runs in no CI
+  workflow.
+- **Practical acceptance has not run.** Nothing in this repository has ever been called against a
+  live dispatch service; every acceptance gate is unmet until it is separately observed.
+- **The start permit carries no key id, so its Ed25519 signing key cannot be rotated in place.**
+  A permit names no key, so a verifier has only the one configured public key to try. Rotating the
+  signing key therefore makes every already-issued permit fail verification — every open attempt's
+  permit — until a permit-version bump and an updated portable fixture carry the new key id. The
+  clock-tolerance half of this gap has landed (`START_PERMIT_CLOCK_SKEW_MS`); the key-id half is
+  deferred by decision (IDEA-213 m10).
 
 ## Schema sync
 

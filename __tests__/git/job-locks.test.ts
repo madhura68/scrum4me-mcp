@@ -1,3 +1,5 @@
+vi.mock('../../src/prisma.js', () => ({ prisma: { claudeJob: { findUnique: vi.fn().mockResolvedValue({kind:'TASK_IMPLEMENTATION',dispatch_request_id:null,dispatch_candidate_id:null}) } } }))
+import { prisma } from '../../src/prisma.js'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
@@ -133,4 +135,31 @@ describe('job-locks: setupProductWorktrees', () => {
     expect(result[1].productId).toBe('a-secondary')
     await releaseLocksOnTerminal('j4')
   })
+})
+
+it('refuses managed lock release before touching held execution locks',async()=>{
+  const release=vi.fn()
+  registerJobLockReleases('managed',[release])
+  vi.mocked(prisma.claudeJob.findUnique).mockResolvedValueOnce({kind:'TASK_IMPLEMENTATION',dispatch_request_id:'request'} as never)
+  await expect(releaseLocksOnTerminal('managed')).rejects.toThrow('DISPATCH_MANAGED_ROW')
+  expect(release).not.toHaveBeenCalled()
+})
+
+// ST-1590.37: the task binding records who holds the task NOW. An ordinary job that already ended
+// keeps its own locks, even once its task has been handed to a managed dispatch.
+it('releases the locks of an ended job whose task went managed afterwards',async()=>{
+  const release=vi.fn().mockResolvedValue(undefined)
+  registerJobLockReleases('handed-over',[release])
+  vi.mocked(prisma.claudeJob.findUnique).mockResolvedValueOnce({kind:'TASK_IMPLEMENTATION',dispatch_request_id:null,dispatch_candidate_id:null,task:{dispatch_request_id:'managed-request'},task_executions:[{task:{dispatch_request_id:'managed-request'}}]} as never)
+  await expect(releaseLocksOnTerminal('handed-over')).resolves.toBeUndefined()
+  expect(release).toHaveBeenCalledTimes(1)
+})
+
+// The helper is documented as never throwing; a failing marker read must not break that promise.
+it('releases the locks and never throws when the marker read fails',async()=>{
+  const release=vi.fn().mockResolvedValue(undefined)
+  registerJobLockReleases('db-down',[release])
+  vi.mocked(prisma.claudeJob.findUnique).mockRejectedValueOnce(Object.assign(new Error('connection refused'),{name:'PrismaClientInitializationError'}))
+  await expect(releaseLocksOnTerminal('db-down')).resolves.toBeUndefined()
+  expect(release).toHaveBeenCalledTimes(1)
 })

@@ -12,7 +12,7 @@ const B1_MCP_SCHEMA_SHA256 = 'e22330c2c90246723eebb9eeddcaab7a3d192aa634f84f44ec
 const REBASELINED_MCP_COMMIT = '6bc6efa9452b232e7be2f52497692f6d1eabb9b6'
 const REBASELINED_SHARED_COMMIT = '194480afa549c87d21b32057bc8ce628ad55af2f'
 const REBASELINED_MCP_SCHEMA_SHA256 = 'a7ef8e39fa658e76241363fd526bafc7909ee6b112d84a50944edabd8d707b68'
-const CURRENT_SHARED_COMMIT = 'bbac6c2bfe324213a8a253186a9e6a267a8a3f46'
+const CURRENT_SHARED_COMMIT = 'c65f5a845e411c8b98906be3c8baa8df95afcc9d'
 const repository = new URL('..', import.meta.url)
 
 const predecessorInput = {

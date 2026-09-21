@@ -1,3 +1,4 @@
+import { assertUnmanagedTask, isManagedTaskRefusal } from '../dispatch/managed-job.js'
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
@@ -40,6 +41,15 @@ export async function handleUpdateTaskStatus({
     const ref = await resolveTaskRef(task_id, auth.userId)
     if ('error' in ref) return toolError(ref.error)
     const taskId = ref.id
+    try {
+      await assertUnmanagedTask(taskId)
+    } catch (error) {
+      if (!isManagedTaskRefusal(error)) throw error
+      // T-1865: the task is held by an active dispatch run, so its status is not ours to change.
+      // Refuse legibly instead of leaking the bare DISPATCH_MANAGED_ROW guard code; fail-closed —
+      // no status is mutated. Same refusal as the enqueue path, worded for the status-update context.
+      return toolError('Er loopt een actieve dispatch voor deze task; de status is nu niet handmatig te wijzigen.')
+    }
 
     if (sprint_run_id) {
       const sprintRun = await prisma.sprintRun.findUnique({

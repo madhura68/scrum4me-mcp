@@ -183,6 +183,8 @@ enum ClaudeJobKind {
   TASK_REVIEW
   DEPLOY
   DOCS_AUDIT
+  QUEUE_TASK
+  QUEUE_REVIEW
 }
 
 enum ReviewVerdict {
@@ -296,6 +298,10 @@ enum IssueLogType {
 }
 
 model User {
+  dispatch_profiles         QueueDispatchProfile[]
+  dispatch_slots            QueueDispatchSlot[]
+  dispatch_requests         QueueDispatchRequest[]
+  dispatch_reply_addresses  QueueDispatchReplyAddress[]
   id                  String             @id @default(cuid())
   username            String             @unique
   email               String?            @unique
@@ -347,6 +353,7 @@ model UserRole {
 }
 
 model ApiToken {
+  dispatch_slots QueueDispatchSlot[]
   id            String        @id @default(cuid())
   user          User          @relation(fields: [user_id], references: [id], onDelete: Cascade)
   user_id       String
@@ -370,6 +377,8 @@ model ApiToken {
 }
 
 model Product {
+  dispatch_profiles QueueDispatchProfile[]
+  dispatch_requests QueueDispatchRequest[]
   id                        String             @id @default(cuid())
   user                      User               @relation(fields: [user_id], references: [id], onDelete: Cascade)
   user_id                   String
@@ -562,6 +571,9 @@ model SprintRun {
 }
 
 model Task {
+  // Active dispatch occupancy across both job and host routes; guarded release.
+  dispatch_request_id String? @unique @db.Uuid
+  dispatch_request QueueDispatchRequest? @relation(fields: [dispatch_request_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
   id                     String                @id @default(cuid())
   story                  Story                 @relation(fields: [story_id], references: [id], onDelete: Cascade)
   story_id               String
@@ -678,6 +690,11 @@ model ClaudeJob {
   /// M32 inbox-archivering (hub); NULL = actief. Alleen terminale jobs
   /// (DONE/FAILED/CANCELLED/SKIPPED); afgedwongen in code.
   archived_at               DateTime?             @db.Timestamptz(6)
+  dispatch_request_id   String? @db.Uuid
+  dispatch_candidate_id String? @unique @db.Uuid
+  dispatch_request      QueueDispatchRequest? @relation(fields: [dispatch_request_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  dispatch_candidate    QueueDispatchCandidate? @relation("DispatchJobCandidate", fields: [dispatch_candidate_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  dispatch_selected_by  QueueDispatchCandidate? @relation("DispatchCandidateJob")
 
   @@index([user_id, status])
   @@index([task_id, status])
@@ -1400,6 +1417,12 @@ model AgentMessage {
   ppe_consumer_generation Int?
   ppe_lease_generation    BigInt?
 
+  // Projection identity has no cross-database FK. IP-02 SQL enforces all three
+  // NULL or complete, immutable identity and monotonically increasing versions.
+  dispatch_request_id         String? @db.Uuid
+  dispatch_projection_version BigInt?
+  dispatch_role               String?
+
   replied_to       AgentMessage?   @relation("AgentMessageReplies", fields: [in_reply_to], references: [id], onDelete: SetNull, onUpdate: NoAction)
   replies          AgentMessage[]  @relation("AgentMessageReplies")
   ppe_run          PpeRunRegistry? @relation(fields: [ppe_run_id], references: [run_id], onDelete: Restrict, onUpdate: NoAction)
@@ -1468,6 +1491,12 @@ model AgentMessageArchive {
   ppe_consumer_generation Int?
   ppe_lease_generation    BigInt?
 
+  // Same nullable managed identity as the live queue. The SQL archive guard
+  // protects these markers without new general checks on historic legacy rows.
+  dispatch_request_id         String? @db.Uuid
+  dispatch_projection_version BigInt?
+  dispatch_role               String?
+
   @@index([created_at(sort: Desc), id(sort: Desc)], map: "agent_message_archive_created_idx")
   @@map("agent_message_archive")
 }
@@ -1496,6 +1525,289 @@ model AgentPresence {
 
   @@id([server, model], map: "agent_presence_pkey")
   @@map("agent_presence")
+}
+
+// IDEA-213 canonical dispatch-v1 schema. Only Scrum4Me owns the migrations.
+// SQL-only checks, partial indexes and immutable/lifecycle guards below are
+// required IP-02 invariants; Prisma relations never substitute for those guards.
+model QueueDispatchProfile {
+  id            String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  key           String
+  revision      Int
+  product_id    String
+  owner_user_id String
+  config        Json @db.JsonB
+  sha256        String
+  revoked_at    DateTime? @db.Timestamptz(6)
+  product       Product @relation(fields: [product_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  owner         User @relation(fields: [owner_user_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  slots         QueueDispatchSlotProfile[]
+  candidates    QueueDispatchCandidate[]
+
+  // SQL: revision > 0; immutable key/revision/product/owner/config/hash.
+  @@unique([key, revision])
+  @@map("queue_dispatch_profiles")
+}
+
+model QueueDispatchSlot {
+  id            String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  capacity_key  String @unique
+  owner_user_id String
+  token_id      String
+  kind          String
+  address       String? @unique
+  config        Json @db.JsonB
+  enabled       Boolean @default(false)
+  owner         User @relation(fields: [owner_user_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  token         ApiToken @relation(fields: [token_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  profiles      QueueDispatchSlotProfile[]
+  incarnations  QueueDispatchIncarnation[]
+  candidates    QueueDispatchCandidate[]
+  reservations  QueueDispatchReservation[]
+
+  // SQL: kind job/host; host key = host:<normalized server:model>, host address
+  // non-null; job address null. Unique address includes disabled host slots.
+  @@map("queue_dispatch_slots")
+}
+
+model QueueDispatchSlotProfile {
+  slot_id             String @db.Uuid
+  profile_revision_id String @db.Uuid
+  slot                QueueDispatchSlot @relation(fields: [slot_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  profile             QueueDispatchProfile @relation(fields: [profile_revision_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@id([slot_id, profile_revision_id])
+  @@map("queue_dispatch_slot_profiles")
+}
+
+model QueueDispatchIncarnation {
+  id                     String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slot_id                String @db.Uuid
+  boot_id                String
+  credential_hash        String
+  credential_key_version Int
+  last_seen_at           DateTime @db.Timestamptz(6)
+  signed_off_at          DateTime? @db.Timestamptz(6)
+  busy                   Boolean @default(false)
+  runtime_scope          Json @db.JsonB
+  slot                   QueueDispatchSlot @relation(fields: [slot_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  candidates             QueueDispatchCandidate[]
+  attempts               QueueDispatchAttempt[]
+
+  // SQL: UNIQUE(slot_id) WHERE signed_off_at IS NULL; positive key version.
+  // A new incarnation never inherits old claims or credentials.
+  @@map("queue_dispatch_incarnations")
+}
+
+model QueueDispatchRequest {
+  occupied_task Task?
+  id                           String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  principal_key                String
+  idempotency_key              String
+  user_id                      String
+  product_id                   String
+  auth_source                  Json @db.JsonB
+  input                        Json @db.JsonB
+  input_hash                   String
+  snapshot                     Json @db.JsonB
+  sources_ready_at             DateTime? @db.Timestamptz(6)
+  state                        String @default("WAITING")
+  version                      BigInt @default(1)
+  generation                   Int @default(0)
+  first_claimed_at             DateTime? @db.Timestamptz(6)
+  retry_authorization_event_id  String? @db.Uuid
+  root_message_id              String @unique @db.Uuid
+  reply_message_id             String @unique @db.Uuid
+  result_id                    String? @unique @db.Uuid
+  created_at                   DateTime @default(now()) @db.Timestamptz(6)
+  updated_at                   DateTime @updatedAt @db.Timestamptz(6)
+  user                         User @relation(fields: [user_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  product                      Product @relation(fields: [product_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  retry_authorization_event    QueueDispatchEvent? @relation("DispatchRetryAuthorization", fields: [retry_authorization_event_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  result                       QueueDispatchResult? @relation("DispatchAcceptedResult", fields: [result_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  canonical_result             QueueDispatchResult? @relation("DispatchResultRequest")
+  candidates                   QueueDispatchCandidate[]
+  jobs                         ClaudeJob[]
+  artifacts                    QueueDispatchArtifact[]
+  publications                 QueueDispatchPublication[]
+  events                       QueueDispatchEvent[] @relation("DispatchRequestEvents")
+  outbox                       QueueDispatchOutbox[]
+
+  // SQL: dispatch state vocabulary, version > 0, generation >= 0, permanent
+  // first-claim history, pinned input/hash/snapshot and guarded result/retry links.
+  // Message ids deliberately have no FK to a potentially separate queue DB.
+  @@unique([principal_key, idempotency_key])
+  @@index([state, created_at])
+  @@map("queue_dispatch_requests")
+}
+
+model QueueDispatchCandidate {
+  id                  String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  request_id          String @db.Uuid
+  generation          Int
+  route               String
+  profile_revision_id String @db.Uuid
+  incarnation_id      String? @db.Uuid
+  job_id              String? @unique
+  state               String @default("RESERVED")
+  reserved_slot_id    String @db.Uuid
+  deadline            DateTime @db.Timestamptz(6)
+  claim_key           String?
+  first_claimed_at    DateTime? @db.Timestamptz(6)
+  request             QueueDispatchRequest @relation(fields: [request_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  profile             QueueDispatchProfile @relation(fields: [profile_revision_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  incarnation         QueueDispatchIncarnation? @relation(fields: [incarnation_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  job                 ClaudeJob? @relation("DispatchCandidateJob", fields: [job_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  bound_job           ClaudeJob? @relation("DispatchJobCandidate")
+  reserved_slot       QueueDispatchSlot @relation(fields: [reserved_slot_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  reservation         QueueDispatchReservation?
+  attempts            QueueDispatchAttempt[]
+
+  // SQL: route job/host, candidate state vocabulary, generation > 0;
+  // UNIQUE(request_id) WHERE state NOT IN ('RETIRED','FINISHED').
+  // Guards verify job/request/candidate tuple and immutable claim history.
+  @@unique([request_id, generation])
+  @@map("queue_dispatch_candidates")
+}
+
+model QueueDispatchReservation {
+  id           String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  candidate_id String @unique @db.Uuid
+  slot_id      String @db.Uuid
+  released_at  DateTime? @db.Timestamptz(6)
+  candidate    QueueDispatchCandidate @relation(fields: [candidate_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  slot         QueueDispatchSlot @relation(fields: [slot_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  // SQL: UNIQUE(slot_id) WHERE released_at IS NULL; release is lifecycle-guarded.
+  @@map("queue_dispatch_reservations")
+}
+
+model QueueDispatchAttempt {
+  id                     String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  candidate_id           String @db.Uuid
+  incarnation_id         String @db.Uuid
+  credential_hash        String
+  credential_key_version Int
+  claim_key              String
+  state                  String @default("CLAIMED")
+  scope_id               String?
+  started_at             DateTime? @db.Timestamptz(6)
+  heartbeat_at           DateTime? @db.Timestamptz(6)
+  stopped_at             DateTime? @db.Timestamptz(6)
+  revoked_at             DateTime? @db.Timestamptz(6)
+  candidate              QueueDispatchCandidate @relation(fields: [candidate_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  incarnation            QueueDispatchIncarnation @relation(fields: [incarnation_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  results                QueueDispatchResult[]
+  artifacts              QueueDispatchArtifact[]
+  publications           QueueDispatchPublication[]
+  events                 QueueDispatchEvent[]
+
+  // SQL: attempt state vocabulary, positive key version; UNIQUE(candidate_id)
+  // WHERE state NOT IN ('SUCCEEDED','FAILED','CANCELLED'); immutable binding.
+  @@unique([incarnation_id, claim_key])
+  @@map("queue_dispatch_attempts")
+}
+
+model QueueDispatchResult {
+  id           String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  request_id   String @unique @db.Uuid
+  attempt_id   String? @db.Uuid
+  outcome      String
+  payload      Json @db.JsonB
+  source_refs  Json @db.JsonB
+  sha256       String
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  request      QueueDispatchRequest @relation("DispatchResultRequest", fields: [request_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  accepted_by  QueueDispatchRequest? @relation("DispatchAcceptedResult")
+  attempt      QueueDispatchAttempt? @relation(fields: [attempt_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  // SQL: immutable canonical result; late evidence is an event, never an upsert.
+  @@map("queue_dispatch_results")
+}
+
+model QueueDispatchArtifact {
+  id         String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  request_id String @db.Uuid
+  attempt_id String? @db.Uuid
+  key        String
+  sha256     String
+  bytes      Bytes @db.ByteA
+  byte_size  Int
+  request    QueueDispatchRequest @relation(fields: [request_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  attempt    QueueDispatchAttempt? @relation(fields: [attempt_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  // SQL: UNIQUE(request_id,key) WHERE attempt_id IS NULL; immutable exact bytes,
+  // byte_size = octet_length(bytes), per-artifact and per-attempt size guards.
+  @@unique([attempt_id, key])
+  @@map("queue_dispatch_artifacts")
+}
+
+model QueueDispatchPublication {
+  id                   String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  request_id           String @db.Uuid
+  attempt_id           String @db.Uuid
+  action_key           String @unique
+  input_hash           String
+  base_sha             String
+  head_sha             String
+  branch               String
+  mode                 String
+  expected_remote_head String?
+  state                String @default("PREPARED")
+  remote_receipt       Json? @db.JsonB
+  created_at           DateTime @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime @updatedAt @db.Timestamptz(6)
+  request              QueueDispatchRequest @relation(fields: [request_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  attempt              QueueDispatchAttempt @relation(fields: [attempt_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  // SQL: state PREPARED/SENT/CONFIRMED/UNKNOWN/FAILED; UNIQUE(request_id)
+  // WHERE state NOT IN ('CONFIRMED','FAILED'). UNKNOWN keeps the slot fenced.
+  @@map("queue_dispatch_publications")
+}
+
+model QueueDispatchEvent {
+  id                  String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  request_id          String? @db.Uuid
+  attempt_id          String? @db.Uuid
+  type                String
+  actor               Json @db.JsonB
+  payload             Json @db.JsonB
+  action_id           String?
+  operation_key       String? @unique
+  created_at          DateTime @default(now()) @db.Timestamptz(6)
+  request             QueueDispatchRequest? @relation("DispatchRequestEvents", fields: [request_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  attempt             QueueDispatchAttempt? @relation(fields: [attempt_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  retry_requests      QueueDispatchRequest[] @relation("DispatchRetryAuthorization")
+
+  // SQL: append-only; UNIQUE(request_id,action_id) WHERE action_id IS NOT NULL.
+  // No secrets in actor/payload; operation_key supports non-request actions.
+  @@map("queue_dispatch_events")
+}
+
+model QueueDispatchOutbox {
+  id              String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  request_id      String @db.Uuid
+  version         BigInt
+  payload         Json @db.JsonB
+  published_at    DateTime? @db.Timestamptz(6)
+  attempts        Int @default(0)
+  next_attempt_at DateTime @default(now()) @db.Timestamptz(6)
+  request         QueueDispatchRequest @relation(fields: [request_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  // SQL: version > 0, attempts >= 0; immutable request/version/payload.
+  @@unique([request_id, version])
+  @@index([published_at, next_attempt_at])
+  @@map("queue_dispatch_outbox")
+}
+
+model QueueDispatchReplyAddress {
+  user_id String
+  address String
+  enabled Boolean @default(false)
+  user    User @relation(fields: [user_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@id([user_id, address])
+  @@map("queue_dispatch_reply_addresses")
 }
 
 // M31 — Communicatiecentrum slice B (IDEA-179). Spec:

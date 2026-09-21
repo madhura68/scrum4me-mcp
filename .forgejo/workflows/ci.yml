@@ -60,6 +60,27 @@ jobs:
       - name: Bootstrap disposable PPE controller schema
         run: npx prisma db push --url "$PPE_CONTROLLER_TEST_DATABASE_URL"
 
+      - name: Prepare exact dispatch schema source
+        run: |
+          set -euo pipefail
+          schema_root="$RUNNER_TEMP/dispatch-schema"
+          schema_sha="$(node --input-type=module -e 'import {DISPATCH_SCHEMA_COMMIT} from "./scripts/dispatch-test-db.mjs"; console.log(DISPATCH_SCHEMA_COMMIT)')"
+          git clone --no-checkout https://git.jp-visser.nl/janpeter/Scrum4Me.git "$schema_root"
+          git -C "$schema_root" checkout --detach "$schema_sha"
+          git -C "$schema_root" submodule update --init --recursive
+          # Provisioning uses tsx/pg and the pinned policy modules, not app builds.
+          # Lifecycle scripts would generate unrelated docs in the pinned source.
+          (cd "$schema_root" && npm ci --ignore-scripts --no-audit --no-fund)
+
+      - name: Run disposable dispatch integration gate
+        env:
+          CI: 'true'
+          DISPATCH_TEST_ADMIN_URL: postgresql://scrum4us_owner:owner_test_password@postgres:5432/s4m_dispatch_test
+        run: |
+          set -euo pipefail
+          export DISPATCH_TEST_SCHEMA_ROOT="$RUNNER_TEMP/dispatch-schema"
+          node scripts/run-dispatch-ci.mjs
+
       - name: Run candidate gates and bind their evidence
         run: |
           set -euo pipefail
@@ -194,6 +215,27 @@ jobs:
 
       - name: Bootstrap disposable PPE controller schema
         run: npx prisma db push --url "$PPE_CONTROLLER_TEST_DATABASE_URL"
+
+      - name: Prepare exact dispatch schema source
+        run: |
+          set -euo pipefail
+          schema_root="$RUNNER_TEMP/dispatch-schema"
+          schema_sha="$(node --input-type=module -e 'import {DISPATCH_SCHEMA_COMMIT} from "./scripts/dispatch-test-db.mjs"; console.log(DISPATCH_SCHEMA_COMMIT)')"
+          git clone --no-checkout https://git.jp-visser.nl/janpeter/Scrum4Me.git "$schema_root"
+          git -C "$schema_root" checkout --detach "$schema_sha"
+          git -C "$schema_root" submodule update --init --recursive
+          # Provisioning uses tsx/pg and the pinned policy modules, not app builds.
+          # Lifecycle scripts would generate unrelated docs in the pinned source.
+          (cd "$schema_root" && npm ci --ignore-scripts --no-audit --no-fund)
+
+      - name: Run disposable dispatch integration gate
+        env:
+          CI: 'true'
+          DISPATCH_TEST_ADMIN_URL: postgresql://scrum4us_owner:owner_test_password@postgres:5432/s4m_dispatch_test
+        run: |
+          set -euo pipefail
+          export DISPATCH_TEST_SCHEMA_ROOT="$RUNNER_TEMP/dispatch-schema"
+          node scripts/run-dispatch-ci.mjs
 
       - name: Run final gates and bind their evidence
         run: |

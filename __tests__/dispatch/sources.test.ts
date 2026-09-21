@@ -1,0 +1,12 @@
+import {describe,it,expect} from 'vitest'
+import {createHash} from 'node:crypto'
+import {readBoundedBytes} from '../../src/dispatch/artifacts.js'
+const hash=(s:Uint8Array)=>createHash('sha256').update(s).digest('hex')
+describe('bounded artifact stream',()=>{
+ it('counts chunks before joining and returns only exact verified bytes',async()=>{async function* chunks(){yield Buffer.from('old\r\n');yield Buffer.from('é')}const bytes=await readBoundedBytes(chunks(),7);expect(Buffer.from(bytes).toString()).toBe('old\r\né');expect(hash(bytes)).toBe(hash(Buffer.from('old\r\né')))})
+ it('stops at the first oversized chunk without consuming the rest',async()=>{let reads=0;async function* chunks(){reads++;yield Buffer.alloc(9);reads++;throw Error('must not consume')}await expect(readBoundedBytes(chunks(),8)).rejects.toThrow('DISPATCH_TOO_LARGE');expect(reads).toBe(1)})
+ it('redacts a failed download stream',async()=>{async function* chunks(){throw Error('private transport detail');yield Buffer.alloc(0)}await expect(readBoundedBytes(chunks())).rejects.toThrow('DISPATCH_TRANSPORT_ERROR')})
+})
+import {createPinnedGitFetcher} from '../../src/dispatch/sources.js'
+it('pinned Git adapter rejects traversal, redirects and missing commits without trying latest',async()=>{let requested='';const fetcher=createPinnedGitFetcher({host:'forge.example',token:'test',fetch:async(url)=>{requested=String(url);return new Response('',{status:404})}});expect(await fetcher('https://forge.example/o/r.git','docs/plan.md','a'.repeat(40))).toEqual({ok:false,reason:'missing'});expect(new URL(requested).searchParams.get('ref')).toBe('a'.repeat(40));expect(await fetcher('https://forge.example/o/r.git','../plan.md','a'.repeat(40))).toEqual({ok:false,reason:'invalid-reference'});expect(await fetcher('https://foreign.example/o/r.git','plan.md','a'.repeat(40))).toEqual({ok:false,reason:'invalid-reference'})})
+it('refuses a private repo authorization error and oversized Git bytes',async()=>{const forbidden=createPinnedGitFetcher({host:'forge.example',token:'test',fetch:async()=>new Response('',{status:403})});expect(await forbidden('https://forge.example/o/r.git','plan.md','a'.repeat(40))).toEqual({ok:false,reason:'forbidden'});const large=createPinnedGitFetcher({host:'forge.example',token:'test',fetch:async()=>new Response(Buffer.alloc(1048577))});expect(await large('https://forge.example/o/r.git','plan.md','a'.repeat(40))).toEqual({ok:false,reason:'too-large'})})

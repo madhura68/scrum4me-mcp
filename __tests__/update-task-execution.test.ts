@@ -322,3 +322,13 @@ describe('update_task_execution — taakgrens-backup (M38)', () => {
     expect(res.isError).toBeFalsy()
   })
 })
+
+it.each(['task','sprint-history'])('rejects %s occupancy before resolving HEAD, pushing or updating',async binding=>{
+ const record=execRecord(binding==='task'
+  ? {task:{dispatch_request_id:'host-request'}}
+  : {sprint_job:{...execRecord().sprint_job,task_executions:[{task:{dispatch_request_id:'host-request'}}]}})
+ mockPrisma.sprintTaskExecution.findUnique.mockResolvedValue(record)
+ const result=await makeServer().call({execution_id:'exec-1',status:'DONE'})
+ expect(result).toMatchObject({isError:true});expect(JSON.stringify(result)).toContain('DISPATCH_MANAGED_ROW')
+ expect(mockResolveHead).not.toHaveBeenCalled();expect(mockBackupPush).not.toHaveBeenCalled();expect(mockPrisma.sprintTaskExecution.update).not.toHaveBeenCalled()
+})

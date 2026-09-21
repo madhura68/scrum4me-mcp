@@ -148,10 +148,11 @@ describe('getFullJobContext DEPLOY jobs', () => {
     expect(mockPrisma.claudeJob.findUnique).toHaveBeenNthCalledWith(2, {
       where: { id: 'job-deploy-1234' },
       select: {
-        kind: true,
+        kind: true, dispatch_request_id: true, dispatch_candidate_id: true,
+        task_executions: { where: { task: { dispatch_request_id: { not: null } } }, select: { task: { select: { dispatch_request_id: true } } }, take: 1 },
         product_id: true,
         branch: true,
-        task: { select: { repo_url: true } },
+        task: { select: { repo_url: true, dispatch_request_id: true } },
       },
     })
     // De QUEUED-reset: tagged-template call → [strings, ...values].

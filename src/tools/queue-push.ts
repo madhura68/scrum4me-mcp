@@ -15,6 +15,7 @@ import {
 } from '../queue/work-item.js'
 import { emitQueueNotifyBestEffort, envelopeOf } from '../queue/notify.js'
 import {
+  QUEUE_DISPATCH_SERVER,
   QUEUE_JOB_SERVER,
   QUEUE_MODELS,
   QUEUE_REQUEST_TYPES,
@@ -85,7 +86,8 @@ export function registerQueuePushTool(server: McpServer) {
         '(sibling of meta.task, version 1, product_doc and/or git refs). ' +
         'When this message is about Scrum4Me work you are doing — almost always a task or review_request tied to a story — pass its id via sprint_id/story_id/task_id so it is traceable on the dashboard. ' +
         'The most specific id you have is enough: the tool derives the rest of the hierarchy (product_id included) via the story, stores it as meta.work_item, and rejects unknown/inconsistent ids. Get the id from get_claude_context or the story/task you are working on. ' +
-        'Returns message_id — fetch the answer later with queue_wait_reply({ message_ids: [message_id] }).',
+        'Returns message_id — fetch the answer later with queue_wait_reply({ message_ids: [message_id] }). ' +
+        'This tool always sends to the one address you name; to have work routed and executed automatically instead, use dispatch_task or dispatch_review.',
       inputSchema,
     },
     async ({ to, type, body, meta, cwd, as, sprint_id, story_id, task_id }) =>
@@ -93,6 +95,11 @@ export function registerQueuePushTool(server: McpServer) {
         await requireWriteAccess()
         const from = resolveQueueIdentity(as)
         const target = parseQueueTarget(to)
+        if (target.server === QUEUE_DISPATCH_SERVER) {
+          return toolError(
+            `VALIDATION_ERROR: ${QUEUE_DISPATCH_SERVER} is reserved for managed dispatch projection`,
+          )
+        }
         // The job id lives on the model position — the columns stay text (M30 §5).
         const dest =
           target.server === QUEUE_JOB_SERVER

@@ -1,0 +1,323 @@
+import { randomUUID } from 'node:crypto'
+import { Pool } from 'pg'
+import type { DispatchInput, DispatchProfileConfig } from '@shared/queue-dispatch.js'
+import { parseDispatchInput } from '@shared/queue-dispatch-validation.js'
+import type { DispatchActor } from '../../src/dispatch/ports.js'
+import { createDispatchAuth } from '../../src/dispatch/auth.js'
+import { createDispatchRegistration, actorForToken } from '../../src/dispatch/registration.js'
+import { assertDispatchTestUrl, assertTestCluster } from '../../scripts/dispatch-test-db.mjs'
+
+type FixtureIds = {
+  userId: string
+  otherUserId: string
+  productId: string
+  tokenId: string
+  profileId: string
+  slotIds: string[]
+  additionalProductIds: string[]
+  additionalTokenIds: string[]
+}
+
+export type DispatchHarnessSeed = {
+  actor: DispatchActor
+  input: DispatchInput
+  jobSlot: { id: string; incarnationId: string; instanceId: string }
+  hostSlot: { id: string; incarnationId: string }
+  otherUser: string
+  profileId: string
+}
+
+export interface DispatchHarness {
+  admin: Pool
+  dispatch: Pool
+  queue: Pool
+  web: Pool
+  seed(input?: Partial<DispatchInput>): Promise<DispatchHarnessSeed>
+  registerNextIncarnation(slotId: string): Promise<{incarnationId:string;sessionCredential:string}>
+  trackProduct(id: string): void
+  trackSlot(id: string): void
+  trackToken(id: string): void
+  reset(): Promise<void>
+  close(): Promise<void>
+  barrier(count: number): () => Promise<void>
+}
+
+function makeBarrier(count: number): () => Promise<void> {
+  if (!Number.isInteger(count) || count < 1) throw new Error('DISPATCH_BARRIER_COUNT_INVALID')
+  let arrivals = 0
+  let release: (() => void) | undefined
+  const allArrived = new Promise<void>((resolve) => { release = resolve })
+  return async () => {
+    arrivals += 1
+    if (arrivals === count) release?.()
+    await allArrived
+  }
+}
+
+export async function makeDispatchHarness(): Promise<DispatchHarness> {
+  const definitions = [
+    ['admin', 'DISPATCH_TEST_ADMIN_URL'],
+    ['dispatch', 'DISPATCH_TEST_URL'],
+    ['queue', 'DISPATCH_TEST_QUEUE_URL'],
+    ['web', 'DISPATCH_TEST_WEB_URL'],
+  ] as const
+  const urls = definitions.map(([name, key]) => [
+    name,
+    assertDispatchTestUrl(process.env[key]),
+  ] as const)
+  if (new Set(urls.map(([, url]) => `${url.hostname}:${url.port}`)).size !== 1) {
+    throw new Error('DISPATCH_TEST_TARGET_REFUSED')
+  }
+  const pools = Object.fromEntries(urls.map(([name, url]) => [
+    name,
+    new Pool({ connectionString: url.href, max: 2, application_name: `mcp-dispatch-test:${name}` }),
+  ])) as Record<(typeof definitions)[number][0], Pool>
+  try {
+    for (const pool of Object.values(pools)) await assertTestCluster(pool)
+  } catch (error) {
+    await Promise.allSettled(Object.values(pools).map((pool) => pool.end()))
+    throw error
+  }
+
+  const fixtures: FixtureIds[] = []
+
+  const reset = async () => {
+    while (fixtures.length > 0) {
+      const fixture = fixtures.at(-1) as FixtureIds
+      const client = await pools.admin.connect()
+      try {
+        await client.query('BEGIN')
+        await client.query("SET LOCAL session_replication_role='replica'")
+        const ownedProductIds=[fixture.productId,...fixture.additionalProductIds]
+        const requestIds = (await client.query<{ id: string }>(
+          'SELECT id FROM queue_dispatch_requests WHERE product_id=ANY($1::text[])',
+          [ownedProductIds],
+        )).rows.map(({ id }) => id)
+        if (requestIds.length > 0) {
+          for (const table of [
+            'queue_dispatch_publications', 'queue_dispatch_artifacts', 'queue_dispatch_results',
+            'queue_dispatch_events', 'queue_dispatch_outbox',
+          ]) {
+            await client.query(`DELETE FROM ${table} WHERE request_id=ANY($1::uuid[])`, [requestIds])
+          }
+          await client.query(
+            `DELETE FROM queue_dispatch_attempts WHERE candidate_id IN
+             (SELECT id FROM queue_dispatch_candidates WHERE request_id=ANY($1::uuid[]))`,
+            [requestIds],
+          )
+          await client.query(
+            `DELETE FROM queue_dispatch_reservations WHERE candidate_id IN
+             (SELECT id FROM queue_dispatch_candidates WHERE request_id=ANY($1::uuid[]))`,
+            [requestIds],
+          )
+          await client.query('DELETE FROM claude_jobs WHERE dispatch_request_id=ANY($1::uuid[])', [requestIds])
+          await client.query('DELETE FROM queue_dispatch_candidates WHERE request_id=ANY($1::uuid[])', [requestIds])
+          await client.query('DELETE FROM queue_dispatch_requests WHERE id=ANY($1::uuid[])', [requestIds])
+        }
+        await client.query(
+          'DELETE FROM queue_dispatch_slot_profiles WHERE slot_id=ANY($1::uuid[])',
+          [fixture.slotIds],
+        )
+        await client.query(
+          'DELETE FROM queue_dispatch_incarnations WHERE slot_id=ANY($1::uuid[])',
+          [fixture.slotIds],
+        )
+        await client.query('DELETE FROM queue_dispatch_slots WHERE id=ANY($1::uuid[])', [fixture.slotIds])
+        await client.query('DELETE FROM queue_dispatch_profiles WHERE product_id=ANY($1::text[])', [ownedProductIds])
+        await client.query(
+          'DELETE FROM queue_dispatch_reply_addresses WHERE user_id=ANY($1::text[])',
+          [[fixture.userId, fixture.otherUserId]],
+        )
+        // IP-04 also seeds real members, roles and explicit Task graphs. Replica
+        // cleanup deliberately suppresses cascade triggers, so delete these
+        // fixture-owned dependents explicitly before their parent rows.
+        await client.query(
+          "DELETE FROM queue_dispatch_events WHERE request_id IS NULL AND actor->>'user_id'=ANY($1::text[])",
+          [[fixture.userId, fixture.otherUserId]],
+        )
+        await client.query(
+          `DELETE FROM sprint_task_executions WHERE task_id IN
+           (SELECT id FROM tasks WHERE product_id=ANY($1::text[]))`, [ownedProductIds],
+        )
+        await client.query('DELETE FROM claude_jobs WHERE product_id=ANY($1::text[])', [ownedProductIds])
+        await client.query('DELETE FROM tasks WHERE product_id=ANY($1::text[])', [ownedProductIds])
+        await client.query('DELETE FROM stories WHERE product_id=ANY($1::text[])', [ownedProductIds])
+        await client.query('DELETE FROM pbis WHERE product_id=ANY($1::text[])', [ownedProductIds])
+        await client.query('DELETE FROM product_members WHERE product_id=ANY($1::text[])', [ownedProductIds])
+        await client.query('DELETE FROM user_roles WHERE user_id=ANY($1::text[])', [[fixture.userId, fixture.otherUserId]])
+        await client.query('DELETE FROM claude_workers WHERE user_id=ANY($1::text[])', [[fixture.userId, fixture.otherUserId]])
+        await client.query('DELETE FROM api_tokens WHERE id=ANY($1::text[])', [[fixture.tokenId,...fixture.additionalTokenIds]])
+        await client.query('DELETE FROM products WHERE id=ANY($1::text[])', [ownedProductIds])
+        await client.query('DELETE FROM users WHERE id=ANY($1::text[])', [
+          [fixture.userId, fixture.otherUserId],
+        ])
+        await client.query('COMMIT')
+        fixtures.pop()
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined)
+        throw error
+      } finally {
+        client.release()
+      }
+    }
+  }
+
+  const seed = async (overrides: Partial<DispatchInput> = {}): Promise<DispatchHarnessSeed> => {
+    const userId = randomUUID()
+    const otherUserId = randomUUID()
+    const productId = randomUUID()
+    const tokenId = randomUUID()
+    const profileId = randomUUID()
+    const jobSlotId = randomUUID()
+    const hostSlotId = randomUUID()
+    const jobIncarnationId = randomUUID()
+    const hostIncarnationId = randomUUID()
+    const profile: DispatchProfileConfig = {
+      version: 1,
+      runtime: 'CODEX',
+      actions: ['free_task'],
+      product_ids: [productId],
+      repository_product_ids: [],
+      environment_keys: [],
+      access: 'read',
+      publish_modes: ['artifact'],
+      image_digest: `sha256:${'a'.repeat(64)}`,
+      source_mount_keys: [],
+      provider_egress_hosts: [],
+      cpu_millis: 1000,
+      memory_mb: 1024,
+      pids_limit: 128,
+      max_duration_seconds: 300,
+      protocol: 'dispatch-v1',
+    }
+    const defaultInput: DispatchInput = {
+      version: 1,
+      product_id: productId,
+      action: 'free_task',
+      objective: 'Onderzoek de vastgezette bron zonder wijzigingen',
+      verification: 'Lever controleerbaar Markdown-bewijs',
+      response_format: 'Markdown',
+      requirements: { access: 'read', environment_keys: [] },
+      publish: 'artifact',
+      reply_to: 'mac:jp',
+    }
+    const input = parseDispatchInput({
+      ...defaultInput,
+      ...overrides,
+      product_id: productId,
+    })
+    const actor: DispatchActor = {
+      userId,
+      principalKey: `bearer:${userId}:${tokenId}`,
+      tokenId,
+      source: 'bearer',
+      isDemo: false,
+      scopedProducts: [productId],
+      scopedRepos: [],
+      tokenKind: 'IMPLEMENTATION',
+    }
+
+    fixtures.push({
+      userId,
+      otherUserId,
+      productId,
+      tokenId,
+      profileId,
+      slotIds: [jobSlotId, hostSlotId],
+      additionalProductIds: [],
+      additionalTokenIds: [],
+    })
+
+    await pools.admin.query(
+      `INSERT INTO users(id,email,username,password_hash,updated_at)
+       VALUES($1,$2,$1,'test',now()),($3,$4,$3,'test',now())`,
+      [userId, `${userId}@example.test`, otherUserId, `${otherUserId}@example.test`],
+    )
+    await pools.admin.query(
+      `INSERT INTO products(id,name,user_id,definition_of_done,updated_at)
+       VALUES($1,$2,$3,'test',now())`,
+      [productId, `dispatch-fixture-${productId}`, userId],
+    )
+    await pools.admin.query(
+      `INSERT INTO api_tokens(id,user_id,token_hash,kind,scoped_products)
+       VALUES($1,$2,$3,'IMPLEMENTATION',$4::text[])`,
+      [tokenId, userId, randomUUID(), [productId]],
+    )
+    await pools.dispatch.query(
+      `INSERT INTO queue_dispatch_profiles
+       (id,key,revision,product_id,owner_user_id,config,sha256)
+       VALUES($1,$2,1,$3,$4,$5,$6)`,
+      [profileId, `fixture-${profileId}`, productId, userId, JSON.stringify(profile), 'a'.repeat(64)],
+    )
+    await pools.dispatch.query(
+      `INSERT INTO queue_dispatch_slots
+       (id,capacity_key,owner_user_id,token_id,kind,address,config,enabled)
+       VALUES($1,$2,$3,$4,'job',NULL,'{}',true),
+             ($5,$6,$3,$4,'host',$7,'{}',true)`,
+      [jobSlotId, `job:managed:${jobSlotId}`, userId, tokenId,
+        hostSlotId, 'host:max2:codex', 'max2:codex'],
+    )
+    await pools.dispatch.query(
+      `INSERT INTO queue_dispatch_slot_profiles(slot_id,profile_revision_id)
+       VALUES($1,$3),($2,$3)`,
+      [jobSlotId, hostSlotId, profileId],
+    )
+    await pools.dispatch.query(
+      `INSERT INTO queue_dispatch_incarnations
+       (id,slot_id,boot_id,credential_hash,credential_key_version,last_seen_at,runtime_scope)
+       VALUES($1,$2,$3,$4,1,now(),'{}'),($5,$6,$7,$8,1,now(),'{}')`,
+      [jobIncarnationId, jobSlotId, `boot-${jobIncarnationId}`, 'b'.repeat(64),
+        hostIncarnationId, hostSlotId, `boot-${hostIncarnationId}`, 'c'.repeat(64)],
+    )
+    const jobConfig={version:1,runtime:'CODEX',product_ids:[productId],capabilities:[],tier:null,worker_instance_id:`managed:${jobSlotId}`}
+    const hostConfig={...jobConfig,worker_instance_id:null}
+    await pools.dispatch.query('UPDATE queue_dispatch_slots SET config=$2::jsonb WHERE id=$1',[jobSlotId,JSON.stringify(jobConfig)])
+    await pools.dispatch.query('UPDATE queue_dispatch_slots SET config=$2::jsonb WHERE id=$1',[hostSlotId,JSON.stringify(hostConfig)])
+    for(const [id,config] of [[jobIncarnationId,jobConfig],[hostIncarnationId,hostConfig]] as const) {
+      await pools.dispatch.query('UPDATE queue_dispatch_incarnations SET runtime_scope=$2::jsonb WHERE id=$1',[id,JSON.stringify({...config,profile_revision_ids:[profileId],image_digest:profile.image_digest,profile_sha256:'a'.repeat(64),supervisor_token_id:tokenId})])
+    }
+    await pools.admin.query(`INSERT INTO claude_workers(id,user_id,token_id,instance_id,runtime,capabilities,last_seen_at) VALUES($1,$2,$3,$4,'CODEX','{}',now())`,[jobSlotId,userId,tokenId,jobConfig.worker_instance_id])
+    await pools.dispatch.query(
+      `INSERT INTO queue_dispatch_reply_addresses(user_id,address,enabled)
+       VALUES($1,'mac:jp',true)`,
+      [userId],
+    )
+
+    return {
+      actor,
+      input,
+      jobSlot: { id: jobSlotId, incarnationId: jobIncarnationId, instanceId: jobConfig.worker_instance_id },
+      hostSlot: { id: hostSlotId, incarnationId: hostIncarnationId },
+      otherUser: otherUserId,
+      profileId,
+    }
+  }
+
+  return {
+    ...pools,
+    seed,
+    registerNextIncarnation: async slotId => {
+      const fixture = fixtures.find(f => f.slotIds.includes(slotId))
+      if (!fixture) throw new Error('DISPATCH_FIXTURE_SLOT_UNKNOWN')
+      const profile = (await pools.dispatch.query<{config:DispatchProfileConfig;sha256:string}>(
+        'SELECT p.config,p.sha256 FROM queue_dispatch_profiles p JOIN queue_dispatch_slot_profiles b ON b.profile_revision_id=p.id WHERE b.slot_id=$1 AND p.revoked_at IS NULL ORDER BY p.id LIMIT 1', [slotId])).rows[0]
+      const registration = createDispatchRegistration({store:pools.dispatch,auth:createDispatchAuth({store:pools.dispatch}),credentialKeys:{1:Buffer.alloc(32,7)},keyVersion:1})
+      const session = await registration.registerDispatchExecutor(actorForToken(fixture.userId,fixture.tokenId), {
+        slot_id:slotId,registration_key:randomUUID(),boot_id:randomUUID(),runtime:profile.config.runtime,image_digest:profile.config.image_digest,profile_sha256:profile.sha256,
+      })
+      return {incarnationId:session.incarnation_id,sessionCredential:session.session_credential}
+    },
+    trackToken: id => { fixtures.at(-1)!.additionalTokenIds.push(id) },
+    trackProduct: id => { fixtures.at(-1)!.additionalProductIds.push(id) },
+    trackSlot: id => { fixtures.at(-1)!.slotIds.push(id) },
+    reset,
+    close: async () => {
+      try {
+        await reset()
+      } finally {
+        await Promise.allSettled(Object.values(pools).map((pool) => pool.end()))
+      }
+    },
+    barrier: makeBarrier,
+  }
+}

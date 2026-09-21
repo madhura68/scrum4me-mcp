@@ -11,7 +11,7 @@
 // uitsluitend de fenced marked-recoveryroute mag zo'n lease terminaliseren.
 import { prisma } from '../prisma.js'
 import { envelopeOf, QUEUE_CHANNEL } from './notify.js'
-import { LEGACY_MARKER_SQL } from './marked.js'
+import { LEGACY_MARKER_SQL, ORDINARY_DISPATCH_SQL } from './marked.js'
 
 export const MCP_LEASE_STALE_INTERVAL = '5 minutes'
 export const SWEEP_MIN_INTERVAL_MS = 8 * 60_000
@@ -43,6 +43,7 @@ export async function sweepStaleQueueClaims(): Promise<{ requeued: string[] }> {
         SELECT id FROM agent_message
          WHERE status = 'claimed'
            AND ${LEGACY_MARKER_SQL}
+           AND ${ORDINARY_DISPATCH_SQL}
            AND (
              (claimed_by LIKE 'mcp:%' AND claimed_at < now() - ${MCP_LEASE_STALE_INTERVAL}::interval)
              OR ((claimed_by IS NULL OR claimed_by NOT LIKE 'mcp:%')
