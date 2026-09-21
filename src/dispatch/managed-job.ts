@@ -42,8 +42,32 @@ export async function assertUnmanagedJobCleanup(jobId: string): Promise<void> {
 export async function assertUnmanagedJobId(jobId: string): Promise<void> {
     assertUnmanagedJob(await prisma.claudeJob.findUnique({ where: { id: jobId }, select: { task_executions: managedTaskExecutionsSelect, kind: true, dispatch_request_id: true, dispatch_candidate_id: true, task: { select: { dispatch_request_id: true } } } }));
 }
+/** Prisma 7 driver adapters hand back the driver's own error (a DriverAdapterError whose cause
+ * carries SQLSTATE and message); engine fields such as meta.target no longer exist. Match on
+ * SQLSTATE 42501 plus the guard's message, walking the cause chain, and on nothing else. This is the
+ * single matcher for the managed-row refusal, whether the in-database trigger raised it or the
+ * assertUnmanagedTask pre-check below did. */
+export function isManagedTaskRefusal(error: unknown): boolean {
+    const seen = new Set<object>();
+    const walk = (value: unknown): boolean => {
+        if (value === null || typeof value !== 'object' || seen.has(value)) return false;
+        seen.add(value);
+        const e = value as { code?: unknown; message?: unknown; cause?: unknown };
+        if (e.code === '42501' && String(e.message ?? '').includes('DISPATCH_MANAGED_ROW')) return true;
+        return walk(e.cause);
+    };
+    return walk(error);
+}
+/** assertUnmanagedTask catches the managed-row condition before the write reaches the in-database
+ * trigger. Mirror the driver-adapter refusal shape (SQLSTATE 42501 on the cause, DISPATCH_MANAGED_ROW
+ * in the message) so isManagedTaskRefusal recognizes this pre-check exactly as it recognizes the
+ * trigger's own refusal — while a bare Error('DISPATCH_MANAGED_ROW') (the job-level guards' internal
+ * sentinel) deliberately stays unmatched. */
+function managedTaskRefusal(): Error {
+    return Object.assign(new Error('DISPATCH_MANAGED_ROW'), { cause: Object.assign(new Error('DISPATCH_MANAGED_ROW'), { code: '42501' }) });
+}
 export async function assertUnmanagedTask(taskId: string): Promise<void> {
     const task = await prisma.task.findUnique({ where: { id: taskId }, select: { dispatch_request_id: true } });
     if (task?.dispatch_request_id != null)
-        throw new Error('DISPATCH_MANAGED_ROW');
+        throw managedTaskRefusal();
 }

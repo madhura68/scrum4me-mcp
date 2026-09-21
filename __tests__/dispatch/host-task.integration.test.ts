@@ -47,7 +47,10 @@ it('excludes ordinary enqueue after actual host Task reserve, claim and start',a
 })
 it('refuses general Task status mutation while the host owns its Task',async()=>{
  await started();const result=await handleUpdateTaskStatus({task_id:task,status:'in_progress'})
- expect(result).toMatchObject({isError:true});expect(JSON.stringify(result)).toContain('DISPATCH_MANAGED_ROW')
+ // T-1865: still fail-closed, but the requester reads the friendly refusal, never the bare guard code.
+ expect(result).toMatchObject({isError:true})
+ expect(JSON.stringify(result)).toMatch(/actieve dispatch voor deze task/)
+ expect(JSON.stringify(result)).not.toContain('DISPATCH_MANAGED_ROW')
  expect((await h.web.query('SELECT status FROM tasks WHERE id=$1',[task])).rows[0].status).toBe('TO_DO')
 })
 it('serializes actual host selection and ordinary enqueue over independent connections',async()=>{

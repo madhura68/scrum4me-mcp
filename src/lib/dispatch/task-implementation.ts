@@ -4,27 +4,16 @@ import { prisma } from '../../prisma.js'
 import { getJobConfigSnapshot } from './snapshot.js'
 import { notifyJobEnqueued } from './notify.js'
 import { DispatchError } from './errors.js'
+// The managed-row matcher lives with the guards in dispatch/managed-job.js; re-export it so existing
+// importers of this module keep working without a second copy of the matcher.
+import { isManagedTaskRefusal } from '../../dispatch/managed-job.js'
+export { isManagedTaskRefusal } from '../../dispatch/managed-job.js'
 
 // The Task is exclusive, so whoever holds it — an ordinary job or a managed dispatch — the requester
 // reads the same sentence. A managed holder shows up two ways: on the Task row this transaction
 // locks, or, when the managed side commits while this transaction runs, as the Task guard refusing
 // the INSERT from inside PostgreSQL. Never let that bare code reach the user.
 const TASK_BUSY = 'Er loopt al een actieve job voor deze task'
-
-/** Prisma 7 driver adapters hand back the driver's own error (a DriverAdapterError whose cause
- * carries SQLSTATE and message); engine fields such as meta.target no longer exist. Match on
- * SQLSTATE 42501 plus the guard's message, walking the cause chain, and on nothing else. */
-export function isManagedTaskRefusal(error: unknown): boolean {
-  const seen = new Set<object>()
-  const walk = (value: unknown): boolean => {
-    if (value === null || typeof value !== 'object' || seen.has(value)) return false
-    seen.add(value)
-    const e = value as { code?: unknown; message?: unknown; cause?: unknown }
-    if (e.code === '42501' && String(e.message ?? '').includes('DISPATCH_MANAGED_ROW')) return true
-    return walk(e.cause)
-  }
-  return walk(error)
-}
 
 export async function dispatchTaskImplementation(opts: {
   taskId: string
