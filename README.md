@@ -677,6 +677,12 @@ Measured on this build; none of these is scheduled work in IP-14.
   workflow.
 - **Practical acceptance has not run.** Nothing in this repository has ever been called against a
   live dispatch service; every acceptance gate is unmet until it is separately observed.
+- **The start permit carries no key id, so its Ed25519 signing key cannot be rotated in place.**
+  A permit names no key, so a verifier has only the one configured public key to try. Rotating the
+  signing key therefore makes every already-issued permit fail verification — every open attempt's
+  permit — until a permit-version bump and an updated portable fixture carry the new key id. The
+  clock-tolerance half of this gap has landed (`START_PERMIT_CLOCK_SKEW_MS`); the key-id half is
+  deferred by decision (IDEA-213 m10).
 
 ## Schema sync
 
