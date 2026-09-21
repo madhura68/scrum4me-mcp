@@ -30,7 +30,7 @@ import { isQueueDispatchRequestId } from '@shared/queue-identity.js'
 export type DispatchHttpOperation =
   | 'submit' | 'read' | 'cancel' | 'recover' | 'recovery_evidence'
   | 'register' | 'executor_heartbeat' | 'claim' | 'start' | 'reconcile' | 'attempt_heartbeat'
-  | 'stop_evidence' | 'result' | 'put_artifact' | 'collect_artifact' | 'get_artifact'
+  | 'stop_evidence' | 'claim_stop' | 'result' | 'put_artifact' | 'collect_artifact' | 'get_artifact'
   | 'agent_source' | 'agent_output' | 'source_manifest'
   | 'recovery_lookup' | 'recovery_stop' | 'recovery_result'
   | 'create_profile' | 'revoke_profile' | 'list_profiles' | 'create_slot' | 'disable_slot' | 'reply_address'
@@ -314,6 +314,15 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
     const evidence = 'evidence' in input ? input.evidence
       : await artifacts.stageSupervisorStop(actor, input.observation as Parameters<typeof artifacts.stageSupervisorStop>[1])
     return { ...await completion.submitStop(actor, input.proof, evidence), evidence }
+  })
+  // A claim that never created a runtime scope has no scope-bound evidence to submit. Its stop
+  // binds to the CLAIM plus a bounded reason, so a subsequent failed result can reach FAILED
+  // instead of leaving the request CLAIMED with its reservation held. A scoped attempt is refused.
+  register('post', '/attempts/claim-stop', 'claim_stop', json, async ({ actor, json: read }) => {
+    const input = parseWith(z.object({
+      proof: attemptProofSchema, reason: z.string().regex(/^DISPATCH_[A-Z0-9_]{1,80}$/), observed_at: z.string().datetime(),
+    }).strict(), read())
+    return completion.submitClaimBoundStop(actor, input.proof, input.reason, input.observed_at)
   })
   register('post', '/attempts/result', 'result', json, async ({ actor, json: read }) => {
     const input = parseWith(z.object({ proof: attemptProofSchema, result: z.unknown() }).strict(), read())

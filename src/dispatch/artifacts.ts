@@ -71,7 +71,7 @@ export async function insertArtifact(db:PoolClient,input:{requestId:string;attem
  if(Number(total)+bytes.byteLength>ATTEMPT_MAX_BYTES)throw new DispatchError('DISPATCH_TOO_LARGE')
  if(attemptId!==null){
   // One shared control reserve, never an additional allowance per evidence kind.
-  const controlKeys=[SUPERVISOR_STOP_KEY,'__operator_recovery',PUBLICATION_RESOLUTION_KEY]
+  const controlKeys=[SUPERVISOR_STOP_KEY,'__operator_recovery','__claim_bound_stop',PUBLICATION_RESOLUTION_KEY]
   const control=controlKeys.includes(key)
   const used=(await db.query<{n:string}>('SELECT COALESCE(sum(byte_size),0)::text n FROM queue_dispatch_artifacts WHERE attempt_id=$1 AND (key=ANY($2::text[]))=$3',[attemptId,controlKeys,control])).rows[0].n
   if(Number(used)+bytes.byteLength>(control?STOP_EVIDENCE_MAX_BYTES:ATTEMPT_OUTPUT_MAX_BYTES))throw new DispatchError('DISPATCH_TOO_LARGE')
