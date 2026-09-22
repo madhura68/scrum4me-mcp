@@ -569,6 +569,11 @@ was issued under them has been retired**, because a running incarnation keeps ve
 its own key version. Removing a version early invalidates live credentials silently and frees
 slots that are still occupied; retire or recover those attempts first.
 
+The start-permit signer rotates on its own terms: a permit (claims `version: 2`) names its signing
+key in a `kid`, and a verifier selects the public key from its trusted keyset by that id, so a new
+`DISPATCH_START_PERMIT_KEY_ID` does not invalidate permits issued under the previous one as long as
+the verifier still trusts both. An unknown `kid` is refused.
+
 ### Readiness
 
 `GET /healthz` (outside `/dispatch/v1`, unauthenticated, side-effect free, cached for one second):
@@ -698,12 +703,6 @@ Measured on this build; none of these is scheduled work in IP-14.
   workflow.
 - **Practical acceptance has not run.** Nothing in this repository has ever been called against a
   live dispatch service; every acceptance gate is unmet until it is separately observed.
-- **The start permit carries no key id, so its Ed25519 signing key cannot be rotated in place.**
-  A permit names no key, so a verifier has only the one configured public key to try. Rotating the
-  signing key therefore makes every already-issued permit fail verification — every open attempt's
-  permit — until a permit-version bump and an updated portable fixture carry the new key id. The
-  clock-tolerance half of this gap has landed (`START_PERMIT_CLOCK_SKEW_MS`); the key-id half is
-  deferred by decision (IDEA-213 m10).
 
 ## Schema sync
 

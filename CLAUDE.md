@@ -303,6 +303,24 @@ CI covers them: `.forgejo/workflows/ci.yml` provisions the database, exports the
 variable, and `npx prisma db push --url "$PPE_CONTROLLER_TEST_DATABASE_URL"`
 applies the schema.
 
+### The dispatch integration suite has its own config and database
+
+`__tests__/dispatch/**/*.integration.test.ts` is **excluded** from
+`vitest.config.ts`, so neither `npm test` nor `npm run test:integration` ever
+runs it — `TEST_DATABASE_URL` does not apply to it. It runs under
+`vitest.dispatch.config.ts` (own setup file, `fileParallelism: false`) via:
+
+```bash
+npm run test:dispatch
+```
+
+That script first runs `node scripts/dispatch-test-db.mjs check`, which demands
+a disposable cluster: `DISPATCH_TEST_ADMIN_URL` plus a `DISPATCH_TEST_SCHEMA_ROOT`
+checkout of the pinned Scrum4Me schema commit, and it refuses any target that is
+not a throwaway. CI provisions both and drives the whole gate through
+`node scripts/run-dispatch-ci.mjs`, which creates a fresh `s4m_dispatch_test`
+database and then calls `npm run test:dispatch`.
+
 All worktree helpers have unit tests under `__tests__/git/worktree.test.ts`, `__tests__/wait-for-job-worktree.test.ts`, and `__tests__/update-job-status-worktree.test.ts`.
 
 ### Test files are typechecked by a second config
@@ -310,7 +328,7 @@ All worktree helpers have unit tests under `__tests__/git/worktree.test.ts`, `__
 | Config | Scope | Runs via |
 |---|---|---|
 | `tsconfig.json` | `src/**/*` | `npm run typecheck` |
-| `tsconfig.type-tests.json` | `__tests__/**/*` | `npm run typecheck:tests`, wired to `pretest` |
+| `tsconfig.type-tests.json` | `__tests__/**/*`, plus `scripts/dispatch-test-db.mjs` under `allowJs`/`checkJs` | `npm run typecheck:tests`, wired to `pretest` |
 
 Because it hangs off `pretest`, `npm test` — and therefore the CI step `npm run test` —
 always typechecks the tests first; `.forgejo/workflows/ci.yml` needs nothing extra. `src/`
@@ -319,8 +337,9 @@ comes along transitively through the tests' imports.
 This exists because **vitest transpiles without typechecking**, so a type error in a test file
 runs green. Until 2026-07-26 the base config only included `src/**/*` and the test config was
 scoped to one file: 54 type errors sat unnoticed in main, and a signature change that broke
-its tests passed CI. Keep the `include` a glob, never a file list — new test files must be
-covered automatically.
+its tests passed CI. Keep the `__tests__` entry a glob, never a file list — new test files must
+be covered automatically. The named `scripts/dispatch-test-db.mjs` entry beside it is the
+exception: a single non-test helper pulled in deliberately, not a pattern to copy.
 
 Two consequences worth knowing before writing tests:
 
