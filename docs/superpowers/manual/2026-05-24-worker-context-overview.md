@@ -11,13 +11,17 @@ audit_verdict: partial
 
 Dit document beschrijft welke context elke Scrum4Me worker/job-kind met de huidige configuratie krijgt. De context komt uit `wait_for_job`: de docker-runner geeft de worker een kind-prompt en een JSON-payload op `$PAYLOAD_PATH`.
 
-## Huidige DB-context voor SC2
+## Historische DB-context voor SC2 (24 mei 2026)
 
-Voor product `SC2 / scrum4me-mcp` geeft `get_claude_context` momenteel:
+Voor product `SC2 / scrum4me-mcp` gaf `get_claude_context` destijds:
 
 - Active sprint: geen.
 - Next story: geen.
 - Open ideas: onder andere `IDEA-018`, `IDEA-042`, `IDEA-050`, `IDEA-054`, `IDEA-055`, `IDEA-056`, `IDEA-077`.
+
+## Compacte context vanaf S-2026-09-23-1
+
+`get_context(product_id, agent?)` levert product, alle OPEN sprints, `agent_context` en `agent_guide`. Geef runtime (CLAUDE/CODEX) en model-id alleen mee als die expliciet bekend zijn. Lees de sprint binnen de opdracht met `get_sprint_context(sprint_id)`; met `task_id` komt uitsluitend voor die taak het volledige plan mee. `get_ideas_context(product_id)` haalt ideeën apart op. De tijdelijke oude naam is een alias met hetzelfde compacte antwoord. Context is geen uitvoerautorisatie.
 
 ## Config Cascade
 
@@ -166,7 +170,7 @@ Default config:
 Belangrijkste tools:
 
 - `Read`, `Edit`, `Write`, `Bash`, `Grep`, `Glob`
-- `get_claude_context`
+- `get_context` en gericht `get_sprint_context`
 - `get_agent_guide`
 - ProductDoc read/search tools
 - task status, plan, log, test, commit en verify tools
