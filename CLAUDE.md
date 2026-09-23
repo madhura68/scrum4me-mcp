@@ -5,19 +5,30 @@
 - **product_id:** `cmopqt0yj000004jp7lr7mn8e`
 - **Definition of Done:** vlekkeloze integratie met scrum4me
 
-Volgt de globale Scrum4Me-methodiek (`~/.claude/rules/scrum4me-methodiek.md` voor Claude; de "Scrum4Me-methodiek"-sectie in `~/.codex/AGENTS.md` voor Codex). Niet-triviaal werk: plan → Sprint/PBI/Story/Taak via de `scrum4me` MCP → `update_task_status` per laag → docs in de DB.
-
 MCP server that exposes the Scrum4Me dev-flow as native tools for Claude Code and Codex.
+
+<!-- BEGIN scrum4me-agent-workflow v1 -->
+## Scrum4Me-methodiek en MCP-queue
+
+Volgt de globale Scrum4Me-methodiek (`~/.claude/rules/scrum4me-methodiek.md` voor Claude; de "Scrum4Me-methodiek"-sectie in `~/.codex/AGENTS.md` voor Codex). Niet-triviaal werk: plan → Sprint/PBI/Story/Taak via de `scrum4me` MCP → `update_task_status` per laag → docs in de DB. Volg de bestaande goedkeuring en hardstop na materialisatie; voor alleen documentatie/instructies geldt de doc-only-uitzondering.
+
+**Context.** Lees `product_id` uit het Scrum4Me-productblok in de repo-`CLAUDE.md`/`AGENTS.md`. Ontbreekt het, werk normaal zonder een product-ID te raden.
+`mcp__scrum4me__get_context({ product_id })` → product, alle `active_sprints` en `agent_guide`. Kies de sprint binnen de actuele opdracht; lees `get_sprint_context({ sprint_id })` voor stories/taken en voeg `task_id` alleen toe voor het volledige taakplan. Gebruik `get_ideas_context({ product_id })` alleen voor ideeën. Geef expliciet bekende `agent.runtime` en `agent.model_id` mee (CLAUDE/CODEX + exact model-ID); laat onbekende gegevens weg. Ontbreekt de guide, gebruik `get_agent_guide` met dezelfde agentinvoer. Context autoriseert geen volgende story.
+
+**Queue gebruiken.** Volg de `s4m-queue`-skill bij queue-handelingen. Gebruik de `mcp__scrum4me__queue_*`-tools met je eigen identiteit; de CLI is fallback bij ontbrekende MCP-toegang of identiteit.
+- Stuur een geautoriseerde opdracht/vraag met `queue_push({ to, type, body, ... })`: `task`, `info` of `review_request`. Voor `task`/`review_request`: `cwd` op de ontvangende host en `meta.task: { objective, verification, response_format }`; geef `meta.task.repo` expliciet mee als die niet uit `cwd` kan worden afgeleid.
+- Koppel bestaand werk met het meest specifieke `task_id`, `story_id` of `sprint_id` als toolparameter. Gebruik echte IDs uit de context, geen zichtbare codes. De tool leidt `product_id` en bovenliggende IDs af naar `meta.work_item`; geef geen losse `product_id`-parameter aan `queue_push`. Zonder bestaand werkitem geen ID verzinnen.
+- Bewaar `message_id`; lees antwoorden met `queue_wait_reply({ message_ids: [...] })`. Ontvang werk via `queue_next`, lees body én metadata en werk binnen `meta.task.cwd`. Rond af via `queue_done`/`queue_fail` met `message_id` en `claim_token`; sluit CLI-claims via de CLI af.
+
+**Reviewdocumenten via metadata.** Voeg bij `review_request` de beoordeelde bronnen toe als `meta.review_documents: { version: 1, items: [...] }`, naast `meta.task`.
+- Iedere referentie bevat `key`, `title`, `product_id` en `sha256` van de exacte documentinhoud. Gebruik `source: "product_doc"` met `doc_id` + `revision_id`, of `source: "git"` met relatief `.md`-`path` + volledige gepubliceerde `commit_sha`.
+- Lees als reviewer de gekoppelde exacte revisie/commit en controleer de SHA-256; alleen de body of de nieuwste versie lezen volstaat niet. Ontbreekt de gepinde bron of wijkt de hash af, voer de review niet uit: meld de fout en rond een geclaimd verzoek af met `queue_fail`.
+- Rapporteer tegen deze pins en antwoord via `queue_done`; het `reviewed`-antwoord blijft via `in_reply_to` gekoppeld aan de reviewdocumenten van het verzoek.
+<!-- END scrum4me-agent-workflow v1 -->
 
 ## Hierarchical ordering contract
 
-Start interactive Scrum4Me work with `get_context`: product, all OPEN sprints and the
-applicable agent guide. Select the sprint covered by the current assignment and use
-`get_sprint_context` for its compact story/task overview. Request the full plan of one
-selected task with a separate call containing `sprint_id` and `task_id`; use
-`get_ideas_context` only when ideas are relevant. These reads do not authorize new work.
-If known, pass the same `agent.runtime` (CLAUDE or CODEX) and exact `agent.model_id` to
-`get_context` and `get_agent_guide`; do not infer an unknown identity.
+Use the standard context workflow above before applying the ordering contract below.
 
 Sprint stories/tasks follow PBI → story → task `sort_order` (then `created_at` and `id`
 at each level). Follow that order; never infer it from priority or stored item codes.
