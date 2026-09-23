@@ -8,6 +8,7 @@ const { mockGetAuth, mockProductFindFirst, mockResolveAgentGuide } = vi.hoisted(
 
 vi.mock('../../src/auth.js', () => ({
   getAuth: mockGetAuth,
+  getTokenScopedProducts: async () => [],
   // errors.js (real) references PermissionDeniedError via instanceof.
   PermissionDeniedError: class PermissionDeniedError extends Error {},
 }))
@@ -79,5 +80,25 @@ describe('get_agent_guide tool', () => {
     const res = await server.call({ product_id: 'p1' })
     expect(res.isError).toBe(true)
     expect(res.content[0].text).toContain('AGENT_GUIDE_TOO_LARGE')
+  })
+
+  it('passes normalized explicit model identity to the shared resolver', async () => {
+    const server = makeServer()
+    registerGetAgentGuideTool(server as never)
+    await server.call({ product_id: 'p1', agent: { runtime: 'CODEX', model_id: '  gpt-6-astra  ' } })
+    expect(mockResolveAgentGuide).toHaveBeenCalledWith(expect.objectContaining({ id: 'p1' }), { runtime: 'CODEX', model_id: 'gpt-6-astra' })
+  })
+
+  it.each([
+    { model_id: 'gpt-6-astra' },
+    { runtime: 'OTHER' },
+    { runtime: 'CODEX', model_id: '  ' },
+    { runtime: 'CODEX', model_id: 'x'.repeat(201) },
+  ])('rejects invalid explicit agent identity %j', async (agent) => {
+    const server = makeServer()
+    registerGetAgentGuideTool(server as never)
+    const result = await server.call({ product_id: 'p1', agent })
+    expect(result.isError).toBe(true)
+    expect(mockResolveAgentGuide).not.toHaveBeenCalled()
   })
 })

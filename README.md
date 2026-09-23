@@ -11,7 +11,11 @@ activity and create todos via native tool calls instead of curl.
 |---|---|---|
 | `health` | Service + DB ping | n/a |
 | `list_products` | Active products the user owns or is a member of | n/a |
-| `get_claude_context` | Bundled product + active sprint + next story (with tasks) + open todos | n/a |
+| `get_context` | Product, all OPEN sprints, caller identity and applicable agent guide | n/a |
+| `get_sprint_context` | Compact stories/tasks of one sprint; optional task_id retrieves only that full task plan | n/a |
+| `get_ideas_context` | Up to 50 own open ideas for the product or without a product, oldest first | n/a |
+| `get_agent_guide` | General, runtime, exact-model and product instructions for the supplied identity | n/a |
+| `get_claude_context` | Deprecated alias of get_context with the same compact response | n/a |
 | `update_task_status` | Set status to `todo`, `in_progress`, `review`, `done` | no |
 | `update_task_plan` | Save/replace `implementation_plan` on a task | no |
 | `log_implementation` | Append IMPLEMENTATION_PLAN to a story log | no |
@@ -72,10 +76,55 @@ and a stale-sweep requeues abandoned ones.
 
 ## Hierarchical ordering contract
 
-`get_claude_context` is the canonical entry point for interactive Scrum4Me work. It returns
-the active sprint and the next story with its tasks in parent-scoped `sort_order` (with
-`created_at` and `id` as deterministic tie-breakers). Agents must use that returned order;
-they must not derive work order from priority or from item codes.
+`get_context` is the canonical entry point for interactive Scrum4Me work. It returns
+the product and **all OPEN sprints**, newest first (created_at desc, id asc), plus the
+applicable agent guide. It does not choose work or query stories, tasks or ideas.
+Choose the sprint covered by the current assignment and call `get_sprint_context`.
+Its compact overview includes all story/task statuses and preserves PBI → story → task
+`sort_order`, with created_at/id tie-breakers at each level and stored task codes.
+Call it separately with one `task_id` to retrieve that full plan and its story's
+description/acceptance criteria. Without a task_id, `selected_task` is null and no
+full plan is queried. An explicitly selected accessible closed sprint remains readable.
+
+Use `get_ideas_context` only when relevant: it returns up to 50 own, non-archived,
+non-PLANNED ideas for this product or without a product, ordered by created_at/id.
+Use `get_idea_context` for one full idea. Existing `list_ideas` keeps its product-only,
+newest-updated-first semantics. These calls are read-only and do not start work.
+
+### Optional runtime and model identity
+
+Both `get_context` and `get_agent_guide` accept the same optional caller-supplied identity:
+
+```json
+{"product_id":"<product-id>","agent":{"runtime":"CODEX","model_id":"gpt-6-astra"}}
+```
+
+`runtime` is CLAUDE or CODEX; model_id is optional, trimmed, nonempty when supplied and
+at most 200 characters. Pass only the known exact configured ID. Unknown IDs remain
+visible; the server does not infer, select or switch the caller's model.
+
+The guide combines the built-in default, active MANUAL `agent-guide-runtime-claude` or
+`agent-guide-runtime-codex`, active `agent-guide-model-<AgentModel.id>` for an exact
+(runtime, model_id) registry match, then the active product `agent-guide` **last**.
+MANUAL must be enabled. The stable registry ID avoids dots/collisions in profile slugs;
+use a readable document title. Inactive registry rows may identify a caller, while
+inactive documents are never instructions. Missing profiles fall back to general layers.
+No registry notes become instructions, and supplied identity grants no permissions.
+
+`agent_context` contains runtime, model_id, display_name and applied_profiles (the loaded
+document slugs in order). Unknown values are null. The combined guide is capped at
+16,000 characters: get_context returns the other context with agent_guide_error and
+applied_profiles: null if resolution fails; get_agent_guide reports the error directly.
+There is no retained identity between calls. Existing product rules and DoD still apply.
+
+### Migration
+
+The temporary `get_claude_context` alias calls the **same compact handler**. The old
+active_sprint, next_story and open_ideas startup fields are removed under both names.
+Migrate instructions, prompts and tool allowlists together; the alias avoids an unknown
+tool error but does not preserve the old fields. Remove it only after the host/agent
+inventory is migrated and fresh clients have demonstrated the new calls. Stable/release
+checkouts use their normal rollout path; source changes alone are not deployment proof.
 
 **Priority** indicates how important an item is to the team. It is a label and optional
 filter only; it never determines presentation order, job order, or execution order.

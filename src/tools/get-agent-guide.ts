@@ -1,13 +1,27 @@
-import { z } from 'zod'
+import type { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
 import { getAuth } from '../auth.js'
+import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { resolveAgentGuide } from '../lib/agent-guide.js'
+import { productContextInputSchema } from '../lib/agent-context.js'
 
-const inputSchema = z.object({
-  product_id: z.string().min(1),
-})
+export async function handleGetAgentGuide(input: z.input<typeof productContextInputSchema>) {
+  return withToolErrors(async () => {
+    const { product_id, agent } = productContextInputSchema.parse(input)
+    const auth = await getAuth()
+    if (!(await userCanAccessProduct(product_id, auth.userId))) {
+      return toolError(`Product ${product_id} not found or not accessible`)
+    }
+    const product = await prisma.product.findFirst({
+      where: { id: product_id },
+      select: { id: true, code: true, name: true, enabled_doc_folders: true },
+    })
+    if (!product) return toolError(`Product ${product_id} not found or not accessible`)
+    return toolJson(await resolveAgentGuide(product, agent))
+  })
+}
 
 export function registerGetAgentGuideTool(server: McpServer) {
   server.registerTool(
@@ -16,29 +30,11 @@ export function registerGetAgentGuideTool(server: McpServer) {
       title: 'Build & document guide for a product',
       description:
         'Resolve the binding build & document guide for a product (global default ' +
-        'plus an optional per-product override). Call this and follow guide_md before ' +
-        'building or documenting.',
-      inputSchema,
+        'plus optional active runtime, exact-model and product supplements). Optionally pass the known ' +
+        'agent runtime and exact model_id, as with get_context. Call this and follow guide_md before building or documenting.',
+      inputSchema: productContextInputSchema,
       annotations: { readOnlyHint: true },
     },
-    async ({ product_id }) =>
-      withToolErrors(async () => {
-        const auth = await getAuth()
-        const product = await prisma.product.findFirst({
-          where: {
-            id: product_id,
-            OR: [
-              { user_id: auth.userId },
-              { members: { some: { user_id: auth.userId } } },
-            ],
-          },
-          select: { id: true, code: true, name: true, enabled_doc_folders: true },
-        })
-        if (!product) {
-          return toolError(`Product ${product_id} not found or not accessible`)
-        }
-        const result = await resolveAgentGuide(product)
-        return toolJson(result)
-      }),
+    handleGetAgentGuide,
   )
 }

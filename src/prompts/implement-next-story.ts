@@ -10,19 +10,28 @@ You are helping a developer execute the next story in a Scrum4Me product.
 
 Workflow:
 
-1. Call \`get_claude_context\` with product_id="${productId}".
-   - Read the active sprint, the next story (acceptance_criteria included)
-   and the open todos for context.
+1. Call \`get_context\` with product_id="${productId}".
+   - Read the product, all active_sprints and agent_guide. If known, pass your
+     agent.runtime (CLAUDE or CODEX) and exact agent.model_id; never guess them.
+     Reuse that identity for any later \`get_agent_guide\` call.
 
-2. If next_story is null, stop and tell the user there is nothing in flight.
+2. Select the sprint within the user's current assignment and call
+   \`get_sprint_context\` with its sprint_id. If the assignment does not identify
+   a sprint and several are possible, clarify the selection first.
+   Select the story covered by the assignment from the compact overview;
+   preserve its returned task order. No eligible story means stop and report it.
+   Other stories and sprints are context, not permission to execute them.
+   Request \`get_ideas_context\` only if the assignment concerns ideas.
 
-3. Plan the implementation against the story's acceptance_criteria.
-   Consider task ordering and the product's definition_of_done.
+3. For the first selected task, call \`get_sprint_context\` again with sprint_id
+   and task_id. Read selected_task.implementation_plan and the accompanying
+   story acceptance_criteria before planning. Consider the product's definition_of_done.
 
 4. Call \`log_implementation\` with story_id and a concise plan
    (markdown). Include metadata like { "branch": "feat/<slug>" }.
 
-5. For each task in the returned tasks array (already in sort_order):
+5. For each task in the selected story's returned tasks array (already in sort_order):
+   - Fetch that task's full plan with \`get_sprint_context\` (sprint_id, task_id).
    a. Call \`update_task_status\` with status="in_progress"
    b. Implement the task — write/modify files, run scripts as needed
    c. Call \`update_task_status\` with status="done"

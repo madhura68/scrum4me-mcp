@@ -16,15 +16,15 @@ function captureNames() {
 }
 
 describe('get_agent_guide registration', () => {
-  it('is registered in the shared toolset (served over HTTP + stdio)', () => {
+  it.each(['get_agent_guide', 'get_context', 'get_sprint_context', 'get_ideas_context'])('%s is registered in the shared toolset (HTTP + stdio)', (name) => {
     const { server, names } = captureNames()
     registerSharedTools(server as never)
-    expect(names).toContain('get_agent_guide')
+    expect(names).toContain(name)
   })
 
-  it('is NOT in the worktree-only toolset', () => {
+  it.each(['get_agent_guide', 'get_context', 'get_sprint_context', 'get_ideas_context'])('%s is NOT in the worktree-only toolset', (name) => {
     const { server, names } = captureNames()
     registerWorktreeTools(server as never)
-    expect(names).not.toContain('get_agent_guide')
+    expect(names).not.toContain(name)
   })
 })

@@ -11,10 +11,16 @@ MCP server that exposes the Scrum4Me dev-flow as native tools for Claude Code an
 
 ## Hierarchical ordering contract
 
-`get_claude_context` is the canonical starting point for interactive Scrum4Me work. Its
-next story and tasks are ordered by parent-scoped `sort_order` (then `created_at` and `id`
-as deterministic tie-breakers). Follow that order; never infer work order from priority or
-from item codes.
+Start interactive Scrum4Me work with `get_context`: product, all OPEN sprints and the
+applicable agent guide. Select the sprint covered by the current assignment and use
+`get_sprint_context` for its compact story/task overview. Request the full plan of one
+selected task with a separate call containing `sprint_id` and `task_id`; use
+`get_ideas_context` only when ideas are relevant. These reads do not authorize new work.
+If known, pass the same `agent.runtime` (CLAUDE or CODEX) and exact `agent.model_id` to
+`get_context` and `get_agent_guide`; do not infer an unknown identity.
+
+Sprint stories/tasks follow PBI → story → task `sort_order` (then `created_at` and `id`
+at each level). Follow that order; never infer it from priority or stored item codes.
 
 **Priority** indicates how important an item is to the team. It is a label and optional
 filter only; it never determines presentation order, job order, or execution order.

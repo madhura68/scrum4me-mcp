@@ -85,7 +85,7 @@ export function registerQueuePushTool(server: McpServer) {
         'For pinned review material, pass immutable sources as meta.review_documents ' +
         '(sibling of meta.task, version 1, product_doc and/or git refs). ' +
         'When this message is about Scrum4Me work you are doing — almost always a task or review_request tied to a story — pass its id via sprint_id/story_id/task_id so it is traceable on the dashboard. ' +
-        'The most specific id you have is enough: the tool derives the rest of the hierarchy (product_id included) via the story, stores it as meta.work_item, and rejects unknown/inconsistent ids. Get the id from get_claude_context or the story/task you are working on. ' +
+        'The most specific id you have is enough: the tool derives the rest of the hierarchy (product_id included) via the story, stores it as meta.work_item, and rejects unknown/inconsistent ids. Start with get_context; get story/task IDs from get_sprint_context for the sprint within your assignment, or from the story/task you are working on. ' +
         'Returns message_id — fetch the answer later with queue_wait_reply({ message_ids: [message_id] }). ' +
         'This tool always sends to the one address you name; to have work routed and executed automatically instead, use dispatch_task or dispatch_review.',
       inputSchema,
