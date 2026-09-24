@@ -185,6 +185,8 @@ describe('dispatch test target', () => {
     },
   )
 
+  // Two sequential `vitest list` runs take ~29 s on CI (run 198 attempt 2: 29,160 ms;
+  // runs 194, 198/1 and 200 timed out at 30 s), so this test gets its own budget.
   it('routes dispatch integration files only through the serial dispatch config', () => {
     const vitest = 'node_modules/vitest/vitest.mjs'
     const ordinary = spawnSync(process.execPath, [vitest, 'list', '--config', 'vitest.config.ts'], {
@@ -200,7 +202,7 @@ describe('dispatch test target', () => {
     expect(ordinary.stdout).not.toContain('__tests__/dispatch/schema.integration.test.ts')
     expect(dispatch.status).toBe(0)
     expect(dispatch.stdout).toContain('__tests__/dispatch/schema.integration.test.ts')
-  })
+  }, 120_000)
 })
 
 describe('dispatch service ports and real PostgreSQL roles', () => {
