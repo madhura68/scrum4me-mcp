@@ -55,6 +55,32 @@ jobs:
           git submodule foreach --quiet --recursive \
             'test -z "$(git status --porcelain --untracked-files=all)"'
 
+      # De final-release-attestation (job `final-release`) eist dat de tree van het
+      # merge-commit gelijk is aan die van de gereviewde PR-head. Dat is alleen zo
+      # als de basis een voorouder van de PR-head is. Was dat niet zo, dan merkte
+      # je het pas NA de merge: de attestation faalt, er verschijnt geen immutable
+      # deploy/*-tag, en de wijziging kan niet uitgerold worden terwijl hij wel op
+      # main staat. Precies dat gebeurde met PR #153 (merge 567c47c3, gereviewde
+      # head f446328): die branch was afgetakt vóór #154. Deze stap zet die
+      # controle vóór de merge, waar rebasen nog goedkoop is.
+      - name: Refuse a PR head that is behind its base
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+          base="$(git rev-parse "refs/remotes/origin/$BASE_REF")"
+          if ! git merge-base --is-ancestor "$base" HEAD; then
+            behind="$(git rev-list --count "HEAD..$base")"
+            echo "PR-head loopt $behind commit(s) achter op $BASE_REF ($base)."
+            echo "De merge levert dan een tree op die afwijkt van de gereviewde PR-head."
+            echo "De final-release-attestation weigert dat NA de merge, waardoor er geen"
+            echo "immutable deploy/*-tag verschijnt en de wijziging niet uitgerold kan worden."
+            echo "Werk deze branch bij (rebase of merge $BASE_REF) en push opnieuw."
+            exit 1
+          fi
+          echo "PR-head bevat $BASE_REF ($base); merge-tree wordt gelijk aan de gereviewde tree."
+
       - name: Set up exact release Node
         uses: actions/setup-node@v4
         with:
