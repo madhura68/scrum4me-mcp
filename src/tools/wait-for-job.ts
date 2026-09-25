@@ -42,6 +42,7 @@ import { getInstanceId } from '../presence/instance.js'
 import { getWorkerRuntimeFromEnv, type WorkerRuntime } from '../worker-runtime.js'
 import { MAX_LOOP_ROUNDS, parseLoopRound } from '../lib/idea-plan-loop.js'
 import { dbClientConfig } from '../db-connection.js'
+import { survivePgClientErrors } from '../queue/listen.js'
 
 /** Parse `https://github.com/<owner>/<name>(.git)?` → `<name>`. */
 export function repoNameFromUrl(repoUrl: string | null | undefined): string | null {
@@ -2005,6 +2006,7 @@ export function registerWaitForJobTool(server: McpServer) {
         // 3. No job available — LISTEN and poll until timeout
         const deadline = Date.now() + wait_seconds * 1000
         const listenClient = new Client(dbClientConfig())
+        survivePgClientErrors(listenClient, 'wait-for-job')
         await listenClient.connect()
         await listenClient.query('LISTEN scrum4me_changes')
 
