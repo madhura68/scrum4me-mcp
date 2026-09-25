@@ -2,7 +2,7 @@
 // EXCLUDED-taken als openstaand werk telde.
 //
 // Zoekt stories met status OPEN/IN_SPRINT waarvan alle taken DONE of EXCLUDED
-// zijn (minstens één taak), en draait de normale rollup (propagateStatusUpwards)
+// zijn en minstens één taak EXCLUDED is, en draait de normale rollup (propagateStatusUpwards)
 // opnieuw via één taak van die story, met diens huidige status. Zo lopen Story →
 // PBI → Sprint → SprintRun via exact dezelfde regels als in productie.
 //
@@ -17,7 +17,10 @@ async function main() {
   const candidates = await prisma.story.findMany({
     where: {
       status: { in: ['OPEN', 'IN_SPRINT'] },
-      tasks: { some: {}, every: { status: { in: ['DONE', 'EXCLUDED'] } } },
+      // Minstens één EXCLUDED-taak: alleen dán is dit een ISS-1-geval. Stories
+      // met uitsluitend DONE-taken die op OPEN staan hebben een andere oorzaak
+      // en horen niet in deze reparatie.
+      tasks: { some: { status: 'EXCLUDED' }, every: { status: { in: ['DONE', 'EXCLUDED'] } } },
     },
     select: {
       id: true,
