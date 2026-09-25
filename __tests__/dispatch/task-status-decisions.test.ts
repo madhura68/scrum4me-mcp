@@ -8,6 +8,17 @@ it('preserves FAILED precedence, nonempty ALL DONE and manual BLOCKED',()=>{
  expect(decideSprintStatus(['DONE'])).toBe('CLOSED')
  expect(decideSprintStatus([])).toBe('OPEN')
 })
+it('telt EXCLUDED als terminaal: DONE zodra de rest DONE is',()=>{
+ expect(decideStoryStatus(['DONE','EXCLUDED'],true)).toBe('DONE')
+ expect(decideStoryStatus(['EXCLUDED','DONE','EXCLUDED'],true)).toBe('DONE')
+ expect(decideStoryStatus(['DONE','EXCLUDED'],false)).toBe('DONE')
+})
+it('promoveert NIET wanneer er niets is uitgevoerd, en een onvoltooide taak blokkeert nog steeds',()=>{
+ expect(decideStoryStatus(['EXCLUDED'],true)).toBe('IN_SPRINT')
+ expect(decideStoryStatus(['EXCLUDED','EXCLUDED'],false)).toBe('OPEN')
+ expect(decideStoryStatus(['DONE','EXCLUDED','IN_PROGRESS'],true)).toBe('IN_SPRINT')
+ expect(decideStoryStatus(['FAILED','EXCLUDED'],true)).toBe('FAILED')
+})
 it('cannot accept empty changes without the frozen verify-only permission',()=>{
  expect(checkVerifyGate('EMPTY',false,'ANY')).toHaveProperty('allowed',false)
  expect(checkVerifyGate('EMPTY',true,'ALIGNED')).toHaveProperty('allowed',true)
