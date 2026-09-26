@@ -84,6 +84,31 @@ function registerHandler() {
 
 const CUTOFF_AT = new Date('2026-07-03T09:59:00.000Z')
 
+function jobRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'job-ideachat',
+    status: 'CLAIMED',
+    claimed_at: new Date('2026-07-03T10:00:00.000Z'),
+    started_at: null,
+    claimed_by_token_id: 'token-1',
+    user_id: 'user-1',
+    product_id: 'prod-1',
+    task_id: null,
+    idea_id: 'idea-1',
+    sprint_run_id: null,
+    kind: 'IDEA_CHAT',
+    runtime: 'CLAUDE',
+    source: 'SYSTEM',
+    verify_result: null,
+    created_at: new Date('2026-07-03T09:58:00.000Z'),
+    chat_cutoff_message_id: 'msg2',
+    chat_cutoff_at: CUTOFF_AT,
+    required_capability: null,
+    task: null,
+    ...overrides,
+  }
+}
+
 const updatedRow = (status: 'DONE' | 'FAILED') => ({
   id: 'job-ideachat',
   status,
@@ -108,26 +133,7 @@ describe('update_job_status system IDEA_CHAT jobs', () => {
     jobLockMocks.releaseLocksOnTerminal.mockResolvedValue(undefined)
     pushMocks.pushBranchForJob.mockResolvedValue({ pushed: true })
     pushMocks.triggerPush.mockResolvedValue(undefined)
-    mockPrisma.claudeJob.findUnique.mockResolvedValue({
-      id: 'job-ideachat',
-      status: 'CLAIMED',
-      claimed_at: new Date('2026-07-03T10:00:00.000Z'),
-      started_at: null,
-      claimed_by_token_id: 'token-1',
-      user_id: 'user-1',
-      product_id: 'prod-1',
-      task_id: null,
-      idea_id: 'idea-1',
-      sprint_run_id: null,
-      kind: 'IDEA_CHAT',
-      runtime: 'CLAUDE',
-      source: 'SYSTEM',
-      verify_result: null,
-      created_at: new Date('2026-07-03T09:58:00.000Z'),
-      chat_cutoff_message_id: 'msg2',
-      chat_cutoff_at: CUTOFF_AT,
-      task: null,
-    })
+    mockPrisma.claudeJob.findUnique.mockResolvedValue(jobRow())
     mockPrisma.claudeJob.count.mockResolvedValue(0)
     txMocks.$queryRaw.mockResolvedValue([{ id: 'idea-1' }])
     txMocks.claudeJob.update.mockResolvedValue(updatedRow('DONE'))
@@ -209,6 +215,55 @@ describe('update_job_status system IDEA_CHAT jobs', () => {
     })
     // notifyJobEnqueued draait buiten de tx via prisma.$executeRaw.
     expect(mockPrisma.$executeRaw).toHaveBeenCalledTimes(1)
+  })
+
+  it('done + required_capability op de job → vervolg-job erft required_capability', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValueOnce(jobRow({ required_capability: 'local_llm' }))
+    txMocks.ideaChatMessage.findFirst.mockResolvedValue({ id: 'msg-nieuw' })
+    const handler = registerHandler()
+
+    await handler({
+      job_id: 'job-ideachat',
+      status: 'done',
+      summary: 'Antwoord voor het kanaal.',
+    })
+
+    expect(txMocks.claudeJob.create).toHaveBeenCalledWith({
+      data: {
+        user_id: 'user-1',
+        product_id: 'prod-1',
+        idea_id: 'idea-1',
+        kind: 'IDEA_CHAT',
+        status: 'QUEUED',
+        required_capability: 'local_llm',
+      },
+      select: { id: true },
+    })
+  })
+
+  it('failed + required_capability op de job → vervolg-job erft required_capability (coalescing draait ook bij failed)', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValueOnce(jobRow({ required_capability: 'local_llm' }))
+    txMocks.claudeJob.update.mockResolvedValue(updatedRow('FAILED'))
+    txMocks.ideaChatMessage.findFirst.mockResolvedValue({ id: 'msg-nieuw' })
+    const handler = registerHandler()
+
+    await handler({
+      job_id: 'job-ideachat',
+      status: 'failed',
+      error: 'iets mis',
+    })
+
+    expect(txMocks.claudeJob.create).toHaveBeenCalledWith({
+      data: {
+        user_id: 'user-1',
+        product_id: 'prod-1',
+        idea_id: 'idea-1',
+        kind: 'IDEA_CHAT',
+        status: 'QUEUED',
+        required_capability: 'local_llm',
+      },
+      select: { id: true },
+    })
   })
 
   it('failed: IdeaLog JOB_EVENT zonder Idea.status-mutatie, coalescing draait wél', async () => {
