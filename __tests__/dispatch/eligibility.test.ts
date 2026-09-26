@@ -27,10 +27,18 @@ describe('shared claim eligibility', () => {
     expect(evaluateClaimPredicates(job, { ...executor, capabilities: ['deploy'] })).toContain('capability')
   })
   it('excludes managed jobs from every ordinary SQL path', () => {
-    for (const capabilities of [[], ['deploy'], ['docs_audit'], ['review']]) {
+    for (const capabilities of [[], ['deploy'], ['docs_audit'], ['local_llm'], ['review']]) {
       const sql = buildClaimableJobWhereFragment({ userId: 'u', hasProductScope: false, runtime: 'CODEX', capabilities })
       expect(sql.sql).toContain('cj.dispatch_request_id IS NULL')
     }
+  })
+  const localLlmJob = { userId: 'u', productId: 'p', runtime: 'CODEX' as const, status: 'QUEUED', kind: 'IDEA_CHAT', source: 'SYSTEM', requiredCapability: 'local_llm', dispatchRequestId: null, profileRevisionId: null, sprintRunId: null, sprintStatus: null, earlierSibling: false, taskId: null, ideaId: 'idea-1' }
+  const localLlmExecutor = { userId: 'u', productIds: ['p'], runtime: 'CODEX' as const, capabilities: ['local_llm'], profileRevisionIds: [], managed: false, quotaPct: null, minQuotaPct: 10 }
+  it('local_llm-only executor claimt exact IDEA_CHAT/SYSTEM/local_llm en nooit NULL-capability of ander kind', () => {
+    expect(evaluateClaimPredicates(localLlmJob, localLlmExecutor)).toEqual([])
+    expect(evaluateClaimPredicates({ ...localLlmJob, requiredCapability: null }, localLlmExecutor)).toContain('capability')
+    expect(evaluateClaimPredicates({ ...localLlmJob, kind: 'IDEA_GRILL' }, localLlmExecutor)).toContain('capability')
+    expect(evaluateClaimPredicates({ ...localLlmJob, requiredCapability: 'local_llm' }, { ...localLlmExecutor, capabilities: ['code_edit', 'planning', 'review'] })).toContain('capability')
   })
 })
 

@@ -1565,6 +1565,35 @@ export async function getFullJobContext(
       )
       .catch(() => [])
 
+    // M2 (agent-harness idea-chat-local-llm, ronde 1 BLOCKER): de payload moet
+    // zelf zeggen welke USER-berichten nog open staan. Bij de claim zet de MCP
+    // de cutoff op het laatste kanaalbericht; komt USER B binnen terwijl beurt
+    // A loopt, dan schrijft A's afronding ASSISTANT A ná B en ziet de
+    // vervolg-job [USER A, USER B, ASSISTANT A] — "USER ná het laatste
+    // ASSISTANT-bericht" vindt B dan niet.
+    // Géén .catch: een mislukte lookup is iets anders dan "geen DONE-job" en mag
+    // nooit een gegokte pending-lijst opleveren (dan zou het model al
+    // beantwoorde berichten opnieuw beantwoorden). De fout loopt door naar de
+    // bestaande foutroute van de contextopbouw in wait_for_job.
+    const lastDone = await prisma.claudeJob.findFirst({
+      where: { idea_id: idea.id, kind: 'IDEA_CHAT', status: 'DONE', id: { not: job.id } },
+      orderBy: [{ finished_at: 'desc' }, { id: 'desc' }],
+      select: { chat_cutoff_at: true, chat_cutoff_message_id: true, created_at: true },
+    })
+    const prevAt = lastDone ? (lastDone.chat_cutoff_at ?? lastDone.created_at) : null
+    const prevId = lastDone?.chat_cutoff_message_id ?? ''
+    // pending = USER-berichten in history met (created_at, id) > (prevAt, prevId);
+    // geen lastDone ⇒ alle USER-berichten. Een FAILED beurt telt bewust niet als
+    // beantwoord (zie update-job-status.ts): zijn berichten komen bij de
+    // volgende beurt terug via dezelfde lastDone-DONE-lookup.
+    const pendingUserMessageIds = history
+      .filter((m) => m.role === 'USER')
+      .filter((m) => prevAt === null || m.created_at.getTime() > prevAt.getTime()
+        || (m.created_at.getTime() === prevAt.getTime() && m.id > prevId))
+      .slice()
+      .reverse()
+      .map((m) => m.id)
+
     // M17b opvolgvragen (spec 2026-07-04 §3): kaart-Q&A-geheugen — de agent
     // ziet eerdere ClaudeQuestions (open + beantwoord) van dit idee, anders
     // "vergeet" een vervolg-beurt wat er via kaarten is gevraagd. Kaart-Q&A
@@ -1625,6 +1654,7 @@ export async function getFullJobContext(
           })),
         cutoff_message_id: job.chat_cutoff_message_id ?? null,
         cutoff_at: job.chat_cutoff_at?.toISOString() ?? null,
+        pending_user_message_ids: pendingUserMessageIds,
         questions: cardQuestions.map((q) => ({
           id: q.id,
           question: q.question,

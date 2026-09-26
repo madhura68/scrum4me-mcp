@@ -887,6 +887,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             created_at: true,
             chat_cutoff_message_id: true,
             chat_cutoff_at: true,
+            required_capability: true,
             task: { select: { verify_only: true, verify_required: true, dispatch_request_id: true } },
           },
         })
@@ -1248,6 +1249,12 @@ export function registerUpdateJobStatusTool(server: McpServer) {
                 idea_id: job.idea_id!,
                 kind: 'IDEA_CHAT',
                 status: 'QUEUED',
+                // M2: de vervolg-job erft de dedicated-worker-capability van de
+                // afgeronde job, zodat een local_llm-beurt niet stilzwijgend
+                // terugvalt op een generieke worker. Alleen toevoegen als
+                // niet-NULL, zodat de bestaande exacte create-verwachting voor
+                // gewone chats (zonder capability) ongewijzigd blijft.
+                ...(job.required_capability ? { required_capability: job.required_capability } : {}),
               },
               select: { id: true },
             })
