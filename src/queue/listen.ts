@@ -9,8 +9,22 @@ import { dbClientConfig } from '../db-connection.js'
 
 export const QUEUE_POLL_INTERVAL_MS = 5_000
 
+/**
+ * ISS-16: een weggevallen LISTEN-verbinding (ETIMEDOUT, DB-herstart, server-
+ * terminate) laat pg een 'error' emitten. Zonder luisteraar is dat een
+ * unhandled 'error' en crasht het hele MCP-proces. De wachtende tools hebben
+ * een poll-vangnet en de claim-/statusquery is de bron van waarheid, dus alleen
+ * loggen volstaat: een storing kost latentie, niet de aanroep of het proces.
+ */
+export function survivePgClientErrors(client: Client, label: string): void {
+  client.on('error', (err: Error) => {
+    console.error(`[${label}] LISTEN-verbinding weg, verder op poll: ${err.message}`)
+  })
+}
+
 export async function openQueueListener(): Promise<Client> {
   const client = new Client(dbClientConfig())
+  survivePgClientErrors(client, 'queue/listen')
   await client.connect()
   // QUEUE_CHANNEL is a module constant ('agent_queue'), safe as identifier.
   await client.query(`LISTEN ${QUEUE_CHANNEL}`)
