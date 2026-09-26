@@ -16,7 +16,7 @@ activity and create todos via native tool calls instead of curl.
 | `get_ideas_context` | Up to 50 own open ideas for the product or without a product, oldest first | n/a |
 | `get_agent_guide` | General, runtime, exact-model and product instructions for the supplied identity | n/a |
 | `get_claude_context` | Deprecated alias of get_context with the same compact response | n/a |
-| `update_task_status` | Set status to `todo`, `in_progress`, `review`, `done` | no |
+| `update_task_status` | Set status to `todo`, `in_progress`, `review`, `done`, `failed` or `excluded`. `excluded` counts as handled in the story rollup: a story reaches DONE once every non-`excluded` task is `done` (at least one must be), so an excluded task no longer pins its story — and its PBI and sprint — to OPEN/IN_SPRINT | no |
 | `update_task_plan` | Save/replace `implementation_plan` on a task | no |
 | `log_implementation` | Append IMPLEMENTATION_PLAN to a story log | no |
 | `log_test_result` | Append TEST_RESULT (PASSED/FAILED) | no |
