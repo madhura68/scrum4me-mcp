@@ -59,9 +59,17 @@ const inputSchema = z.object({
   doc_slug: z.string().min(1).optional(),
   doc_id: z.string().min(1).optional(),
   pr_url: z.string().url().optional(),
+  required_capability: z.enum(['local_llm']).optional(),
 })
 
 type Input = z.infer<typeof inputSchema>
+
+function validateRequiredCapability(input: Input): string | null {
+  if (input.required_capability !== undefined && input.kind !== 'TASK_IMPLEMENTATION') {
+    return 'required_capability is alleen toegestaan bij TASK_IMPLEMENTATION.'
+  }
+  return null
+}
 
 function validateRefs(input: Input): string | null {
   const rule = REF_MATRIX[input.kind]
@@ -88,6 +96,8 @@ export async function handleDispatchJob(rawInput: Input) {
     return toolError(`VALIDATION_ERROR: ${formatZodError(parseResult.error)}`)
   }
   const input = parseResult.data
+  const capabilityError = validateRequiredCapability(input)
+  if (capabilityError) return toolError(`VALIDATION_ERROR: ${capabilityError}`)
   const refError = validateRefs(input)
   if (refError) return toolError(`VALIDATION_ERROR: ${refError}`)
 
@@ -109,6 +119,7 @@ export async function handleDispatchJob(rawInput: Input) {
         case 'TASK_IMPLEMENTATION':
           return toolJson(await dispatchTaskImplementation({
             taskId: input.task_id!, productId: input.product_id, userId: auth.userId,
+            requiredCapability: input.required_capability,
           }))
         case 'SPRINT_IMPLEMENTATION':
           return toolJson(await dispatchSprintRun({

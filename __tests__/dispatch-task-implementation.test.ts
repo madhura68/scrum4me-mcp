@@ -67,6 +67,26 @@ describe('dispatchTaskImplementation', () => {
         status: 'QUEUED',
       }),
     }))
+    const data = mockCreate.mock.calls[0][0].data
+    expect(data).not.toHaveProperty('required_capability')
+    expect(data).not.toHaveProperty('runtime')
+  })
+
+  it('requiredCapability local_llm → claudeJob.create schrijft required_capability + runtime CLAUDE', async () => {
+    const res = await dispatchTaskImplementation({
+      taskId: 't1', productId: 'prod-1', userId: 'u1', requiredCapability: 'local_llm',
+    })
+    expect(res).toEqual({ job_id: 'job-1' })
+    expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        kind: 'TASK_IMPLEMENTATION',
+        source: 'COPILOT',
+        task_id: 't1',
+        status: 'QUEUED',
+        required_capability: 'local_llm',
+        runtime: 'CLAUDE',
+      }),
+    }))
   })
 })
 

@@ -19,6 +19,7 @@ export async function dispatchTaskImplementation(opts: {
   taskId: string
   productId: string
   userId: string
+  requiredCapability?: 'local_llm'
 }, dependencies: { db?: typeof prisma; notify?: typeof notifyJobEnqueued } = {}): Promise<{ job_id: string }> {
   const db = dependencies.db ?? prisma
   const snapshot = await getJobConfigSnapshot({
@@ -55,6 +56,9 @@ export async function dispatchTaskImplementation(opts: {
         status: 'QUEUED',
         source: 'COPILOT',
         ...snapshot,
+        ...(opts.requiredCapability
+          ? { required_capability: opts.requiredCapability, runtime: 'CLAUDE' }
+          : {}),
       },
       select: { id: true },
     })
