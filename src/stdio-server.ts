@@ -1,3 +1,4 @@
+import { recordSuccessfulTokenUse } from './token-usage.js'
 // stdio entrypoint construction, split into a side-effect-free constructor and
 // a runtime lifecycle that is the *only* place auth/presence/heartbeat/queue
 // maintenance run.
@@ -74,8 +75,8 @@ export interface StdioServerOptions {
  */
 export function createStdioServer(options: StdioServerOptions): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: VERSION }, { instructions: INSTRUCTIONS })
-  if (options.mode !== 'canary' && options.recordTokenUsage) {
-    installTokenUsageObserver(server, options.recordTokenUsage)
+  if (options.mode !== 'canary') {
+    installTokenUsageObserver(server, options.recordTokenUsage ?? recordSuccessfulTokenUse)
   }
   registerFullStdioSurface(server, {
     execution: options.mode === 'canary' ? 'forbidden' : 'enabled',

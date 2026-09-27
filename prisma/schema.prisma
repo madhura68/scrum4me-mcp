@@ -360,6 +360,7 @@ model ApiToken {
   token_hash    String        @unique
   label         String?
   created_at    DateTime      @default(now())
+  last_used_at  DateTime?
   revoked_at    DateTime?
   kind          ApiTokenKind  @default(IMPLEMENTATION)
   scoped_repos  String[]      @default([])

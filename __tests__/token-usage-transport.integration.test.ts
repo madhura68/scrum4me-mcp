@@ -23,7 +23,7 @@ describeDb('real MCP transport success boundary (explicit disposable DB)', () =>
   let httpUrl: URL
   let httpOutput = ''
   const env = () => ({ PATH: process.env.PATH ?? '', DATABASE_URL: dsn!, SCRUM4ME_TOKEN: raw,
-    S4M_SERVER: 'mac', S4M_MODEL: 'codex', NODE_ENV: 'test' })
+    SCRUM4ME_WORKER_INSTANCE_ID: 'usage-probe', S4M_SERVER: 'mac', S4M_MODEL: 'codex', NODE_ENV: 'test', TOKEN_USAGE_PERSIST: '1' })
   const count = (text: string) => text.split('\n').filter(line => line.startsWith('USAGE_SPY:')).length
   async function stdio(token = raw, mode = 'stdio') {
     let output = ''
@@ -53,6 +53,7 @@ describeDb('real MCP transport success boundary (explicit disposable DB)', () =>
     for (const [token, dead] of [[raw, false], [revoked, true]] as const) {
       await pool.query('INSERT INTO api_tokens(id,user_id,token_hash,revoked_at) VALUES($1,$2,$3,$4)', [token, uid, createHash('sha256').update(token).digest('hex'), dead ? new Date() : null])
     }
+    await pool.query('INSERT INTO claude_workers(id,user_id,token_id,instance_id) VALUES($1,$2,$3,$4)', [raw, uid, raw, 'usage-probe'])
     const child = spawn(process.execPath, ['--import', 'tsx', '__tests__/fixtures/token-usage-server.ts', 'http'], { env: env(), stdio: ['ignore', 'pipe', 'pipe'] })
     children.push(child)
     child.stderr!.on('data', chunk => { httpOutput += String(chunk) })
@@ -72,25 +73,34 @@ describeDb('real MCP transport success boundary (explicit disposable DB)', () =>
       await pool.end()
     }
   })
+  const stamp = async (token = raw) => (await pool.query('SELECT last_used_at FROM api_tokens WHERE id=$1', [token])).rows[0]?.last_used_at
   it('stdio: real get_context counts; failed action and revoked token do not', async () => {
     const good = await stdio()
     expect((await good.client.callTool({ name: 'get_context', arguments: { product_id: pid } })).isError).not.toBe(true)
     await pause(20)
     expect(good.writes()).toBe(1)
+    const successStamp = await stamp()
+    expect(successStamp).toBeInstanceOf(Date)
     expect((await good.client.callTool({ name: 'create_sprint', arguments: { product_id: 'missing', sprint_goal: 'Must fail' } })).isError).toBe(true)
     expect(good.writes()).toBe(1)
+    expect(await stamp()).toEqual(successStamp)
     const dead = await stdio(revoked)
     expect((await dead.client.callTool({ name: 'get_context', arguments: { product_id: pid } })).isError).toBe(true)
     expect(dead.writes()).toBe(0)
+    expect(await stamp(revoked)).toBeNull()
   })
   it('HTTP: real get_context counts; failed action and revoked preflight do not', async () => {
     const client = await http()
     const before = count(httpOutput)
+    const previousStamp = await stamp()
     expect((await client.callTool({ name: 'get_context', arguments: { product_id: pid } })).isError).not.toBe(true)
     await pause(20)
     expect(count(httpOutput)).toBe(before + 1)
+    const successStamp = await stamp()
+    expect(successStamp.getTime()).toBeGreaterThan(previousStamp.getTime())
     expect((await client.callTool({ name: 'create_sprint', arguments: { product_id: 'missing', sprint_goal: 'Must fail' } })).isError).toBe(true)
     await expect(http(revoked)).rejects.toThrow()
+    expect(await stamp()).toEqual(successStamp)
     expect(count(httpOutput)).toBe(before + 1)
   })
   it('invalid plan YAML remains an explicit domain error and does not count', async () => {
@@ -103,9 +113,11 @@ describeDb('real MCP transport success boundary (explicit disposable DB)', () =>
     expect(probe.writes()).toBe(0)
   })
   it('canary: real get_context execution forbidden and no writer', async () => {
+    const previousStamp = await stamp()
     const canary = await stdio(raw, 'canary')
     expect((await canary.client.callTool({ name: 'get_context', arguments: { product_id: pid } })).isError).toBe(true)
     expect(canary.writes()).toBe(0)
+    expect(await stamp()).toEqual(previousStamp)
   })
   async function waitUntilListening() {
     for (let i = 0; i < 100; i++) {
@@ -116,6 +128,7 @@ describeDb('real MCP transport success boundary (explicit disposable DB)', () =>
     throw new Error('Actual queue wait never reached LISTEN')
   }
   it('stdio: cancellation of actual queue wait never counts', async () => {
+    const previousStamp = await stamp()
     const probe = await stdio()
     const controller = new AbortController()
     const call = probe.client.callTool({ name: 'queue_wait_reply', arguments: { message_ids: [randomUUID()], wait_seconds: 10 } }, undefined, { signal: controller.signal }).catch(e => e)
@@ -124,8 +137,10 @@ describeDb('real MCP transport success boundary (explicit disposable DB)', () =>
     expect(await call).toBeInstanceOf(Error)
     await pause(200)
     expect(probe.writes()).toBe(0)
+    expect(await stamp()).toEqual(previousStamp)
   })
   it('HTTP: disconnect before a blocked real get_context completes never counts', async () => {
+    const previousStamp = await stamp()
     const before = count(httpOutput)
     const lock = await pool.connect()
     await lock.query('BEGIN')
@@ -153,6 +168,42 @@ describeDb('real MCP transport success boundary (explicit disposable DB)', () =>
     }
     await pause(300)
     expect(count(httpOutput)).toBe(before)
+    expect(await stamp()).toEqual(previousStamp)
+  })
+  it('runtime constructor installs its real default writer without injection', async () => {
+    const before = await stamp()
+    const probe = await stdio(raw, 'real')
+    expect((await probe.client.callTool({ name: 'get_context', arguments: { product_id: pid } })).isError).not.toBe(true)
+    expect((await stamp()).getTime()).toBeGreaterThan(before.getTime())
+    expect(probe.writes()).toBe(0) // no injected spy
+  })
+  it('real worker_heartbeat advances usage; an internal interval is not installed by construction', async () => {
+    const probe = await stdio(raw, 'real')
+    const before = await stamp()
+    expect((await probe.client.callTool({ name: 'worker_heartbeat', arguments: { last_quota_pct: 87 } })).isError).not.toBe(true)
+    expect((await stamp()).getTime()).toBeGreaterThan(before.getTime())
+  })
+  it('parallel HTTP callers use their own validated token; permission failure preserves its stamp', async () => {
+    const other = raw + '-other'
+    await pool.query('INSERT INTO users(id,username,password_hash,updated_at) VALUES($1,$1,$1,now())', [other])
+    await pool.query('INSERT INTO products(id,user_id,name,definition_of_done,updated_at) VALUES($1,$1,$1,$1,now())', [other])
+    await pool.query('INSERT INTO api_tokens(id,user_id,token_hash) VALUES($1,$1,$2)', [other, createHash('sha256').update(other).digest('hex')])
+    try {
+      const a = await http(), b = await http(other)
+      const results = await Promise.all([
+        a.callTool({ name: 'get_context', arguments: { product_id: pid } }),
+        b.callTool({ name: 'get_context', arguments: { product_id: other } }),
+      ])
+      expect(results.map(r => r.isError === true)).toEqual([false, false])
+      expect(await stamp()).toBeInstanceOf(Date)
+      const otherStamp = await stamp(other)
+      expect(otherStamp).toBeInstanceOf(Date)
+      expect((await b.callTool({ name: 'get_context', arguments: { product_id: pid } })).isError).toBe(true)
+      expect(await stamp(other)).toEqual(otherStamp)
+    } finally {
+      await pool.query('DELETE FROM products WHERE id=$1', [other])
+      await pool.query('DELETE FROM users WHERE id=$1', [other])
+    }
   })
   it('normal empty queue timeout is a successful request', async () => {
     const probe = await stdio()

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { recordSuccessfulTokenUse } from './token-usage.js'
 // Centralized HTTP entrypoint for scrum4me-mcp.
 //
 // One process serves many callers. Unlike the stdio entrypoint (one process =
@@ -40,7 +41,7 @@ const host = process.env.HOST ?? '0.0.0.0'
 
 export function createMcpServer(recordTokenUsage?: (usage: TokenUsage) => Promise<void>): McpServer {
   const server = new McpServer({ name: 'scrum4me-mcp', version: VERSION }, { instructions: INSTRUCTIONS })
-  if (recordTokenUsage) installTokenUsageObserver(server, recordTokenUsage)
+  installTokenUsageObserver(server, recordTokenUsage ?? recordSuccessfulTokenUse)
   registerSharedTools(server)
   return server
 }

@@ -2,7 +2,8 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { CallToolRequestSchema, CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js'
 import { authenticatedCallContext } from './request-context.js'
 
-export type TokenUsage = { tokenId: string; userId: string; completedAt: Date }
+import type { TokenUsage } from '@shared/api-token-usage.js'
+export type { TokenUsage } from '@shared/api-token-usage.js'
 
 /** Observe the complete SDK handler, including its output-schema validation. */
 export function installTokenUsageObserver(
