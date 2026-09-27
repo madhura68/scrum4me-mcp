@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 import { pushBranchForJob } from './push.js'
 import { resolveOriginDefaultRef } from './default-branch.js'
 import { claimLog } from '../lib/claim-log.js'
+import { isLocalLlmWorktree } from './local-llm.js'
 
 const exec = promisify(execFile)
 
@@ -31,6 +32,14 @@ export async function maybeBackupPush(opts: {
 }): Promise<'pushed' | 'up-to-date' | 'skipped'> {
   const { worktreePath, branchName, context } = opts
   try {
+    // local_llm-bewaking (spec §4.5/§5.3): de worktree's .git-gitlink kan door
+    // een container zijn omgebogen naar zelfgemaakte git-administratie met
+    // executable config. Beslis dit altijd uit de DB, nooit uit de worktree
+    // zelf, en check dit vóór elke git-aanroep met de worktree als werkmap.
+    if (await isLocalLlmWorktree(worktreePath)) {
+      claimLog('backup-push.skip_local_llm', { context, branchName, worktreePath })
+      return 'skipped'
+    }
     const head = await resolveWorktreeHead(worktreePath)
     if (!head) {
       claimLog('backup-push.skip_no_worktree', { context, branchName, worktreePath })

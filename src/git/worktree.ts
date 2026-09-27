@@ -7,6 +7,7 @@ import { withRetry, isTransientGitError } from './retry.js'
 import { localTipContainedInRemote, maybeBackupPushBranch } from './branch-safety.js'
 import { resolveOriginDefaultRef } from './default-branch.js'
 import { claimLog } from '../lib/claim-log.js'
+import { isLocalLlmJob, isLocalLlmWorktree, removeWorktreeWithoutGit } from './local-llm.js'
 
 const exec = promisify(execFile)
 
@@ -217,7 +218,14 @@ export async function createWorktreeForJob(opts: {
     // If the branch is still attached to a stale sibling worktree, drop that first.
     const occupant = await findWorktreeForBranch(repoRoot, branchName)
     if (occupant) {
-      await exec('git', ['worktree', 'remove', '--force', occupant], { cwd: repoRoot })
+      // local_llm-bewaking (spec §5.3): een oude bezetter kan de worktree van
+      // een local_llm-job zijn, waarvan de .git-gitlink door een container is
+      // omgebogen — nooit git draaien met dat pad als werkmap.
+      if (await isLocalLlmWorktree(occupant)) {
+        await removeWorktreeWithoutGit(repoRoot, occupant)
+      } else {
+        await exec('git', ['worktree', 'remove', '--force', occupant], { cwd: repoRoot })
+      }
     }
     // reuseBranch is decided sprint-wide, but git branches are per-repo. For a
     // cross-repo sprint the first job targeting THIS repo gets reuseBranch=true
@@ -273,8 +281,14 @@ export async function createWorktreeForJob(opts: {
     if (occupant) {
       // Branch is currently checked out elsewhere — likely a sibling worktree
       // that should have been cleaned up. Remove it before reusing the name.
+      // local_llm-bewaking (spec §5.3): idem als hierboven — nooit git draaien
+      // met een (mogelijk omgebogen) local_llm-worktree als werkmap.
       try {
-        await exec('git', ['worktree', 'remove', '--force', occupant], { cwd: repoRoot })
+        if (await isLocalLlmWorktree(occupant)) {
+          await removeWorktreeWithoutGit(repoRoot, occupant)
+        } else {
+          await exec('git', ['worktree', 'remove', '--force', occupant], { cwd: repoRoot })
+        }
       } catch {
         // ignore — fall through to deletion below
       }
@@ -317,6 +331,16 @@ export async function removeWorktreeForJob(opts: {
     await fs.access(worktreePath)
   } catch {
     return { removed: false }
+  }
+
+  // local_llm-bewaking (spec §4.5/§5.3): voor deze job draait git nooit met
+  // de worktree als werkmap buiten de claim en het groene pad (elders
+  // afgehandeld). Geen rev-parse voor de branchName, geen `worktree remove` —
+  // enkel de map weg en pruning vanuit de clone. keepBranch is dan
+  // irrelevant: de branch-ref staat in de clone en blijft altijd staan.
+  if (await isLocalLlmJob(jobId)) {
+    await removeWorktreeWithoutGit(repoRoot, worktreePath)
+    return { removed: true }
   }
 
   let branchName: string | undefined
