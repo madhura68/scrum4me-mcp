@@ -28,6 +28,10 @@ const REPO_ROOT = join(HERE, '..')
 const TSX_CLI = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs')
 const releases: string[] = []
 const execFileAsync = promisify(execFile)
+// Tests that copy the package and cold-start a tsx subprocess take ~1 s locally but
+// 3.8–4.3 s on the CI runner under full-suite load (run 221), and hit vitest's 5 s
+// default in runs 223 and 225. They get their own budget; the global default stays.
+const SUBPROCESS_TEST_TIMEOUT_MS = 30_000
 const sha256 = (contents: string | Buffer): string =>
   createHash('sha256').update(contents).digest('hex')
 
@@ -164,7 +168,7 @@ describe('packaged release identity', () => {
         SCRUM4ME_RELEASE_COMMIT: undefined,
       }),
     ).rejects.toThrow('PACKAGED_RELEASE_IDENTITY_MISSING')
-  })
+  }, SUBPROCESS_TEST_TIMEOUT_MS)
 
   it('uses the packaged identity as the only commit source without .git', async () => {
     const release = await makePackagedRelease({ removeGit: true })
@@ -190,7 +194,7 @@ describe('packaged release identity', () => {
     })) as { release_commit: string }
 
     expect(result.release_commit).toBe(commit)
-  })
+  }, SUBPROCESS_TEST_TIMEOUT_MS)
 
   it('rejects a packaged identity whose surface differs from the live tool surface', async () => {
     const release = await makePackagedRelease({ removeGit: true })
@@ -210,7 +214,7 @@ describe('packaged release identity', () => {
     await expect(
       runPackagedCanary(release, { SCRUM4ME_RELEASE_COMMIT: undefined }),
     ).rejects.toThrow('PACKAGED_RELEASE_TOOL_SURFACE_MISMATCH')
-  })
+  }, SUBPROCESS_TEST_TIMEOUT_MS)
 })
 
 describe('verifyReleasePackage', () => {
@@ -563,6 +567,7 @@ describe('Forgejo release workflow contract', () => {
         ok: true,
       })
     },
+    SUBPROCESS_TEST_TIMEOUT_MS,
   )
 
   it('binds merge parent 1 to the validated pre-push target SHA', async () => {
