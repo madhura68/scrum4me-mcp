@@ -12,6 +12,12 @@ export type AuthContext = {
   scopedProducts: string[]
 }
 
+// Zelfde grens als het dispatchpad (`src/dispatch/auth.ts`): geldig is alleen
+// `expires_at IS NULL OR expires_at > now()`.
+function isExpired(expiresAt: Date | null | undefined): boolean {
+  return expiresAt != null && expiresAt <= new Date()
+}
+
 export async function getAuth(): Promise<AuthContext> {
   // No process-lifetime cache: `ApiToken.user_id` can be re-pointed by an
   // admin user-migration (see `scripts/migrate-user.ts` in Scrum4Me). A long-
@@ -31,7 +37,7 @@ export async function getAuth(): Promise<AuthContext> {
     include: { user: true },
   })
 
-  if (!apiToken || apiToken.revoked_at) {
+  if (!apiToken || apiToken.revoked_at || isExpired(apiToken.expires_at)) {
     throw new Error('SCRUM4ME_TOKEN is invalid or revoked')
   }
 
@@ -69,7 +75,7 @@ export async function requireWriteAccess(): Promise<AuthContext> {
 /**
  * Scope van het huidige request-token (IDEA-118 K3). [] = ongescopet.
  * Eigen goedkope findUnique i.p.v. cache: zie de cache-waarschuwing bij getAuth.
- * Faalpaden (geen/onbekend/ingetrokken token) geven [] terug — de tool faalt
+ * Faalpaden (geen/onbekend/ingetrokken/verlopen token) geven [] terug — de tool faalt
  * dan toch al op getAuth(); deze helper hoeft alleen de scope-vraag te beantwoorden.
  */
 export async function getTokenScopedProducts(): Promise<string[]> {
@@ -78,8 +84,8 @@ export async function getTokenScopedProducts(): Promise<string[]> {
   const tokenHash = createHash('sha256').update(token).digest('hex')
   const row = await prisma.apiToken.findUnique({
     where: { token_hash: tokenHash },
-    select: { scoped_products: true, revoked_at: true },
+    select: { scoped_products: true, revoked_at: true, expires_at: true },
   })
-  if (!row || row.revoked_at) return []
+  if (!row || row.revoked_at || isExpired(row.expires_at)) return []
   return row.scoped_products
 }
