@@ -129,11 +129,11 @@ export async function handleUpdateIdeaPlanMd(input: { idea_id: string; markdown:
         },
       }),
     ])
-    return toolJson({
+    return { ...toolJson({
       ok: false,
       idea: result[0],
       errors: parsed.errors,
-    })
+    }), isError: true }
   }
 
   const idea = await prisma.idea.findUnique({

@@ -6,6 +6,7 @@ vi.mock('../src/prisma.js', () => ({
 }))
 vi.mock('../src/request-context.js', () => ({
   getRequestToken: vi.fn(),
+  markAuthenticatedToken: vi.fn(),
 }))
 
 import { prisma } from '../src/prisma.js'
