@@ -16,6 +16,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import * as fs from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
 import * as path from 'node:path'
 import { prisma } from '../prisma.js'
 import { getWorktreeRoot } from './worktree-paths.js'
@@ -42,13 +43,45 @@ export async function isLocalLlmJob(jobId: string): Promise<boolean> {
   return job?.required_capability === 'local_llm'
 }
 
-/** <worktreeRoot>/<jobId> ⇒ jobId; elk ander pad ⇒ null (dan is het geen job-worktree). */
-export function jobIdFromWorktreePath(worktreePath: string): string | null {
-  const root = getWorktreeRoot()
+// Best-effort realpath: valt terug op het onopgeloste pad wanneer het (nog)
+// niet bestaat of om een andere reden niet resolvebaar is — nooit throwen.
+function tryRealpath(p: string): string {
+  try {
+    return realpathSync(p)
+  } catch {
+    return p
+  }
+}
+
+function relativeJobId(root: string, worktreePath: string): string | null {
   const rel = path.relative(root, worktreePath)
   if (!rel || rel === '.' || rel.startsWith('..') || path.isAbsolute(rel)) return null
   if (rel.includes(path.sep)) return null // dieper dan één niveau onder de root
   return rel
+}
+
+/**
+ * <worktreeRoot>/<jobId> ⇒ jobId; elk ander pad ⇒ null (dan is het geen
+ * job-worktree).
+ *
+ * `git worktree list --porcelain` print realpath'de paden (symlinks
+ * opgelost), terwijl `getWorktreeRoot()` en de paden die deze module zelf
+ * opbouwt het onopgeloste pad gebruiken (bv. `SCRUM4ME_AGENT_WORKTREE_DIR`
+ * of `$HOME` via een symlink, zoals macOS' `/tmp` → `/private/tmp`). Zonder
+ * realpath-vergelijking mist die mismatch dan een local_llm-bezetter-
+ * worktree stil — vergelijk daarom zowel het onopgeloste als het
+ * gerealpathte pad aan beide kanten.
+ */
+export function jobIdFromWorktreePath(worktreePath: string): string | null {
+  const root = getWorktreeRoot()
+  const realRoot = tryRealpath(root)
+  const realWorktreePath = tryRealpath(worktreePath)
+  return (
+    relativeJobId(root, worktreePath)
+    ?? relativeJobId(root, realWorktreePath)
+    ?? relativeJobId(realRoot, worktreePath)
+    ?? relativeJobId(realRoot, realWorktreePath)
+  )
 }
 
 /** true als het pad de worktree van een local_llm-job is. */

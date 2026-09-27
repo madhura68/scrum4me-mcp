@@ -9,6 +9,38 @@ vi.mock('../../src/prisma.js', () => ({
   prisma: { claudeJob: { findUnique: vi.fn() } },
 }))
 
+// Spy op child_process.execFile die naar de echte implementatie delegeert —
+// nodig om te kunnen bewijzen dat een fix géén `git worktree remove` meer
+// aanroept voor een local_llm-bezetter (i.p.v. alleen het eindresultaat op
+// de schijf te controleren, wat voor beide code-paden identiek is).
+//
+// De hele codebase roept git aan via `promisify(execFile)`, niet via de
+// callback-vorm rechtstreeks. `util.promisify` kijkt eerst naar
+// `fn[util.promisify.custom]` — Node's `execFile` heeft die, en als je die
+// custom-implementatie zomaar meekopieert naar een `vi.fn(actual.execFile)`-
+// wrapper, retourneert `promisify(execFileMock)` alsnog de ORIGINELE
+// (ongewrapte) promisified functie en omzeilt de mock volledig: alle
+// `.mock.calls` blijven dan leeg terwijl de echte git-calls wél degelijk
+// lopen. Daarom registreren we de aanroep hier expliciet zelf, vóór we naar
+// de originele custom-promisify-implementatie delegeren.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  const { promisify } = await import('node:util')
+  const originalPromisified = (
+    actual.execFile as unknown as Record<symbol, (...a: unknown[]) => unknown>
+  )[promisify.custom]
+  const execFileMock = vi.fn((...args: unknown[]) =>
+    (actual.execFile as unknown as (...a: unknown[]) => unknown)(...args),
+  )
+  Object.defineProperty(execFileMock, promisify.custom, {
+    value: (...args: unknown[]) => {
+      execFileMock.mock.calls.push(args as never)
+      return originalPromisified(...args)
+    },
+  })
+  return { ...actual, execFile: execFileMock }
+})
+
 import { prisma } from '../../src/prisma.js'
 import {
   SAFE_GIT_CONFIG,
@@ -256,5 +288,105 @@ describe('local_llm-worktree: geen git in de worktree op niet-groene paden (mark
     await expect(
       git(clone, 'show-ref', '--verify', `refs/heads/${branchName}`),
     ).rejects.toThrow()
+  })
+})
+
+describe('createWorktreeForJob: bezetter-detectie onder een gesymlinkte worktree-root', () => {
+  let dir: string, origin: string, clone: string, realRoot: string, linkRoot: string
+  const originalEnv = process.env.SCRUM4ME_AGENT_WORKTREE_DIR
+
+  async function commit(cwd: string, name: string) {
+    await fs.writeFile(path.join(cwd, name), name)
+    await git(cwd, 'add', '-A')
+    await git(cwd, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', name)
+  }
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'local-llm-symlink-'))
+    origin = path.join(dir, 'origin.git')
+    clone = path.join(dir, 'clone')
+    realRoot = path.join(dir, 'real-root')
+    linkRoot = path.join(dir, 'link-root')
+    await fs.mkdir(realRoot, { recursive: true })
+    await fs.symlink(realRoot, linkRoot)
+    // SCRUM4ME_AGENT_WORKTREE_DIR wijst naar de symlink — zoals bv. macOS'
+    // /tmp → /private/tmp, of een expliciet gesymlinkte $HOME.
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = linkRoot
+
+    await exec('git', ['init', '--bare', '-b', 'main', origin])
+    await exec('git', ['init', '-b', 'main', clone])
+    await git(clone, 'remote', 'add', 'origin', origin)
+    await commit(clone, 'base.txt')
+    await git(clone, 'push', '-u', 'origin', 'main')
+  })
+
+  afterEach(async () => {
+    if (originalEnv === undefined) delete process.env.SCRUM4ME_AGENT_WORKTREE_DIR
+    else process.env.SCRUM4ME_AGENT_WORKTREE_DIR = originalEnv
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  it('jobIdFromWorktreePath matcht het door git gerealpathte occupant-pad', async () => {
+    // Bewijst de kernclaim zonder de trage worktree-integratie: git geeft
+    // straks het realpath'te pad terug, niet het pad zoals opgebouwd via
+    // getWorktreeRoot(). jobIdFromWorktreePath moet dat toch herkennen.
+    //
+    // `resolvedRealRoot` volgt zowel onze eigen symlink (linkRoot → realRoot)
+    // als eventuele OS-niveau-symlinks in het pad ervoor (bv. macOS'
+    // os.tmpdir() onder /var, wat zelf een symlink naar /private/var is) —
+    // exact wat git bij `worktree list --porcelain` teruggeeft. `job-abc`
+    // zelf hoeft niet te bestaan; alleen het al-bestaande prefix wordt
+    // gerealpath't.
+    const resolvedRealRoot = await fs.realpath(realRoot)
+    const realPath = path.join(resolvedRealRoot, 'job-abc')
+    const literalPath = path.join(linkRoot, 'job-abc')
+    expect(jobIdFromWorktreePath(realPath)).toBe('job-abc')
+    expect(jobIdFromWorktreePath(literalPath)).toBe('job-abc')
+  })
+
+  it('herkent een local_llm-bezetter ook via het gerealpathte git-pad — geen git worktree remove', async () => {
+    const branchName = 'feat/shared-symlink'
+    const { worktreePath: occupantPath } = await createWorktreeForJob({
+      repoRoot: clone,
+      jobId: 'local-occupant',
+      branchName,
+      baseRef: 'origin/main',
+    })
+    // Het pad dat wij opbouwden ligt onder de symlink (linkRoot) — het
+    // onopgeloste pad, exact zoals `getWorktreeRoot()` het teruggeeft.
+    expect(occupantPath).toBe(path.join(linkRoot, 'local-occupant'))
+
+    // Bevestig de bevinding zelf: git rapporteert het realpath'te pad, niet
+    // het pad waarmee de worktree werd aangemaakt.
+    const { stdout: listOut } = await git(clone, 'worktree', 'list', '--porcelain')
+    expect(listOut).toContain(path.join(realRoot, 'local-occupant'))
+    expect(listOut).not.toContain(path.join(linkRoot, 'local-occupant'))
+
+    mockCapability({ 'local-occupant': 'local_llm' })
+
+    const execMock = vi.mocked(execFile)
+    execMock.mockClear()
+
+    // reuseBranch: true op dezelfde branchnaam ⇒ createWorktreeForJob vindt
+    // de bezetter via findWorktreeForBranch (het realpath'te pad) en moet 'm
+    // opruimen zonder ooit git met dat pad als werkmap of als
+    // `worktree remove`-target aan te roepen.
+    await createWorktreeForJob({
+      repoRoot: clone,
+      jobId: 'local-occupant-2',
+      branchName,
+      baseRef: 'origin/main',
+      reuseBranch: true,
+    })
+
+    const worktreeRemoveCalls = execMock.mock.calls.filter((call) => {
+      const [file, args] = call as unknown as [string, string[] | undefined]
+      return file === 'git' && Array.isArray(args) && args.includes('remove') && args.includes('worktree')
+    })
+    expect(worktreeRemoveCalls).toEqual([])
+
+    // De bezetter-map is weg — via fs.rm, ongeacht welke padvorm.
+    await expect(fs.access(occupantPath)).rejects.toThrow()
+    await expect(fs.access(path.join(realRoot, 'local-occupant'))).rejects.toThrow()
   })
 })
