@@ -473,6 +473,41 @@ export { buildClaimableJobWhereClause, buildClaimableJobWhereFragment, buildHigh
 import { buildClaimableJobWhereFragment, buildHigherTierIdleFragment } from '../dispatch/eligibility.js'
 export type { ClaimFilterInput, ClaimSqlFilterInput, HigherTierIdleInput } from '../dispatch/eligibility.js'
 
+type EnqueuePayload = { type?: unknown; user_id?: unknown; product_id?: unknown }
+type NotificationSource = {
+  on(event: 'notification', listener: (msg: { payload?: string }) => void): unknown
+  removeListener(event: 'notification', listener: (msg: { payload?: string }) => void): unknown
+}
+
+/**
+ * Resolves on the first matching NOTIFY or after `ms`, whichever comes first, and always removes its
+ * listener. ISS-8: the previous `once('notification')` stayed attached whenever the poll timer won, so a
+ * 300 s wait piled up ~60 listeners on the LISTEN client (MaxListenersExceededWarning); it also dropped
+ * out after the first non-matching notification.
+ */
+export function waitForEnqueueNotification(
+  client: NotificationSource,
+  ms: number,
+  matches: (payload: EnqueuePayload) => boolean,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      clearTimeout(timer)
+      client.removeListener('notification', onNotification)
+      resolve()
+    }
+    const onNotification = (msg: { payload?: string }) => {
+      try {
+        if (matches(JSON.parse(msg.payload ?? '{}') as EnqueuePayload)) done()
+      } catch {
+        // ignore parse errors
+      }
+    }
+    const timer = setTimeout(done, ms)
+    client.on('notification', onNotification)
+  })
+}
+
 const inputSchema = z.object({
   product_id: z.string().min(1).optional(),
   wait_seconds: z.number().int().min(1).max(MAX_WAIT_SECONDS).default(300),
@@ -2043,24 +2078,10 @@ export function registerWaitForJobTool(server: McpServer) {
         try {
           while (Date.now() < deadline) {
             // Wait for a notification or poll interval
-            await new Promise<void>((resolve) => {
-              const pollTimer = setTimeout(resolve, POLL_INTERVAL_MS)
-              listenClient.once('notification', (msg) => {
-                try {
-                  const payload = JSON.parse(msg.payload ?? '{}')
-                  if (
-                    payload.type === 'claude_job_enqueued' &&
-                    payload.user_id === userId &&
-                    (!product_id || payload.product_id === product_id)
-                  ) {
-                    clearTimeout(pollTimer)
-                    resolve()
-                  }
-                } catch {
-                  // ignore parse errors
-                }
-              })
-            })
+            await waitForEnqueueNotification(listenClient, POLL_INTERVAL_MS, (payload) =>
+              payload.type === 'claude_job_enqueued' &&
+              payload.user_id === userId &&
+              (!product_id || payload.product_id === product_id))
 
             await resetStaleClaimedJobs(userId)
             jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities, capability ?? null)
