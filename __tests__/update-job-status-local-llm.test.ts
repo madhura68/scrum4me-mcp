@@ -1,9 +1,4 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
-import { execFile, execFileSync } from 'node:child_process'
-import { promisify } from 'node:util'
-import * as fs from 'node:fs/promises'
-import * as os from 'node:os'
-import * as path from 'node:path'
 
 // Taak 5 (M3-plan): update_job_status slaat maybeCreateAutoPr,
 // propagateStatusUpwards en cancelPbiOnFailure over voor
@@ -12,6 +7,14 @@ import * as path from 'node:path'
 // de hand. Push bij done, de verify-gate, de jobvelden en de antwoord-JSON
 // blijven ongewijzigd (Taak 3 regelt de backup-push-skip al via
 // maybeBackupPush/branch-safety.ts).
+//
+// Dit bestand test de HANDLER-condities met gemockte git (push.js gemockt,
+// branch-safety.js/worktree.js hier niet gebruikt). De keten-proef met échte
+// git tegen een omgebogen gitlink (fsmonitor/sshCommand-markers) zit in het
+// aparte bestand __tests__/update-job-status-local-llm-chain.test.ts — die
+// heeft écht `git/push.js` nodig (niet gemockt) om te bewijzen dat een
+// weggehaalde guard daadwerkelijk een echte push door de evil-origin zou
+// triggeren; dat kan niet in hetzelfde bestand als deze gemockte push.js.
 
 const authMocks = vi.hoisted(() => ({ requireWriteAccess: vi.fn() }))
 const pgMocks = vi.hoisted(() => ({ connect: vi.fn(), query: vi.fn(), end: vi.fn() }))
@@ -49,12 +52,13 @@ vi.mock('pg', () => ({
   }),
 }))
 
-// NB: git/branch-safety.js, git/worktree.js en git/local-llm.js blijven
-// ECHT (niet gemockt) — dit bestand test juist dat die keten intact blijft
-// voor local_llm-jobs. node:child_process blijft ook echt (delegerende spy,
-// zie __tests__/git/local-llm.test.ts): git-aanroepen zonder bestaande
-// worktree op schijf falen simpelweg stil (ENOENT), precies zoals het
-// bestaande gedrag vóór deze taak (zie update-job-status-push.test.ts).
+// node:child_process blijft echt (delegerende spy, zie
+// __tests__/git/local-llm.test.ts): prepareDoneUpdate's post-push
+// `rev-parse HEAD` (dynamische import van node:child_process, ná
+// gitPrefixFor) draait dus echt, maar zonder bestaande worktree op schijf
+// faalt dat simpelweg stil (ENOENT) — precies het bestaande gedrag van vóór
+// deze taak (zie update-job-status-push.test.ts). git/push.js blijft hieronder
+// gemockt: dit bestand test de HANDLER-condities, niet de git-keten zelf.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   const { promisify: p } = await import('node:util')
@@ -91,10 +95,6 @@ import { registerUpdateJobStatusTool } from '../src/tools/update-job-status.js'
 import { propagateStatusUpwards } from '../src/lib/tasks-status-update.js'
 import { cancelPbiOnFailure } from '../src/cancel/pbi-cascade.js'
 import { createPullRequest } from '../src/git/pr.js'
-import { createWorktreeForJob } from '../src/git/worktree.js'
-
-const exec = promisify(execFile)
-const git = (cwd: string, ...args: string[]) => exec('git', args, { cwd })
 
 const mockPrisma = prisma as unknown as {
   claudeJob: {
@@ -255,9 +255,16 @@ describe('update_job_status: local_llm TASK_IMPLEMENTATION jobs', () => {
     expect(result.structuredContent.status).toBe('done')
     expect(result.structuredContent.pushed_at).not.toBeNull()
 
-    // Push blijft (prepareDoneUpdate roept pushBranchForJob aan).
+    // Push blijft (prepareDoneUpdate roept pushBranchForJob aan) en zet
+    // pushed_at echt als Date op de jobUpdateData — niet enkel doorgegeven
+    // vanuit de gemockte prisma-return.
     expect(pushMocks.pushBranchForJob).toHaveBeenCalledWith(
       expect.objectContaining({ branchName: 'feat/job-local-1' }),
+    )
+    expect(mockPrisma.claudeJob.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ pushed_at: expect.any(Date) }),
+      }),
     )
     // Geen auto-PR: createPullRequest (via maybeCreateAutoPr) nooit aangeroepen.
     expect(mockCreatePr).not.toHaveBeenCalled()
@@ -292,11 +299,11 @@ describe('update_job_status: local_llm TASK_IMPLEMENTATION jobs', () => {
     expect(result.structuredContent.status).toBe('failed')
 
     expect(mockPropagate).not.toHaveBeenCalled()
-    expect(mockCancelPbi).not.toHaveBeenCalled()
     // cancelPbiOnFailure is de ENIGE plek die siblings onder dezelfde PBI
-    // cancelt (via prisma.claudeJob.updateMany binnen die module) — nooit
-    // aangeroepen ⇒ een tweede actieve job onder dezelfde PBI blijft actief.
-    expect(mockPrisma.claudeJob.findMany).not.toHaveBeenCalled()
+    // cancelt; dit bestand mockt die hele module (zie vi.mock hierboven), dus
+    // "nooit aangeroepen" is de volledige assertie — een aparte findMany-check
+    // op de (eveneens gemockte) prisma zou niets extra's bewijzen.
+    expect(mockCancelPbi).not.toHaveBeenCalled()
   })
 
   it('regressie zonder local_llm: done roept maybeCreateAutoPr + propagateStatusUpwards nog gewoon aan', async () => {
@@ -353,169 +360,5 @@ describe('update_job_status: local_llm TASK_IMPLEMENTATION jobs', () => {
 
     expect(result).not.toMatchObject({ isError: true })
     expect(mockCancelPbi).toHaveBeenCalledOnce()
-  })
-})
-
-// Keten-test (brief Taak 5): echte branch-safety/worktree/local-llm-modules,
-// een echte tijdelijke repo met omgebogen gitlink + markers (Taak 3-fixture),
-// prisma gemockt met een local_llm-job. Bewijst dat het failed-pad van de
-// ECHTE handler (niet alleen maybeBackupPush in isolatie) nooit git draait
-// in de worktree van een local_llm-job.
-//
-// Bekende zwakte uit de Taak 3-review: een BARE evil-gitdir zonder
-// core.worktree maakt de fsmonitor-helft onbewijsbaar (git weigert `status`
-// in een bare repo zonder work-tree vóórdat de hook ooit geraakt wordt).
-// Deze test gebruikt daarom een NIET-bare evil-gitdir met expliciete
-// core.worktree=<worktree>, en bewijst eerst met een POSITIEVE controle
-// (een directe `git status`/`git push` in die worktree) dat beide markers
-// écht kunnen vuren — pas dan telt de afwezigheid van markers na de handler
-// als bewijs.
-describe('local_llm-keten: update_job_status(failed) draait nooit git in de worktree (markerproef)', () => {
-  let dir: string, origin: string, clone: string, wtRoot: string, scripts: string
-  let worktreePath: string, evilGitDir: string, evilDotGit: string
-  let fsmonitorMarker: string, sshMarker: string
-  const jobId = 'local-chain-1'
-  const branchName = 'feat/local-chain-1'
-
-  async function commit(cwd: string, name: string) {
-    await fs.writeFile(path.join(cwd, name), name)
-    await git(cwd, 'add', '-A')
-    await git(cwd, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', name)
-  }
-
-  beforeEach(async () => {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'update-job-status-local-llm-'))
-    origin = path.join(dir, 'origin.git')
-    clone = path.join(dir, 'clone')
-    wtRoot = path.join(dir, 'wt')
-    scripts = path.join(dir, 'scripts')
-    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = wtRoot
-
-    await exec('git', ['init', '--bare', '-b', 'main', origin])
-    await exec('git', ['init', '-b', 'main', clone])
-    await git(clone, 'remote', 'add', 'origin', origin)
-    await commit(clone, 'base.txt')
-    await git(clone, 'push', '-u', 'origin', 'main')
-
-    await fs.mkdir(scripts, { recursive: true })
-    const fsmonitorScript = path.join(scripts, 'fsmonitor.sh')
-    const sshScript = path.join(scripts, 'ssh.sh')
-    fsmonitorMarker = path.join(dir, 'marker-fsmonitor')
-    sshMarker = path.join(dir, 'marker-ssh')
-    await fs.writeFile(
-      fsmonitorScript,
-      `#!/bin/sh\necho invoked > ${JSON.stringify(fsmonitorMarker)}\nexit 0\n`,
-    )
-    await fs.writeFile(
-      sshScript,
-      `#!/bin/sh\necho invoked > ${JSON.stringify(sshMarker)}\nexit 1\n`,
-    )
-    await fs.chmod(fsmonitorScript, 0o755)
-    await fs.chmod(sshScript, 0o755)
-
-    const created = await createWorktreeForJob({
-      repoRoot: clone,
-      jobId,
-      branchName,
-      baseRef: 'origin/main',
-    })
-    worktreePath = created.worktreePath
-
-    // Niet-bare evil-gitdir MET expliciete core.worktree=<worktree> — in
-    // tegenstelling tot Task 3's bare fixture kan git hier daadwerkelijk
-    // `status`/`push` uitvoeren tegen de echte worktree-inhoud.
-    evilGitDir = path.join(dir, 'evil-git-admin')
-    evilDotGit = path.join(evilGitDir, '.git')
-    await exec('git', ['init', '-b', 'main', evilGitDir])
-    await exec('git', ['config', '--file', path.join(evilDotGit, 'config'), 'core.worktree', worktreePath])
-    await exec('git', [
-      'config', '--file', path.join(evilDotGit, 'config'), 'core.fsmonitor', fsmonitorScript,
-    ])
-    await exec('git', [
-      'config', '--file', path.join(evilDotGit, 'config'), 'core.sshCommand', sshScript,
-    ])
-    await exec('git', [
-      'config', '--file', path.join(evilDotGit, 'config'), 'remote.origin.url', 'ssh://example.invalid/x',
-    ])
-    const evilEnv = {
-      ...process.env,
-      GIT_AUTHOR_NAME: 'evil', GIT_AUTHOR_EMAIL: 'evil@evil',
-      GIT_COMMITTER_NAME: 'evil', GIT_COMMITTER_EMAIL: 'evil@evil',
-    }
-    const emptyTree = execFileSync(
-      'git',
-      ['--git-dir', evilDotGit, 'hash-object', '-t', 'tree', '--stdin', '-w'],
-      { input: '' },
-    ).toString().trim()
-    const evilCommit = (
-      await exec('git', ['--git-dir', evilDotGit, 'commit-tree', emptyTree, '-m', 'evil'], { env: evilEnv })
-    ).stdout.trim()
-    await exec('git', ['--git-dir', evilDotGit, 'update-ref', 'refs/heads/main', evilCommit])
-    // Omgebogen gitlink: worktreePath/.git wijst naar de niet-bare evil-gitdir.
-    await fs.writeFile(path.join(worktreePath, '.git'), `gitdir: ${evilDotGit}\n`)
-  })
-
-  afterEach(async () => {
-    delete process.env.SCRUM4ME_AGENT_WORKTREE_DIR
-    await fs.rm(dir, { recursive: true, force: true })
-  })
-
-  it('positieve controle: git status/push in deze worktree zet écht beide markers (bewijst dat de fixture leeft)', async () => {
-    await git(worktreePath, 'status').catch(() => {})
-    await expect(fs.access(fsmonitorMarker)).resolves.toBeUndefined()
-
-    await git(worktreePath, 'push', 'origin', 'HEAD:refs/heads/positive-control-x').catch(() => {})
-    await expect(fs.access(sshMarker)).resolves.toBeUndefined()
-  })
-
-  it('update_job_status(failed) op een local_llm-job laat geen marker achter', async () => {
-    // Bewijs eerst dat de fixture leeft (zelfde proef als de vorige test,
-    // herhaald binnen déze test zodat de volgorde van assertions niet
-    // afhangt van test-isolatie tussen `it`-blocks).
-    await git(worktreePath, 'status').catch(() => {})
-    await expect(fs.access(fsmonitorMarker)).resolves.toBeUndefined()
-    await git(worktreePath, 'push', 'origin', 'HEAD:refs/heads/positive-control-y').catch(() => {})
-    await expect(fs.access(sshMarker)).resolves.toBeUndefined()
-
-    // Reset de markers — vanaf hier mag niets ze opnieuw aanmaken.
-    await fs.rm(fsmonitorMarker, { force: true })
-    await fs.rm(sshMarker, { force: true })
-
-    installJobFixture(
-      baseFixture({
-        id: jobId,
-        branch: branchName,
-        status: 'CLAIMED',
-      }),
-    )
-    mockPrisma.claudeJob.update.mockResolvedValue({
-      id: jobId,
-      status: 'FAILED',
-      branch: branchName,
-      pushed_at: null,
-      pr_url: null,
-      verify_result: 'ALIGNED',
-      summary: null,
-      error: 'model faalde',
-      started_at: new Date('2026-09-27T09:00:00Z'),
-      finished_at: new Date('2026-09-27T09:05:00Z'),
-      head_sha: null,
-    })
-
-    const handler = registerHandler()
-    const result = (await handler({
-      job_id: jobId,
-      status: 'failed',
-      error: 'model faalde ergens onderweg',
-    })) as { structuredContent: { status: string } }
-
-    expect(result).not.toMatchObject({ isError: true })
-    expect(result.structuredContent.status).toBe('failed')
-
-    await expect(fs.access(fsmonitorMarker)).rejects.toThrow()
-    await expect(fs.access(sshMarker)).rejects.toThrow()
-
-    expect(mockPropagate).not.toHaveBeenCalled()
-    expect(mockCancelPbi).not.toHaveBeenCalled()
   })
 })
