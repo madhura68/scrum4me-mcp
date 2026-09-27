@@ -1,3 +1,4 @@
+import { isTokenExpired } from '../auth.js'
 import { prisma } from '../prisma.js'
 import { registerWorker } from './worker.js'
 
@@ -20,9 +21,9 @@ export function startHeartbeat(opts: {
       // PK-lookup over the unique token_id index is cheap.
       const token = await prisma.apiToken.findUnique({
         where: { id: opts.tokenId },
-        select: { user_id: true, revoked_at: true },
+        select: { user_id: true, revoked_at: true, expires_at: true },
       })
-      if (!token || token.revoked_at) return
+      if (!token || token.revoked_at || isTokenExpired(token.expires_at)) return
 
       const result = await prisma.claudeWorker.updateMany({
         where: { token_id: opts.tokenId, instance_id: opts.instanceId },

@@ -66,7 +66,7 @@ describe('startHeartbeat — token user_id re-resolution', () => {
     await vi.advanceTimersByTimeAsync(INTERVAL)
     expect(mockPrisma.apiToken.findUnique).toHaveBeenCalledWith({
       where: { id: TOKEN_ID },
-      select: { user_id: true, revoked_at: true },
+      select: { user_id: true, revoked_at: true, expires_at: true },
     })
     expect(mockPrisma.claudeWorker.updateMany).toHaveBeenLastCalledWith({
       where: { token_id: TOKEN_ID, instance_id: INSTANCE_ID },
@@ -130,6 +130,43 @@ describe('startHeartbeat — token user_id re-resolution', () => {
     await vi.advanceTimersByTimeAsync(INTERVAL)
     expect(mockPrisma.claudeWorker.updateMany).not.toHaveBeenCalled()
     expect(mockPrisma.claudeWorker.upsert).not.toHaveBeenCalled()
+
+    stop()
+  })
+
+  it('skips the tick when the token has expired (ISS-9)', async () => {
+    mockPrisma.apiToken.findUnique.mockResolvedValueOnce({
+      user_id: 'user-lars',
+      revoked_at: null,
+      expires_at: new Date(Date.now() - 60_000),
+    })
+    // Ook een verdwenen worker-rij mag bij een verlopen token niet terugkomen.
+    mockPrisma.claudeWorker.updateMany.mockResolvedValueOnce({ count: 0 })
+
+    const { stop } = startHeartbeat({ tokenId: TOKEN_ID, instanceId: INSTANCE_ID, intervalMs: INTERVAL })
+
+    await vi.advanceTimersByTimeAsync(INTERVAL)
+    expect(mockPrisma.claudeWorker.updateMany).not.toHaveBeenCalled()
+    expect(mockPrisma.claudeWorker.upsert).not.toHaveBeenCalled()
+
+    stop()
+  })
+
+  it('keeps beating for a token without expiry or with a future expiry', async () => {
+    mockPrisma.apiToken.findUnique
+      .mockResolvedValueOnce({ user_id: 'user-lars', revoked_at: null, expires_at: null })
+      .mockResolvedValueOnce({
+        user_id: 'user-lars',
+        revoked_at: null,
+        expires_at: new Date(Date.now() + 60 * 60_000),
+      })
+
+    const { stop } = startHeartbeat({ tokenId: TOKEN_ID, instanceId: INSTANCE_ID, intervalMs: INTERVAL })
+
+    await vi.advanceTimersByTimeAsync(INTERVAL)
+    expect(mockPrisma.claudeWorker.updateMany).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(INTERVAL)
+    expect(mockPrisma.claudeWorker.updateMany).toHaveBeenCalledTimes(2)
 
     stop()
   })
