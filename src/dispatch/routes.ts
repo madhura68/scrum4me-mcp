@@ -1,3 +1,4 @@
+import { observeDispatchTokenUse, recordDispatchTokenUse } from './token-usage.js'
 import express, { type Express, type Request, type Response, type NextFunction, type RequestHandler } from 'express'
 import { performance } from 'node:perf_hooks'
 import type { KeyObject } from 'node:crypto'
@@ -145,6 +146,7 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
 
   function handle(fn: Handler, decode: boolean) {
     return async (req: Request, res: Response, next: NextFunction) => {
+      let usage: ReturnType<typeof observeDispatchTokenUse> | undefined
       try {
         const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
         // Unreadable bytes are answered before authentication, exactly as intake always did:
@@ -161,16 +163,18 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
           // signs (and is checked against) the empty string its absent header decodes to.
           idempotencyKey: req.get('Idempotency-Key') ?? '',
         })
+        usage = observeDispatchTokenUse(req, res, actor, value => recordDispatchTokenUse(deps.store, value))
         const value = await fn({
           actor, req, res, raw: bytes,
           json: () => { if (!decode) throw new DispatchError('DISPATCH_BAD_JSON'); return decoded },
         })
+        usage.succeeded()
         if (res.headersSent) return
         if (value && typeof value === 'object' && 'id' in value && typeof value.id === 'string' && isQueueDispatchRequestId(value.id)) res.locals.dispatchRequestId = value.id
         // `null` is a real answer — "no work for you" on a claim — so only an absent value
         // becomes an empty object. Collapsing null here would hand the client a receipt shape.
         res.status(200).json(value === undefined ? {} : value)
-      } catch (error) { next(error) }
+      } catch (error) { usage?.failed(); next(error) }
     }
   }
   function log(operation: DispatchHttpOperation): RequestHandler {

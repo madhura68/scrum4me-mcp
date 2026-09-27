@@ -1,9 +1,29 @@
+import { createHash } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { readFileSync, realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { Pool } from 'pg'
 
 export const DISPATCH_SCHEMA_COMMIT = '6dc581daa7d56bd0e00a82383b3be4bd5d877afb'
+// Additive migration only; retain the historical schema and its policy proof.
+export const TOKEN_USAGE_MIGRATION_COMMIT = 'bd3f5eaeabc8d4cefd959698824b677bb78cbcc2'
+export const TOKEN_USAGE_MIGRATION_PATH = 'prisma/migrations/20260927170000_api_token_last_used_at/migration.sql'
+export const TOKEN_USAGE_MIGRATION_SHA256 = '18d535b2c96b2674d8673c0b3f768de6cabd2f0afce2de054252ec8316bf55ba'
+
+/** @param {string} root */
+export function readTokenUsageMigration(root) {
+  let sql
+  try {
+    sql = execFileSync('git', ['show', `${TOKEN_USAGE_MIGRATION_COMMIT}:${TOKEN_USAGE_MIGRATION_PATH}`], {
+      cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    })
+  } catch { throw new Error('DISPATCH_USAGE_MIGRATION_SOURCE_REFUSED') }
+  if (createHash('sha256').update(sql).digest('hex') !== TOKEN_USAGE_MIGRATION_SHA256) {
+    throw new Error('DISPATCH_USAGE_MIGRATION_HASH_REFUSED')
+  }
+  return sql
+}
+
 export const requiredUrls = [
   'DISPATCH_TEST_ADMIN_URL',
   'DISPATCH_TEST_URL',
@@ -69,7 +89,8 @@ export async function assertTestCluster(client) {
 
 /** @param {NodeJS.ProcessEnv} [env] */
 export async function checkDispatchTestTarget(env = process.env) {
-  assertDispatchSchemaRoot(env.DISPATCH_TEST_SCHEMA_ROOT)
+  const root = assertDispatchSchemaRoot(env.DISPATCH_TEST_SCHEMA_ROOT)
+  readTokenUsageMigration(root)
   const urls = requiredUrls.map((key) => assertDispatchTestUrl(env[key], env))
   if (new Set(urls.map((url) => `${url.hostname}:${url.port}`)).size !== 1) {
     throw new Error('DISPATCH_TEST_TARGET_REFUSED')
@@ -127,6 +148,15 @@ export async function provisionDispatchTestTarget(env = process.env) {
     { cwd: root, env, stdio: 'inherit' },
   )
   if (result.status !== 0) throw new Error('DISPATCH_TEST_PROVISION_FAILED')
+
+  // The source has a separate immutable pin, never a replacement historical baseline.
+  const overlay = new Pool({ connectionString: adminUrl.href, max: 1 })
+  try {
+    await assertTestCluster(overlay)
+    await overlay.query(readTokenUsageMigration(root))
+    // JP approved only this column right for the existing dispatch role.
+    await overlay.query('GRANT UPDATE(last_used_at) ON public.api_tokens TO scrum4me_dispatch')
+  } finally { await overlay.end() }
 
   const fresh = readGeneratedRuntimeEnv(env.DISPATCH_TEST_ENV_FILE)
   await checkDispatchTestTarget({ ...env, ...fresh })

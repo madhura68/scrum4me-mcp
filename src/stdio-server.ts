@@ -1,3 +1,4 @@
+import { recordSuccessfulTokenUse } from './token-usage.js'
 // stdio entrypoint construction, split into a side-effect-free constructor and
 // a runtime lifecycle that is the *only* place auth/presence/heartbeat/queue
 // maintenance run.
@@ -14,6 +15,7 @@
 // The lifecycle boundary is injectable so tests can prove the negative — that
 // merely constructing and listing the canary surface invokes none of it —
 // without monkey-patching module globals.
+import { installTokenUsageObserver, type TokenUsage } from './token-usage-observer.js'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { hostname as osHostname } from 'node:os'
@@ -61,6 +63,7 @@ export interface StdioLifecycle {
 
 export interface StdioServerOptions {
   mode: StdioMode
+  recordTokenUsage?: (usage: TokenUsage) => Promise<void>
   /** Only consumed by {@link startStdioServer}; construction never reads it. */
   lifecycle?: StdioLifecycle
 }
@@ -72,6 +75,9 @@ export interface StdioServerOptions {
  */
 export function createStdioServer(options: StdioServerOptions): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: VERSION }, { instructions: INSTRUCTIONS })
+  if (options.mode !== 'canary') {
+    installTokenUsageObserver(server, options.recordTokenUsage ?? recordSuccessfulTokenUse)
+  }
   registerFullStdioSurface(server, {
     execution: options.mode === 'canary' ? 'forbidden' : 'enabled',
   })

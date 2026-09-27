@@ -1,7 +1,7 @@
 import { createHash } from 'crypto'
 import type { ApiTokenKind } from '@prisma/client'
 import { prisma } from './prisma.js'
-import { getRequestToken } from './request-context.js'
+import { getRequestToken, markAuthenticatedToken } from './request-context.js'
 
 export type AuthContext = {
   userId: string
@@ -47,6 +47,7 @@ export async function getAuth(): Promise<AuthContext> {
     throw new Error('COPILOT token has empty scoped_products — token is misconfigured')
   }
 
+  markAuthenticatedToken({ tokenId: apiToken.id, userId: apiToken.user_id })
   return {
     userId: apiToken.user_id,
     tokenId: apiToken.id,

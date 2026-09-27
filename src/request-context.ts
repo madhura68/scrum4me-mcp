@@ -25,3 +25,13 @@ export const requestContext = new AsyncLocalStorage<RequestContext>()
 export function getRequestToken(): string | undefined {
   return requestContext.getStore()?.token ?? process.env.SCRUM4ME_TOKEN
 }
+
+/** Only populated after authentication within this individual tools/call. */
+export const authenticatedCallContext = new AsyncLocalStorage<{
+  identity?: { tokenId: string; userId: string }
+}>()
+
+export function markAuthenticatedToken(identity: { tokenId: string; userId: string }): void {
+  const call = authenticatedCallContext.getStore()
+  if (call) call.identity = identity
+}
