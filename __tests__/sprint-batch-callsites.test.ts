@@ -128,6 +128,9 @@ describe('maybeAutoDeploySprintBatchPr call-sites in update_job_status', () => {
       .mockResolvedValueOnce({ ...JOB_BASE, task_id: 'task-1', kind: 'TASK_IMPLEMENTATION', verify_result: 'ALIGNED', task: { verify_only: false, verify_required: 'ALIGNED_OR_PARTIAL' } })
       // Fresh pre-push managed-binding guard; ordinary fixture remains unbound.
       .mockResolvedValueOnce({ kind: 'TASK_IMPLEMENTATION', dispatch_request_id: null, dispatch_candidate_id: null })
+      // Taak 4: post-push rev-parse HEAD in prepareDoneUpdate raadpleegt
+      // gitPrefixFor(worktreePath) → isLocalLlmJob — ordinary fixture is niet local_llm.
+      .mockResolvedValueOnce({ required_capability: null })
       // 2: maybeCreateAutoPr sprint_run-lookup (auto-PR draait want kind=TASK_IMPLEMENTATION + pushed)
       .mockResolvedValueOnce({ sprint_run_id: 'run-1', sprint_run: { id: 'run-1', pr_strategy: 'SPRINT', sprint: { sprint_goal: 'Live' } } })
       // 3: isStoryAutoMergeCandidate storyCtx-lookup — pr_strategy=SPRINT (≠STORY) ⇒ STORY-auto-merge geskipt
@@ -148,6 +151,9 @@ describe('maybeAutoDeploySprintBatchPr call-sites in update_job_status', () => {
       .mockResolvedValueOnce({ ...JOB_BASE, task_id: null, kind: 'SPRINT_IMPLEMENTATION', verify_result: null, task: null })
       // Fresh pre-push managed-binding guard; ordinary fixture remains unbound.
       .mockResolvedValueOnce({ kind: 'TASK_IMPLEMENTATION', dispatch_request_id: null, dispatch_candidate_id: null })
+      // Taak 4: post-push rev-parse HEAD in prepareDoneUpdate raadpleegt
+      // gitPrefixFor(worktreePath) → isLocalLlmJob — ordinary fixture is niet local_llm.
+      .mockResolvedValueOnce({ required_capability: null })
       .mockResolvedValueOnce({ sprint_run_id: 'run-1', sprint_run: { id: 'run-1', sprint: { sprint_goal: 'Live' } } })
     mockPrisma.sprintTaskExecution.findMany.mockResolvedValue([{ id: 'exec-1', task_id: 'task-1', order: 0, status: 'DONE', verify_result: 'ALIGNED', verify_summary: null, verify_required_snapshot: 'ALIGNED_OR_PARTIAL', verify_only_snapshot: false, task: { code: 'TASK-1', title: 'Sample' } }])
     mockPrisma.sprintRun.findUnique
@@ -171,6 +177,9 @@ describe('maybeAutoDeploySprintBatchPr call-sites in update_job_status', () => {
       .mockResolvedValueOnce({ ...JOB_BASE, task_id: 'task-1', kind: 'TASK_IMPLEMENTATION', verify_result: 'ALIGNED', task: { verify_only: false, verify_required: 'ALIGNED_OR_PARTIAL' } })
       // Fresh pre-push managed-binding guard; ordinary fixture remains unbound.
       .mockResolvedValueOnce({ kind: 'TASK_IMPLEMENTATION', dispatch_request_id: null, dispatch_candidate_id: null })
+      // Taak 4: post-push rev-parse HEAD in prepareDoneUpdate raadpleegt
+      // gitPrefixFor(worktreePath) → isLocalLlmJob — ordinary fixture is niet local_llm.
+      .mockResolvedValueOnce({ required_capability: null })
       .mockResolvedValueOnce({ sprint_run_id: 'run-1', sprint_run: { id: 'run-1', pr_strategy: 'STORY', sprint: { sprint_goal: 'Story' } } })
       .mockResolvedValueOnce({ task: { story: { status: 'DONE' } }, sprint_run: { pr_strategy: 'STORY' } })
     mockPropagate.mockResolvedValue({ task: { id: 'task-1', title: 't', status: 'DONE', story_id: 'story-1', implementation_plan: null }, storyId: 'story-1', storyChanged: true, pbiChanged: false, sprintChanged: false, sprintRunChanged: false })
@@ -189,6 +198,9 @@ describe('maybeAutoDeploySprintBatchPr call-sites in update_job_status', () => {
       .mockResolvedValueOnce({ ...JOB_BASE, task_id: 'task-1', kind: 'TASK_IMPLEMENTATION', verify_result: 'ALIGNED', task: { verify_only: false, verify_required: 'ALIGNED_OR_PARTIAL' } })
       // Fresh pre-push managed-binding guard; ordinary fixture remains unbound.
       .mockResolvedValueOnce({ kind: 'TASK_IMPLEMENTATION', dispatch_request_id: null, dispatch_candidate_id: null })
+      // Taak 4: post-push rev-parse HEAD in prepareDoneUpdate raadpleegt
+      // gitPrefixFor(worktreePath) → isLocalLlmJob — ordinary fixture is niet local_llm.
+      .mockResolvedValueOnce({ required_capability: null })
       .mockResolvedValueOnce({ sprint_run_id: 'run-1', sprint_run: { id: 'run-1', pr_strategy: 'STORY', sprint: { sprint_goal: 'Story' } } })
       .mockResolvedValueOnce({ task: { story: { status: 'DONE' } }, sprint_run: { pr_strategy: 'STORY' } })
       .mockResolvedValueOnce({ sprint_run_id: 'run-1', sprint_run: { pr_strategy: 'STORY', status: 'DONE' } })

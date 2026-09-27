@@ -27,6 +27,7 @@ import {
 import { releaseLocksOnTerminal } from '../git/job-locks.js'
 import { resolveRepoRoot } from './wait-for-job.js'
 import { pushBranchForJob } from '../git/push.js'
+import { gitPrefixFor } from '../git/local-llm.js'
 import { maybeBackupPush } from '../git/branch-safety.js'
 import { notifyJobEnqueued } from '../lib/dispatch/notify.js'
 import { formatDocsAuditCursor } from '@shared/docs-audit-cursor.js'
@@ -240,7 +241,11 @@ export async function prepareDoneUpdate(
       const { execFile } = await import('node:child_process')
       const { promisify } = await import('node:util')
       const exec = promisify(execFile)
-      const { stdout } = await exec('git', ['rev-parse', 'HEAD'], { cwd: worktreePath })
+      const { stdout } = await exec(
+        'git',
+        [...(await gitPrefixFor(worktreePath)), 'rev-parse', 'HEAD'],
+        { cwd: worktreePath },
+      )
       headSha = stdout.trim()
     } catch (err) {
       console.warn(`[prepareDoneUpdate] failed to resolve HEAD sha for job ${jobId}:`, err)

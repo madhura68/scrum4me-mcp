@@ -2,12 +2,22 @@
 // master) konden geen job-worktree krijgen en werden nooit gepusht.
 // Echte git-fixtures: een bare origin met `master` als default naast één met
 // `main`, zodat de regressie zichtbaar is zonder mocks.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
+
+// Deze tests dekken de niet-lokale weg (geen local_llm-job): de findUnique-mock
+// zorgt dat isLocalLlmJob() altijd false teruggeeft zonder een echte DB nodig
+// te hebben, zodat resolveOriginDefaultRef/createWorktreeForJob/pushBranchForJob
+// hun argumenten ongewijzigd laten (Taak 4). Het local_llm-pad zelf zit in
+// __tests__/git/default-branch-local-llm.test.ts en __tests__/git/worktree-local-llm.test.ts.
+vi.mock('../src/prisma.js', () => ({
+  prisma: { claudeJob: { findUnique: vi.fn().mockResolvedValue(null) } },
+}))
+
 import { resolveOriginDefaultRef } from '../src/git/default-branch.js'
 import { createWorktreeForJob } from '../src/git/worktree.js'
 import { pushBranchForJob } from '../src/git/push.js'

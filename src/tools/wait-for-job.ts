@@ -25,8 +25,9 @@ import {
 const execFileP = promisify(execFile)
 import { requireWriteAccess } from '../auth.js'
 import { toolJson, toolError, withToolErrors } from '../errors.js'
-import { createWorktreeForJob, removeWorktreeForJob } from '../git/worktree.js'
+import { createWorktreeForJob, removeWorktreeForJob, LocalLlmWorktreeRefused } from '../git/worktree.js'
 import { getWorktreeRoot } from '../git/worktree-paths.js'
+import { removeWorktreeWithoutGit, gitPrefixFor } from '../git/local-llm.js'
 import { setupProductWorktrees, releaseLocksOnTerminal } from '../git/job-locks.js'
 import { maybeBackupPush } from '../git/branch-safety.js'
 import { fetchPrDiff, fetchCompareDiff, getPullRequestState } from '../git/pr.js'
@@ -437,7 +438,11 @@ export async function attachWorktreeToJob(
     // just checked out.
     let baseSha: string | null = null
     try {
-      const { stdout } = await execFileP('git', ['rev-parse', 'HEAD'], { cwd: worktreePath })
+      const { stdout } = await execFileP(
+        'git',
+        [...(await gitPrefixFor(worktreePath)), 'rev-parse', 'HEAD'],
+        { cwd: worktreePath },
+      )
       baseSha = stdout.trim()
     } catch (err) {
       claimLog('attach.baseShaFailed', { jobId, error: String((err as Error).message).slice(0, 200) })
@@ -458,6 +463,20 @@ export async function attachWorktreeToJob(
     claimLog('attach.done', { jobId, branchName: actualBranch, baseSha })
     return { worktree_path: worktreePath, branch_name: actualBranch, reused_branch: reused }
   } catch (err) {
+    if (err instanceof LocalLlmWorktreeRefused) {
+      // Taak 4: een geweigerde local_llm-worktree mag nooit via rollbackClaim
+      // terug naar QUEUED — dat zou de job eindeloos laten herclaimen en
+      // opnieuw weigeren. In plaats daarvan: job op FAILED, map opruimen
+      // zonder git in de worktree, en de fout teruggeven als toolfout.
+      const worktreePath = path.join(getWorktreeRoot(), jobId)
+      await prisma.claudeJob.update({
+        where: { id: jobId },
+        data: { status: 'FAILED', error: err.message.slice(0, 2000), finished_at: new Date() },
+      })
+      await removeWorktreeWithoutGit(repoRoot, worktreePath)
+      claimLog('attach.localLlmRefused', { jobId, error: err.message })
+      return { error: err.message }
+    }
     claimLog('attach.failed', { jobId, error: String((err as Error).message).slice(0, 200) })
     await rollbackClaim(jobId, ownerIdentity(ownerCtx))
     return { error: `Worktree creation failed: ${(err as Error).message}` }
