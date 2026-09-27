@@ -40,6 +40,19 @@ describe('shared claim eligibility', () => {
     expect(evaluateClaimPredicates({ ...localLlmJob, kind: 'IDEA_GRILL' }, localLlmExecutor)).toContain('capability')
     expect(evaluateClaimPredicates({ ...localLlmJob, requiredCapability: 'local_llm' }, { ...localLlmExecutor, capabilities: ['code_edit', 'planning', 'review'] })).toContain('capability')
   })
+  // M3 (agent-harness task-implementation-local-llm): dezelfde dedicated
+  // local_llm-worker claimt daarnaast losse TASK_IMPLEMENTATION-jobs die
+  // dispatch_job zonder sprint aanmaakt (source COPILOT, sprint_run_id NULL).
+  // sprint_run_id IS NULL sluit sprint-runs uit: die horen bij de
+  // SPRINT_IMPLEMENTATION-route, niet bij deze losse-taakjob-route.
+  const localLlmTaskJob = { userId: 'u', productId: 'p', runtime: 'CODEX' as const, status: 'QUEUED', kind: 'TASK_IMPLEMENTATION', source: 'COPILOT', requiredCapability: 'local_llm', dispatchRequestId: null, profileRevisionId: null, sprintRunId: null, sprintStatus: null, earlierSibling: false, taskId: 'task-1', ideaId: null }
+  it('local_llm-only executor claimt ook een losse TASK_IMPLEMENTATION/COPILOT-job zonder sprint-run', () => {
+    expect(evaluateClaimPredicates(localLlmTaskJob, localLlmExecutor)).toEqual([])
+    expect(evaluateClaimPredicates({ ...localLlmTaskJob, sprintRunId: 'run1' }, localLlmExecutor)).toContain('capability')
+    expect(evaluateClaimPredicates({ ...localLlmTaskJob, source: 'MANUAL' }, localLlmExecutor)).toContain('capability')
+    expect(evaluateClaimPredicates({ ...localLlmTaskJob, requiredCapability: null }, localLlmExecutor)).toContain('capability')
+    expect(evaluateClaimPredicates({ ...localLlmTaskJob, requiredCapability: 'local_llm' }, { ...localLlmExecutor, capabilities: ['code_edit', 'planning', 'review'] })).toContain('capability')
+  })
 })
 
 import { eligibleExecutors, type RegisteredSlot, type RegisteredProfile } from '../../src/dispatch/eligibility.js'
