@@ -14,7 +14,7 @@ export type AuthContext = {
 
 // Zelfde grens als het dispatchpad (`src/dispatch/auth.ts`): geldig is alleen
 // `expires_at IS NULL OR expires_at > now()`.
-function isExpired(expiresAt: Date | null | undefined): boolean {
+export function isTokenExpired(expiresAt: Date | null | undefined): boolean {
   return expiresAt != null && expiresAt <= new Date()
 }
 
@@ -37,7 +37,7 @@ export async function getAuth(): Promise<AuthContext> {
     include: { user: true },
   })
 
-  if (!apiToken || apiToken.revoked_at || isExpired(apiToken.expires_at)) {
+  if (!apiToken || apiToken.revoked_at || isTokenExpired(apiToken.expires_at)) {
     throw new Error('SCRUM4ME_TOKEN is invalid or revoked')
   }
 
@@ -87,6 +87,6 @@ export async function getTokenScopedProducts(): Promise<string[]> {
     where: { token_hash: tokenHash },
     select: { scoped_products: true, revoked_at: true, expires_at: true },
   })
-  if (!row || row.revoked_at || isExpired(row.expires_at)) return []
+  if (!row || row.revoked_at || isTokenExpired(row.expires_at)) return []
   return row.scoped_products
 }
