@@ -7,8 +7,23 @@ import { withRetry, isTransientGitError } from './retry.js'
 import { localTipContainedInRemote, maybeBackupPushBranch } from './branch-safety.js'
 import { resolveOriginDefaultRef } from './default-branch.js'
 import { claimLog } from '../lib/claim-log.js'
+import { isLocalLlmJob, isLocalLlmWorktree, removeWorktreeWithoutGit, SAFE_GIT_CONFIG } from './local-llm.js'
 
 const exec = promisify(execFile)
+
+/**
+ * Geworpen wanneer .gitmodules van een local_llm-worktree afwijkt van de
+ * versie in de vertrouwde default-ref (spec §4.5/§5.3, Taak 4): submodule-
+ * init zou anders een omgebogen submodule-URL/config uit een gemanipuleerde
+ * branch vertrouwen. attachWorktreeToJob zet de job hierop op FAILED i.p.v.
+ * rollbackClaim — dat laatste zou de job eindeloos laten herclaimen.
+ */
+export class LocalLlmWorktreeRefused extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'LocalLlmWorktreeRefused'
+  }
+}
 
 async function branchExists(repoRoot: string, name: string): Promise<boolean> {
   try {
@@ -99,12 +114,64 @@ async function linkNodeModules(repoRoot: string, worktreePath: string, jobId: st
 // import of them. Init them in the worktree. Guarded on .gitmodules so this is
 // a no-op for repos without submodules. Best-effort: never fail worktree
 // creation over setup — verify will surface a genuine init failure instead.
-async function initSubmodules(worktreePath: string, jobId: string): Promise<void> {
+//
+// local_llm-bewaking (spec §4.5, Taak 4): voor zo'n job draait submodule-init
+// nog vóór elke container, dus vertrouwt de submodule-URL's/config uit
+// .gitmodules. Dat mag alleen wanneer .gitmodules van de worktree byte-gelijk
+// is aan de versie in de vertrouwde `defaultRef` (cwd = repoRoot) — anders
+// zou een gemanipuleerde branch een kwaadaardige submodule-URL kunnen laten
+// initialiseren. Wijkt hij af, dan wordt de job geweigerd (niet stil
+// genegeerd zoals het best-effort pad hieronder): attachWorktreeToJob vertaalt
+// LocalLlmWorktreeRefused naar FAILED.
+async function initSubmodules(
+  repoRoot: string,
+  worktreePath: string,
+  jobId: string,
+  defaultRef: string,
+  isLocal: boolean,
+): Promise<void> {
+  let worktreeGitmodules: Buffer
   try {
-    await fs.access(path.join(worktreePath, '.gitmodules'))
+    worktreeGitmodules = await fs.readFile(path.join(worktreePath, '.gitmodules'))
   } catch {
     return // no submodules in this repo
   }
+
+  if (isLocal) {
+    let trustedGitmodules: Buffer
+    try {
+      const { stdout } = await exec(
+        'git',
+        [...SAFE_GIT_CONFIG, 'show', `${defaultRef}:.gitmodules`],
+        { cwd: repoRoot, encoding: 'buffer' },
+      )
+      trustedGitmodules = stdout as unknown as Buffer
+    } catch {
+      throw new LocalLlmWorktreeRefused(
+        `.gitmodules wijkt af van ${defaultRef}; submodule-init geweigerd`,
+      )
+    }
+    if (!worktreeGitmodules.equals(trustedGitmodules)) {
+      throw new LocalLlmWorktreeRefused(
+        `.gitmodules wijkt af van ${defaultRef}; submodule-init geweigerd`,
+      )
+    }
+    try {
+      await exec(
+        'git',
+        [...SAFE_GIT_CONFIG, 'submodule', 'update', '--init', '--recursive'],
+        { cwd: worktreePath },
+      )
+      claimLog('worktree.submodulesInit', { jobId })
+    } catch (err) {
+      claimLog('worktree.submodulesInitFailed', {
+        jobId,
+        error: String((err as Error).message).slice(0, 200),
+      })
+    }
+    return
+  }
+
   try {
     await exec('git', ['submodule', 'update', '--init', '--recursive'], { cwd: worktreePath })
     claimLog('worktree.submodulesInit', { jobId })
@@ -150,9 +217,22 @@ async function runWorktreePrepare(worktreePath: string, jobId: string): Promise<
 // it would in a full checkout: shared deps (symlink), submodule checkouts, and
 // repo-specific gitignored codegen. Order matters — node_modules first so the
 // prepare hook can run its npm script.
-async function prepareWorktree(repoRoot: string, worktreePath: string, jobId: string): Promise<void> {
+//
+// local_llm-bewaking (spec §4.5, Taak 4): repo-code (npm-scripts, codegen)
+// draait nooit op de host voor zo'n job — alleen later, in de containers.
+// `runWorktreePrepare` (npm run prepare:worktree) wordt daarom overgeslagen;
+// linkNodeModules blijft (een symlink, geen repo-code) en initSubmodules
+// draait altijd, maar dan achter de .gitmodules-gate hierboven.
+async function prepareWorktree(
+  repoRoot: string,
+  worktreePath: string,
+  jobId: string,
+  defaultRef: string,
+): Promise<void> {
   await linkNodeModules(repoRoot, worktreePath, jobId)
-  await initSubmodules(worktreePath, jobId)
+  const isLocal = await isLocalLlmJob(jobId)
+  await initSubmodules(repoRoot, worktreePath, jobId, defaultRef, isLocal)
+  if (isLocal) return
   await runWorktreePrepare(worktreePath, jobId)
 }
 
@@ -217,7 +297,14 @@ export async function createWorktreeForJob(opts: {
     // If the branch is still attached to a stale sibling worktree, drop that first.
     const occupant = await findWorktreeForBranch(repoRoot, branchName)
     if (occupant) {
-      await exec('git', ['worktree', 'remove', '--force', occupant], { cwd: repoRoot })
+      // local_llm-bewaking (spec §5.3): een oude bezetter kan de worktree van
+      // een local_llm-job zijn, waarvan de .git-gitlink door een container is
+      // omgebogen — nooit git draaien met dat pad als werkmap.
+      if (await isLocalLlmWorktree(occupant)) {
+        await removeWorktreeWithoutGit(repoRoot, occupant)
+      } else {
+        await exec('git', ['worktree', 'remove', '--force', occupant], { cwd: repoRoot })
+      }
     }
     // reuseBranch is decided sprint-wide, but git branches are per-repo. For a
     // cross-repo sprint the first job targeting THIS repo gets reuseBranch=true
@@ -258,7 +345,7 @@ export async function createWorktreeForJob(opts: {
       await gitRetry(['worktree', 'add', '-b', branchName, worktreePath, baseRef])
     }
     claimLog('worktree.created', { jobId, branchName, worktreePath, reuse: reuseBranch })
-    await prepareWorktree(repoRoot, worktreePath, jobId)
+    await prepareWorktree(repoRoot, worktreePath, jobId, baseRef)
     return { worktreePath, branchName }
   }
 
@@ -273,8 +360,14 @@ export async function createWorktreeForJob(opts: {
     if (occupant) {
       // Branch is currently checked out elsewhere — likely a sibling worktree
       // that should have been cleaned up. Remove it before reusing the name.
+      // local_llm-bewaking (spec §5.3): idem als hierboven — nooit git draaien
+      // met een (mogelijk omgebogen) local_llm-worktree als werkmap.
       try {
-        await exec('git', ['worktree', 'remove', '--force', occupant], { cwd: repoRoot })
+        if (await isLocalLlmWorktree(occupant)) {
+          await removeWorktreeWithoutGit(repoRoot, occupant)
+        } else {
+          await exec('git', ['worktree', 'remove', '--force', occupant], { cwd: repoRoot })
+        }
       } catch {
         // ignore — fall through to deletion below
       }
@@ -298,7 +391,7 @@ export async function createWorktreeForJob(opts: {
   await gitRetry(['worktree', 'add', '-b', branchName, worktreePath, baseRef])
 
   claimLog('worktree.created', { jobId, branchName, worktreePath, reuse: reuseBranch })
-  await prepareWorktree(repoRoot, worktreePath, jobId)
+  await prepareWorktree(repoRoot, worktreePath, jobId, baseRef)
   return { worktreePath, branchName }
 }
 
@@ -317,6 +410,16 @@ export async function removeWorktreeForJob(opts: {
     await fs.access(worktreePath)
   } catch {
     return { removed: false }
+  }
+
+  // local_llm-bewaking (spec §4.5/§5.3): voor deze job draait git nooit met
+  // de worktree als werkmap buiten de claim en het groene pad (elders
+  // afgehandeld). Geen rev-parse voor de branchName, geen `worktree remove` —
+  // enkel de map weg en pruning vanuit de clone. keepBranch is dan
+  // irrelevant: de branch-ref staat in de clone en blijft altijd staan.
+  if (await isLocalLlmJob(jobId)) {
+    await removeWorktreeWithoutGit(repoRoot, worktreePath)
+    return { removed: true }
   }
 
   let branchName: string | undefined

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { resolveOriginDefaultRef } from './default-branch.js'
+import { gitPrefixFor } from './local-llm.js'
 
 const exec = promisify(execFile)
 
@@ -18,6 +19,10 @@ export async function pushBranchForJob(opts: {
   branchName: string
 }): Promise<PushResult> {
   const { worktreePath, branchName } = opts
+  // Taak 4: local_llm-jobworktree ⇒ veilige host-git-config + --no-verify op
+  // de push. Niet-lokale job ⇒ prefix = [] en de argumenten blijven identiek
+  // aan vóór deze wijziging.
+  const prefix = await gitPrefixFor(worktreePath)
 
   // Detect no new commits vs de default branch van origin.
   // ISS-3: dit stond hardgecodeerd op `origin/main`. In een repo met een
@@ -30,8 +35,8 @@ export async function pushBranchForJob(opts: {
   try {
     const defaultRef = await resolveOriginDefaultRef(worktreePath)
     const [headResult, baseResult] = await Promise.all([
-      exec('git', ['rev-parse', 'HEAD'], { cwd: worktreePath }),
-      exec('git', ['rev-parse', defaultRef], { cwd: worktreePath }),
+      exec('git', [...prefix, 'rev-parse', 'HEAD'], { cwd: worktreePath }),
+      exec('git', [...prefix, 'rev-parse', defaultRef], { cwd: worktreePath }),
     ])
     headSha = headResult.stdout.trim()
     baseSha = baseResult.stdout.trim()
@@ -45,7 +50,10 @@ export async function pushBranchForJob(opts: {
 
   // Push
   try {
-    await exec('git', ['push', '-u', 'origin', branchName], { cwd: worktreePath })
+    const pushArgs = [...prefix, 'push']
+    if (prefix.length > 0) pushArgs.push('--no-verify')
+    pushArgs.push('-u', 'origin', branchName)
+    await exec('git', pushArgs, { cwd: worktreePath })
     return { pushed: true, remoteRef: `refs/heads/${branchName}` }
   } catch (err) {
     const stderr = (err as { stderr?: string }).stderr ?? (err as Error).message ?? ''

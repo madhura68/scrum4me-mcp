@@ -1,7 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+// Forgejo-review PR #169: gitPrefixFor controleert voor een local_llm-worktree
+// eerst de gitlink tegen de clone (fs-only). Deze tests gaan over de
+// prefix-argumenten met fictieve paden; de controle zelf is gestubd en wordt
+// getest in __tests__/git/worktree-gitlink.test.ts en de done-pad-ketentest.
+const gitlinkMocks = vi.hoisted(() => ({ assertTrustedLocalJobWorktree: vi.fn() }))
+vi.mock('../src/git/worktree-gitlink.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/git/worktree-gitlink.js')>()),
+  assertTrustedLocalJobWorktree: gitlinkMocks.assertTrustedLocalJobWorktree,
+}))
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as fs from 'node:fs/promises'
+import { execFile } from 'node:child_process'
 
 vi.mock('../src/prisma.js', () => ({
   prisma: {
@@ -12,15 +23,42 @@ vi.mock('../src/prisma.js', () => ({
   },
 }))
 
-vi.mock('../src/git/worktree.js', () => ({
-  createWorktreeForJob: vi.fn(),
-  removeWorktreeForJob: vi.fn(),
-}))
+// createWorktreeForJob/removeWorktreeForJob blijven gemockt (deze tests draaien
+// geen echte git), maar LocalLlmWorktreeRefused blijft de echte class — anders
+// zou `err instanceof LocalLlmWorktreeRefused` in attachWorktreeToJob altijd
+// falen (Taak 4).
+vi.mock('../src/git/worktree.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/git/worktree.js')>()
+  return {
+    ...actual,
+    createWorktreeForJob: vi.fn(),
+    removeWorktreeForJob: vi.fn(),
+  }
+})
+
+// isLocalLlmJob/gitPrefixFor blijven echt (ze lezen via de gemockte prisma
+// hierboven) — alleen removeWorktreeWithoutGit wordt gemockt zodat de
+// LocalLlmWorktreeRefused-test 'm met exacte argumenten kan asserten.
+vi.mock('../src/git/local-llm.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/git/local-llm.js')>()
+  return {
+    ...actual,
+    removeWorktreeWithoutGit: vi.fn(),
+  }
+})
 
 vi.mock('../src/git/branch-safety.js', () => ({ maybeBackupPush: vi.fn() }))
 
+// node:child_process: attachWorktreeToJob doet na createWorktreeForJob een
+// directe `rev-parse HEAD` voor base_sha. Default: laat 'm falen (zoals vóór
+// deze mock ook al gebeurde tegen de niet-bestaande gemockte worktreePaden) —
+// individuele tests zetten desgewenst een succesvolle implementatie.
+type ExecCallback = (err: Error | null, result?: { stdout: string; stderr: string }) => void
+vi.mock('node:child_process', () => ({ execFile: vi.fn() }))
+
 import { prisma } from '../src/prisma.js'
-import { createWorktreeForJob, removeWorktreeForJob } from '../src/git/worktree.js'
+import { createWorktreeForJob, removeWorktreeForJob, LocalLlmWorktreeRefused } from '../src/git/worktree.js'
+import { removeWorktreeWithoutGit, SAFE_GIT_CONFIG } from '../src/git/local-llm.js'
 import { maybeBackupPush } from '../src/git/branch-safety.js'
 import {
   resolveRepoRoot,
@@ -38,6 +76,8 @@ const mockPrisma = prisma as unknown as {
 const mockCreateWorktree = createWorktreeForJob as ReturnType<typeof vi.fn>
 const mockRemoveWorktree = removeWorktreeForJob as ReturnType<typeof vi.fn>
 const mockBackupPush = maybeBackupPush as unknown as ReturnType<typeof vi.fn>
+const mockRemoveWorktreeWithoutGit = removeWorktreeWithoutGit as ReturnType<typeof vi.fn>
+const mockExecFile = execFile as unknown as ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -45,6 +85,10 @@ beforeEach(() => {
   mockPrisma.claudeJob.findUnique.mockResolvedValue({ sprint_run_id: null, sprint_run: null })
   mockPrisma.sprintTaskExecution.deleteMany.mockResolvedValue({ count: 0 })
   mockBackupPush.mockResolvedValue('pushed')
+  mockExecFile.mockImplementation(
+    (_cmd: string, _args: string[], _opts: unknown, cb: ExecCallback) =>
+      cb(new Error('ENOENT: test default (no real worktree on disk)')),
+  )
 })
 
 describe('resolveRepoRoot', () => {
@@ -177,6 +221,108 @@ describe('attachWorktreeToJob', () => {
     expect(mockPrisma.$executeRaw).toHaveBeenCalledOnce()
     const sqlParts: string[] = mockPrisma.$executeRaw.mock.calls[0][0]
     expect(sqlParts.join('')).toContain("status = 'QUEUED'")
+  })
+})
+
+// Taak 4: local_llm-bewaking bij attachWorktreeToJob — de rev-parse HEAD
+// (base_sha) krijgt SAFE_GIT_CONFIG voor een local_llm-job, en een
+// LocalLlmWorktreeRefused uit createWorktreeForJob zet de job op FAILED
+// i.p.v. rollbackClaim.
+describe('attachWorktreeToJob: local_llm-bewaking (Taak 4)', () => {
+  const originalWorktreeEnv = process.env.SCRUM4ME_AGENT_WORKTREE_DIR
+  const originalRepoEnv = process.env['SCRUM4ME_REPO_ROOT_prod-local']
+
+  beforeEach(() => {
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = '/wt-root'
+    process.env['SCRUM4ME_REPO_ROOT_prod-local'] = '/repos/my-project'
+    mockPrisma.claudeJob.findFirst.mockResolvedValue(null)
+    mockPrisma.claudeJob.update.mockResolvedValue({})
+  })
+
+  afterEach(() => {
+    if (originalWorktreeEnv === undefined) delete process.env.SCRUM4ME_AGENT_WORKTREE_DIR
+    else process.env.SCRUM4ME_AGENT_WORKTREE_DIR = originalWorktreeEnv
+    if (originalRepoEnv === undefined) delete process.env['SCRUM4ME_REPO_ROOT_prod-local']
+    else process.env['SCRUM4ME_REPO_ROOT_prod-local'] = originalRepoEnv
+  })
+
+  it('prefixt de rev-parse HEAD (base_sha) met SAFE_GIT_CONFIG voor een local_llm-job', async () => {
+    mockPrisma.claudeJob.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => {
+      if (where.id === 'job-local-attach') {
+        return { sprint_run_id: null, sprint_run: null, required_capability: 'local_llm' }
+      }
+      return { sprint_run_id: null, sprint_run: null, required_capability: null }
+    })
+    mockCreateWorktree.mockResolvedValue({
+      worktreePath: '/wt-root/job-local-attach',
+      branchName: 'feat/story-local',
+    })
+    mockPrisma.$executeRaw.mockResolvedValue(0)
+    mockExecFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: ExecCallback) =>
+      cb(null, { stdout: 'deadbeef\n', stderr: '' }),
+    )
+
+    const result = await attachWorktreeToJob('prod-local', 'job-local-attach', 'story-local')
+
+    expect('worktree_path' in result).toBe(true)
+    const revParseCall = mockExecFile.mock.calls.find((c) => {
+      const args = c[1] as string[]
+      return Array.isArray(args) && args.includes('rev-parse') && args.includes('HEAD')
+    })
+    expect(revParseCall).toBeDefined()
+    expect(revParseCall![1]).toEqual([...SAFE_GIT_CONFIG, 'rev-parse', 'HEAD'])
+  })
+
+  it('laat de rev-parse HEAD (base_sha) ongewijzigd voor een niet-lokale job', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      sprint_run_id: null, sprint_run: null, required_capability: null,
+    })
+    mockCreateWorktree.mockResolvedValue({
+      worktreePath: '/wt-root/job-normal-attach',
+      branchName: 'feat/story-normal',
+    })
+    mockPrisma.$executeRaw.mockResolvedValue(0)
+    mockExecFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: ExecCallback) =>
+      cb(null, { stdout: 'deadbeef\n', stderr: '' }),
+    )
+
+    const result = await attachWorktreeToJob('prod-local', 'job-normal-attach', 'story-normal')
+
+    expect('worktree_path' in result).toBe(true)
+    const revParseCall = mockExecFile.mock.calls.find((c) => {
+      const args = c[1] as string[]
+      return Array.isArray(args) && args.includes('rev-parse') && args.includes('HEAD')
+    })
+    expect(revParseCall).toBeDefined()
+    expect(revParseCall![1]).toEqual(['rev-parse', 'HEAD'])
+    expect(gitlinkMocks.assertTrustedLocalJobWorktree).not.toHaveBeenCalled()
+  })
+
+  it('markeert de job FAILED (geen rollbackClaim) en ruimt op zonder git wanneer de worktree als local_llm geweigerd wordt', async () => {
+    mockCreateWorktree.mockRejectedValue(
+      new LocalLlmWorktreeRefused('.gitmodules wijkt af van origin/main; submodule-init geweigerd'),
+    )
+
+    const result = await attachWorktreeToJob('prod-local', 'job-refused', 'story-refused')
+
+    expect('error' in result).toBe(true)
+    expect((result as { error: string }).error).toBe(
+      '.gitmodules wijkt af van origin/main; submodule-init geweigerd',
+    )
+    expect(mockPrisma.claudeJob.update).toHaveBeenCalledWith({
+      where: { id: 'job-refused' },
+      data: expect.objectContaining({
+        status: 'FAILED',
+        error: '.gitmodules wijkt af van origin/main; submodule-init geweigerd',
+        finished_at: expect.any(Date),
+      }),
+    })
+    expect(mockRemoveWorktreeWithoutGit).toHaveBeenCalledWith(
+      '/repos/my-project',
+      path.join('/wt-root', 'job-refused'),
+    )
+    // Geen rollbackClaim: geen $executeRaw-aanroep die de job terug op QUEUED zet.
+    expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
   })
 })
 

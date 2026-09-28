@@ -27,6 +27,7 @@ import {
 import { releaseLocksOnTerminal } from '../git/job-locks.js'
 import { resolveRepoRoot } from './wait-for-job.js'
 import { pushBranchForJob } from '../git/push.js'
+import { gitPrefixFor, UntrustedWorktreeGitlinkError } from '../git/local-llm.js'
 import { maybeBackupPush } from '../git/branch-safety.js'
 import { notifyJobEnqueued } from '../lib/dispatch/notify.js'
 import { formatDocsAuditCursor } from '@shared/docs-audit-cursor.js'
@@ -232,7 +233,26 @@ export async function prepareDoneUpdate(
   const worktreeDir = getWorktreeRoot()
   const worktreePath = path.join(worktreeDir, jobId)
 
-  const pushResult = await pushBranchForJob({ worktreePath, branchName })
+  // local_llm (Forgejo-review PR #169): pushBranchForJob bouwt zijn eerste
+  // git-aanroep via gitPrefixFor, dat voor een local_llm-worktree eerst de
+  // gitlink tegen de clone controleert — vóór enige git. Klopt die niet, dan
+  // wordt de job FAILED zonder push; de worktree blijft staan voor inspectie
+  // (zoals bij een mislukte push). Niet-lokale jobs: gitPrefixFor gooit nooit.
+  let pushResult: Awaited<ReturnType<typeof pushBranchForJob>>
+  try {
+    pushResult = await pushBranchForJob({ worktreePath, branchName })
+  } catch (err) {
+    if (!(err instanceof UntrustedWorktreeGitlinkError)) throw err
+    console.warn(`[prepareDoneUpdate] ${err.message} (job ${jobId})`)
+    return {
+      dbStatus: 'FAILED',
+      pushedAt: undefined,
+      branchOverride: undefined,
+      errorOverride: err.message,
+      skipWorktreeCleanup: true,
+      headSha: undefined,
+    }
+  }
 
   if (pushResult.pushed) {
     let headSha: string | undefined
@@ -240,7 +260,11 @@ export async function prepareDoneUpdate(
       const { execFile } = await import('node:child_process')
       const { promisify } = await import('node:util')
       const exec = promisify(execFile)
-      const { stdout } = await exec('git', ['rev-parse', 'HEAD'], { cwd: worktreePath })
+      const { stdout } = await exec(
+        'git',
+        [...(await gitPrefixFor(worktreePath)), 'rev-parse', 'HEAD'],
+        { cwd: worktreePath },
+      )
       headSha = stdout.trim()
     } catch (err) {
       console.warn(`[prepareDoneUpdate] failed to resolve HEAD sha for job ${jobId}:`, err)
@@ -1069,6 +1093,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         // Auto-PR: best-effort, only when push actually happened.
         // M12: idee-jobs hebben geen task_id en geen branch — skip auto-PR.
         // PBI-50: SPRINT_IMPLEMENTATION krijgt een eigen PR-flow (sprint-goal als title).
+        // M3 (local_llm): de harness beheert deze losse taakjobs zelf en de
+        // Claude-sessie mergt de branch met de hand — geen auto-PR.
         let prUrl: string | null = null
         if (
           actualStatus === 'done' &&
@@ -1076,7 +1102,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           branchToWrite &&
           job.kind === 'TASK_IMPLEMENTATION' &&
           job.source !== 'MANUAL' &&
-          job.task_id
+          job.task_id &&
+          job.required_capability !== 'local_llm'
         ) {
           const worktreeDir = getWorktreeRoot()
           prUrl = await maybeCreateAutoPr({
@@ -1300,12 +1327,15 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         // bij elke task-statusovergang (DONE of FAILED). De helper handelt ook
         // sibling-cancel binnen dezelfde SprintRun af bij FAILED.
         // Idea-jobs hebben geen task_id en worden hier overgeslagen.
+        // M3 (local_llm): de harness beheert de taakstatus zelf via
+        // update_task_status — geen dubbele doorwerking hier.
         let sprintRunBecameDone = false
         if (
           (actualStatus === 'done' || actualStatus === 'failed') &&
           job.kind === 'TASK_IMPLEMENTATION' &&
           job.source !== 'MANUAL' &&
-          job.task_id
+          job.task_id &&
+          job.required_capability !== 'local_llm'
         ) {
           try {
             const propagation = await propagateStatusUpwards(
@@ -1598,11 +1628,15 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         // PBI-50: SPRINT_IMPLEMENTATION SKIPS this — cascade naar tasks/stories/
         // PBIs is al gebeurd via per-task update_task_status('failed')-calls
         // van de worker. Sprint-job heeft geen task_id; cancelPbi-flow past niet.
+        // M3 (local_llm): geen PBI fail-cascade — de harness/Claude-sessie
+        // beheert deze losse taakjob zelf; siblings onder dezelfde PBI blijven
+        // ongemoeid.
         if (
           actualStatus === 'failed' &&
           job.kind === 'TASK_IMPLEMENTATION' &&
           job.source !== 'MANUAL' &&
-          job.task_id
+          job.task_id &&
+          job.required_capability !== 'local_llm'
         ) {
           await cancelPbiOnFailure(job_id)
         }

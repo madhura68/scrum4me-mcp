@@ -74,12 +74,16 @@ export function buildClaimableJobWhereClause(input: ClaimFilterInput): string {
   }
 
   // M2 (agent-harness idea-chat-local-llm): een worker met exact ['local_llm']
-  // is een dedicated local_llm-worker — hard beperken tot IDEA_CHAT/SYSTEM en
-  // de NULL-capability-tak uitsluiten. Zonder deze tak zou zo'n worker via het
-  // generieke pad ook NULL-capability-jobs (gewoon Claude-werk) claimen, want
-  // de generieke capability-filter matcht altijd NULL ongeacht de lijst.
-  // Byte-symmetrisch met deployOnly/docsAuditOnly, met `source = 'SYSTEM'`
-  // (enkelvoudig, niet IN) omdat IDEA_CHAT-jobs voor local_llm altijd SYSTEM zijn.
+  // is een dedicated local_llm-worker — hard beperken tot twee kind/source-
+  // combinaties en de NULL-capability-tak uitsluiten. Zonder deze tak zou zo'n
+  // worker via het generieke pad ook NULL-capability-jobs (gewoon Claude-werk)
+  // claimen, want de generieke capability-filter matcht altijd NULL ongeacht
+  // de lijst. Byte-symmetrisch met deployOnly/docsAuditOnly.
+  // Twee combinaties: IDEA_CHAT/SYSTEM (M2, `source = 'SYSTEM'` enkelvoudig
+  // omdat IDEA_CHAT-jobs voor local_llm altijd SYSTEM zijn) en, sinds M3,
+  // TASK_IMPLEMENTATION/COPILOT/sprint_run_id IS NULL — losse taakjobs die
+  // dispatch_job aanmaakt. `sprint_run_id IS NULL` sluit sprint-runs uit: die
+  // horen bij de SPRINT_IMPLEMENTATION-route, niet bij deze losse-taakjob-route.
   const localLlmOnly =
     (input.capabilities ?? []).length === 1 && input.capabilities?.[0] === 'local_llm'
   if (localLlmOnly) {
@@ -90,8 +94,8 @@ export function buildClaimableJobWhereClause(input: ClaimFilterInput): string {
             AND cj.status = 'QUEUED'
             AND cj.dispatch_request_id IS NULL
             AND cj.required_capability = 'local_llm'
-            AND cj.kind = 'IDEA_CHAT'
-            AND cj.source = 'SYSTEM'
+            AND ((cj.kind = 'IDEA_CHAT' AND cj.source = 'SYSTEM')
+              OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'COPILOT' AND cj.sprint_run_id IS NULL))
   `
   }
 
@@ -198,9 +202,9 @@ export function buildHigherTierIdleFragment(input: HigherTierIdleInput): Prisma.
                  AND cj.required_capability = 'docs_audit'
                  AND cj.source IN ('SYSTEM', 'MANUAL')
               WHEN w.capabilities = ARRAY['local_llm']::text[]
-                THEN cj.kind = 'IDEA_CHAT'
-                 AND cj.required_capability = 'local_llm'
-                 AND cj.source = 'SYSTEM'
+                THEN cj.required_capability = 'local_llm'
+                 AND ((cj.kind = 'IDEA_CHAT' AND cj.source = 'SYSTEM')
+                   OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'COPILOT' AND cj.sprint_run_id IS NULL))
               ELSE cj.required_capability IS NULL
                 OR cj.required_capability = ANY(w.capabilities)
             END
@@ -241,10 +245,15 @@ export const claimPredicates = {
     if (e.capabilities.length === 1 && ['deploy', 'docs_audit'].includes(e.capabilities[0])) {
       return j.requiredCapability === e.capabilities[0] && j.kind === e.capabilities[0].toUpperCase() && ['SYSTEM', 'MANUAL'].includes(j.source)
     }
-    // M2: 'local_llm' is geen kind is capability.toUpperCase() (het kind blijft
-    // IDEA_CHAT); aparte tak nodig, zie eligibility.ts-contract in het M2-plan.
+    // M2/M3: 'local_llm' is geen kind is capability.toUpperCase() (het kind
+    // blijft IDEA_CHAT); aparte tak nodig, zie eligibility.ts-contract in het
+    // M2-/M3-plan. Twee combinaties: IDEA_CHAT/SYSTEM (M2) en, sinds M3, ook
+    // losse TASK_IMPLEMENTATION/COPILOT-jobs zonder sprint-run (sprint-runs
+    // horen bij de SPRINT_IMPLEMENTATION-route, niet bij deze route).
     if (e.capabilities.length === 1 && e.capabilities[0] === 'local_llm') {
-      return j.requiredCapability === 'local_llm' && j.kind === 'IDEA_CHAT' && j.source === 'SYSTEM'
+      return j.requiredCapability === 'local_llm' && (
+        (j.kind === 'IDEA_CHAT' && j.source === 'SYSTEM') ||
+        (j.kind === 'TASK_IMPLEMENTATION' && j.source === 'COPILOT' && j.sprintRunId === null))
     }
     return j.requiredCapability === null || e.capabilities.includes(j.requiredCapability)
   },
@@ -276,7 +285,7 @@ const claimConditionSql: Record<keyof typeof claimPredicates, (e: ClaimExecutor)
   capability: e => {
     if (e.capabilities.length === 1 && e.capabilities[0] === 'deploy') return Prisma.sql`cj.required_capability = 'deploy' AND cj.kind = 'DEPLOY' AND cj.source IN ('SYSTEM', 'MANUAL')`
     if (e.capabilities.length === 1 && e.capabilities[0] === 'docs_audit') return Prisma.sql`cj.required_capability = 'docs_audit' AND cj.kind = 'DOCS_AUDIT' AND cj.source IN ('SYSTEM', 'MANUAL')`
-    if (e.capabilities.length === 1 && e.capabilities[0] === 'local_llm') return Prisma.sql`cj.required_capability = 'local_llm' AND cj.kind = 'IDEA_CHAT' AND cj.source = 'SYSTEM'`
+    if (e.capabilities.length === 1 && e.capabilities[0] === 'local_llm') return Prisma.sql`cj.required_capability = 'local_llm' AND ((cj.kind = 'IDEA_CHAT' AND cj.source = 'SYSTEM') OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'COPILOT' AND cj.sprint_run_id IS NULL))`
     return e.capabilities.length ? Prisma.sql`(cj.required_capability IS NULL OR cj.required_capability = ANY(${e.capabilities}::text[]))` : Prisma.sql`cj.required_capability IS NULL`
   },
   kind: e => e.managed ? Prisma.sql`cj.source = 'COPILOT' AND cj.kind IN ('QUEUE_TASK','QUEUE_REVIEW','TASK_IMPLEMENTATION') AND cj.sprint_run_id IS NULL` : Prisma.raw(CLAIMABLE_JOB_KIND_FILTER.replace(/^AND /, '')),

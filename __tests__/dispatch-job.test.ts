@@ -113,6 +113,27 @@ it('happy paths leveren job-ids', async () => {
   expect(JSON.parse(toolText(sprint))).toMatchObject({ sprint_run_id: 'run-1' })
 })
 
+it('required_capability local_llm bij TASK_IMPLEMENTATION wordt doorgegeven', async () => {
+  const { dispatchTaskImplementation } = await import('../src/lib/dispatch/task-implementation.js')
+  const res = await handleDispatchJob({
+    kind: 'TASK_IMPLEMENTATION', product_id: 'p1', task_id: 't1', required_capability: 'local_llm',
+  })
+  expect(res.isError).toBeFalsy()
+  expect(dispatchTaskImplementation).toHaveBeenCalledWith(expect.objectContaining({
+    taskId: 't1', productId: 'p1', userId: 'u1', requiredCapability: 'local_llm',
+  }))
+})
+
+it('required_capability bij een andere kind dan TASK_IMPLEMENTATION → validatiefout, geen dispatch', async () => {
+  const { dispatchPrReview } = await import('../src/lib/dispatch/review-jobs.js')
+  const res = await handleDispatchJob({
+    kind: 'PR_REVIEW', product_id: 'p1', pr_url: 'https://x/y/pulls/1', required_capability: 'local_llm',
+  } as never)
+  expect(res.isError).toBe(true)
+  expect(toolText(res)).toMatch(/required_capability is alleen toegestaan bij TASK_IMPLEMENTATION\./)
+  expect(dispatchPrReview).not.toHaveBeenCalled()
+})
+
 it('DispatchError uit een dispatcher wordt een nette toolError', async () => {
   const { dispatchIdeaJob } = await import('../src/lib/dispatch/idea-jobs.js')
   const { DispatchError } = await import('../src/lib/dispatch/errors.js')

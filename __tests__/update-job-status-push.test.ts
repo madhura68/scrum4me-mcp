@@ -1,4 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+// Forgejo-review PR #169: gitPrefixFor controleert voor een local_llm-worktree
+// eerst de gitlink tegen de clone (fs-only). Deze tests gaan over de
+// prefix-argumenten met fictieve paden; de controle zelf is gestubd en wordt
+// getest in __tests__/git/worktree-gitlink.test.ts en de done-pad-ketentest.
+const gitlinkMocks = vi.hoisted(() => ({ assertTrustedLocalJobWorktree: vi.fn() }))
+vi.mock('../src/git/worktree-gitlink.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/git/worktree-gitlink.js')>()),
+  assertTrustedLocalJobWorktree: gitlinkMocks.assertTrustedLocalJobWorktree,
+}))
 import * as path from 'node:path'
 
 vi.mock('../src/git/push.js', () => ({
@@ -17,21 +27,41 @@ vi.mock('../src/git/branch-safety.js', () => ({
   maybeBackupPush: vi.fn(),
 }))
 
+// Taak 4: prepareDoneUpdate doet ná een geslaagde push een directe
+// `rev-parse HEAD` via een dynamische node:child_process-import, die nu
+// gitPrefixFor(worktreePath) meekrijgt. Mock execFile met de last-arg-
+// callback-conventie (zoals __tests__/git/push.test.ts) zodat we de exacte
+// argumenten kunnen asserten zonder een echte worktree op schijf nodig te
+// hebben.
+vi.mock('node:child_process', () => ({ execFile: vi.fn() }))
+
 import { pushBranchForJob } from '../src/git/push.js'
 import { prisma } from '../src/prisma.js'
 import { maybeBackupPush } from '../src/git/branch-safety.js'
+import { execFile } from 'node:child_process'
+import { SAFE_GIT_CONFIG, UntrustedWorktreeGitlinkError } from '../src/git/local-llm.js'
 import { backupPushOnFailure, prepareDoneUpdate } from '../src/tools/update-job-status.js'
+
+type ExecCallback = (err: Error | null, result?: { stdout: string; stderr: string }) => void
 
 const mockPush = pushBranchForJob as ReturnType<typeof vi.fn>
 const mockBackupPush = maybeBackupPush as unknown as ReturnType<typeof vi.fn>
 const mockFindUnique = (prisma as unknown as {
   claudeJob: { findUnique: ReturnType<typeof vi.fn> }
 }).claudeJob.findUnique
+const mockExecFile = execFile as unknown as ReturnType<typeof vi.fn>
 
 beforeEach(() => {
   vi.clearAllMocks()
   mockFindUnique.mockResolvedValue(null)
   mockBackupPush.mockResolvedValue('pushed')
+  // Default: gedraagt zich als het reële path-gebaseerde gedrag van vóór
+  // deze mock — de post-push rev-parse faalt stil tegen een niet-bestaande
+  // worktree (headSha blijft undefined, alleen console.warn). Individuele
+  // tests zetten desgewenst een succesvolle implementatie.
+  mockExecFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: ExecCallback) =>
+    cb(new Error('ENOENT: test default (no real worktree on disk)')),
+  )
 })
 
 describe('prepareDoneUpdate', () => {
@@ -143,6 +173,71 @@ describe('prepareDoneUpdate', () => {
 
     expect(plan.dbStatus).toBe('FAILED')
     expect(plan.skipWorktreeCleanup).toBe(true)
+  })
+
+  it('afgekeurde local_llm-gitlink ⇒ FAILED met de gitlink-melding, worktree blijft staan, geen rev-parse', async () => {
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = '/wt'
+    mockPush.mockRejectedValue(new UntrustedWorktreeGitlinkError('gitdir ligt niet direct onder x'))
+
+    const plan = await prepareDoneUpdate('job-abc', 'feat/job-abc')
+
+    expect(plan).toEqual({
+      dbStatus: 'FAILED',
+      pushedAt: undefined,
+      branchOverride: undefined,
+      errorOverride:
+        'git-administratie van de worktree wijst niet naar de clone (gitdir ligt niet direct onder x); geen git uitgevoerd',
+      skipWorktreeCleanup: true,
+      headSha: undefined,
+    })
+    expect(mockExecFile).not.toHaveBeenCalled()
+  })
+
+  it('andere fouten uit pushBranchForJob blijven doorgooien (ongewijzigd gedrag)', async () => {
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = '/wt'
+    mockPush.mockRejectedValue(new Error('onverwacht'))
+
+    await expect(prepareDoneUpdate('job-abc', 'feat/job-abc')).rejects.toThrow('onverwacht')
+  })
+
+  // Taak 4: de post-push rev-parse HEAD (headSha) krijgt gitPrefixFor(worktreePath).
+  it('prefixt de post-push rev-parse HEAD met SAFE_GIT_CONFIG voor een local_llm-job', async () => {
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = '/wt'
+    mockPush.mockResolvedValue({ pushed: true, remoteRef: 'refs/heads/feat/job-abc' })
+    mockFindUnique.mockResolvedValue({ required_capability: 'local_llm' })
+    mockExecFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: ExecCallback) =>
+      cb(null, { stdout: 'deadbeef\n', stderr: '' }),
+    )
+
+    const plan = await prepareDoneUpdate('job-abc', 'feat/job-abc')
+
+    expect(plan.headSha).toBe('deadbeef')
+    const revParseCall = mockExecFile.mock.calls.find((c) => {
+      const args = c[1] as string[]
+      return Array.isArray(args) && args.includes('rev-parse') && args.includes('HEAD')
+    })
+    expect(revParseCall).toBeDefined()
+    expect(revParseCall![1]).toEqual([...SAFE_GIT_CONFIG, 'rev-parse', 'HEAD'])
+  })
+
+  it('laat de post-push rev-parse HEAD ongewijzigd voor een niet-lokale job', async () => {
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = '/wt'
+    mockPush.mockResolvedValue({ pushed: true, remoteRef: 'refs/heads/feat/job-abc' })
+    mockFindUnique.mockResolvedValue(null)
+    mockExecFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: ExecCallback) =>
+      cb(null, { stdout: 'deadbeef\n', stderr: '' }),
+    )
+
+    const plan = await prepareDoneUpdate('job-abc', 'feat/job-abc')
+
+    expect(plan.headSha).toBe('deadbeef')
+    const revParseCall = mockExecFile.mock.calls.find((c) => {
+      const args = c[1] as string[]
+      return Array.isArray(args) && args.includes('rev-parse') && args.includes('HEAD')
+    })
+    expect(revParseCall).toBeDefined()
+    expect(revParseCall![1]).toEqual(['rev-parse', 'HEAD'])
+    expect(gitlinkMocks.assertTrustedLocalJobWorktree).not.toHaveBeenCalled()
   })
 })
 

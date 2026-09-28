@@ -36,3 +36,28 @@ describe('claim-filter: local_llm (M2 dedicated IDEA_CHAT-worker)', () => {
     expect(clause).not.toContain("'local_llm'")
   })
 })
+
+describe('claim-filter: local_llm (M3 dedicated worker claimt ook losse TASK_IMPLEMENTATION-jobs)', () => {
+  it('local_llm-only worker: Prisma.Sql-variant (live pad) bevat ook de TASK_IMPLEMENTATION/COPILOT/sprint_run_id-tak', () => {
+    const fragment = buildClaimableJobWhereFragment({
+      userId: 'user-1',
+      runtime: 'CLAUDE',
+      hasProductScope: false,
+      capabilities: ['local_llm'],
+    })
+    const text = sqlText(fragment)
+    expect(text).toContain("cj.required_capability = 'local_llm'")
+    expect(text).toContain("cj.kind = 'IDEA_CHAT'")
+    expect(text).toContain("cj.source = 'SYSTEM'")
+    expect(text).toContain("cj.kind = 'TASK_IMPLEMENTATION'")
+    expect(text).toContain("cj.source = 'COPILOT'")
+    expect(text).toContain('cj.sprint_run_id IS NULL')
+  })
+
+  it('local_llm-only worker: string-variant (buildClaimableJobWhereClause) matcht dezelfde tak (symmetrie)', () => {
+    const clause = buildClaimableJobWhereClause({ runtime: 'CLAUDE', hasProductScope: false, capabilities: ['local_llm'] })
+    expect(clause).toContain("cj.kind = 'TASK_IMPLEMENTATION'")
+    expect(clause).toContain("cj.source = 'COPILOT'")
+    expect(clause).toContain('cj.sprint_run_id IS NULL')
+  })
+})

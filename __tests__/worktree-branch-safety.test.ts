@@ -1,9 +1,17 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
+
+// Deze tests dekken de niet-lokale weg (geen local_llm-job); de findUnique-mock
+// zorgt dat isLocalLlmJob() altijd false teruggeeft zonder een echte DB nodig
+// te hebben. Het local_llm-pad zelf zit in __tests__/git/local-llm.test.ts.
+vi.mock('../src/prisma.js', () => ({
+  prisma: { claudeJob: { findUnique: vi.fn().mockResolvedValue(null) } },
+}))
+
 import { createWorktreeForJob, removeWorktreeForJob } from '../src/git/worktree.js'
 
 const exec = promisify(execFile)

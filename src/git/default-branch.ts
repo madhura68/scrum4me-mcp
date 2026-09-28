@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { gitPrefixFor } from './local-llm.js'
 
 const exec = promisify(execFile)
 
@@ -16,15 +17,19 @@ const exec = promisify(execFile)
 // Deze helper stond eerder privé in product-worktree.ts en dekte daardoor
 // alleen de product-worktrees; job-worktrees en de push-gate misten hem.
 export async function resolveOriginDefaultRef(cwd: string): Promise<string> {
+  // Taak 4: cwd is soms een local_llm-jobworktree (push-gate, diff) en soms
+  // repoRoot (claim-time in createWorktreeForJob) — gitPrefixFor(cwd) is []
+  // voor repoRoot, dus dat pad blijft ongewijzigd.
+  const prefix = await gitPrefixFor(cwd)
   try {
-    await exec('git', ['remote', 'set-head', 'origin', '--auto'], { cwd })
+    await exec('git', [...prefix, 'remote', 'set-head', 'origin', '--auto'], { cwd })
   } catch {
     // origin/HEAD kon niet automatisch gezet worden — probeer toch te lezen
   }
   try {
     const { stdout } = await exec(
       'git',
-      ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'],
+      [...prefix, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'],
       { cwd },
     )
     const ref = stdout.trim()
