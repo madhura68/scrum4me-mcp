@@ -266,6 +266,12 @@ op die host tijdens díé sessie — **bij eliminatie vastgesteld, niet positief
 een ontvanger stil `&lt;` naar schijf. Queue-berichten bevatten routinematig
 `<server>:<model>`, `&&` en shell-fragmenten, dus dit raakt de normale gevallen.
 
+## Notes-tools (IDEA-226)
+
+- Six tools (`create_note`, `update_note`, `delete_note`, `get_note`, `search_notes`, `list_note_keywords`) on top of `src/lib/notes-data.ts` — the **only** module that touches `prisma.note*`, `prisma.noteKeyword*` and `prisma.noteKeywordLink*`. Every adapter function takes `userId` as its first parameter; no tool schema has a `user_id`.
+- Writes start with `requireWriteAccess()` (demo → `PERMISSION_DENIED` before handler-level parsing or any DB access; input that fails the published `inputSchema` is rejected by the MCP SDK before the handler runs, so a demo token never reaches the adapter either way); product links and product filters go through `userCanAccessProduct` (respects `scoped_products`). `get_note` is the only read/search tool that returns a `body`; `create_note`/`update_note` return the full note.
+- **Never `prisma db pull` on `note_keywords`:** the partial unique index `note_keywords_default_name_key` and the default keywords live only in Scrum4Me migration `20260928060000_add_notes`. This repo only runs `prisma generate`.
+
 ## Key source files
 
 | File | Purpose |
