@@ -127,6 +127,8 @@ When a `TASK_IMPLEMENTATION` job ends in `FAILED`, `cancelPbiOnFailure` (`src/ca
 - **Merged PR** → revert-PR opened against the base branch via `git revert` (parent-count-aware: `-m 1` for merge-commits, plain revert for squash-merges with 1 parent). **No** auto-merge on the revert PR — review by hand.
 - **Branch without PR** → best-effort `git push origin --delete <branch>` with `expectedHeadSha`-guard, subject to the same M38 gate: an unmerged tip is kept as a backup rather than deleted.
 
+`local_llm` task jobs are exempt: they get no auto-PR, no status propagation to task/story/PBI and no PBI fail-cascade on `done`/`failed` — the harness manages those loose task jobs itself.
+
 A trace (cancelled job count, closed/reverted PRs, deleted branches) is written to the original failed job's `error` column. Race-protection: if a parallel worker tries to `update_job_status` on a job that the cascade already set to `CANCELLED`, the call is rejected with a `JOB_CANCELLED` error so the agent discards local work and calls `wait_for_job` again. The cascade is idempotent and never throws — failures become warnings on the failed-job's trace.
 
 ## Forgejo PR-automatisering
@@ -197,7 +199,7 @@ Or add to `~/.scrum4me-agent-config.json`:
 }
 ```
 
-If no local root is found, `wait_for_job` tries an **on-demand clone** of `product.repo_url` (spec: `docs/superpowers/specs/2026-07-08-on-demand-repo-clone-fallback-design.md`). Only if the clone also fails does it roll the claim back to QUEUED and return an error. Explicit configuration is therefore optional for any product with a valid `repo_url`.
+If no local root is found, `wait_for_job` tries an **on-demand clone** of `product.repo_url` (spec: `docs/superpowers/specs/2026-07-08-on-demand-repo-clone-fallback-design.md`). Only if the clone also fails does it roll the claim back to QUEUED and return an error. Explicit configuration is therefore optional for any product with a valid `repo_url`. Exception: a `local_llm` job (`required_capability = 'local_llm'`) resolves **only** from an explicitly configured root (env var or config entry) — no `~/Projects/<name>` convention lookup and no on-demand clone, and a cross-repo task never falls back to the product root. Without one the job goes straight to `FAILED` (no rollback to QUEUED).
 
 ## Token-usage capture (PostToolUse hook)
 

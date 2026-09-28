@@ -524,7 +524,7 @@ Alternatively, configure repo roots in `~/.scrum4me-agent-config.json`:
 }
 ```
 
-If no repo root is configured for the product, `wait_for_job` tries an **on-demand clone** of `product.repo_url` (spec: `docs/superpowers/specs/2026-07-08-on-demand-repo-clone-fallback-design.md`). Only if the clone also fails does it roll the claim back to `QUEUED` and return an error. Explicit configuration is therefore optional for any product with a valid `repo_url`.
+If no repo root is configured for the product, `wait_for_job` tries an **on-demand clone** of `product.repo_url` (spec: `docs/superpowers/specs/2026-07-08-on-demand-repo-clone-fallback-design.md`). Only if the clone also fails does it roll the claim back to `QUEUED` and return an error. Explicit configuration is therefore optional for any product with a valid `repo_url`. Exception: a `local_llm` job (`required_capability = 'local_llm'`) resolves **only** from an explicitly configured root (env var or config entry) — no `~/Projects/<name>` convention lookup and no on-demand clone, and a cross-repo task never falls back to the product root. Without one the job goes straight to `FAILED` (no rollback to QUEUED).
 
 ### Smoke-test checklist
 
