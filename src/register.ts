@@ -76,6 +76,10 @@ import { registerCreateIssueTool } from './tools/create-issue.js'
 import { registerUpdateIssueTool } from './tools/update-issue.js'
 import { registerListIssuesTool } from './tools/list-issues.js'
 import { registerGetIssueTool } from './tools/get-issue.js'
+// IDEA-226 (PBI-30): private notes — read tools (T-151)
+import { registerGetNoteTool } from './tools/get-note.js'
+import { registerSearchNotesTool } from './tools/search-notes.js'
+import { registerListNoteKeywordsTool } from './tools/list-note-keywords.js'
 
 // Worktree/local-filesystem-bound tools (stdio-only)
 import { registerWaitForJobTool } from './tools/wait-for-job.js'
@@ -177,6 +181,10 @@ export function registerSharedTools(server: McpServer): void {
   registerUpdateIssueTool(server)
   registerListIssuesTool(server)
   registerGetIssueTool(server)
+  // IDEA-226 (PBI-30): private notes — read tools (T-151)
+  registerGetNoteTool(server)
+  registerSearchNotesTool(server)
+  registerListNoteKeywordsTool(server)
 }
 
 /**
