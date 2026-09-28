@@ -9,6 +9,9 @@
 // root, and never touches cloneRepoOnDemand or rollbackClaim when none exists.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { execFile } from 'node:child_process'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import * as fs from 'node:fs/promises'
 
 // vi.mock factories are hoisted, so the mock fn must be created via vi.hoisted.
 const { cloneMock } = vi.hoisted(() => ({ cloneMock: vi.fn() }))
@@ -153,6 +156,160 @@ describe('attachWorktreeToJob: local_llm-job zonder repo-root (P13)', () => {
     )
     expect(mockCreateWorktree).toHaveBeenCalledWith(
       expect.objectContaining({ repoRoot: '/cloned/repo-root-zzz-nonexistent' }),
+    )
+  })
+})
+
+// Follow-up (re-review regression, P13): explicitRootsOnly guarded the
+// PRODUCT-level convention/on-demand-clone steps, but the TASK-level route
+// (src/tools/wait-for-job.ts:~133-145) still fell through to product-level
+// resolution once its own env/config checks missed. A cross-repo local_llm
+// task (task.repo_url set, no SCRUM4ME_REPO_ROOT_REPO_<name>) then silently
+// resolved to the PRODUCT's root — a different repo — instead of failing.
+// "A cross-repo task must run in ITS repo" (the existing on-demand-clone
+// comment) applies just as much when cloning is off.
+describe('attachWorktreeToJob: task-route explicitRootsOnly regression (P13 follow-up)', () => {
+  const TASK_PRODUCT_ID = 'prod-local-llm-task-route-zzz'
+  const TASK_REPO_URL = 'https://git.jp-visser.nl/janpeter/task-route-zzz-repo.git'
+  const TASK_REPO_NAME = 'task-route-zzz-repo'
+  const TASK_REPO_ENV_KEY = `SCRUM4ME_REPO_ROOT_REPO_${TASK_REPO_NAME}`
+
+  const originalEnv = { ...process.env }
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('SCRUM4ME_REPO_ROOT_')) delete process.env[key]
+    }
+    Object.assign(process.env, originalEnv)
+  })
+
+  it('local_llm-job met task.repo_url, geen REPO_-root, WEL een product-root → FAILED (niet de product-repo)', async () => {
+    delete process.env[TASK_REPO_ENV_KEY]
+    // The product DOES have an explicitly configured root — the bug was
+    // falling through to exactly this, landing the worktree in the wrong repo.
+    process.env[`SCRUM4ME_REPO_ROOT_${TASK_PRODUCT_ID}`] = '/repos/PRODUCT-should-never-be-used'
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      sprint_run_id: null,
+      sprint_run: null,
+      required_capability: 'local_llm',
+    })
+
+    const result = await attachWorktreeToJob(
+      TASK_PRODUCT_ID,
+      'job-task-route-no-repo-root',
+      'story-x',
+      TASK_REPO_URL,
+    )
+
+    expect('error' in result).toBe(true)
+    expect((result as { error: string }).error).toBe(
+      `geen repo-root voor task.repo_url=${TASK_REPO_URL} op deze host ` +
+        '(local_llm vereist een expliciete SCRUM4ME_REPO_ROOT_*)',
+    )
+    expect(mockCreateWorktree).not.toHaveBeenCalled()
+    expect(cloneMock).not.toHaveBeenCalled()
+    expect(mockPrisma.claudeJob.update).toHaveBeenCalledWith({
+      where: { id: 'job-task-route-no-repo-root' },
+      data: expect.objectContaining({ status: 'FAILED' }),
+    })
+    expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
+  })
+
+  it('local_llm-job met task.repo_url EN een REPO_-root claimt met die task-root', async () => {
+    process.env[TASK_REPO_ENV_KEY] = '/repos/task-specific-repo'
+    // Product-level root present too — must NOT win; the task-level root does.
+    process.env[`SCRUM4ME_REPO_ROOT_${TASK_PRODUCT_ID}`] = '/repos/PRODUCT-should-never-be-used'
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      sprint_run_id: null,
+      sprint_run: null,
+      required_capability: 'local_llm',
+    })
+    mockCreateWorktree.mockResolvedValue({
+      worktreePath: '/wt-root/job-task-route-with-repo-root',
+      branchName: 'feat/story-x',
+    })
+
+    const result = await attachWorktreeToJob(
+      TASK_PRODUCT_ID,
+      'job-task-route-with-repo-root',
+      'story-x',
+      TASK_REPO_URL,
+    )
+
+    expect('worktree_path' in result).toBe(true)
+    expect(cloneMock).not.toHaveBeenCalled()
+    expect(mockCreateWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({ repoRoot: '/repos/task-specific-repo' }),
+    )
+  })
+})
+
+// Follow-up (re-review regression, P13): the ~/Projects/<name> convention
+// lookup must be skipped for a local_llm job's TASK route too, not just the
+// product route — same bug as above, one level up (task-convention runs
+// before the task-level explicitRootsOnly short-circuit was added).
+describe('attachWorktreeToJob: ~/Projects convention skipped for local_llm task route (P13 follow-up)', () => {
+  const TASK_REPO_NAME = 'task-conv-zzz-repo'
+  const TASK_REPO_URL = `https://git.jp-visser.nl/janpeter/${TASK_REPO_NAME}.git`
+  const originalEnv = { ...process.env }
+  let tmpHome: string
+
+  beforeEach(async () => {
+    tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'p13-repo-root-'))
+    await fs.mkdir(path.join(tmpHome, 'Projects', TASK_REPO_NAME, '.git'), { recursive: true })
+    process.env.HOME = tmpHome
+  })
+
+  afterEach(async () => {
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('SCRUM4ME_REPO_ROOT_')) delete process.env[key]
+    }
+    Object.assign(process.env, originalEnv)
+    await fs.rm(tmpHome, { recursive: true, force: true }).catch(() => {})
+  })
+
+  it('local_llm-job resolvet NIET naar de ~/Projects-conventie voor de task-repo', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      sprint_run_id: null,
+      sprint_run: null,
+      required_capability: 'local_llm',
+    })
+
+    const result = await attachWorktreeToJob(
+      'prod-local-llm-task-conv-zzz',
+      'job-task-conv-local',
+      'story-x',
+      TASK_REPO_URL,
+    )
+
+    expect('error' in result).toBe(true)
+    expect(mockCreateWorktree).not.toHaveBeenCalled()
+    expect(cloneMock).not.toHaveBeenCalled()
+  })
+
+  it('regressiebewaker: een niet-lokale job resolvet nog steeds via de ~/Projects-taskconventie', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      sprint_run_id: null,
+      sprint_run: null,
+      required_capability: null,
+    })
+    mockCreateWorktree.mockResolvedValue({
+      worktreePath: '/wt-root/job-task-conv-normal',
+      branchName: 'feat/story-x',
+    })
+
+    const result = await attachWorktreeToJob(
+      'prod-normal-task-conv-zzz',
+      'job-task-conv-normal',
+      'story-x',
+      TASK_REPO_URL,
+    )
+
+    expect('worktree_path' in result).toBe(true)
+    expect(mockCreateWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repoRoot: path.join(tmpHome, 'Projects', TASK_REPO_NAME),
+      }),
     )
   })
 })

@@ -130,19 +130,24 @@ export async function resolveRepoRoot(
         if (config.repoRoots?.[taskRepoName]) return resolved('task-config', config.repoRoots[taskRepoName])
       } catch { /* fall through */ }
 
-      if (!explicitRootsOnly) {
-        const candidate = path.join(os.homedir(), 'Projects', taskRepoName)
-        try {
-          await fs.access(path.join(candidate, '.git'))
-          return resolved('task-convention', candidate)
-        } catch { /* not precloned */ }
+      // explicitRootsOnly (P13 follow-up): a cross-repo task must run in ITS
+      // repo (see the on-demand-clone comment below) — that rule doesn't
+      // relax just because cloning is off. Falling through to product-level
+      // resolution here would let a local_llm task with no REPO_ root land
+      // in the PRODUCT's clone, a different repo than task.repo_url names.
+      // Stop here; do NOT fall through to step 2 (product-env) below.
+      if (explicitRootsOnly) return unresolved()
 
-        // On-demand clone the TASK repo. A cross-repo task must run in ITS repo, so
-        // we do NOT fall through to product-level resolution here (spec §4).
-        if (allowClone) return await tryOnDemand(taskRepoUrl, taskRepoName, 'task-on-demand')
-      }
-      // clone/convention disabled (cleanup path, or explicitRootsOnly) → keep
-      // legacy fall-through to product-level env/config resolution
+      const candidate = path.join(os.homedir(), 'Projects', taskRepoName)
+      try {
+        await fs.access(path.join(candidate, '.git'))
+        return resolved('task-convention', candidate)
+      } catch { /* not precloned */ }
+
+      // On-demand clone the TASK repo. A cross-repo task must run in ITS repo, so
+      // we do NOT fall through to product-level resolution here (spec §4).
+      if (allowClone) return await tryOnDemand(taskRepoUrl, taskRepoName, 'task-on-demand')
+      // clone disabled (cleanup path) → keep legacy fall-through to product-level
     }
   }
 
