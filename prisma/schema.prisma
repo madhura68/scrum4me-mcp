@@ -337,6 +337,8 @@ model User {
   copilot_app_users         CopilotAppUser[]
   hub_devices               HubDevice[]
   hub_approvals             HubApproval[]
+  notes                     Note[]
+  note_keywords             NoteKeyword[]
 
   @@index([active_product_id])
   @@map("users")
@@ -440,6 +442,7 @@ model Product {
   copilot_app_users         CopilotAppUser[]
   review_logs               ReviewLog[]         @relation("ProductReviewLogs")
   issues                    Issue[]
+  notes                     Note[]
 
   @@unique([user_id, name])
   @@unique([user_id, code])
@@ -2247,4 +2250,47 @@ model PpeStateHead {
 
   @@unique([run_id, scope_kind, scope_key], map: "ppe_state_head_run_id_scope_kind_scope_key_key")
   @@map("ppe_state_head")
+}
+
+model Note {
+  id         String            @id @default(cuid())
+  user       User              @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id    String
+  product    Product?          @relation(fields: [product_id], references: [id], onDelete: SetNull)
+  product_id String?
+  title      String            @db.VarChar(200)
+  body       String            @db.Text
+  created_at DateTime          @default(now())
+  updated_at DateTime          @updatedAt
+  keywords   NoteKeywordLink[]
+
+  @@index([user_id, updated_at])
+  @@index([product_id])
+  @@map("notes")
+}
+
+/// Partiële unieke index `note_keywords_default_name_key` (name WHERE user_id IS NULL)
+/// leeft alleen in de migratie-SQL van Scrum4Me (§ 4.3 idea-226-spec) — nooit
+/// `prisma db pull` op `note_keywords`, net als `product_docs.search_vec`.
+model NoteKeyword {
+  id         String            @id @default(cuid())
+  user       User?             @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id    String? // NULL = default keyword
+  name       String            @db.VarChar(40)
+  created_at DateTime          @default(now())
+  links      NoteKeywordLink[]
+
+  @@unique([user_id, name])
+  @@map("note_keywords")
+}
+
+model NoteKeywordLink {
+  note       Note        @relation(fields: [note_id], references: [id], onDelete: Cascade)
+  note_id    String
+  keyword    NoteKeyword @relation(fields: [keyword_id], references: [id], onDelete: Cascade)
+  keyword_id String
+
+  @@id([note_id, keyword_id])
+  @@index([keyword_id])
+  @@map("note_keyword_links")
 }
