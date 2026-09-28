@@ -49,7 +49,7 @@ activity and create todos via native tool calls instead of curl.
 | `create_note` | Create a private note for the token's user: `title`, `body`, optional `product_id` (must be accessible and inside `scoped_products`), 0–10 keywords (unknown names become the user's own keywords); returns the full note | no |
 | `update_note` | Partially update an own note: omitted fields stay, `product_id: null` unlinks, `keywords` replaces the whole set (`[]` clears); an empty update or `null` for title/body/keywords is a validation error | no |
 | `delete_note` | Delete an own note; another user's and a nonexistent id give the same `Note niet gevonden` | no |
-| `get_note` | One own note **including `body`**, keywords and product — the only tool that returns a body | n/a |
+| `get_note` | One own note **including `body`**, keywords and product — the only read/search tool that returns a body | n/a |
 | `search_notes` | Search own notes on title/body plus product and keyword filters; `limit` 1–100 (default 20, above 100 is a validation error, no clamp) and `offset`; returns `{ items, total, limit, offset, has_more }` **without `body`** | n/a |
 | `list_note_keywords` | The 10 default keywords plus the token user's own keywords (not paginated) | n/a |
 | `dispatch_task` | IDEA-213 automatic dispatch: hand a task to the central dispatch service, which picks a job worker or a registered host agent and delivers one final answer to `reply_to`. Without `task_id` this is a free task; an explicit `task_id` — and nothing else, `work_item` included — selects `task_implementation`. Needs `S4M_DISPATCH_URL` plus the caller's own bearer; there is no service identity to fall back on | no |

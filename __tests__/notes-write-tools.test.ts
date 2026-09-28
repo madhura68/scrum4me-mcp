@@ -73,7 +73,7 @@ beforeEach(() => {
 })
 
 describe('demo-guard — PERMISSION_DENIED, geen enkele adapter-call', () => {
-  it('create_note: demo-token krijgt PERMISSION_DENIED, createNote wordt niet aangeroepen (ook bij ongeldige input)', async () => {
+  it('create_note: demo-token krijgt PERMISSION_DENIED, createNote wordt niet aangeroepen (ook bij handler-ongeldige input)', async () => {
     denyDemo()
     const res = await handleCreateNote({}) // title ontbreekt — ongeldig
     expect(res.isError).toBe(true)
@@ -81,7 +81,7 @@ describe('demo-guard — PERMISSION_DENIED, geen enkele adapter-call', () => {
     expect(mockCreate).not.toHaveBeenCalled()
   })
 
-  it('update_note: demo-token krijgt PERMISSION_DENIED, updateNote wordt niet aangeroepen (ook bij ongeldige input)', async () => {
+  it('update_note: demo-token krijgt PERMISSION_DENIED, updateNote wordt niet aangeroepen (ook bij handler-ongeldige input)', async () => {
     denyDemo()
     const res = await handleUpdateNote({}) // id ontbreekt — ongeldig
     expect(res.isError).toBe(true)
@@ -89,7 +89,7 @@ describe('demo-guard — PERMISSION_DENIED, geen enkele adapter-call', () => {
     expect(mockUpdate).not.toHaveBeenCalled()
   })
 
-  it('delete_note: demo-token krijgt PERMISSION_DENIED, deleteNote wordt niet aangeroepen (ook bij ongeldige input)', async () => {
+  it('delete_note: demo-token krijgt PERMISSION_DENIED, deleteNote wordt niet aangeroepen (ook bij handler-ongeldige input)', async () => {
     denyDemo()
     const res = await handleDeleteNote({}) // id ontbreekt — ongeldig
     expect(res.isError).toBe(true)
