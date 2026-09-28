@@ -27,7 +27,7 @@ import { requireWriteAccess } from '../auth.js'
 import { toolJson, toolError, withToolErrors } from '../errors.js'
 import { createWorktreeForJob, removeWorktreeForJob, LocalLlmWorktreeRefused } from '../git/worktree.js'
 import { getWorktreeRoot } from '../git/worktree-paths.js'
-import { removeWorktreeWithoutGit, gitPrefixFor } from '../git/local-llm.js'
+import { removeWorktreeWithoutGit, gitPrefixFor, isLocalLlmJob } from '../git/local-llm.js'
 import { setupProductWorktrees, releaseLocksOnTerminal } from '../git/job-locks.js'
 import { maybeBackupPush } from '../git/branch-safety.js'
 import { fetchPrDiff, fetchCompareDiff, getPullRequestState } from '../git/pr.js'
@@ -64,17 +64,28 @@ export function repoNameFromUrl(repoUrl: string | null | undefined): string | nu
  * The task-level override exists for cross-repo tasks (e.g. an MCP-server
  * task tracked under the main product's PBI). Falls back to product-level
  * resolution when null. Documented in CLAUDE.md.
+ *
+ * `explicitRootsOnly` (P13, controller ruling on the M3 whole-branch review):
+ * for a `local_llm` job, repo code may only ever touch the host from a root
+ * the operator explicitly configured (env var or `~/.scrum4me-agent-config.json`
+ * entry). It disables BOTH steps 1/4's `~/Projects/<name>` convention lookup
+ * AND the on-demand clone — a local_llm job never runs `npm ci` on the host,
+ * and never silently adopts a repo that merely happens to sit in ~/Projects.
+ * It forces `allowClone` off regardless of `allowOnDemandClone`, so a caller
+ * cannot accidentally combine the two.
  */
 export async function resolveRepoRoot(
   productId: string,
   taskRepoUrl?: string | null,
-  opts?: { ownerCtx?: CloneOwnerCtx | null; allowOnDemandClone?: boolean },
+  opts?: { ownerCtx?: CloneOwnerCtx | null; allowOnDemandClone?: boolean; explicitRootsOnly?: boolean },
 ): Promise<string | null> {
   const ownerCtx = opts?.ownerCtx ?? null
+  const explicitRootsOnly = opts?.explicitRootsOnly ?? false
   // On-demand cloning is opt-in: only legit resolution callers (SPRINT/IDEA/TASK
   // claim) enable it. Cleanup callers leave it off so worktree-removal never
   // triggers an expensive clone of a repo that isn't even present.
-  const allowClone = opts?.allowOnDemandClone ?? false
+  // `explicitRootsOnly` always wins over `allowOnDemandClone` (see doc-comment).
+  const allowClone = !explicitRootsOnly && (opts?.allowOnDemandClone ?? false)
 
   const resolved = (via: string, repoRoot: string): string => {
     claimLog('repoRoot.resolved', { productId, via, repoRoot })
@@ -119,16 +130,19 @@ export async function resolveRepoRoot(
         if (config.repoRoots?.[taskRepoName]) return resolved('task-config', config.repoRoots[taskRepoName])
       } catch { /* fall through */ }
 
-      const candidate = path.join(os.homedir(), 'Projects', taskRepoName)
-      try {
-        await fs.access(path.join(candidate, '.git'))
-        return resolved('task-convention', candidate)
-      } catch { /* not precloned */ }
+      if (!explicitRootsOnly) {
+        const candidate = path.join(os.homedir(), 'Projects', taskRepoName)
+        try {
+          await fs.access(path.join(candidate, '.git'))
+          return resolved('task-convention', candidate)
+        } catch { /* not precloned */ }
 
-      // On-demand clone the TASK repo. A cross-repo task must run in ITS repo, so
-      // we do NOT fall through to product-level resolution here (spec §4).
-      if (allowClone) return await tryOnDemand(taskRepoUrl, taskRepoName, 'task-on-demand')
-      // clone disabled (cleanup path) → keep legacy fall-through to product-level
+        // On-demand clone the TASK repo. A cross-repo task must run in ITS repo, so
+        // we do NOT fall through to product-level resolution here (spec §4).
+        if (allowClone) return await tryOnDemand(taskRepoUrl, taskRepoName, 'task-on-demand')
+      }
+      // clone/convention disabled (cleanup path, or explicitRootsOnly) → keep
+      // legacy fall-through to product-level env/config resolution
     }
   }
 
@@ -145,6 +159,12 @@ export async function resolveRepoRoot(
   } catch {
     // ignore — fall through
   }
+
+  // explicitRootsOnly (P13): steps 1-3 above already covered every explicitly
+  // configured root. Never fall through to the ~/Projects convention or an
+  // on-demand clone — that would put unvetted repo code (and its lifecycle
+  // scripts) on the host for a local_llm job.
+  if (explicitRootsOnly) return unresolved()
 
   // 4. Convention via product.repo_url, else on-demand clone.
   try {
@@ -407,12 +427,35 @@ export async function attachWorktreeToJob(
   ownerCtx?: CloneOwnerCtx | null,
 ): Promise<{ worktree_path: string; branch_name: string; reused_branch: boolean } | { error: string }> {
   claimLog('attach.start', { jobId, productId })
-  const repoRoot = await resolveRepoRoot(productId, taskRepoUrl, { ownerCtx, allowOnDemandClone: true })
+  // P13 (controller ruling, M3 whole-branch review): whether this job is
+  // local_llm is decided from the DB (required_capability), never from the
+  // worktree itself. A local_llm job resolves ONLY from an explicitly
+  // configured repo root — no ~/Projects/<name> convention fallback, no
+  // on-demand clone (that would run `npm ci`/lifecycle scripts on the host).
+  const isLocal = await isLocalLlmJob(jobId)
+  const repoRoot = await resolveRepoRoot(productId, taskRepoUrl, {
+    ownerCtx,
+    allowOnDemandClone: !isLocal,
+    explicitRootsOnly: isLocal,
+  })
   if (!repoRoot) {
-    await rollbackClaim(jobId, ownerIdentity(ownerCtx))
     const repoHint = taskRepoUrl
       ? `task.repo_url=${taskRepoUrl}`
       : `product ${productId}`
+    if (isLocal) {
+      // Mirror the LocalLlmWorktreeRefused path below: FAILED, no
+      // rollbackClaim (that would hot-loop claim → fail → rollback), and
+      // nothing to clean up since no worktree/clone was ever created.
+      const message =
+        `geen repo-root voor ${repoHint} op deze host (local_llm vereist een expliciete SCRUM4ME_REPO_ROOT_*)`
+      await prisma.claudeJob.update({
+        where: { id: jobId },
+        data: { status: 'FAILED', error: message.slice(0, 2000), finished_at: new Date() },
+      })
+      claimLog('attach.localLlmNoRepoRoot', { jobId, productId, taskRepoUrl: taskRepoUrl ?? null })
+      return { error: message }
+    }
+    await rollbackClaim(jobId, ownerIdentity(ownerCtx))
     return {
       error:
         `No repo root configured for ${repoHint}. ` +
