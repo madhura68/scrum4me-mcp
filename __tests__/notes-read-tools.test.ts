@@ -61,9 +61,13 @@ describe('get_note', () => {
     expect(toolText(res)).toBe('Note niet gevonden')
   })
 
-  it('null → "Note niet gevonden" ook voor andermans note (zelfde uitkomst, geen 403)', async () => {
+  // De adapter (getNote) bewijst zelf dat andermans note ook `null` oplevert
+  // (notes-data-tests) — deze test bewijst alleen dat de tool-laag élke
+  // `null` van de adapter, ongeacht de reden erachter, naar dezelfde
+  // "Note niet gevonden" vertaalt (nooit een ander bericht of een 403).
+  it('vertaalt elke null van getNote naar "Note niet gevonden"', async () => {
     mockGetNote.mockResolvedValue(null)
-    const res = await handleGetNote({ id: 'note-of-someone-else' })
+    const res = await handleGetNote({ id: 'some-id' })
     expect(res.isError).toBe(true)
     expect(toolText(res)).toBe('Note niet gevonden')
   })

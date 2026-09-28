@@ -1,8 +1,17 @@
 // IDEA-226 (PBI-30, T-152): update one or more fields of a private note.
 //
-// Key rule (spec, demo-negatives): `requireWriteAccess()` MUST be the first
-// statement of the handler, before any input parsing or DB access (do not
-// copy create-idea.ts's parse-then-auth order).
+// Ordering (review T-151/152 round 1): the MCP SDK itself
+// (`McpServer.validateToolInput`, SDK 1.29) validates the raw arguments
+// against the published `inputSchema` below BEFORE this handler runs at
+// all — but that published schema only requires `id`; the "at least one
+// field besides id" rule lives in `noteUpdateSchema`'s `.refine()`, which we
+// only apply *inside* the handler (see below). So `update_note { id: 'n1' }`
+// alone DOES pass the SDK's pre-check and reach this handler. Key rule
+// (spec, demo-negatives): `requireWriteAccess()` MUST still be the first
+// statement of the handler, before that refine-check or any DB access, so a
+// demo token sending exactly that input (schema-valid, refine-invalid)
+// still gets PERMISSION_DENIED and never reaches the adapter — unlike
+// create-idea.ts, which parses first (do not copy that order here).
 //
 // `id` is not part of `noteUpdateSchema` (that schema only covers the patch
 // fields and their "at least one field" refine), so the published inputSchema
@@ -37,6 +46,13 @@ export async function handleUpdateNote(input: unknown) {
     }
 
     const note = await getNote(auth.userId, id)
+    // De `updateMany`-scoped write hierboven heeft de note al als van
+    // `auth.userId` bevestigd, dus dit zou nooit null mogen zijn — behalve
+    // een concurrent delete tussen de update en deze re-fetch. Faal dan
+    // expliciet i.p.v. `toolJson(null)` terug te geven.
+    if (!note) {
+      return toolError('Note niet gevonden')
+    }
     return toolJson(note)
   })
 }

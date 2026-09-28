@@ -1,8 +1,15 @@
 // IDEA-226 (PBI-30, T-152): permanently delete a private note.
 //
-// Key rule (spec, demo-negatives): `requireWriteAccess()` MUST be the first
-// statement of the handler, before any input parsing or DB access (do not
-// copy create-idea.ts's parse-then-auth order).
+// Ordering (review T-151/152 round 1): the MCP SDK itself
+// (`McpServer.validateToolInput`, SDK 1.29) validates the raw arguments
+// against the published `inputSchema` (`{ id: string, min 1 }`) BEFORE this
+// handler runs at all — `delete_note {}` (missing `id`) never reaches us;
+// the caller gets an SDK-level input-validation error instead. Key rule
+// (spec, demo-negatives): once we DO run, `requireWriteAccess()` MUST still
+// be the first statement of the handler, before any further parsing/DB
+// access, so a demo token whose input DID pass the published schema still
+// gets PERMISSION_DENIED and never reaches the adapter — unlike
+// create-idea.ts, which parses first (do not copy that order here).
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { requireWriteAccess } from '../auth.js'

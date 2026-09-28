@@ -33,7 +33,7 @@ export function registerGetNoteTool(server: McpServer) {
     {
       title: 'Get note',
       description:
-        "Fetch one private note by id, including its body, keywords and linked product. Notes are private to the token's user — this is the only note tool that returns the body; search_notes never does.",
+        "Fetch one private note by id, including its body, keywords and linked product. Notes are private to the token's user — this is the only read/search tool that returns the body; search_notes never does. (create_note and update_note also return the full note.)",
       inputSchema,
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
