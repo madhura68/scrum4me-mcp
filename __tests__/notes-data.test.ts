@@ -260,6 +260,32 @@ describe('Productcheck (create + update) — spec § 4.1: ontoegankelijk product
     expect(result).toEqual({ ok: false, code: 404, error: 'Product niet gevonden' })
     expect(tx.note.updateMany).not.toHaveBeenCalled()
   })
+
+  it('createNote: toegankelijk product_id → checkt userCanAccessProduct en zet product_id in create.data', async () => {
+    tx.note.create.mockResolvedValue({ id: 'note-x' })
+    tx.noteKeyword.findMany.mockResolvedValue([])
+
+    const result = await createNote('user-1', {
+      title: 'T',
+      body: '',
+      product_id: 'prod-1',
+      keywords: [],
+    })
+
+    expect(result).toEqual({ ok: true, id: 'note-x' })
+    expect(mockUserCanAccessProduct).toHaveBeenCalledWith('prod-1', 'user-1')
+    const [{ data }] = tx.note.create.mock.calls[0] as [{ data: Record<string, unknown> }]
+    expect(data.product_id).toBe('prod-1')
+  })
+
+  it('updateNote: toegankelijk product_id → checkt userCanAccessProduct en zet product_id in updateMany.data', async () => {
+    const result = await updateNote('user-1', 'note-1', { product_id: 'prod-1' })
+
+    expect(result).toEqual({ ok: true })
+    expect(mockUserCanAccessProduct).toHaveBeenCalledWith('prod-1', 'user-1')
+    const [{ data }] = tx.note.updateMany.mock.calls[0] as [{ data: Record<string, unknown> }]
+    expect(data.product_id).toBe('prod-1')
+  })
 })
 
 describe('updateNote — scoping en NOTE_NOT_FOUND (spec § 4.1)', () => {
@@ -280,7 +306,7 @@ describe('updateNote — scoping en NOTE_NOT_FOUND (spec § 4.1)', () => {
     expect(tx.noteKeywordLink.deleteMany).not.toHaveBeenCalled()
   })
 
-  it('count !== 1 (bv. 2) gooit binnen de transactie i.p.v. stil te returnen (rollback)', async () => {
+  it('count !== 1 (bv. 2) gooit binnen de transactie i.p.v. stil te returnen (rollback); ook geen link-delete als keywords in de patch zitten', async () => {
     tx.note.updateMany.mockResolvedValue({ count: 2 })
     let transactionRejected = false
     mockTransaction.mockImplementationOnce(async (arg: unknown) => {
@@ -292,10 +318,13 @@ describe('updateNote — scoping en NOTE_NOT_FOUND (spec § 4.1)', () => {
       }
     })
 
-    const result = await updateNote('user-1', 'note-1', { title: 'Overschreven' })
+    const result = await updateNote('user-1', 'note-1', { title: 'Overschreven', keywords: ['a'] })
 
     expect(result).toEqual({ ok: false, code: 404, error: 'Note niet gevonden' })
     expect(transactionRejected).toBe(true)
+    // De throw op de count-mismatch gebeurt vóór de keyword-link-stap: een
+    // patch met `keywords` mag die stap dus nooit bereiken.
+    expect(tx.noteKeywordLink.deleteMany).not.toHaveBeenCalled()
   })
 })
 
@@ -394,7 +423,7 @@ describe('createNote — resolveKeywords (spec § 4.3)', () => {
     })
   })
 
-  it('nieuwe naam → createMany({ data: [{ user_id, name }], skipDuplicates: true }), daarna herlezen voor het id', async () => {
+  it('nieuwe naam → createMany({ data: [{ user_id, name }], skipDuplicates: true }), daarna herlezen voor het id — beide reads user-scoped', async () => {
     tx.noteKeyword.findMany
       .mockResolvedValueOnce([]) // eerste read: niets bestaands matcht
       .mockResolvedValueOnce([{ id: 'kw-new', name: 'nieuwkeyword', user_id: 'user-1' }]) // herlezen
@@ -414,6 +443,45 @@ describe('createNote — resolveKeywords (spec § 4.3)', () => {
     expect(tx.noteKeywordLink.createMany).toHaveBeenCalledWith({
       data: [{ note_id: 'note-x', keyword_id: 'kw-new' }],
     })
+
+    // Beide reads (eerste + herlees na createMany) moeten dezelfde
+    // user-scoping dragen: `OR: [{ user_id: null }, { user_id: userId }]`.
+    // Een keyword van een andere gebruiker mag hier nooit matchen.
+    expect(tx.noteKeyword.findMany).toHaveBeenNthCalledWith(1, {
+      where: { name: { in: ['nieuwkeyword'] }, OR: [{ user_id: null }, { user_id: 'user-1' }] },
+      select: { id: true, name: true, user_id: true },
+    })
+    expect(tx.noteKeyword.findMany).toHaveBeenNthCalledWith(2, {
+      where: { name: { in: ['nieuwkeyword'] }, OR: [{ user_id: null }, { user_id: 'user-1' }] },
+      select: { id: true, name: true, user_id: true },
+    })
+  })
+
+  it("andermans keyword ('x', user_id: 'user-2') matcht nooit: wordt niet gelinkt, 'x' wordt aangemaakt als eigen keyword van user-1", async () => {
+    tx.noteKeyword.findMany
+      .mockResolvedValueOnce([{ id: 'k-x', name: 'x', user_id: 'user-2' }]) // eerste read: alleen andermans rij
+      .mockResolvedValueOnce([{ id: 'k-x-own', name: 'x', user_id: 'user-1' }]) // herlezen: eigen nieuwe rij
+
+    const result = await createNote('user-1', {
+      title: 'T',
+      body: '',
+      product_id: null,
+      keywords: ['x'],
+    })
+
+    expect(result).toEqual({ ok: true, id: 'note-x' })
+    expect(tx.noteKeyword.createMany).toHaveBeenCalledWith({
+      data: [{ user_id: 'user-1', name: 'x' }],
+      skipDuplicates: true,
+    })
+    expect(tx.noteKeywordLink.createMany).toHaveBeenCalledWith({
+      data: [{ note_id: 'note-x', keyword_id: 'k-x-own' }],
+    })
+    // Andermans rij ('k-x') mag nooit gelinkt worden.
+    const linkCall = tx.noteKeywordLink.createMany.mock.calls[0][0] as {
+      data: Array<{ keyword_id: string }>
+    }
+    expect(linkCall.data.map((d) => d.keyword_id)).not.toContain('k-x')
   })
 
   it('resolveKeywords blijft intern: notes-data exporteert geen resolveKeywords', async () => {

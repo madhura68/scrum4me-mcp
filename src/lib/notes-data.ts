@@ -69,7 +69,7 @@ export type NoteDetail = Prisma.NoteGetPayload<{ select: typeof noteDetailSelect
 export interface NoteError {
   ok: false
   code: 404
-  error: string
+  error: 'Note niet gevonden' | 'Product niet gevonden'
 }
 
 const PRODUCT_NOT_FOUND: NoteError = { ok: false, code: 404, error: 'Product niet gevonden' }
