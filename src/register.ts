@@ -80,6 +80,10 @@ import { registerGetIssueTool } from './tools/get-issue.js'
 import { registerGetNoteTool } from './tools/get-note.js'
 import { registerSearchNotesTool } from './tools/search-notes.js'
 import { registerListNoteKeywordsTool } from './tools/list-note-keywords.js'
+// IDEA-226 (PBI-30): private notes — write tools (T-152)
+import { registerCreateNoteTool } from './tools/create-note.js'
+import { registerUpdateNoteTool } from './tools/update-note.js'
+import { registerDeleteNoteTool } from './tools/delete-note.js'
 
 // Worktree/local-filesystem-bound tools (stdio-only)
 import { registerWaitForJobTool } from './tools/wait-for-job.js'
@@ -185,6 +189,10 @@ export function registerSharedTools(server: McpServer): void {
   registerGetNoteTool(server)
   registerSearchNotesTool(server)
   registerListNoteKeywordsTool(server)
+  // IDEA-226 (PBI-30): private notes — write tools (T-152)
+  registerCreateNoteTool(server)
+  registerUpdateNoteTool(server)
+  registerDeleteNoteTool(server)
 }
 
 /**
