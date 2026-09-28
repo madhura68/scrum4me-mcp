@@ -1,5 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
+// Forgejo-review PR #169: gitPrefixFor controleert voor een local_llm-worktree
+// eerst de gitlink tegen de clone (fs-only). Deze tests gaan over de
+// prefix-argumenten met fictieve paden; de controle zelf is gestubd en wordt
+// getest in __tests__/git/worktree-gitlink.test.ts en de done-pad-ketentest.
+const gitlinkMocks = vi.hoisted(() => ({ assertTrustedLocalJobWorktree: vi.fn() }))
+vi.mock('../../src/git/worktree-gitlink.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/git/worktree-gitlink.js')>()),
+  assertTrustedLocalJobWorktree: gitlinkMocks.assertTrustedLocalJobWorktree,
+}))
+
 vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
 }))
@@ -136,6 +146,7 @@ describe('pushBranchForJob: local_llm-vlaggen (Taak 4)', () => {
     for (const call of revParseCalls) {
       expect((call[1] as string[]).slice(0, SAFE_GIT_CONFIG.length)).toEqual([...SAFE_GIT_CONFIG])
     }
+    expect(gitlinkMocks.assertTrustedLocalJobWorktree).toHaveBeenCalled()
   })
 
   it('laat de argumenten ongewijzigd voor een niet-lokale job (geen --no-verify)', async () => {
@@ -152,5 +163,6 @@ describe('pushBranchForJob: local_llm-vlaggen (Taak 4)', () => {
     expect(result).toEqual({ pushed: true, remoteRef: 'refs/heads/feat/job-normal' })
     const pushCall = mockExec.mock.calls.find((c) => (c[1] as string[]).includes('push'))
     expect(pushCall![1]).toEqual(['push', '-u', 'origin', 'feat/job-normal'])
+    expect(gitlinkMocks.assertTrustedLocalJobWorktree).not.toHaveBeenCalled()
   })
 })

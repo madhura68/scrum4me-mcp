@@ -2,6 +2,16 @@
 // ná de harness-scan en krijgt daarom gitPrefixFor(worktreePath) vóór `diff`.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
+// Forgejo-review PR #169: gitPrefixFor controleert voor een local_llm-worktree
+// eerst de gitlink tegen de clone (fs-only). Deze tests gaan over de
+// prefix-argumenten met fictieve paden; de controle zelf is gestubd en wordt
+// getest in __tests__/git/worktree-gitlink.test.ts en de done-pad-ketentest.
+const gitlinkMocks = vi.hoisted(() => ({ assertTrustedLocalJobWorktree: vi.fn() }))
+vi.mock('../../src/git/worktree-gitlink.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/git/worktree-gitlink.js')>()),
+  assertTrustedLocalJobWorktree: gitlinkMocks.assertTrustedLocalJobWorktree,
+}))
+
 vi.mock('node:child_process', () => ({ execFile: vi.fn() }))
 vi.mock('../../src/prisma.js', () => ({
   prisma: { claudeJob: { findUnique: vi.fn() } },
@@ -46,6 +56,18 @@ describe('getGitDiff', () => {
       expect.objectContaining({ cwd: '/wt/job-1' }),
       expect.any(Function),
     )
+    expect(gitlinkMocks.assertTrustedLocalJobWorktree).toHaveBeenCalledWith('job-1', '/wt/job-1')
+  })
+
+  it('draait geen git diff wanneer de gitlink-controle van een local_llm-worktree faalt', async () => {
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = '/wt'
+    findUnique.mockResolvedValue(
+      { required_capability: 'local_llm' } as unknown as Awaited<ReturnType<typeof findUnique>>,
+    )
+    gitlinkMocks.assertTrustedLocalJobWorktree.mockRejectedValueOnce(new Error('gitlink afgekeurd'))
+
+    await expect(getGitDiff('/wt/job-1', 'abc..def')).rejects.toThrow('gitlink afgekeurd')
+    expect(mockExec).not.toHaveBeenCalled()
   })
 
   it('laat de argumenten ongewijzigd voor een niet-lokale worktree', async () => {
@@ -60,6 +82,7 @@ describe('getGitDiff', () => {
       expect.objectContaining({ cwd: '/wt/job-2' }),
       expect.any(Function),
     )
+    expect(gitlinkMocks.assertTrustedLocalJobWorktree).not.toHaveBeenCalled()
   })
 
   it('laat de argumenten ongewijzigd wanneer het pad geen jobworktree is (geen DB-lookup)', async () => {

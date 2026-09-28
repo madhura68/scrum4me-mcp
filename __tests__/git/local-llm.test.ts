@@ -1,4 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+// Forgejo-review PR #169: gitPrefixFor controleert voor een local_llm-worktree
+// eerst de gitlink tegen de clone (fs-only). Deze tests gaan over de
+// prefix-argumenten met fictieve paden; de controle zelf is gestubd en wordt
+// getest in __tests__/git/worktree-gitlink.test.ts en de done-pad-ketentest.
+const gitlinkMocks = vi.hoisted(() => ({ assertTrustedLocalJobWorktree: vi.fn() }))
+vi.mock('../../src/git/worktree-gitlink.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/git/worktree-gitlink.js')>()),
+  assertTrustedLocalJobWorktree: gitlinkMocks.assertTrustedLocalJobWorktree,
+}))
 import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
 import * as fs from 'node:fs/promises'
@@ -44,6 +54,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 import { prisma } from '../../src/prisma.js'
 import {
   SAFE_GIT_CONFIG,
+  UntrustedWorktreeGitlinkError,
   isLocalLlmJob,
   jobIdFromWorktreePath,
   isLocalLlmWorktree,
@@ -132,11 +143,20 @@ describe('isLocalLlmWorktree / gitPrefixFor', () => {
     mockCapability({ 'job-x': 'local_llm' })
     expect(await isLocalLlmWorktree('/tmp/wtroot/job-x')).toBe(true)
     expect(await gitPrefixFor('/tmp/wtroot/job-x')).toEqual([...SAFE_GIT_CONFIG])
+    expect(gitlinkMocks.assertTrustedLocalJobWorktree).toHaveBeenCalledWith('job-x', '/tmp/wtroot/job-x')
+  })
+  it('gitPrefixFor gooit (en geeft geen prefix) wanneer de gitlink-controle faalt', async () => {
+    mockCapability({ 'job-x': 'local_llm' })
+    gitlinkMocks.assertTrustedLocalJobWorktree.mockRejectedValueOnce(
+      new UntrustedWorktreeGitlinkError('test'),
+    )
+    await expect(gitPrefixFor('/tmp/wtroot/job-x')).rejects.toBeInstanceOf(UntrustedWorktreeGitlinkError)
   })
   it('false + [] voor een niet-lokale jobworktree', async () => {
     mockCapability({ 'job-y': null })
     expect(await isLocalLlmWorktree('/tmp/wtroot/job-y')).toBe(false)
     expect(await gitPrefixFor('/tmp/wtroot/job-y')).toEqual([])
+    expect(gitlinkMocks.assertTrustedLocalJobWorktree).not.toHaveBeenCalled()
   })
   it('false voor een pad buiten de root (geen DB-lookup nodig)', async () => {
     expect(await isLocalLlmWorktree('/elsewhere/job-x')).toBe(false)

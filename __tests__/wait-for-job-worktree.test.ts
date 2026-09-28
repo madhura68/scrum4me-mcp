@@ -1,4 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+
+// Forgejo-review PR #169: gitPrefixFor controleert voor een local_llm-worktree
+// eerst de gitlink tegen de clone (fs-only). Deze tests gaan over de
+// prefix-argumenten met fictieve paden; de controle zelf is gestubd en wordt
+// getest in __tests__/git/worktree-gitlink.test.ts en de done-pad-ketentest.
+const gitlinkMocks = vi.hoisted(() => ({ assertTrustedLocalJobWorktree: vi.fn() }))
+vi.mock('../src/git/worktree-gitlink.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/git/worktree-gitlink.js')>()),
+  assertTrustedLocalJobWorktree: gitlinkMocks.assertTrustedLocalJobWorktree,
+}))
 import * as os from 'node:os'
 import * as path from 'node:path'
 import * as fs from 'node:fs/promises'
@@ -285,6 +295,7 @@ describe('attachWorktreeToJob: local_llm-bewaking (Taak 4)', () => {
     })
     expect(revParseCall).toBeDefined()
     expect(revParseCall![1]).toEqual(['rev-parse', 'HEAD'])
+    expect(gitlinkMocks.assertTrustedLocalJobWorktree).not.toHaveBeenCalled()
   })
 
   it('markeert de job FAILED (geen rollbackClaim) en ruimt op zonder git wanneer de worktree als local_llm geweigerd wordt', async () => {

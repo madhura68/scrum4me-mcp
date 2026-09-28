@@ -27,7 +27,7 @@ import {
 import { releaseLocksOnTerminal } from '../git/job-locks.js'
 import { resolveRepoRoot } from './wait-for-job.js'
 import { pushBranchForJob } from '../git/push.js'
-import { gitPrefixFor } from '../git/local-llm.js'
+import { gitPrefixFor, UntrustedWorktreeGitlinkError } from '../git/local-llm.js'
 import { maybeBackupPush } from '../git/branch-safety.js'
 import { notifyJobEnqueued } from '../lib/dispatch/notify.js'
 import { formatDocsAuditCursor } from '@shared/docs-audit-cursor.js'
@@ -233,7 +233,26 @@ export async function prepareDoneUpdate(
   const worktreeDir = getWorktreeRoot()
   const worktreePath = path.join(worktreeDir, jobId)
 
-  const pushResult = await pushBranchForJob({ worktreePath, branchName })
+  // local_llm (Forgejo-review PR #169): pushBranchForJob bouwt zijn eerste
+  // git-aanroep via gitPrefixFor, dat voor een local_llm-worktree eerst de
+  // gitlink tegen de clone controleert — vóór enige git. Klopt die niet, dan
+  // wordt de job FAILED zonder push; de worktree blijft staan voor inspectie
+  // (zoals bij een mislukte push). Niet-lokale jobs: gitPrefixFor gooit nooit.
+  let pushResult: Awaited<ReturnType<typeof pushBranchForJob>>
+  try {
+    pushResult = await pushBranchForJob({ worktreePath, branchName })
+  } catch (err) {
+    if (!(err instanceof UntrustedWorktreeGitlinkError)) throw err
+    console.warn(`[prepareDoneUpdate] ${err.message} (job ${jobId})`)
+    return {
+      dbStatus: 'FAILED',
+      pushedAt: undefined,
+      branchOverride: undefined,
+      errorOverride: err.message,
+      skipWorktreeCleanup: true,
+      headSha: undefined,
+    }
+  }
 
   if (pushResult.pushed) {
     let headSha: string | undefined

@@ -7,6 +7,16 @@
 // aan te raken.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
+// Forgejo-review PR #169: gitPrefixFor controleert voor een local_llm-worktree
+// eerst de gitlink tegen de clone (fs-only). Deze tests gaan over de
+// prefix-argumenten met fictieve paden; de controle zelf is gestubd en wordt
+// getest in __tests__/git/worktree-gitlink.test.ts en de done-pad-ketentest.
+const gitlinkMocks = vi.hoisted(() => ({ assertTrustedLocalJobWorktree: vi.fn() }))
+vi.mock('../../src/git/worktree-gitlink.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/git/worktree-gitlink.js')>()),
+  assertTrustedLocalJobWorktree: gitlinkMocks.assertTrustedLocalJobWorktree,
+}))
+
 vi.mock('node:child_process', () => ({ execFile: vi.fn() }))
 vi.mock('../../src/prisma.js', () => ({
   prisma: { claudeJob: { findUnique: vi.fn() } },
@@ -52,6 +62,7 @@ describe('resolveOriginDefaultRef: SAFE_GIT_CONFIG voor local_llm (Taak 4)', () 
     expect(symbolicRefCall).toBeDefined()
     expect(setHeadCall![1]).toEqual([...SAFE_GIT_CONFIG, 'remote', 'set-head', 'origin', '--auto'])
     expect(symbolicRefCall![1]).toEqual([...SAFE_GIT_CONFIG, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
+    expect(gitlinkMocks.assertTrustedLocalJobWorktree).toHaveBeenCalled()
   })
 
   it('laat de argumenten ongewijzigd voor een niet-lokale cwd', async () => {
@@ -68,6 +79,7 @@ describe('resolveOriginDefaultRef: SAFE_GIT_CONFIG voor local_llm (Taak 4)', () 
     const symbolicRefCall = mockExec.mock.calls.find((c) => (c[1] as string[]).includes('symbolic-ref'))
     expect(setHeadCall![1]).toEqual(['remote', 'set-head', 'origin', '--auto'])
     expect(symbolicRefCall![1]).toEqual(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
+    expect(gitlinkMocks.assertTrustedLocalJobWorktree).not.toHaveBeenCalled()
   })
 
   it('laat de argumenten ongewijzigd voor repoRoot (geen jobworktree-pad, geen DB-lookup)', async () => {
@@ -82,5 +94,6 @@ describe('resolveOriginDefaultRef: SAFE_GIT_CONFIG voor local_llm (Taak 4)', () 
     expect(findUnique).not.toHaveBeenCalled()
     const setHeadCall = mockExec.mock.calls.find((c) => (c[1] as string[]).includes('set-head'))
     expect(setHeadCall![1]).toEqual(['remote', 'set-head', 'origin', '--auto'])
+    expect(gitlinkMocks.assertTrustedLocalJobWorktree).not.toHaveBeenCalled()
   })
 })

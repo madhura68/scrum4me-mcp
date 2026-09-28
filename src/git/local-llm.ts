@@ -20,6 +20,7 @@ import { realpathSync } from 'node:fs'
 import * as path from 'node:path'
 import { prisma } from '../prisma.js'
 import { getWorktreeRoot } from './worktree-paths.js'
+import { assertTrustedLocalJobWorktree } from './worktree-gitlink.js'
 
 const exec = promisify(execFile)
 
@@ -103,7 +104,28 @@ export async function removeWorktreeWithoutGit(
   await exec('git', [...SAFE_GIT_CONFIG, 'worktree', 'prune'], { cwd: repoRoot }).catch(() => {})
 }
 
-/** SAFE_GIT_CONFIG als de worktree van een local_llm-job is, anders []. */
+// Vertrouwde worktree-gitlink (Forgejo-review PR #169): de controle staat in
+// een eigen module zodat tests van de prefix-argumenten hem kunnen stubben;
+// hier opnieuw geëxporteerd zodat aanroepers alles uit local-llm.js halen.
+export {
+  UntrustedWorktreeGitlinkError,
+  assertTrustedWorktreeGitlink,
+  assertTrustedLocalJobWorktree,
+} from './worktree-gitlink.js'
+
+/**
+ * SAFE_GIT_CONFIG als de worktree van een local_llm-job is, anders [].
+ *
+ * Voor een local_llm-worktree controleert dit eerst de gitlink tegen de clone
+ * (assertTrustedLocalJobWorktree) en gooit UntrustedWorktreeGitlinkError als
+ * die niet klopt. Elke host-git-aanroep in een local_llm-worktree bouwt zijn
+ * argumenten via deze functie, dus de controle loopt vóór elke zulke git-
+ * aanroep (push, set-head, rev-parse, diff). Niet-lokale jobs: dezelfde
+ * DB-lookups als vóór deze wijziging, geen controle, prefix [].
+ */
 export async function gitPrefixFor(worktreePath: string): Promise<string[]> {
-  return (await isLocalLlmWorktree(worktreePath)) ? [...SAFE_GIT_CONFIG] : []
+  const jobId = jobIdFromWorktreePath(worktreePath)
+  if (!jobId || !(await isLocalLlmJob(jobId))) return []
+  await assertTrustedLocalJobWorktree(jobId, worktreePath)
+  return [...SAFE_GIT_CONFIG]
 }
