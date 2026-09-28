@@ -46,6 +46,12 @@ activity and create todos via native tool calls instead of curl.
 | `update_issue` | Append research or resolution prose (timestamped, attributed to `authored_by` or the token user), change status/severity, or link a PBI or idea. Closing requires a resolution **code** in `resolution` (`fixed`, `wont_fix`, `duplicate`, `cannot_reproduce`, `invalid`) alongside `status=closed` — the prose explanation goes in `append_resolution`, and both may be sent in one call. A closed issue can only reopen to `investigating` | no |
 | `list_issues` | List a product's or system's issues (max 50, most-recently-seen first); closed issues are excluded unless `include_closed` is set | n/a |
 | `get_issue` | Fetch one issue with its research, resolution, links, and the last 50 log entries | n/a |
+| `create_note` | Create a private note for the token's user: `title`, `body`, optional `product_id` (must be accessible and inside `scoped_products`), 0–10 keywords (unknown names become the user's own keywords); returns the full note | no |
+| `update_note` | Partially update an own note: omitted fields stay, `product_id: null` unlinks, `keywords` replaces the whole set (`[]` clears); an empty update or `null` for title/body/keywords is a validation error | no |
+| `delete_note` | Delete an own note; another user's and a nonexistent id give the same `Note niet gevonden` | no |
+| `get_note` | One own note **including `body`**, keywords and product — the only tool that returns a body | n/a |
+| `search_notes` | Search own notes on title/body plus product and keyword filters; `limit` 1–100 (default 20, above 100 is a validation error, no clamp) and `offset`; returns `{ items, total, limit, offset, has_more }` **without `body`** | n/a |
+| `list_note_keywords` | The 10 default keywords plus the token user's own keywords (not paginated) | n/a |
 | `dispatch_task` | IDEA-213 automatic dispatch: hand a task to the central dispatch service, which picks a job worker or a registered host agent and delivers one final answer to `reply_to`. Without `task_id` this is a free task; an explicit `task_id` — and nothing else, `work_item` included — selects `task_implementation`. Needs `S4M_DISPATCH_URL` plus the caller's own bearer; there is no service identity to fall back on | no |
 | `dispatch_review` | IDEA-213 automatic dispatch: review of documents pinned by revision/commit and sha256, always read-only, always answered with exactly one verdict. An unpinned reference is refused before the request leaves the host | no |
 | `get_dispatch` | IDEA-213: read-only state, route, reason and delivery of one dispatch request you may see | n/a |
@@ -773,6 +779,8 @@ git commit -am "chore: bump scrum4me-shared to <sha>"
 `url=` / `directUrl=` lines from the datasource block (Prisma 7 uses
 `prisma.config.ts` for connection URLs, so they would otherwise conflict).
 `postinstall` and `prebuild` invoke this pipeline automatically.
+
+Never run `prisma db pull` here, and in particular not on `note_keywords`: the partial unique index `note_keywords_default_name_key` (`note_keywords(name) WHERE user_id IS NULL`) and the 10 default keywords live only in Scrum4Me migration `20260928060000_add_notes`. This repo only runs `prisma generate` on the schema generated from `scrum4me-shared`; Scrum4Me is the only migrator.
 
 ## Development
 
