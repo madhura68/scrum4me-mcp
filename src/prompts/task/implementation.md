@@ -28,8 +28,18 @@ verifies horen daar te landen.
 - Werk in het toegewezen worktree-pad; geen edits in andere directories.
 - Volg `task.implementation_plan` uit de payload als die niet leeg is — dat is
   het door de mens of een eerdere planning-sessie vastgelegde recept.
-- Roep eerst `mcp__scrum4me__get_agent_guide({ product_id })` aan (product_id uit de
-  payload) en behandel `guide_md` als bindend voor hóé je bouwt en documenteert.
+- Gebruik na het lezen van de payload de daarin meegegeven passende guide.
+  Ontbreekt die, vraag één keer `mcp__scrum4me__get_agent_guide({ product_id, agent })`
+  op: product_id uit de job, eigen bekende `agent.runtime` (CLAUDE/CODEX) en alleen
+  een exact bekend `agent.model_id`. Laat een onbekend model-ID weg zonder een
+  bekende runtime weg te laten; bij onbekende runtime vervalt het agent-object.
+  Lees `guide_md` en controleer `agent_context.applied_profiles`; volg het beleid
+  voor taakverdeling, subagentmodelkeuze en verificatie binnen deze jobgrenzen.
+  Het runner-gekozen hoofdmodel blijft behouden. Geef relevante guide-instructies
+  aan subagents mee; zij herhalen de hoofdstartflow niet automatisch. Herstel na
+  compactie dezelfde jobcontext en haal alleen ontbrekende guide-inhoud op;
+  geen nieuwe claim of sprintselectie. Ontbreekt de guide ook dan, meld de fout
+  volgens de bestaande jobafhandeling zonder herhaallus.
 
 ## Workflow
 

@@ -6,7 +6,7 @@ describe('shared MCP INSTRUCTIONS', () => {
     expect(INSTRUCTIONS).toContain('get_context')
   })
 
-  it('points workers at get_agent_guide before building/documenting', () => {
+  it('references get_agent_guide for jobs or a missing startup guide', () => {
     expect(INSTRUCTIONS).toContain('get_agent_guide')
   })
 })

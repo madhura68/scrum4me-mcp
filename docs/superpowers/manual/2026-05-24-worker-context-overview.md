@@ -21,7 +21,13 @@ Voor product `SC2 / scrum4me-mcp` gaf `get_claude_context` destijds:
 
 ## Compacte context vanaf S-2026-09-23-1
 
-`get_context(product_id, agent?)` levert product, alle OPEN sprints, `agent_context` en `agent_guide`. Geef runtime (CLAUDE/CODEX) en model-id alleen mee als die expliciet bekend zijn. Lees de sprint binnen de opdracht met `get_sprint_context(sprint_id)`; met `task_id` komt uitsluitend voor die taak het volledige plan mee. `get_ideas_context(product_id)` haalt ideeën apart op. De tijdelijke oude naam is een alias met hetzelfde compacte antwoord. Context is geen uitvoerautorisatie.
+De interactieve hoofdsessie start met `get_context({ product_id, agent })` en herhaalt dit na compactie vóór hervatten van dezelfde opdracht. Geef de bekende runtime (CLAUDE/CODEX) mee, ook zonder bekend model-ID. Voeg alleen een exact bekend model-ID toe; laat het agent-object weg als ook runtime onbekend is. Identiteit selecteert een profiel en wisselt het hoofdmodel niet.
+
+De response bevat product, alle OPEN sprints, `agent_context` en `agent_guide`. Lees de guide, controleer de toegepaste profielen en volg het beleid voor taakverdeling, modelkeuze voor subagents en verificatie. Het gebruikersgekozen hoofdmodel blijft behouden, ook bij een andere guide-aanbeveling. Alleen bij een ontbrekende of lege guide volgt één `get_agent_guide` met dezelfde invoer; gebruik `guide_md`. Een ontbrekend profiel alleen is geen reden voor een extra aanroep. Een blijvend ontbrekende guide wordt gemeld volgens de bestaande context-/jobafhandeling zonder herhaallus.
+
+Subagents gebruiken de meegegeven relevante guide en taakcontext en herhalen de hoofdstartflow niet automatisch. Workerjobs lezen eerst kind-prompt en payload, gebruiken een al meegegeven passende guide of halen een ontbrekende guide op met het jobproduct en de eigen bekende agentidentiteit. Na compactie herstellen zij dezelfde jobcontext zonder nieuwe claim; hun runner-gekozen hoofdmodel blijft behouden.
+
+Lees alleen de sprint binnen de opdracht met `get_sprint_context(sprint_id)`; met `task_id` komt uitsluitend het volledige plan van die taak mee. `get_ideas_context(product_id)` haalt ideeën apart op. De tijdelijke oude naam blijft een alias met hetzelfde compacte antwoord. Context is geen uitvoerautorisatie.
 
 ## Config Cascade
 

@@ -51,10 +51,12 @@ export function registerGetContextTool(server: McpServer) {
   const definition = {
     title: 'Compact product and agent context',
     description:
-      'Start a Scrum4Me workflow with product context, every OPEN sprint and the applicable agent guide. ' +
-      'Optionally pass your known agent runtime and exact model_id for targeted instructions; do not guess them. ' +
-      'Use get_sprint_context for the sprint selected by the current assignment and one task plan, ' +
-      'or get_ideas_context when ideas are relevant. Reading context does not start work.',
+      'Start an interactive main session, or restore it after compaction, with the product, every OPEN sprint and the applicable agent guide. ' +
+      'Include known agent.runtime even if model_id is unknown; include only an exact known model_id. Omit agent if runtime is unknown; never guess identity. ' +
+      'Read agent_guide, check agent_context.applied_profiles and follow the guide for task distribution, subagent model selection and verification. Keep the user-selected main model unchanged. ' +
+      'Fetch get_agent_guide once with the same product/agent input only if the guide is missing or empty; a missing profile alone needs no extra call. ' +
+      'Subagents use delegated context; worker jobs follow their kind prompt/payload instead of automatically repeating this startup. ' +
+      'Use get_sprint_context for the assigned sprint and one task plan, or get_ideas_context when relevant. Preserve the assignment after compaction; context does not start other work.',
     inputSchema: productContextInputSchema,
     annotations: { readOnlyHint: true, idempotentHint: true },
   }

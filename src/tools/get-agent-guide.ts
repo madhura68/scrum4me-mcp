@@ -29,9 +29,13 @@ export function registerGetAgentGuideTool(server: McpServer) {
     {
       title: 'Build & document guide for a product',
       description:
-        'Resolve the binding build & document guide for a product (global default ' +
-        'plus optional active runtime, exact-model and product supplements). Optionally pass the known ' +
-        'agent runtime and exact model_id, as with get_context. Call this and follow guide_md before building or documenting.',
+        'Resolve the binding guide for explicit inspection, a missing startup guide, or a job without an applicable guide. ' +
+        'Combines the global default with active runtime, exact-model and product supplements. ' +
+        'Use the same product and agent input as a preceding get_context call, or the job product and known identity when no guide was supplied. ' +
+        'Include known runtime, omit only an unknown model_id, and omit agent if runtime is unknown; never guess identity. ' +
+        'Read guide_md, check agent_context.applied_profiles and follow the guide for task distribution, subagent model selection and verification within the assignment. ' +
+        'Keep the user- or runner-selected main model unchanged. An available guide needs no second call, and a missing profile alone is not a reason to retry. ' +
+        'If this fallback fails, report the missing guide without a retry loop. Direct inspection and explicit refresh remain available.',
       inputSchema: productContextInputSchema,
       annotations: { readOnlyHint: true },
     },
