@@ -10,6 +10,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = join(HERE, '..')
 const TSX_CLI = join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs')
 const CANARY_SCRIPT = join(REPO_ROOT, 'scripts', 'stdio-canary.ts')
+const CANARY_PROCESS_TIMEOUT_MS = 60_000
 
 // A named-but-not-embedded secret: we inject it into the child environment and
 // assert it never surfaces in the credentialless canary's stdout or stderr.
@@ -39,6 +40,8 @@ describe('stdio canary — in-process', () => {
 })
 
 describe('stdio canary — spawned without DB/token', () => {
+  // Cold CI startup can exceed Vitest's default 5s. Keep its budget above the
+  // bounded child-process deadline, with room for the result assertions.
   it('emits exactly one result object, exits 0, and leaks no secret', () => {
     // Strip DB + token; a real handler would throw, but the canary forbids
     // execution so it never needs them. Inject a secret to prove no leak.
@@ -53,7 +56,7 @@ describe('stdio canary — spawned without DB/token', () => {
       cwd: REPO_ROOT,
       env,
       encoding: 'utf8',
-      timeout: 60_000,
+      timeout: CANARY_PROCESS_TIMEOUT_MS,
     })
 
     expect(proc.status).toBe(0)
@@ -67,5 +70,5 @@ describe('stdio canary — spawned without DB/token', () => {
 
     expect(proc.stdout).not.toContain(INJECTED_SECRET)
     expect(proc.stderr).not.toContain(INJECTED_SECRET)
-  })
+  }, CANARY_PROCESS_TIMEOUT_MS + 5_000)
 })
