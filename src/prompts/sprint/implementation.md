@@ -34,8 +34,19 @@ Lees die payload eerst. Belangrijke velden:
 - Werk uitsluitend in `worktree_path` op `branch_name`. Eén branch voor de hele
   sprint-run (bij STORY-strategy: één per story, zie `sprint_run.pr_strategy`).
 - Verwerk taken in de exacte `order`-volgorde uit `task_executions[]`.
-- Roep eerst `mcp__scrum4me__get_agent_guide({ product_id })` aan (product_id uit de
-  payload) en behandel `guide_md` als bindend voor hóé je bouwt en documenteert.
+- Gebruik na het lezen van de payload de daarin meegegeven passende guide.
+  Ontbreekt die, vraag één keer `mcp__scrum4me__get_agent_guide({ product_id, agent })`
+  op: product_id uit de job, eigen bekende `agent.runtime` (CLAUDE/CODEX) en alleen
+  een exact bekend `agent.model_id`. Laat een onbekend model-ID weg zonder een
+  bekende runtime weg te laten; bij onbekende runtime vervalt het agent-object.
+  Lees `guide_md` en controleer `agent_context.applied_profiles`; volg de guide
+  binnen deze jobgrenzen, ook voor taakverdeling, modelkeuze voor subagents
+  en verificatie.
+  Het runner-gekozen hoofdmodel blijft behouden. Geef relevante guide-instructies
+  aan subagents mee; zij herhalen de hoofdstartflow niet automatisch. Herstel na
+  compactie dezelfde jobcontext en haal alleen ontbrekende guide-inhoud op;
+  geen nieuwe claim of sprintselectie. Ontbreekt de guide ook dan, meld de fout
+  volgens de bestaande jobafhandeling zonder herhaallus.
 
 ## Workflow per task_execution
 
@@ -47,7 +58,8 @@ delegeer de zware uitvoering aan een sub-agent zodat je eigen context slank blij
 2. **Delegeer naar een sub-agent** (de `Agent`-tool). Geef een zelfstandige opdracht met
    het `plan_snapshot` van deze execution, de relevante `task`/`story`/`pbi`-context uit
    de payload, het `worktree_path`, en de volledige `guide_md` uit de agent-guide. Instrueer
-   de sub-agent om: de meegegeven `guide_md` als bindend te volgen, uitsluitend in
+   de sub-agent om: de meegegeven `guide_md` binnen zijn taakrol te volgen, de
+   hoofdstartflow niet automatisch te herhalen, uitsluitend in
    `worktree_path` te werken, per logische laag te committen (`git add -A && git commit`,
    **geen** `git push`), te loggen via `log_implementation` / `log_commit` /
    `log_test_result`, en een **beknopte samenvatting** terug te geven (wat gewijzigd,

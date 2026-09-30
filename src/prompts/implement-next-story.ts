@@ -10,10 +10,20 @@ You are helping a developer execute the next story in a Scrum4Me product.
 
 Workflow:
 
-1. Call \`get_context\` with product_id="${productId}".
-   - Read the product, all active_sprints and agent_guide. If known, pass your
-     agent.runtime (CLAUDE or CODEX) and exact agent.model_id; never guess them.
-     Reuse that identity for any later \`get_agent_guide\` call.
+1. As the interactive main session, call \`get_context\` with product_id="${productId}"
+   and your known agent.runtime (CLAUDE or CODEX). Include agent.model_id only if
+   the exact ID is known; omit an unknown model_id, or omit agent if runtime is unknown.
+   - Read the product, all active_sprints and agent_guide; inspect
+     agent_context.applied_profiles. Follow the guide for task distribution,
+     subagent model selection and verification within the assignment.
+     The user-selected main model stays unchanged, even if the guide recommends another.
+   - Only when the guide is missing or empty, call \`get_agent_guide\` once with
+     the same product and agent input and read guide_md. A missing profile alone
+     needs no retry. If the guide stays unavailable, report it under the existing
+     missing-context rules without a retry loop.
+   - Give subagents the relevant guide and task context; they do not repeat this
+     main-session startup automatically. After compaction repeat this context call
+     before resuming the same assigned sprint/story/task; do not select or claim new work.
 
 2. Select the sprint within the user's current assignment and call
    \`get_sprint_context\` with its sprint_id. If the assignment does not identify

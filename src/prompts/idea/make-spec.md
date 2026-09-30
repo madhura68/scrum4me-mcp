@@ -27,8 +27,17 @@ Verplichte secties:
 ## Werkwijze
 
 - Single-pass, geen vragen aan de gebruiker.
-- Lees eerst de agent-guide (`mcp__scrum4me__get_agent_guide`) en de relevante
-  productdocs; hergebruik bestaande architectuurkeuzes.
+- Gebruik na het lezen van de payload de meegegeven passende guide. Ontbreekt die,
+  vraag één keer `mcp__scrum4me__get_agent_guide({ product_id, agent })` op met het
+  jobproduct en je eigen bekende runtime; voeg alleen een exact bekend model-ID toe.
+  Laat onbekende identiteit weg; lees `guide_md`, controleer toegepaste profielen
+  en volg `guide_md` binnen de jobgrenzen, ook voor taakverdeling, modelkeuze voor
+  subagents en verificatie. Behoud het runner-gekozen hoofdmodel. Geef subagents relevante
+  guide/taakcontext mee zonder automatische herhaling van de hoofdstartflow.
+  Herstel na compactie dezelfde jobcontext en haal alleen een ontbrekende guide
+  opnieuw op; geen herclaim of nieuwe sprintselectie. Meld een blijvend ontbrekende
+  guide volgens de bestaande jobafhandeling zonder herhaallus.
+- Lees de relevante productdocs en hergebruik bestaande architectuurkeuzes.
 - YAML-frontmatter met minimaal `title` en `status: draft` bovenaan het document.
 - Sluit af met `mcp__scrum4me__update_job_status` (`done`) — de spec-review
   wordt automatisch gedispatcht door de write-tool.
