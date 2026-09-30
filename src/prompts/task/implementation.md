@@ -33,8 +33,9 @@ verifies horen daar te landen.
   op: product_id uit de job, eigen bekende `agent.runtime` (CLAUDE/CODEX) en alleen
   een exact bekend `agent.model_id`. Laat een onbekend model-ID weg zonder een
   bekende runtime weg te laten; bij onbekende runtime vervalt het agent-object.
-  Lees `guide_md` en controleer `agent_context.applied_profiles`; volg het beleid
-  voor taakverdeling, subagentmodelkeuze en verificatie binnen deze jobgrenzen.
+  Lees `guide_md` en controleer `agent_context.applied_profiles`; volg de guide
+  binnen deze jobgrenzen, ook voor taakverdeling, modelkeuze voor subagents
+  en verificatie.
   Het runner-gekozen hoofdmodel blijft behouden. Geef relevante guide-instructies
   aan subagents mee; zij herhalen de hoofdstartflow niet automatisch. Herstel na
   compactie dezelfde jobcontext en haal alleen ontbrekende guide-inhoud op;

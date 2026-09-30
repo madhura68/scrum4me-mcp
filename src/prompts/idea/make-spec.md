@@ -31,8 +31,8 @@ Verplichte secties:
   vraag één keer `mcp__scrum4me__get_agent_guide({ product_id, agent })` op met het
   jobproduct en je eigen bekende runtime; voeg alleen een exact bekend model-ID toe.
   Laat onbekende identiteit weg; lees `guide_md`, controleer toegepaste profielen
-  en volg het beleid voor taakverdeling, subagentmodelkeuze en verificatie binnen
-  de jobgrenzen. Behoud het runner-gekozen hoofdmodel. Geef subagents relevante
+  en volg `guide_md` binnen de jobgrenzen, ook voor taakverdeling, modelkeuze voor
+  subagents en verificatie. Behoud het runner-gekozen hoofdmodel. Geef subagents relevante
   guide/taakcontext mee zonder automatische herhaling van de hoofdstartflow.
   Herstel na compactie dezelfde jobcontext en haal alleen een ontbrekende guide
   opnieuw op; geen herclaim of nieuwe sprintselectie. Meld een blijvend ontbrekende
