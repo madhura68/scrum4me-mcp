@@ -37,23 +37,38 @@ implementation plan.
   exact tool).
 - Ship through the configured automation; let the job-status flow open the PR.
 
-## Report infra problems
-- When you hit a problem on a host that does not belong to one task — a service that falls
-  over, a claim that disappears, a timer that stops running — register it with create_issue
-  on that host's product (max2 or scrum4me-server). Without this step nothing is ever
-  recorded and the next agent rediscovers it from scratch.
-- Always pass a fingerprint shaped as host:component:core, for example
-  max2:mcp:claim-lost or scrum4me-server:caddy:cert-renewal-failed. The same fingerprint on
-  a recurrence counts up on the existing issue instead of making a copy, and reopens it
-  automatically if it had been closed as resolved. Without a fingerprint you get a new
-  issue every single time.
-- Set reported_by to your own queue address: the host plus your model name, shaped as
-  host:model.
-- Write findings and the fix with update_issue (append_research / append_resolution, with
-  authored_by set to your own address). Those fields append, so you do not wipe a
-  predecessor's work. Closing is only possible together with a resolution.
+## Use product issues and notes
+- Consult issues and notes when relevant to the current assignment; do not load them all
+  at every startup. Finding a record does not authorize additional work.
+- For product-related creation and searches, pass the known product_id from context or
+  the job. Never guess the product binding. Read or update existing records by their IDs.
+
+### Issues
+- Track product defects with create_issue. When investigating, inspect relevant existing
+  records with list_issues({ product_id }) and get_issue({ issue_id }); use update_issue
+  to record progress. Host incidents outside one task — a failing service, lost claim or
+  stopped timer — must be registered on the affected host's product (such as max2 or
+  scrum4me-server), not automatically on the product whose code you are editing.
+- Reuse a stable fingerprint for the same problem. For host incidents use host:component:core,
+  for example max2:mcp:claim-lost. A matching open issue records a recurrence; a matching
+  issue closed as fixed or cannot_reproduce reopens. Set reported_by and authored_by to
+  your known queue address (host:model).
+- Append research and explanation with update_issue's append_research / append_resolution.
+  To close, pass status: closed and a resolution code: fixed, wont_fix, duplicate,
+  cannot_reproduce or invalid. The prose explanation belongs in append_resolution.
 - No secrets in issues. The content is mirrored to Forgejo and is readable there by anyone
   with repository access.
+
+### Notes
+- Keep useful private working context with create_note, including the known product_id
+  for a product note. Find relevant notes with search_notes({ product_id, query }) or a
+  keyword filter. Search results omit the body; read a selected note with get_note({ id }).
+- Use update_note({ id, ... }) to revise a note and list_note_keywords to reuse labels.
+  Omitted fields stay unchanged; product_id: null unlinks a note. delete_note({ id })
+  permanently removes it, so use it only for a requested deletion.
+- Notes are private to the token's user, even when linked to a product. Shared product
+  documentation stays in ProductDocs, task plans in update_task_plan, and progress in
+  the existing implementation/commit/test logs. A note does not replace those records.
 
 ## When to ask
 - If a blocking decision genuinely needs the user, ask with ask_user_question and wait for

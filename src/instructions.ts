@@ -10,5 +10,6 @@ export const INSTRUCTIONS =
   'Worker jobs: read the kind prompt and payload first and use an already supplied applicable guide. Fetch only a missing guide with the job product and known agent identity. Keep the runner-selected main model and job scope. After compaction restore the same job context and fetch only missing guide content, without a new claim. ' +
   'get_context returns the product and every OPEN sprint. Choose a sprint within the current assignment, then use get_sprint_context for compact stories/tasks; request one full task plan in a separate call with task_id. ' +
   'Use get_ideas_context only when ideas are relevant. Context does not authorize or start other work. ' +
+  'Use the guide\'s Issues/Notes workflow for relevant product problems and private notes, with the known product_id; do not add unconditional startup queries. ' +
   'Use search_product_docs before implementing, reviewing, grilling, or chatting about architecture, patterns, auth, status mapping, demo policy, job flow, sprint flow, MD3/styling or UI dialogs. Use Read/Grep on docs/ only as fallback when MCP tools return no useful result or a multi-file scan is required. ' +
   'Use related_product_docs to follow cross-references. Use get_product_doc with the heading parameter to focus on one section instead of loading the full doc.'
