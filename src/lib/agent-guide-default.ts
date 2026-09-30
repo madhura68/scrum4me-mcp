@@ -40,8 +40,9 @@ implementation plan.
 ## Use product issues and notes
 - Consult issues and notes when relevant to the current assignment; do not load them all
   at every startup. Finding a record does not authorize additional work.
-- For product-related creation and searches, pass the known product_id from context or
-  the job. Never guess the product binding. Read or update existing records by their IDs.
+- For product-related creation and searches, use a known product_id from context or the
+  job; resolve an unknown affected product with list_products. Never guess the binding.
+  Read or update existing records by their IDs.
 
 ### Issues
 - Track product defects with create_issue. When investigating, inspect relevant existing
@@ -51,8 +52,8 @@ implementation plan.
   scrum4me-server), not automatically on the product whose code you are editing.
 - Reuse a stable fingerprint for the same problem. For host incidents use host:component:core,
   for example max2:mcp:claim-lost. A matching open issue records a recurrence; a matching
-  issue closed as fixed or cannot_reproduce reopens. Set reported_by and authored_by to
-  your known queue address (host:model).
+  issue closed as fixed or cannot_reproduce reopens. Pass reported_by to create_issue and
+  authored_by to update_issue, using your known queue address (host:model).
 - Append research and explanation with update_issue's append_research / append_resolution.
   To close, pass status: closed and a resolution code: fixed, wont_fix, duplicate,
   cannot_reproduce or invalid. The prose explanation belongs in append_resolution.
