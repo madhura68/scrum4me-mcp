@@ -24,3 +24,7 @@ Bewijsbestanden:
 - [Database-readback](./2026-10-01-modelregistry-runner-db.json)
 
 Dit is implementatie- en testbewijs. Productie-uitrol, de echte positieve releasecanary en de open workers-startvoorwaarde horen bij T-171 en zijn niet uitgevoerd. Forgejo-CI is hiermee niet impliciet bewezen.
+
+## CI-correctie na publicatie
+
+De eerste Forgejo candidate-run 243 ving een verouderde `CURRENT_SHARED_COMMIT` in `ppe-bundle1-parity.test.ts`: de lokale precommit-suite had nog de oude gitlink in de index gelezen. Dezelfde fout is na commit lokaal gereproduceerd (1 fout, 3 geslaagd). Uitsluitend de actuele verwachte pin is bijgewerkt naar `8bf0ca3d63d1fadfc7d45be04058e3780c77e4bc`; de historische Plan A-, B1- en rebaseline-pins en schemahashes zijn bytegelijk gebleven. Daarna gerichte paritytest 4/4 en volledige typecheck/tests opnieuw groen: 2015 geslaagd, 69 bestaande skips. Geen runtimecode gewijzigd na de onafhankelijke implementatiereview. Nieuwe CI-run moet de gepubliceerde correctie nog bevestigen.
