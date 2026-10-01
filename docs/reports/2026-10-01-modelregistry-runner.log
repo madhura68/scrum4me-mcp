@@ -1,0 +1,21 @@
+e65ca899681ce4bde531444d2abe6d03c2db94b36ad01831bc4547b9b78ec5e2
+2
+running=false exit=2 image=sha256:b8471b2b9cb488e3b39dbddddba9c481443541766c8837652a7ad7a92b6c570c
+2026-10-01T00:15:59.913Z [run-one-job] claim attempt starting
+2026-10-01T00:15:59.914Z [run-one-job] skills inventory catalog=3acb44a3102093a33584d0507b9f2578f2d03b84b393156edcdd03e0679dea31 count=3
+2026-10-01T00:15:59.914Z [run-one-job] instance_id=modelregistry-test-once hostname=max2 pid=17
+2026-10-01T00:15:59.914Z [run-one-job] worker_capability=HIGH_P capabilities=[planning]
+2026-10-01T00:16:00.127Z [run-one-job] auth ok user_id=modelregistry-runner-user token_id=modelregistry-runner-token
+2026-10-01T00:16:00.128Z [run-one-job] worker runtime=CODEX
+2026-10-01T00:16:00.293Z [run-one-job] runtime=CODEX — skipping Anthropic quota probe
+2026-10-01T00:16:00.581Z [run-one-job] claimed job_id=modelregistry-runner-job
+2026-10-01T00:16:00.931Z [run-one-job] config job_id=modelregistry-runner-job runtime=CODEX model=gpt-6-astra sandbox_mode=read-only thinking_budget=6000 max_turns=5 skills_count=0
+2026-10-01T00:16:00.931Z [run-one-job] payload written path=/tmp/job-modelregistry-runner-job/payload.json size_bytes=1118
+2026-10-01T00:16:00.931Z [run-one-job] spawn codex job_id=modelregistry-runner-job cwd=/opt/agent args="exec --json --skip-git-repo-check --ephemeral --color never --cd /opt/agent --model gpt-6-astra --sandbox read-only -c model_reasoning_effort=low <prompt-747-chars>"
+MODELREGISTRY_TEST_STUB {"model":"gpt-6-astra","modelFlagCount":1,"argvWithoutPrompt":["exec","--json","--skip-git-repo-check","--ephemeral","--color","never","--cd","/opt/agent","--model","gpt-6-astra","--sandbox","read-only","-c","model_reasoning_effort=low"]}
+2026-10-01T00:16:00.960Z [run-one-job] codex done job_id=modelregistry-runner-job exit_code=2 duration_ms=29 wall_clock_seconds=0
+2026-10-01T00:16:00.961Z [run-one-job] codex usage capture skipped job_id=modelregistry-runner-job reason=rollback_to_queued
+2026-10-01T00:16:00.971Z [run-one-job] rollback claim job_id=modelregistry-runner-job reason=claude_exit_2_without_status_update
+2026-10-01T00:16:01.066Z [run-one-job] cleanup payload_cleanup_allowed=true heartbeat_stopped=true
+2026-10-01T00:16:01.066Z [run-one-job] exit code=2
+{"scope":"claim","event":"repoRoot.unresolved","productId":"modelregistry-runner-product","taskRepoUrl":null}
