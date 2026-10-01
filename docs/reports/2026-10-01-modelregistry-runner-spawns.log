@@ -1,0 +1,2 @@
+running=false exit=2 restarts=0
+{"model":"gpt-6-astra","modelFlagCount":1,"argvWithoutPrompt":["exec","--json","--skip-git-repo-check","--ephemeral","--color","never","--cd","/opt/agent","--model","gpt-6-astra","--sandbox","read-only","-c","model_reasoning_effort=low"]}
