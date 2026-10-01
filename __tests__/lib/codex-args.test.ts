@@ -32,10 +32,11 @@ describe('buildCodexArgs', () => {
     }
   })
 
-  it.each(CODEX_MODELS)('geeft model %s exact door via --model', (model) => {
+  it.each([...CODEX_MODELS, 'gpt-6-astra', 'gpt-future-registry-fixture'])('geeft model %s exact door via --model', (model) => {
     const args = buildCodexArgs({ promptText: 'p', cwd: '/opt/agent', model })
     expect(args).toContain('--model')
     expect(args[args.indexOf('--model') + 1]).toBe(model)
+    expect(args.filter(arg => arg === '--model')).toHaveLength(1)
     expect(args[args.length - 1]).toBe('p')
   })
 

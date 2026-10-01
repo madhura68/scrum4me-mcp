@@ -1,0 +1,15 @@
+{
+  "environment": "disposable local PostgreSQL17 via loopback-only SSH reverse forward; max2 test image and test token only",
+  "job": {
+    "id": "modelregistry-runner-job",
+    "status": "QUEUED",
+    "claimed_by_token_id": null,
+    "worker_instance_id": null,
+    "lease_until": null,
+    "retry_count": 0,
+    "requested_model": null
+  },
+  "kind": {
+    "codex_model": "gpt-6-astra"
+  }
+}
