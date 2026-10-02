@@ -16,7 +16,8 @@ export function registerDispatchReviewTool(server: McpServer) {
       title: 'Dispatch review',
       description:
         'Hand a review of pinned documents to automatic dispatch. Always read-only and always answered with one ' +
-        'verdict in a reviewed message to reply_to. Every document must be pinned; an unpinned reference is refused.',
+        'verdict in a reviewed message to reply_to. Every document must be pinned; an unpinned reference is refused. ' +
+        'Wait for the answer with queue_wait_reply({ message_ids: [dispatch.root_message_id] }).',
       inputSchema,
     },
     async ({ idempotency_key, runtime, ...rest }) =>

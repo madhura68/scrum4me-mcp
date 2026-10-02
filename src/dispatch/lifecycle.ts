@@ -34,7 +34,7 @@ export async function insertResult(db:PoolClient,id:string,attemptId:string|null
 }
 export async function lifecycleView(db:PoolClient,id:string):Promise<DispatchView>{
  const r=(await db.query('SELECT r.*,c.route,c.profile_revision_id,c.job_id FROM queue_dispatch_requests r LEFT JOIN queue_dispatch_candidates c ON c.request_id=r.id AND c.generation=r.generation WHERE r.id=$1',[id])).rows[0]
- return {id:r.id,version:String(r.version),state:r.state,action:r.input.action,reason:r.state.toLowerCase(),route:r.route??null,profile_revision_id:r.profile_revision_id??null,job_id:r.job_id??null,executor_label:null,result_id:r.result_id,delivery:'pending',created_at:r.created_at.toISOString()}
+ return {id:r.id,version:String(r.version),state:r.state,action:r.input.action,reason:r.state.toLowerCase(),route:r.route??null,profile_revision_id:r.profile_revision_id??null,job_id:r.job_id??null,executor_label:null,result_id:r.result_id,delivery:'pending',created_at:r.created_at.toISOString(),root_message_id:r.root_message_id,reply_message_id:r.reply_message_id}
 }
 /** The canonical result travels back with the receipt: the domain may rewrite the submitted
  * outcome, so a supervisor that only learned an id could not know what was actually accepted. */

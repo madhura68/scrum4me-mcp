@@ -144,7 +144,7 @@ it.each(['owner','product_owner','admin','member','admin_without_access','web_ow
  if(role==='web_owner')actor={...actor,source:'web',tokenId:null,principalKey:`web:${x.f.otherUser}`}
  const v=(await h.dispatch.query('SELECT version FROM queue_dispatch_requests WHERE id=$1',[x.proof.request_id])).rows[0],action=randomUUID()
  if(['owner','product_owner','admin'].includes(role)){
-  expect((await x.cancel.cancelDispatch(actor,x.proof.request_id,action,String(v.version))).state).toBe('CANCEL_REQUESTED')
+  expect(await x.cancel.cancelDispatch(actor,x.proof.request_id,action,String(v.version))).toMatchObject({state:'CANCEL_REQUESTED',root_message_id:x.view.root_message_id,reply_message_id:x.view.reply_message_id})
   expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations WHERE candidate_id=$1',[x.proof.candidate_id])).rows[0].released_at).toBeNull()
   await x.completion.submitStop(x.f.actor,x.proof,x.stop)
   expect((await x.cancel.cancelDispatch(actor,x.proof.request_id,action,String(v.version))).state).toBe('CANCELLED')

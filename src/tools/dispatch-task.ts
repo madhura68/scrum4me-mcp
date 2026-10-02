@@ -20,7 +20,8 @@ export function registerDispatchTaskTool(server: McpServer) {
         'Hand a task to automatic dispatch: a suitable job worker runs it, or a registered host agent when the ' +
         'requirements need one, and one final answer comes back to reply_to in Messages. Without task_id this is a ' +
         'free task; with task_id it implements that Scrum4Me Task. To send work to one specific watcher yourself, ' +
-        'use queue_push instead — that path is unchanged and creates no job.',
+        'use queue_push instead — that path is unchanged and creates no job. ' +
+        'Wait for the answer with queue_wait_reply({ message_ids: [dispatch.root_message_id] }).',
       inputSchema,
     },
     async ({ idempotency_key, access, runtime, environment_keys, repository, publish, ...rest }) =>

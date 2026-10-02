@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { makeDispatchHarness, type DispatchHarness, type DispatchHarnessSeed } from './harness.js'
 import { createDispatchAuth } from '../../src/dispatch/auth.js'
-import { createDispatchRequests } from '../../src/dispatch/requests.js'
+import { createDispatchRequests, dispatchReplyUuid } from '../../src/dispatch/requests.js'
 
 let h: DispatchHarness
 let f: DispatchHarnessSeed
@@ -100,6 +100,14 @@ describe('current database authorization and atomic intake', () => {
     await expect(off.getDispatch(f.actor, view.id)).resolves.toEqual(view)
     await h.admin.query('UPDATE products SET user_id=$1 WHERE id=$2', [f.otherUser, f.input.product_id])
     await expect(off.getDispatch(f.actor, view.id)).rejects.toThrow('DISPATCH_NOT_FOUND')
+  })
+  it('returns the projected root and reply queue ids, so a requester can wait on the answer', async () => {
+    const view = await requests.submitDispatch(f.actor, f.input, 'ids')
+    const row = (await h.dispatch.query('SELECT root_message_id,reply_message_id FROM queue_dispatch_requests WHERE id=$1', [view.id])).rows[0]
+    expect(view.root_message_id).toBe(row.root_message_id)
+    expect(view.reply_message_id).toBe(dispatchReplyUuid(view.id))
+    expect(row.reply_message_id).toBe(view.reply_message_id)
+    await expect(requests.getDispatch(f.actor, view.id)).resolves.toMatchObject({ root_message_id: row.root_message_id, reply_message_id: view.reply_message_id })
   })
   it('keeps work_item informational without looking up or snapshotting its task', async () => {
     const view = await requests.submitDispatch(f.actor, { ...f.input, work_item: { task_id: 'does-not-exist' } }, 'label')
