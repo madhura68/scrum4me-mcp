@@ -144,3 +144,14 @@ describe('M23 spec-maker-prompts', () => {
     expect(getIdeaPromptText('IDEA_REVISE_SPEC')).toContain('review_feedback')
   })
 })
+
+describe('managed queue prompts point at the mounted sources (M41)', () => {
+  const variants = (['CLAUDE', 'CODEX'] as const).flatMap(runtime =>
+    (['QUEUE_TASK', 'QUEUE_REVIEW'] as const).map(kind => ({ runtime, kind, text: getKindPromptText(kind, runtime) })))
+  it.each(variants)('$kind/$runtime reads sources at /sources/<key> and the task at /sources/__dispatch_input', ({ text }) => {
+    expect(text).toContain('/sources/<key>')
+    expect(text).toContain('/sources/__dispatch_input')
+    expect(text).toContain('$PAYLOAD_PATH')
+    expect(text).not.toMatch(/unpacked[^.]*under `\/work`/)
+  })
+})
