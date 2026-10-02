@@ -8,7 +8,7 @@ Read the JSON file at $PAYLOAD_PATH: `{ "dispatch": { "input": …, "source_arti
 - `dispatch.input.review_documents.items`: the documents under review, each pinned by revision or commit.
 - `dispatch.source_artifacts`: the bytes you were actually given, each with a `key` and a `sha256`. Each one is a read-only file at `/sources/<key>` — the file name is the key, with no extension. `/sources/__dispatch_input` is the task itself, not a document under review.
 
-`/work` is empty unless a repository checkout is provided.
+`/work` is empty unless a repository checkout is provided. When `dispatch.input.requirements.repository` is set, `/work` holds a read-only, depth-1 checkout of exactly its `base_sha`: check every claim the documents make about the code against that checkout, and cite each finding as `path:line`.
 
 The pinned version is the subject. There is no newer version, and you have no way to fetch one. If something a document refers to is not among your sources, say so as a finding instead of guessing at it.
 
