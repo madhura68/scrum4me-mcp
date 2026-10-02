@@ -30,6 +30,9 @@ export type ExecutionContext = {
   proof: AttemptProof
   sourceArtifacts: { key: string; artifactId: string; sha256: string }[]
   modelConfig: { model: string; effort: string | null; runtime: DispatchRuntime }
+  /** The bound claude_jobs row on the job route (null on the host route), so the
+   * supervisor can link the attempt's run log to the job in Worker Logs. */
+  jobId: string | null
 }
 
 type ClaimStatus = { requestId: string; attemptId: string; requestState: DispatchState; attemptState: AttemptState }
