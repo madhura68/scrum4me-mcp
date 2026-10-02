@@ -34,6 +34,12 @@ describe('durable claim and start authority',()=>{
   expect((await requests.getDispatch(f.actor,r.id)).state).toBe('CLAIMED')
   expect(JSON.stringify((await h.dispatch.query('SELECT * FROM queue_dispatch_attempts')).rows)).not.toContain(context.proof.credential)
  })
+ it('names the bound job in the execution context so the supervisor can link its run log (M41 U1)',async()=>{
+  const {context}=await claimed()
+  const job=(await h.dispatch.query('SELECT job_id FROM queue_dispatch_candidates WHERE id=$1',[context.proof.candidate_id])).rows[0].job_id
+  expect(job).toBeTruthy()
+  expect(context.jobId).toBe(job)
+ })
  it('requires current session credential before any claim',async()=>{
   await reserve();await expect(attempts.claimDispatchAttempt(f.actor,session.incarnation_id,'wrong','wrong')).rejects.toThrow('DISPATCH_FORBIDDEN')
   expect((await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_attempts')).rows[0].n).toBe(0)
@@ -167,6 +173,7 @@ it('binds a host claim to exactly its registered incarnation and starts that sco
  const receipt=await attempts.claimDispatchAttempt(f.actor,host.incarnation_id,'host-claim',host.session_credential)
  expect(receipt?.authority).toBe('prepare');if(!receipt?.context)throw Error('host not claimed')
  expect(receipt.context.proof.incarnation_id).toBe(host.incarnation_id)
+ expect(receipt.context.jobId).toBeNull()
  await expect(attempts.startDispatchAttempt(f.actor,receipt.context.proof,scope)).resolves.toHaveProperty('permitId')
  expect((await h.dispatch.query('SELECT count(*)::int n FROM claude_jobs')).rows[0].n).toBe(0)
  // Registration may sign off an old session; its claim and occupied scope stay bound.

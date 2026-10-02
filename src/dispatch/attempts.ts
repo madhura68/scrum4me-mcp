@@ -161,7 +161,8 @@ export function createDispatchAttempts(deps: {
                 artifactId: string;
                 sha256: string;
             }>('SELECT key,id AS "artifactId",sha256 FROM queue_dispatch_artifacts WHERE request_id=$1 AND attempt_id IS NULL ORDER BY key', [x.r.id])).rows,
-            modelConfig: { model: cfg.model, effort: cfg.thinking_budget, runtime: cfg.runtime } };
+            modelConfig: { model: cfg.model, effort: cfg.thinking_budget, runtime: cfg.runtime },
+            jobId: x.c.job_id ?? null };
     }
     async function receipt(db: PoolClient, actor: DispatchActor, x: Locked): Promise<DispatchClaimReceipt> {
         const status = { requestId: x.r.id, attemptId: x.a.id, requestState: x.r.state, attemptState: x.a.state };
