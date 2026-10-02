@@ -121,6 +121,11 @@ export function createDispatchArtifacts(deps:{store:DispatchStore;auth:DispatchA
    const row=(await db.query('SELECT * FROM queue_dispatch_artifacts WHERE id=$1 AND request_id=$2 AND attempt_id IS NULL',[id,x.r.id])).rows[0]
    if(!row)throw new DispatchError('DISPATCH_NOT_FOUND')
    if(row.byte_size!==row.bytes.length||artifactHash(row.bytes)!==row.sha256)throw new DispatchError('DISPATCH_STATE_CONFLICT')
+   // M41: delivering a pinned document to its own attempt is that attempt's source receipt
+   // (the deployed child holds no gateway token). Service keys never produce one.
+   const ref=x.r.input.review_documents?.items.find(ref=>ref.key===row.key)
+   if(ref&&ref.sha256===row.sha256)await db.query("INSERT INTO queue_dispatch_events(id,request_id,attempt_id,type,actor,payload,operation_key) VALUES($1,$2,$3,'source_delivered',$4,$5,$6) ON CONFLICT(operation_key) DO NOTHING",
+    [randomUUID(),x.r.id,x.a.id,{source:'attempt_supervisor',incarnation_id:x.i.id,token_id:actor.tokenId},{key:row.key,artifact_id:row.id,sha256:row.sha256},`source-delivered:${x.a.id}:${row.key}`])
    return new Uint8Array(row.bytes)
   })
  }
