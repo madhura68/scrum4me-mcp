@@ -92,10 +92,12 @@ async function startService(f: DispatchHarnessSeed, options: {
   prepareRepository?: Parameters<typeof createDispatchSources>[0]['prepareRepository']
   queue?: Pool
   agentOutputKey?: Uint8Array
+  sourceManifest?: boolean
 } = {}) {
   const auth = createDispatchAuth({ store: h.dispatch })
   const core = { store: h.dispatch, auth, enabled: true, productAllowlist: [f.input.product_id] }
-  const executor = { credentialKeys: { 1: Buffer.alloc(32, 7) }, keyVersion: 1, startPermitPrivateKey: generateKeyPairSync('ed25519').privateKey, startPermitKeyId: 'permit-test' }
+  const executor = { credentialKeys: { 1: Buffer.alloc(32, 7) }, keyVersion: 1, startPermitPrivateKey: generateKeyPairSync('ed25519').privateKey, startPermitKeyId: 'permit-test',
+    ...(options.sourceManifest ? { sourceManifestPrivateKey: generateKeyPairSync('ed25519').privateKey, sourceManifestKeyId: 'manifest-test' } : {}) }
   const publisher = options.publisherPort
     ? createDispatchPublication({ ...core, port: options.publisherPort, loadBaseBranch: async () => 'main' })
     : undefined
@@ -794,6 +796,81 @@ describe('POST /attempts/result answers with the canonical receipt', () => {
       proof, result: { version: 1, outcome: 'succeeded', summary: 'claimed a review', report_markdown: 'GO', checks: [] },
     })
     expect(receipt.status).toBe('accepted')
+    expect(receipt.canonical_result).toMatchObject({ outcome: 'failed', summary: 'review_sources_unverified' })
+  })
+})
+
+/** The deployed supervisor's own source path: the signed manifest, then each named artifact under
+ * the attempt proof. No child gateway token is involved anywhere. */
+async function downloadPreparedSources(service: Service, proof: { request_id: string; candidate_id: string; generation: number; attempt_id: string; incarnation_id: string; credential: string }, keys?: string[]) {
+  const response = await fetch(`${service.root}/attempts/sources/manifest`, {
+    method: 'POST', headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ proof }),
+  })
+  expect(response.status).toBe(200)
+  const manifest = JSON.parse(((await response.json()) as { manifest: string }).manifest) as { sources: Array<{ key: string; artifactId: string; sha256: string }> }
+  const downloaded: string[] = []
+  for (const source of manifest.sources) {
+    if (keys && !keys.includes(source.key)) continue
+    const artifact = await service.client.getArtifact(source.artifactId, proof)
+    expect(artifact.sha256).toBe(source.sha256)
+    downloaded.push(source.key)
+  }
+  return { manifest, downloaded }
+}
+async function reviewSlot(f: DispatchHarnessSeed, patch: Partial<DispatchProfileConfig> = {}) {
+  const slot = await useRoute(f, 'job')
+  await reprofile(f, slot.id, { runtime: 'CODEX', actions: ['review'], access: 'read', publish_modes: ['artifact'], ...patch })
+  await h.dispatch.query(`UPDATE queue_dispatch_slots SET config=jsonb_set(config,'{capabilities}','["review"]') WHERE id=$1`, [slot.id])
+  await h.admin.query("UPDATE claude_workers SET capabilities=ARRAY['review'] WHERE user_id=$1", [f.actor.userId])
+  return slot
+}
+const deliveredReceipts = async (attemptId: string) => (await h.dispatch.query<{ type: string; actor: Record<string, unknown>; payload: Record<string, unknown> }>(
+  "SELECT type,actor,payload FROM queue_dispatch_events WHERE attempt_id=$1 AND type IN ('source_delivered','source_read') ORDER BY created_at", [attemptId])).rows
+
+describe('a review proves its sources through the supervisor download alone (M41 G1)', () => {
+  it('accepts GO when the pinned source was fetched only through the manifest and the attempt-proof download', async () => {
+    const f = await h.seed(); await authorizeToken(f)
+    const documents = await pinnedDocument(f)
+    const slot = await reviewSlot(f)
+    const service = await startService(f, { sourceManifest: true }), runtime = fakeRuntime()
+    const session = await registerSupervisor(service, slot.id, 'CODEX')
+    const input: DispatchInput = { ...f.input, action: 'review', review_documents: documents }
+    await service.client.submitDispatch(input, randomUUID())
+    expect((await service.tick()).reserved).toBe(1)
+    const { proof, scope } = await claimAndStart(service, session, runtime)
+    expect((await downloadPreparedSources(service, proof)).downloaded).toContain('plan')
+    // A supervisor that fetches twice (a retried download) leaves exactly one receipt.
+    await downloadPreparedSources(service, proof, ['plan'])
+    await submitStop(service, proof, stopObservation(slot.id, proof, scope))
+    const result: DispatchResult = {
+      version: 1, outcome: 'succeeded', summary: 'Reviewed the pinned plan', report_markdown: 'GO on the pinned revision.',
+      checks: [], review: { verdict: 'GO', documents },
+    }
+    const receipt = await service.client.submitResult({ proof, result })
+    expect(receipt.canonical_result).toMatchObject({ outcome: 'succeeded', review: { verdict: 'GO' } })
+    const receipts = await deliveredReceipts(proof.attempt_id)
+    expect(receipts).toHaveLength(1)
+    expect(receipts[0]).toMatchObject({ type: 'source_delivered', actor: { source: 'attempt_supervisor', incarnation_id: proof.incarnation_id }, payload: { key: 'plan', sha256: documents.items[0].sha256 } })
+  })
+
+  it('a downloaded repository base alone is no read receipt for a pinned document', async () => {
+    const f = await h.seed(); await authorizeToken(f)
+    await h.admin.query("UPDATE products SET repo_url='https://forge.test/repo.git' WHERE id=$1", [f.input.product_id])
+    const documents = await pinnedDocument(f)
+    const slot = await reviewSlot(f, { repository_product_ids: [f.input.product_id] })
+    const service = await startService(f, { sourceManifest: true, prepareRepository: async () => ({ bytes: Buffer.from('bundle'), repoUrl: 'https://forge.test/repo.git', baseSha: 'b'.repeat(40) }) })
+    const runtime = fakeRuntime()
+    const session = await registerSupervisor(service, slot.id, 'CODEX')
+    const input: DispatchInput = { ...f.input, action: 'review', review_documents: documents,
+      requirements: { access: 'read', environment_keys: [], repository: { product_id: f.input.product_id, base_sha: 'b'.repeat(40) } } }
+    await service.client.submitDispatch(input, randomUUID())
+    expect((await service.tick()).reserved).toBe(1)
+    const { proof, scope } = await claimAndStart(service, session, runtime)
+    expect((await downloadPreparedSources(service, proof, ['__repository_base'])).downloaded).toEqual(['__repository_base'])
+    expect(await deliveredReceipts(proof.attempt_id)).toEqual([])
+    await submitStop(service, proof, stopObservation(slot.id, proof, scope))
+    const receipt = await service.client.submitResult({ proof, result: {
+      version: 1, outcome: 'succeeded', summary: 'claimed a review', report_markdown: 'GO', checks: [], review: { verdict: 'GO', documents } } })
     expect(receipt.canonical_result).toMatchObject({ outcome: 'failed', summary: 'review_sources_unverified' })
   })
 })

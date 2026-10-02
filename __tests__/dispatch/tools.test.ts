@@ -51,6 +51,16 @@ describe('dispatch MCP tools',()=>{
   await asUser(()=>handlers.dispatch_review({...base,review_documents:documents}))
   expect(body()).toEqual({version:1,...base,action:'review',requirements:{access:'read',environment_keys:[]},publish:'artifact',review_documents:documents})
  })
+ it('a review may pin a read-only repository checkout of one exact commit (M41)',async()=>{
+  const repository={product_id:'p',base_sha:'c'.repeat(40)},schema=metas.dispatch_review.inputSchema as {safeParse:(v:unknown)=>{success:boolean}}
+  expect(schema.safeParse({...base,review_documents:documents,repository}).success).toBe(true)
+  expect(schema.safeParse({...base,review_documents:documents,repository:{...repository,base_sha:'c'.repeat(39)}}).success).toBe(false)
+  expect(schema.safeParse({...base,review_documents:documents,repository:{...repository,extra:1}}).success).toBe(false)
+  await asUser(()=>handlers.dispatch_review({...base,review_documents:documents,repository}))
+  expect(body()).toEqual({version:1,...base,action:'review',requirements:{access:'read',environment_keys:[],repository},publish:'artifact',review_documents:documents})
+  const short=await asUser(()=>handlers.dispatch_review({...base,review_documents:documents,repository:{...repository,base_sha:'c'.repeat(39)}}))
+  expect(short.isError).toBe(true);expect(calls).toHaveLength(1)
+ })
  it('refuses an unknown key instead of quietly dropping it, but reads prose as prose',async()=>{
   // The declared schema is what the SDK validates against. A stripped key is
   // worse than a refused one: the caller would believe a PPE marker or a

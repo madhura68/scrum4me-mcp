@@ -36,14 +36,15 @@ export function createAgentGateway(deps:{store:DispatchStore;auth:DispatchAuth;c
  }
  return {readSource,stage}
 }
-/** IP09 calls inside its already locked completion transaction. Reads prove
- * delivered source provenance only, never the model's internal reasoning. */
+/** IP09 calls inside its already locked completion transaction. A receipt is either the child's
+ * gateway read or the bound supervisor's attempt-proof download (M41); both prove that these
+ * exact bytes were delivered to this attempt, never the model's reasoning about them. */
 export async function assertReviewSourceReceipts(db:import('pg').PoolClient,requestId:string,attemptId:string,documents:DispatchInput['review_documents']):Promise<void>{
  const r=(await db.query<{input:DispatchInput}>('SELECT input FROM queue_dispatch_requests WHERE id=$1',[requestId])).rows[0]
  if(!r||!r.input.review_documents||JSON.stringify(canonical(r.input.review_documents))!==JSON.stringify(canonical(documents)))throw new DispatchError('DISPATCH_INVALID_INPUT')
  for(const ref of r.input.review_documents.items){
   const receipt=await db.query(`SELECT 1 FROM queue_dispatch_events e JOIN queue_dispatch_artifacts a ON a.id::text=e.payload->>'artifact_id'
-   WHERE e.request_id=$1 AND e.attempt_id=$2 AND e.type='source_read' AND e.actor->>'source'='agent_gateway'
+   WHERE e.request_id=$1 AND e.attempt_id=$2 AND ((e.type='source_read' AND e.actor->>'source'='agent_gateway') OR (e.type='source_delivered' AND e.actor->>'source'='attempt_supervisor'))
    AND e.payload->>'key'=$3 AND e.payload->>'sha256'=$4 AND a.request_id=$1 AND a.attempt_id IS NULL AND a.key=$3 AND a.sha256=$4`,[requestId,attemptId,ref.key,ref.sha256])
   if(!receipt.rowCount)throw new DispatchError('DISPATCH_STATE_CONFLICT')
  }

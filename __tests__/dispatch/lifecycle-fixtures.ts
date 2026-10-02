@@ -13,13 +13,18 @@ import {createDispatchCompletion} from '../../src/dispatch/completion.js'
 import {createDispatchCancellation} from '../../src/dispatch/cancel.js'
 import {canonicalRuntimeStopObservation,type RuntimeStopObservationBody} from '@shared/queue-dispatch-runtime-observation.js'
 import type {DispatchResult} from '@shared/queue-dispatch.js'
-export async function running(h:DispatchHarness,options:{prepared?:boolean;review?:boolean;readSource?:boolean}={}){
+/** `documents` pins one review document on the default free task; `review` also makes it a review. */
+export async function running(h:DispatchHarness,options:{prepared?:boolean;review?:boolean;documents?:boolean;readSource?:boolean}={}){
  const f=await h.seed(),auth=createDispatchAuth({store:h.dispatch}),opts={store:h.dispatch,auth,enabled:true,productAllowlist:[f.input.product_id]},requests=createDispatchRequests(opts)
- if(options.review){
-  const docId=randomUUID(),revisionId=randomUUID(),profileId=randomUUID(),sha=artifactHash('pinned')
+ if(options.review||options.documents){
+  const docId=randomUUID(),revisionId=randomUUID(),sha=artifactHash('pinned')
   await h.admin.query("INSERT INTO product_docs(id,product_id,folder,slug,title,content_md,status,created_by,updated_at) VALUES($1,$2,'PLANS','source','Source','latest','active',$3,now())",[docId,f.input.product_id,f.actor.userId]);await h.admin.query("INSERT INTO product_doc_revisions(id,doc_id,revision,title,status,content_md,content_hash,created_by) VALUES($1,$2,1,'Source','active','pinned',$3,$4)",[revisionId,docId,sha,f.actor.userId])
+  f.input.review_documents={version:1,items:[{key:'plan',title:'Plan',source:'product_doc',product_id:f.input.product_id,doc_id:docId,revision_id:revisionId,sha256:sha}]}
+ }
+ if(options.review){
+  const profileId=randomUUID()
   await h.dispatch.query("UPDATE queue_dispatch_slots SET config=jsonb_set(config,'{capabilities}','[\"review\"]') WHERE id=$1",[f.jobSlot.id]);await h.admin.query("UPDATE claude_workers SET capabilities=ARRAY['review'] WHERE id=$1",[f.jobSlot.id])
-  f.input.action='review';f.input.review_documents={version:1,items:[{key:'plan',title:'Plan',source:'product_doc',product_id:f.input.product_id,doc_id:docId,revision_id:revisionId,sha256:sha}]}
+  f.input.action='review'
   const config=(await h.dispatch.query('SELECT config FROM queue_dispatch_profiles WHERE id=$1',[f.profileId])).rows[0].config
   await h.dispatch.query('INSERT INTO queue_dispatch_profiles(id,key,revision,product_id,owner_user_id,config,sha256) VALUES($1::uuid,$1::text,1,$2,$3,$4,$5)',[profileId,f.input.product_id,f.actor.userId,{...config,actions:['review']},'a'.repeat(64)])
   await h.dispatch.query('INSERT INTO queue_dispatch_slot_profiles(slot_id,profile_revision_id) VALUES($1,$2)',[f.jobSlot.id,profileId])
@@ -32,5 +37,5 @@ export async function running(h:DispatchHarness,options:{prepared?:boolean;revie
  if(options.readSource){const capabilities=createAgentOutputCapabilities(Buffer.alloc(32,2)),inputHash=(await h.dispatch.query('SELECT input_hash FROM queue_dispatch_requests WHERE id=$1',[r.id])).rows[0].input_hash,token=capabilities.mint({binding:{request_id:r.id,candidate_id:proof.candidate_id,generation:proof.generation,attempt_id:proof.attempt_id,incarnation_id:proof.incarnation_id,input_sha256:inputHash,profile_sha256:scope.profileSha256},action:f.input.action,access:'read',attemptDeadlineMs:Date.now()+60000},Date.now());await createAgentGateway({...opts,capabilities}).readSource(token,proof.attempt_id,'plan')}
  const body:RuntimeStopObservationBody={version:1,slotId:f.jobSlot.id,binding:{requestId:r.id,candidateId:proof.candidate_id,generation:proof.generation,attemptId:proof.attempt_id,incarnationId:proof.incarnation_id,scope},runtimeBootId:'vm-boot',observer:`broker:${f.jobSlot.id}`,observedAt:new Date().toISOString(),commands:[{command:'stop',succeeded:true}],containerId:scope.scopeId,pid:0,running:false,status:options.prepared?'created':'exited'}
  const artifacts=createDispatchArtifacts(opts),stop=await artifacts.stageSupervisorStop(f.actor,{...body,sha256:artifactHash(canonicalRuntimeStopObservation(body))})
- return {f,opts,requests,proof,stop,artifacts,scope,body,attempts,session,completion:createDispatchCompletion(opts),cancel:createDispatchCancellation(opts)}
+ return {f,opts,requests,view:r,proof,stop,artifacts,scope,body,attempts,session,completion:createDispatchCompletion(opts),cancel:createDispatchCancellation(opts)}
 }

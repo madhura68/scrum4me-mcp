@@ -22,8 +22,9 @@ type RequestRow = {
   state: DispatchView['state']; created_at: Date; result_id: string | null
   route: 'job' | 'host' | null; profile_revision_id: string | null; job_id: string | null
   delivery: DispatchView['delivery']; waiting_reason: string | null
+  root_message_id: string; reply_message_id: string
 }
-const selectRequest = `SELECT r.id,r.user_id,r.input,r.input_hash,r.version::text,r.state,r.created_at,r.result_id,
+const selectRequest = `SELECT r.id,r.user_id,r.input,r.input_hash,r.version::text,r.state,r.created_at,r.result_id,r.root_message_id,r.reply_message_id,
  c.route,c.profile_revision_id,c.job_id,
  (SELECT e.payload->>'reason' FROM queue_dispatch_events e WHERE e.request_id=r.id AND e.type='waiting_reason' ORDER BY e.created_at DESC,e.id DESC LIMIT 1) AS waiting_reason,
  CASE WHEN o.published_at IS NOT NULL THEN 'delivered' WHEN o.attempts>=${DELIVERY_FAILED_AFTER} THEN 'failed' ELSE 'pending' END AS delivery
@@ -34,7 +35,8 @@ function view(row: RequestRow): DispatchView {
   return { id: row.id, version: row.version, state: row.state, action: row.input.action,
     reason: row.state === 'WAITING' ? (row.waiting_reason ?? 'waiting_for_capacity') : row.state.toLowerCase(), route: row.route,
     profile_revision_id: row.profile_revision_id, job_id: row.job_id, executor_label: null,
-    result_id: row.result_id, delivery: row.delivery, created_at: row.created_at.toISOString() }
+    result_id: row.result_id, delivery: row.delivery, created_at: row.created_at.toISOString(),
+    root_message_id: row.root_message_id, reply_message_id: row.reply_message_id }
 }
 function validateKey(key: string) {
   if (typeof key !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(key)) throw new DispatchError('DISPATCH_INVALID_INPUT')

@@ -51,6 +51,13 @@ it('the final answer stays readable and acknowledgeable through the ordinary rep
  expect(read).toMatchObject({id:ids.reply,type:'result',status:'done',body:'Final result',previous_status:'pending'})
  expect(await claimNextReply({server:'mac',model:'jp',messageIds:[ids.root],claimedBy:'mcp:reader'})).toBeNull()
 })
+it('the view returned at submit carries the root id a requester waits on for the reply',async()=>{
+ const x=await running(h);await x.completion.verifyStopEvidence(x.f.actor,x.proof,x.stop);await x.completion.acceptDispatchResult(x.f.actor,x.proof,result)
+ await createDispatchDelivery({store:h.dispatch,queue:projector}).deliverDispatchOutbox(25)
+ const {claimNextReply}=await import('../../src/queue/claim.js')
+ const read=await claimNextReply({server:'mac',model:'jp',messageIds:[x.view.root_message_id],claimedBy:'mcp:reader'})
+ expect(read).toMatchObject({id:x.view.reply_message_id,in_reply_to:x.view.root_message_id,body:'Final result'})
+})
 it('archives a fully terminal managed thread by changing archived_at alone, and refuses an active one as a whole',async()=>{
  const x=await running(h),delivery=createDispatchDelivery({store:h.dispatch,queue:projector}),{archiveQueueSubtree,unarchiveQueueSubtree}=await import('../../src/tools/queue-archive.js')
  await delivery.deliverDispatchOutbox(25)

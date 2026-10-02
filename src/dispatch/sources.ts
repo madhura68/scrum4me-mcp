@@ -6,7 +6,7 @@ import {canonicalDispatchInput} from '@shared/queue-dispatch-validation.js'
 import {decideDispatchTransition} from '@shared/queue-dispatch-state.js'
 import {readPinnedDocument,type DocumentSourcePorts,type DocumentFailureReason,type RevisionRecord} from '@shared/queue-document-reader.js'
 import {MARKDOWN_PREVIEW_MAX_BYTES} from '@shared/markdown-profile.js'
-import {REPOSITORY_SOURCE_KEY,canonicalPreparedSourcesManifest,type SourceArtifact,type SignedPreparedSourcesManifest} from '@shared/queue-dispatch-sources.js'
+import {DISPATCH_INPUT_SOURCE_KEY,REPOSITORY_SOURCE_KEY,canonicalPreparedSourcesManifest,type SourceArtifact,type SignedPreparedSourcesManifest} from '@shared/queue-dispatch-sources.js'
 import {dispatchKeyIdSchema} from '@shared/queue-dispatch-start-permit.js'
 import type {DispatchActor} from './ports.js'
 import type {DispatchAuth} from './auth.js'
@@ -76,6 +76,10 @@ export function createDispatchSources(deps:{store:DispatchStore;auth:DispatchAut
   try{
    prepared=await loadPinnedSourceBytes(actor,r.input)
    if(r.input.requirements.repository){if(!deps.prepareRepository)throw new DispatchSourceError('not-configured');repo=await deps.prepareRepository(r.input,r.id,r.snapshot);prepared.push({key:REPOSITORY_SOURCE_KEY,sha256:artifactHash(repo.bytes),byteSize:repo.bytes.byteLength,bytes:repo.bytes})}
+   // M41: the child's only copy of the task. Its hash is the signed inputSha256, so the manifest binds it as is.
+   const task=new TextEncoder().encode(canonicalDispatchInput(r.input))
+   if(artifactHash(task)!==r.input_hash){await rejectUnstarted(requestId,'source_input_mismatch');return}
+   prepared.push({key:DISPATCH_INPUT_SOURCE_KEY,sha256:r.input_hash,byteSize:task.byteLength,bytes:task})
   }catch(error){
    if(error instanceof DispatchSourceError&&['network','timeout','unavailable'].includes(error.reason)){
     await withDispatchRetryTransaction(deps.store,async db=>{const current=(await db.query<SourceRequest>('SELECT * FROM queue_dispatch_requests WHERE id=$1 FOR UPDATE',[requestId])).rows[0];if(!current||current.sources_ready_at||current.first_claimed_at||current.state!=='WAITING')return

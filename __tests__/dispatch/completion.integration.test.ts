@@ -47,6 +47,31 @@ it.each([false,true])('uses actual immutable review read receipts=%s and preserv
  expect((await h.dispatch.query('SELECT status FROM claude_jobs WHERE dispatch_request_id=$1',[x.proof.request_id])).rows[0].status).toBe(readSource?'DONE':'FAILED')
  expect((await h.web.query('SELECT count(*)::int n FROM tasks WHERE product_id=$1',[x.f.input.product_id])).rows[0].n).toBe(0)
 })
+/** The supervisor's attempt-proof download of each pinned document, the deployed source path. */
+const deliverDocuments=async(x:Awaited<ReturnType<typeof makeRunning>>,proof=x.proof)=>{
+ for(const row of (await h.dispatch.query("SELECT id FROM queue_dispatch_artifacts WHERE request_id=$1 AND attempt_id IS NULL AND key NOT LIKE '\\_\\_%'",[proof.request_id])).rows)await x.artifacts.loadBoundSourceArtifact(x.f.actor,proof,row.id)
+}
+it.each([false,true])('a non-review action carrying review documents accepts the supervisor delivery receipt (delivered=%s)',async delivered=>{
+ const x=await makeRunning(h,{documents:true});if(delivered)await deliverDocuments(x);await x.completion.verifyStopEvidence(x.f.actor,x.proof,x.stop)
+ expect((await x.completion.acceptDispatchResult(x.f.actor,x.proof,result)).result).toMatchObject(delivered?{outcome:'succeeded'}:{outcome:'failed',summary:'sources_unverified'})
+})
+it('a delivery to an earlier attempt is no read receipt for its retry',async()=>{
+ const x=await makeRunning(h,{review:true});await deliverDocuments(x)
+ const {createDispatchRecovery}=await import('../../src/dispatch/recovery.js')
+ await h.dispatch.query("UPDATE queue_dispatch_attempts SET heartbeat_at=now()-interval '121 seconds' WHERE id=$1",[x.proof.attempt_id]);await x.attempts.markExpiredAttempts()
+ const v=await x.requests.getDispatch(x.f.actor,x.proof.request_id)
+ await createDispatchRecovery(x.opts).recoverDispatch(x.f.actor,v.id,randomUUID(),v.version,x.stop,'retry_same_contract')
+ await createDispatchSelection(x.opts).reserveRequest(v.id)
+ const claim=await x.attempts.claimDispatchAttempt(x.f.actor,x.session.incarnation_id,'retry',x.session.session_credential)
+ if(!claim?.context)throw Error('retry claim required');const proof=claim.context.proof,scope={...x.scope,scopeId:randomUUID()}
+ expect(proof.attempt_id).not.toBe(x.proof.attempt_id)
+ await x.attempts.startDispatchAttempt(x.f.actor,proof,scope)
+ const body:RuntimeStopObservationBody={...x.body,binding:{requestId:proof.request_id,candidateId:proof.candidate_id,generation:proof.generation,attemptId:proof.attempt_id,incarnationId:proof.incarnation_id,scope},containerId:scope.scopeId,observedAt:new Date().toISOString()}
+ const stop=await x.artifacts.stageSupervisorStop(x.f.actor,{...body,sha256:artifactHash(canonicalRuntimeStopObservation(body))})
+ await x.completion.verifyStopEvidence(x.f.actor,proof,stop)
+ const accepted=await x.completion.acceptDispatchResult(x.f.actor,proof,{...result,review:{verdict:'GO',documents:x.f.input.review_documents}})
+ expect(accepted.result).toMatchObject({outcome:'failed',summary:'review_sources_unverified'})
+})
 it('serializes concurrent cancel and success over two connections',async()=>{
  const x=await running();await x.completion.verifyStopEvidence(x.f.actor,x.proof,x.stop);const v=await x.requests.getDispatch(x.f.actor,x.proof.request_id),barrier=h.barrier(2)
  const responses=await Promise.allSettled([barrier().then(()=>x.cancel.cancelDispatch(x.f.actor,v.id,randomUUID(),v.version)),barrier().then(()=>x.completion.acceptDispatchResult(x.f.actor,x.proof,result))])
@@ -144,7 +169,7 @@ it.each(['owner','product_owner','admin','member','admin_without_access','web_ow
  if(role==='web_owner')actor={...actor,source:'web',tokenId:null,principalKey:`web:${x.f.otherUser}`}
  const v=(await h.dispatch.query('SELECT version FROM queue_dispatch_requests WHERE id=$1',[x.proof.request_id])).rows[0],action=randomUUID()
  if(['owner','product_owner','admin'].includes(role)){
-  expect((await x.cancel.cancelDispatch(actor,x.proof.request_id,action,String(v.version))).state).toBe('CANCEL_REQUESTED')
+  expect(await x.cancel.cancelDispatch(actor,x.proof.request_id,action,String(v.version))).toMatchObject({state:'CANCEL_REQUESTED',root_message_id:x.view.root_message_id,reply_message_id:x.view.reply_message_id})
   expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations WHERE candidate_id=$1',[x.proof.candidate_id])).rows[0].released_at).toBeNull()
   await x.completion.submitStop(x.f.actor,x.proof,x.stop)
   expect((await x.cancel.cancelDispatch(actor,x.proof.request_id,action,String(v.version))).state).toBe('CANCELLED')
