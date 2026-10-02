@@ -226,7 +226,7 @@ describe('IP-13 REST matrix wiring', () => {
         ['PUT', '/attempts/collected/code'], ['POST', '/attempts/sources/manifest'], ['GET', '/artifacts/id'],
         ['POST', '/attempts/recovery/lookup'], ['POST', '/attempts/recovery/stop'], ['POST', '/attempts/recovery/result'],
         ['POST', '/profiles'], ['POST', '/profiles/id/revoke'], ['GET', '/profiles?product_id=p'],
-        ['POST', '/slots'], ['POST', '/slots/id/disable'], ['POST', '/reply-addresses'],
+        ['POST', '/slots'], ['POST', '/slots/id/disable'], ['POST', '/reply-addresses'], ['GET', '/reply-addresses'],
         ['POST', '/outbox/republish'], ['POST', '/publications/id/resolve'],
       ]
       const statuses: Record<string, number> = {}
@@ -1051,6 +1051,21 @@ describe('managed administration contract shared by the MCP, CLI and workers cli
     expect(await service.client.allowReplyAddress({ action_id: 'address-one', user_id: f.actor.userId, address: 'MAC:CODEX' }))
       .toEqual({ user_id: f.actor.userId, address: 'mac:codex', enabled: true })
     expect(Number((await h.dispatch.query<{ n: string }>('SELECT count(*)::text n FROM queue_dispatch_reply_addresses WHERE user_id=$1', [f.actor.userId])).rows[0].n)).toBe(2)
+  })
+
+  it('lists only the caller\'s own enabled reply addresses, sorted, and ignores any user parameter', async () => {
+    const f = await h.seed(); await authorizeToken(f)
+    const service = await startService(f)
+    await h.admin.query(`INSERT INTO queue_dispatch_reply_addresses(user_id,address,enabled)
+      VALUES($1,'mac:codex',true),($1,'max2:claude',false),($2,'scrum4me-server:claude',true)`, [f.actor.userId, f.otherUser])
+    expect(await service.client.listReplyAddresses()).toEqual({ reply_addresses: [{ address: 'mac:codex' }, { address: 'mac:jp' }] })
+    // A user_id query parameter does not exist: it is ignored, never a way to read someone else.
+    const response = await fetch(`${service.root}/reply-addresses?user_id=${encodeURIComponent(f.otherUser)}`, { headers: { Authorization: `Bearer ${TOKEN}` } })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ reply_addresses: [{ address: 'mac:codex' }, { address: 'mac:jp' }] })
+    // Disabling is a read-visible change, and the list of another user stays separate.
+    await h.admin.query("UPDATE queue_dispatch_reply_addresses SET enabled=false WHERE user_id=$1 AND address='mac:codex'", [f.actor.userId])
+    expect(await service.client.listReplyAddresses()).toEqual({ reply_addresses: [{ address: 'mac:jp' }] })
   })
 
   it('refuses administration from a principal without product-administrator rights', async () => {

@@ -40,6 +40,8 @@ export interface DispatchClient {
   createSlot(input: SlotInput): Promise<DispatchSlotView>
   disableSlot(id: string, input: VersionAction): Promise<DispatchSlotView>
   allowReplyAddress(input: { action_id: string; user_id: string; address: string }): Promise<{ user_id: string; address: string; enabled: boolean }>
+  /** The caller's own enabled reply addresses, sorted by address. */
+  listReplyAddresses(): Promise<{ reply_addresses: { address: string }[] }>
 }
 export class DispatchClientError extends Error {
   constructor(readonly status: number, readonly code: string) { super(code); this.name = 'DispatchClientError' }
@@ -114,5 +116,6 @@ export function createDispatchClient(config: { baseUrl: string; token: string; f
     createSlot: input => json('/slots', 'POST', input),
     disableSlot: (id, input) => json(`/slots/${segment(id)}/disable`, 'POST', input),
     allowReplyAddress: input => json('/reply-addresses', 'POST', input),
+    listReplyAddresses: () => json('/reply-addresses', 'GET'),
   }
 }
