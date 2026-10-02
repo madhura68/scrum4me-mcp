@@ -195,6 +195,18 @@ export function createDispatchAdministration(deps: { store: DispatchStore; auth:
     })
     return receipt as unknown as { user_id: string; address: string; enabled: boolean }
   }
+  /** The caller's own enabled reply addresses. This is a read of the actor's own bindings, so it
+   * needs authentication and nothing more: any authenticated actor (bearer, workers or web
+   * assertion) may read; a demo user is already refused by the refresh. The user is never an
+   * input: it is the refreshed actor's id, so another user's rows are unreachable. */
+  async function listReplyAddresses(actor: DispatchActor): Promise<{ reply_addresses: { address: string }[] }> {
+    return withDispatchRetryTransaction(deps.store, async db => {
+      const current = await deps.auth.refreshActor(actor, db)
+      const rows = (await db.query<{ address: string }>(
+        'SELECT address FROM queue_dispatch_reply_addresses WHERE user_id=$1 AND enabled ORDER BY address', [current.userId])).rows
+      return { reply_addresses: rows.map(row => ({ address: row.address })) }
+    })
+  }
   /** Queue restore. A queue database restored to an earlier point has lost deliveries the outbox
    * already marked published, so the newest snapshot of each affected request is handed back to
    * the projector. It clears a publication marker and nothing else: no execution state, no result,
@@ -221,6 +233,6 @@ export function createDispatchAdministration(deps: { store: DispatchStore; auth:
     })
     return receipt as unknown as OutboxRepublishReceipt
   }
-  return { createProfile, revokeProfile, listProfiles, disableSlot, allowReplyAddress, republishOutbox }
+  return { createProfile, revokeProfile, listProfiles, disableSlot, allowReplyAddress, listReplyAddresses, republishOutbox }
 }
 export type DispatchAdministration = ReturnType<typeof createDispatchAdministration>

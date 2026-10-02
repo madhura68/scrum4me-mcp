@@ -62,6 +62,7 @@ it('implements every REST matrix transport with exact methods, body, headers and
   await client.createSlot(createSlot)
   await client.disableSlot('slot', version)
   await client.allowReplyAddress({ action_id: 'action', user_id: 'user', address: 'mac:jp' })
+  await client.listReplyAddresses()
   expect(calls.map(c => `${c.method} ${c.path}`)).toEqual([
     'POST /dispatch/v1/requests', 'GET /dispatch/v1/requests/request', 'POST /dispatch/v1/requests/request/cancel',
     'POST /dispatch/v1/requests/request/recover', 'PUT /dispatch/v1/requests/request/evidence/proof-key',
@@ -70,13 +71,14 @@ it('implements every REST matrix transport with exact methods, body, headers and
     'POST /dispatch/v1/attempts/result', 'PUT /dispatch/v1/attempts/artifacts/code.patch', 'GET /dispatch/v1/artifacts/artifact',
     'POST /dispatch/v1/profiles', 'POST /dispatch/v1/profiles/profile/revoke', 'GET /dispatch/v1/profiles?product_id=p%3Aone',
     'POST /dispatch/v1/slots', 'POST /dispatch/v1/slots/slot/disable', 'POST /dispatch/v1/reply-addresses',
+    'GET /dispatch/v1/reply-addresses',
   ])
   const bodies = [input, undefined, version, { ...version, evidence, mode: 'close_failed' }, bytes, register,
     { ...session, busy: true }, { ...session, claim_key: 'claim' },
     { proof, scope_id: 'scope', boot_id: 'boot', image_digest: profile.image_digest, profile_sha256: 'a'.repeat(64) }, { proof, scope_id: 'scope' },
     { proof, evidence }, { proof, result }, bytes, undefined,
     { action_id: 'action', key: 'profile', product_id: 'p', config: profile }, { action_id: 'action', reason: 'revoked' },
-    undefined, createSlot, version, { action_id: 'action', user_id: 'user', address: 'mac:jp' }]
+    undefined, createSlot, version, { action_id: 'action', user_id: 'user', address: 'mac:jp' }, undefined]
   calls.forEach((c, index) => {
     expect(c.headers.get('Authorization')).toBe('Bearer bearer-secret')
     const binary = [4, 12].includes(index)
@@ -84,10 +86,29 @@ it('implements every REST matrix transport with exact methods, body, headers and
     if (c.body !== undefined) expect(c.headers.get('Content-Type')).toBe(binary ? 'application/octet-stream' : 'application/json')
     expect(c.path).not.toContain('secret')
   })
+  // The listing is a bare read: the caller is its only parameter, so nothing may name a user.
+  expect(calls[20].path).toBe('/dispatch/v1/reply-addresses')
   expect(calls[0].headers.get('Idempotency-Key')).toBe('intake-key')
   expect(calls[4].headers.get('X-Dispatch-Attempt-Id')).toBe('attempt')
   for (const index of [4, 12]) expect(calls[index].headers.get('X-Content-SHA256')).toBe('b'.repeat(64))
   for (const index of [12, 13]) expect(JSON.parse(Buffer.from(calls[index].headers.get('X-Dispatch-Attempt-Proof')!, 'base64url').toString())).toEqual(proof)
+})
+
+it('parses the own reply-address listing and rejects an unauthenticated call before any database access', async () => {
+  const client = createDispatchClient({ baseUrl: 'https://dispatch.test/dispatch/v1', token: 'secret', fetch: async () =>
+    new Response(JSON.stringify({ reply_addresses: [{ address: 'mac:codex' }, { address: 'mac:jp' }] }), { status: 200 }) })
+  expect(await client.listReplyAddresses()).toEqual({ reply_addresses: [{ address: 'mac:codex' }, { address: 'mac:jp' }] })
+  const pool = new Pool({ connectionString: 'postgres://invalid:invalid@127.0.0.1:1/never_connect' })
+  const server = createDispatchApp({ store: pool, enabled: false, productAllowlist: [] }).listen(0, '127.0.0.1')
+  try {
+    await new Promise<void>(resolve => server.once('listening', resolve))
+    const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/dispatch/v1/reply-addresses`
+    const response = await fetch(url)
+    expect(response.status).toBe(401)
+    expect(await response.json()).toEqual({ error: 'DISPATCH_UNAUTHENTICATED' })
+    expect((await fetch(`${url}?user_id=someone-else`)).status).toBe(401)
+    expect(pool.totalCount).toBe(0)
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); await pool.end() }
 })
 
 it('does not redirect bearer credentials or expose transport/server error bodies', async () => {

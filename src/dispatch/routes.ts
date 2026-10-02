@@ -34,7 +34,7 @@ export type DispatchHttpOperation =
   | 'stop_evidence' | 'claim_stop' | 'result' | 'put_artifact' | 'collect_artifact' | 'get_artifact'
   | 'agent_source' | 'agent_output' | 'source_manifest'
   | 'recovery_lookup' | 'recovery_stop' | 'recovery_result'
-  | 'create_profile' | 'revoke_profile' | 'list_profiles' | 'create_slot' | 'disable_slot' | 'reply_address'
+  | 'create_profile' | 'revoke_profile' | 'list_profiles' | 'create_slot' | 'disable_slot' | 'reply_address' | 'list_reply_addresses'
   | 'republish_outbox' | 'resolve_publication' | 'health'
 export type DispatchHttpLog = { operation: DispatchHttpOperation; request_id: string | null; status: number; duration_ms: number }
 
@@ -431,6 +431,8 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
     administration.disableSlot(actor, req.params.id, body(read()) as unknown as SlotDisableInput))
   register('post', '/reply-addresses', 'reply_address', json, ({ actor, json: read }) =>
     administration.allowReplyAddress(actor, body(read()) as unknown as ReplyAddressInput))
+  // A read of the caller's own bindings: the user is the authenticated actor, never a parameter.
+  register('get', '/reply-addresses', 'list_reply_addresses', json, ({ actor }) => administration.listReplyAddresses(actor))
   // Queue restore: hand the newest outbox snapshot of every request delivered since the restore
   // point back to the projector. Audited under the caller's action id like every other operation.
   register('post', '/outbox/republish', 'republish_outbox', json, ({ actor, json: read }) =>
