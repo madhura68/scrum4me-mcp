@@ -4,10 +4,10 @@ import type {PoolClient} from 'pg'
 /** T-1972: the token usage the supervisor read from the sealed child's own transcript. The child
  * produced those bytes, so this is reporting, never accounting or authority: every count is a
  * bounded int4, and a value that does not parse is recorded as `parse_error` instead of refusing
- * the result it travels with. */
+ * the result it travels with. `truncated`: the transcript was cut off, so no counts are kept. */
 const COUNT=z.number().int().min(0).max(2_000_000_000)
 export const dispatchUsageSchema=z.object({
- version:z.literal(1),runtime:z.enum(['CODEX','CLAUDE']),status:z.enum(['captured','no_usage_events','parse_error']),
+ version:z.literal(1),runtime:z.enum(['CODEX','CLAUDE']),status:z.enum(['captured','no_usage_events','parse_error','truncated']),
  model:z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/).nullable(),
  input_tokens:COUNT,output_tokens:COUNT,cache_read_tokens:COUNT,cache_write_tokens:COUNT,reasoning_output_tokens:COUNT.nullable(),
 }).strict()

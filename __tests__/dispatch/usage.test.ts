@@ -36,6 +36,11 @@ describe('dispatchUsageColumns (T-1972)', () => {
       })
   })
 
+  it('keeps no counts for a truncated transcript and says so', () => {
+    expect(dispatchUsageColumns({ ...captured, status: 'truncated', input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, reasoning_output_tokens: null }, 'gpt-6.1-sol'))
+      .toMatchObject({ model_id: null, input_tokens: null, usage_capture_status: 'truncated', usage_capture_error: 'dispatch_transcript_truncated' })
+  })
+
   it.each([
     ['a negative count', { ...captured, input_tokens: -1 }],
     ['a count beyond int4', { ...captured, output_tokens: 3_000_000_000 }],
