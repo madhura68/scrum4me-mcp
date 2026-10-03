@@ -131,3 +131,35 @@ it('refuses an attestation that predates the claim of a never-started attempt an
  await expect(recovery.recoverDispatch(x.f.actor,v.id,randomUUID(),v.version,evidence,'close_failed')).rejects.toThrow('DISPATCH_STATE_CONFLICT')
  expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations WHERE candidate_id=$1',[x.proof.candidate_id])).rows[0].released_at).toBeNull()
 })
+// T-1972 (review scrum4me-docker#103): the supervisor's recovery route carries the journalled usage too.
+const usage={version:1,runtime:'CODEX',status:'captured',model:'gpt-6.1-sol',input_tokens:200,output_tokens:300,cache_read_tokens:1000,cache_write_tokens:0,reasoning_output_tokens:40}
+const result={version:1 as const,outcome:'succeeded' as const,summary:'Read-only work completed',report_markdown:'Final result',checks:[]}
+const usageOf=async(requestId:string)=>(await h.dispatch.query('SELECT model_id,input_tokens,output_tokens,usage_capture_status FROM claude_jobs WHERE dispatch_request_id=$1',[requestId])).rows[0]
+it('records usage sent with a result through the recovery route',async()=>{
+ const x=await running(h),recovery=createDispatchRecovery(x.opts)
+ await x.completion.verifyStopEvidence(x.f.actor,x.proof,x.stop)
+ const binding=(await h.dispatch.query("SELECT payload->'binding' binding FROM queue_dispatch_events WHERE attempt_id=$1 AND type='stop_accepted'",[x.proof.attempt_id])).rows[0].binding
+ expect(await recovery.nonLaunchRecovery(x.f.actor).submitResult(binding,result,usage)).toMatchObject({status:'accepted'})
+ expect(await usageOf(x.proof.request_id)).toEqual({model_id:'gpt-6.1-sol',input_tokens:200,output_tokens:300,usage_capture_status:'captured'})
+})
+it('records usage once on a recovered late result after cancellation, canonical result untouched',async()=>{
+ const x=await running(h),recovery=createDispatchRecovery(x.opts)
+ await x.completion.verifyStopEvidence(x.f.actor,x.proof,x.stop)
+ const v=await x.requests.getDispatch(x.f.actor,x.proof.request_id);await x.cancel.cancelDispatch(x.f.actor,v.id,randomUUID(),v.version)
+ expect((await x.requests.getDispatch(x.f.actor,x.proof.request_id)).state).toBe('CANCELLED')
+ const binding=(await h.dispatch.query("SELECT payload->'binding' binding FROM queue_dispatch_events WHERE attempt_id=$1 AND type='stop_accepted'",[x.proof.attempt_id])).rows[0].binding
+ const port=recovery.nonLaunchRecovery(x.f.actor)
+ expect(await port.submitResult(binding,result,usage)).toMatchObject({status:'accepted',result:{outcome:'cancelled'}})
+ expect(await usageOf(x.proof.request_id)).toEqual({model_id:'gpt-6.1-sol',input_tokens:200,output_tokens:300,usage_capture_status:'captured'})
+ await port.submitResult(binding,result,{...usage,input_tokens:1})
+ expect((await usageOf(x.proof.request_id)).input_tokens).toBe(200)
+})
+it('records usage once on a recovered late result after an operator close_failed',async()=>{
+ const x=await running(h),recovery=createDispatchRecovery(x.opts)
+ await h.dispatch.query("UPDATE queue_dispatch_requests SET state='UNCERTAIN' WHERE id=$1",[x.proof.request_id]);await h.dispatch.query("UPDATE queue_dispatch_attempts SET state='UNCERTAIN' WHERE id=$1",[x.proof.attempt_id])
+ const v=await x.requests.getDispatch(x.f.actor,x.proof.request_id)
+ expect((await recovery.recoverDispatch(x.f.actor,v.id,randomUUID(),v.version,x.stop,'close_failed')).state).toBe('FAILED')
+ const binding=(await h.dispatch.query("SELECT payload->'binding' binding FROM queue_dispatch_events WHERE attempt_id=$1 AND type='stop_accepted'",[x.proof.attempt_id])).rows[0].binding
+ expect(await recovery.nonLaunchRecovery(x.f.actor).submitResult(binding,result,usage)).toMatchObject({status:'accepted',result:{outcome:'failed'}})
+ expect(await usageOf(x.proof.request_id)).toEqual({model_id:'gpt-6.1-sol',input_tokens:200,output_tokens:300,usage_capture_status:'captured'})
+})

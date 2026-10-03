@@ -121,5 +121,5 @@ export function createDispatchCompletion(deps:CompletionDeps){
    return finishResult(db,x,result,submittedHash,usage)
   })
  }
- return {...stops,acceptDispatchResult:(actor:DispatchActor,proof:AttemptProof,value:DispatchResult,usage?:unknown)=>accept(actor,{proof},value,usage),acceptHistoricalResult:(actor:DispatchActor,binding:DispatchStartBinding,value:DispatchResult)=>accept(actor,{binding},value)}
+ return {...stops,acceptDispatchResult:(actor:DispatchActor,proof:AttemptProof,value:DispatchResult,usage?:unknown)=>accept(actor,{proof},value,usage),acceptHistoricalResult:(actor:DispatchActor,binding:DispatchStartBinding,value:DispatchResult,usage?:unknown)=>accept(actor,{binding},value,usage)}
 }
