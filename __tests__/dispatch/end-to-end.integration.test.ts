@@ -853,6 +853,18 @@ describe('POST /attempts/result records the dispatch usage on the job', () => {
     expect(await service.client.submitResult({ proof, result })).toMatchObject({ status: 'accepted' })
     expect(await job()).toMatchObject({ status: 'DONE', input_tokens: null, usage_capture_status: null })
   })
+
+  // Review mcp#180: the recovery route over real HTTP. A strict body schema without `usage` would refuse it here.
+  it('POST /attempts/recovery/result carries usage onto the job', async () => {
+    const { service, proof, result, job } = await reviewedAttempt()
+    const binding = (await h.dispatch.query("SELECT payload->'binding' binding FROM queue_dispatch_events WHERE attempt_id=$1 AND type='stop_accepted'", [proof.attempt_id])).rows[0].binding
+    const response = await fetch(`${service.root}/attempts/recovery/result`, {
+      method: 'POST', headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ binding, result, usage }),
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ status: 'accepted' })
+    expect(await job()).toMatchObject({ status: 'DONE', model_id: 'gpt-6.1-sol', input_tokens: 98311, usage_capture_source: 'dispatch_transcript', usage_capture_status: 'captured' })
+  })
 })
 
 /** The deployed supervisor's own source path: the signed manifest, then each named artifact under
