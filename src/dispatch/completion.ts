@@ -11,6 +11,7 @@ import {classifyDiffAgainstPlan} from '../verify/classify.js'
 import {checkVerifyGate,type VerifyRequired} from '../verify/gate.js'
 import {canonicalResult,lifecycleEvent,finishResult,unresolvedPublication} from './lifecycle.js'
 import {projectManagedTaskStatus} from './task-status.js'
+import {writeDispatchUsage} from './usage.js'
 import {withDispatchRetryTransaction,type DispatchStore} from './db.js'
 import type {DispatchAuth} from './auth.js'
 import type {DispatchActor} from './ports.js'
@@ -35,7 +36,11 @@ export function createDispatchCompletion(deps:CompletionDeps){
    const x=await lockArtifactAttempt(db,attemptId);await verify(db,x);await authenticateHistoricalSupervisor(db,deps.auth,actor,x)
    const old=(await db.query('SELECT * FROM queue_dispatch_results WHERE request_id=$1',[x.r.id])).rows[0]
    if(old){const event=(await db.query("SELECT payload FROM queue_dispatch_events WHERE request_id=$1 AND attempt_id=$2 AND type='result_accepted'",[x.r.id,x.a.id])).rows[0];if(event?.payload.submitted_hash===submittedHash)return {receipt:{accepted:true,resultId:old.id,reason:'replayed',result:old.payload as DispatchResult}}
-    await lifecycleEvent(db,x.r.id,'late_result',{submitted_hash:submittedHash,result:original},x.a.id);return {receipt:{accepted:false,resultId:old.id,reason:'terminal_result',result:old.payload as DispatchResult}}}
+    await lifecycleEvent(db,x.r.id,'late_result',{submitted_hash:submittedHash,result:original},x.a.id)
+    // T-1972: a cancelled attempt's canonical result was written at stop, without usage. This attempt's
+    // late result still reports what the run consumed: recorded once, the canonical result untouched.
+    if(usage!==undefined&&x.c.job_id&&old.attempt_id===x.a.id)await writeDispatchUsage(db,x.c.job_id,usage,{once:true})
+    return {receipt:{accepted:false,resultId:old.id,reason:'terminal_result',result:old.payload as DispatchResult}}}
    if(x.c.generation!==x.r.generation||!x.a.stopped_at)throw new DispatchError('DISPATCH_STATE_CONFLICT')
    if(!(await db.query("SELECT 1 FROM queue_dispatch_events WHERE request_id=$1 AND attempt_id=$2 AND type='stop_accepted'",[x.r.id,x.a.id])).rowCount)throw new DispatchError('DISPATCH_STATE_CONFLICT')
    if(artifactHash(canonicalDispatchInput(x.r.input))!==x.r.input_hash)throw new DispatchError('DISPATCH_STATE_CONFLICT')

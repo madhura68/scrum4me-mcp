@@ -28,9 +28,11 @@ export function dispatchUsageColumns(raw:unknown,requestedModel:string|null){
   usage_capture_source:DISPATCH_USAGE_SOURCE,usage_capture_status:model?'captured':'missing_model',usage_capture_error:model?null:`${DISPATCH_USAGE_SOURCE}_missing_model`}
 }
 
-export async function writeDispatchUsage(db:PoolClient,jobId:string,raw:unknown):Promise<void>{
- const job=(await db.query('SELECT requested_model FROM claude_jobs WHERE id=$1',[jobId])).rows[0]
- if(!job)return
+/** `once` leaves a job that already carries usage as it is: the late-result path of a cancelled
+ * attempt may arrive more than once, and only its first usage counts. */
+export async function writeDispatchUsage(db:PoolClient,jobId:string,raw:unknown,options:{once?:boolean}={}):Promise<void>{
+ const job=(await db.query('SELECT requested_model,usage_capture_status FROM claude_jobs WHERE id=$1',[jobId])).rows[0]
+ if(!job||(options.once&&job.usage_capture_status!==null))return
  const c=dispatchUsageColumns(raw,job.requested_model??null),keys=Object.keys(c) as (keyof typeof c)[]
  await db.query(`UPDATE claude_jobs SET ${keys.map((k,i)=>`${k}=$${i+2}`).join(',')},updated_at=now() WHERE id=$1`,[jobId,...keys.map(k=>c[k])])
 }

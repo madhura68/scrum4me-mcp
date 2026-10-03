@@ -198,3 +198,19 @@ it('keeps a second cancel with a fresh action id idempotent and moves the candid
  expect((await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_outbox WHERE request_id=$1',[v.id])).rows[0].n).toBe(outbox)
  expect((await h.dispatch.query("SELECT count(*)::int n FROM queue_dispatch_events WHERE request_id=$1 AND type='cancel_requested'",[v.id])).rows[0].n).toBe(1)
 })
+// T-1972 (review mcp#179): a cancelled attempt's canonical result is written at stop, without usage.
+// The supervisor's later result is late, but its usage is this attempt's real consumption: recorded once.
+it('records the usage of a late result on a cancelled attempt once, without touching the canonical result',async()=>{
+ const x=await running();await x.completion.verifyStopEvidence(x.f.actor,x.proof,x.stop)
+ const v=await x.requests.getDispatch(x.f.actor,x.proof.request_id);await x.cancel.cancelDispatch(x.f.actor,v.id,randomUUID(),v.version)
+ expect((await x.requests.getDispatch(x.f.actor,x.proof.request_id)).state).toBe('CANCELLED')
+ const usage={version:1,runtime:'CODEX',status:'captured',model:'gpt-6.1-sol',input_tokens:200,output_tokens:300,cache_read_tokens:1000,cache_write_tokens:0,reasoning_output_tokens:40}
+ const job=async()=>(await h.dispatch.query('SELECT model_id,input_tokens,output_tokens,usage_capture_status FROM claude_jobs WHERE dispatch_request_id=$1',[x.proof.request_id])).rows[0]
+ const stored=async()=>(await h.dispatch.query('SELECT outcome,payload FROM queue_dispatch_results WHERE request_id=$1',[x.proof.request_id])).rows
+ const before=await stored()
+ expect(await x.completion.acceptDispatchResult(x.f.actor,x.proof,result,usage)).toMatchObject({accepted:false,reason:'terminal_result'})
+ expect(await job()).toEqual({model_id:'gpt-6.1-sol',input_tokens:200,output_tokens:300,usage_capture_status:'captured'})
+ expect(await stored()).toEqual(before)
+ await x.completion.acceptDispatchResult(x.f.actor,x.proof,{...result,summary:'again'},{...usage,input_tokens:1})
+ expect((await job()).input_tokens).toBe(200)
+})
