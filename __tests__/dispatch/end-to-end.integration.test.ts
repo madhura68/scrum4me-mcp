@@ -800,6 +800,61 @@ describe('POST /attempts/result answers with the canonical receipt', () => {
   })
 })
 
+// T-1972: the supervisor hands over what it read from the child's transcript; the job row carries it.
+describe('POST /attempts/result records the dispatch usage on the job', () => {
+  const usage = {
+    version: 1, runtime: 'CODEX', status: 'captured', model: 'gpt-6.1-sol',
+    input_tokens: 98311, output_tokens: 13835, cache_read_tokens: 1552680, cache_write_tokens: 0, reasoning_output_tokens: 5699,
+  }
+  async function reviewedAttempt() {
+    const f = await h.seed(); await authorizeToken(f)
+    const documents = await pinnedDocument(f)
+    const slot = await useRoute(f, 'job')
+    await reprofile(f, slot.id, { runtime: 'CODEX', actions: ['review'], access: 'read', publish_modes: ['artifact'] })
+    await h.dispatch.query(`UPDATE queue_dispatch_slots SET config=jsonb_set(config,'{capabilities}','["review"]') WHERE id=$1`, [slot.id])
+    await h.admin.query("UPDATE claude_workers SET capabilities=ARRAY['review'] WHERE user_id=$1", [f.actor.userId])
+    const service = await startService(f), runtime = fakeRuntime()
+    const session = await registerSupervisor(service, slot.id, 'CODEX')
+    const input: DispatchInput = { ...f.input, action: 'review', review_documents: documents }
+    const submitted = await service.client.submitDispatch(input, randomUUID())
+    await service.tick()
+    const { proof, scope } = await claimAndStart(service, session, runtime)
+    await readReviewSources(service, proof, input)
+    await submitStop(service, proof, stopObservation(slot.id, proof, scope))
+    const result: DispatchResult = {
+      version: 1, outcome: 'succeeded', summary: 'Reviewed the pinned plan', report_markdown: 'GO on the pinned revision.',
+      checks: [], review: { verdict: 'GO', documents },
+    }
+    const job = async () => (await h.dispatch.query('SELECT status,model_id,pricing_model_id,pricing_model_source,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_output_tokens,usage_capture_source,usage_capture_status,usage_capture_error FROM claude_jobs WHERE dispatch_request_id=$1', [submitted.id])).rows[0]
+    return { service, proof, result, job }
+  }
+
+  it('writes the bounded counts and the observed model, and a replay leaves them as they are', async () => {
+    const { service, proof, result, job } = await reviewedAttempt()
+    expect(await service.client.submitResult({ proof, result, usage })).toMatchObject({ status: 'accepted', reason: 'succeeded' })
+    const expected = {
+      status: 'DONE', model_id: 'gpt-6.1-sol', pricing_model_id: 'gpt-6.1-sol', pricing_model_source: 'observed_event',
+      input_tokens: 98311, output_tokens: 13835, cache_read_tokens: 1552680, cache_write_tokens: 0, reasoning_output_tokens: 5699,
+      usage_capture_source: 'dispatch_transcript', usage_capture_status: 'captured', usage_capture_error: null,
+    }
+    expect(await job()).toEqual(expected)
+    expect(await service.client.submitResult({ proof, result, usage: { ...usage, input_tokens: 1 } })).toMatchObject({ status: 'accepted', reason: 'replayed' })
+    expect(await job()).toEqual(expected)
+  })
+
+  it('accepts the result with unusable usage and records parse_error', async () => {
+    const { service, proof, result, job } = await reviewedAttempt()
+    expect(await service.client.submitResult({ proof, result, usage: { ...usage, input_tokens: -5 } })).toMatchObject({ status: 'accepted', reason: 'succeeded' })
+    expect(await job()).toMatchObject({ status: 'DONE', input_tokens: null, usage_capture_status: 'parse_error', usage_capture_error: 'dispatch_transcript_parse_error' })
+  })
+
+  it('leaves the usage columns empty when the supervisor sends none', async () => {
+    const { service, proof, result, job } = await reviewedAttempt()
+    expect(await service.client.submitResult({ proof, result })).toMatchObject({ status: 'accepted' })
+    expect(await job()).toMatchObject({ status: 'DONE', input_tokens: null, usage_capture_status: null })
+  })
+})
+
 /** The deployed supervisor's own source path: the signed manifest, then each named artifact under
  * the attempt proof. No child gateway token is involved anywhere. */
 async function downloadPreparedSources(service: Service, proof: { request_id: string; candidate_id: string; generation: number; attempt_id: string; incarnation_id: string; credential: string }, keys?: string[]) {

@@ -335,10 +335,11 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
     return completion.submitClaimBoundStop(actor, input.proof, input.reason, input.observed_at)
   })
   register('post', '/attempts/result', 'result', json, async ({ actor, json: read }) => {
-    const input = parseWith(z.object({ proof: attemptProofSchema, result: z.unknown() }).strict(), read())
+    // T-1972: `usage` is parsed by the domain, never here: unusable usage must not refuse the result.
+    const input = parseWith(z.object({ proof: attemptProofSchema, result: z.unknown(), usage: z.unknown().optional() }).strict(), read())
     let result
     try { result = parseDispatchResult(input.result) } catch { throw new DispatchError('DISPATCH_INVALID_INPUT') }
-    const receipt = await completion.acceptDispatchResult(actor, input.proof, result)
+    const receipt = await completion.acceptDispatchResult(actor, input.proof, result, input.usage)
     // The canonical result travels with the receipt. `acceptDispatchResult` may rewrite the
     // submitted outcome to failed or cancelled, so an id alone would leave the supervisor
     // guessing what the service actually accepted. Existing readers of `status`/`result_id`
