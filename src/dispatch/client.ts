@@ -31,7 +31,7 @@ export interface DispatchClient {
   submitStopEvidence(input: { proof: AttemptProof; evidence: StopEvidence }): Promise<{ receipt_id: string }>
   /** `canonical_result` is what the service holds, which is not always what was submitted:
    * the domain may rewrite the outcome. It is absent only where no canonical result exists yet. */
-  submitResult(input: { proof: AttemptProof; result: DispatchResult }): Promise<{ status: 'accepted' | 'late'; result_id: string | null; reason: string; canonical_result?: DispatchResult }>
+  submitResult(input: { proof: AttemptProof; result: DispatchResult; usage?: unknown }): Promise<{ status: 'accepted' | 'late'; result_id: string | null; reason: string; canonical_result?: DispatchResult }>
   putArtifact(key: string, input: BinaryArtifact & { proof: AttemptProof }): Promise<ArtifactReceipt>
   getArtifact(id: string, proof?: AttemptProof): Promise<BinaryArtifact>
   createProfile(input: ProfileInput): Promise<DispatchProfileView>

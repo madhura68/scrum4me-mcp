@@ -719,7 +719,7 @@ only place in the protocol where a caller has no dispatch identity at all.
 |---|---|---|---|
 | `POST /attempts/claim` · `/start` · `/reconcile` · `/heartbeat` | supervisor bearer + session credential or `AttemptProof` | JSON | claim receipt or `null`; start permit; lease |
 | `POST /attempts/stop-evidence` | supervisor bearer + `AttemptProof` | `{proof,evidence}` **or** `{proof,observation}` | `{receipt_id,evidence}`. It never frees capacity on its own |
-| `POST /attempts/result` | supervisor bearer + `AttemptProof` | `{proof,result}` | `{status:'accepted'\|'late', result_id, reason, canonical_result?}` |
+| `POST /attempts/result` | supervisor bearer + `AttemptProof` | `{proof,result,usage?}` | `{status:'accepted'\|'late', result_id, reason, canonical_result?}` |
 | `PUT /attempts/artifacts/:key` | supervisor bearer + `X-Dispatch-Attempt-Proof` | raw bytes + `X-Content-SHA256` | `{artifact_id,sha256,byte_size}`. Refused once the attempt is revoked |
 | `PUT /attempts/collected/:key` | **original supervisor** bearer + `X-Dispatch-Start-Binding` | raw bytes + `X-Content-SHA256`; `:key` ∈ `report`\|`checks`\|`code` | same receipt. The post-stop path: valid only after this supervisor's own stop was accepted |
 | `POST /attempts/recovery/lookup` · `/stop` · `/result` | **original supervisor** bearer, bound to the historical binding | `{key}` / `{binding,evidence}` / `{binding,result}` | `RecoveryState`; `{receipt_id}`; `RecoveryState`. No execution authority anywhere on these three |
@@ -730,6 +730,21 @@ only place in the protocol where a caller has no dispatch identity at all.
 submitted `succeeded` to `failed` or `cancelled`, so a supervisor must complete on the canonical
 result and never on the one it sent. It is absent exactly where no canonical result exists yet —
 an unresolved publication answers `{status:'late', result_id:null, reason:'publication_unknown'}`.
+
+`usage` (optional, T-1972) is the token usage the supervisor read from the child's own transcript:
+`{version:1, runtime:'CODEX'|'CLAUDE', status:'captured'|'no_usage_events'|'parse_error'|'truncated',
+model: string|null, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+reasoning_output_tokens: int|null}`, every count a non-negative int4. The child produced those bytes,
+so it is reporting, never authority: the route never parses it, and the domain writes it onto the
+`claude_jobs` row (`usage_capture_source='dispatch_transcript'`) without ever refusing the result over
+it — an unusable value becomes `usage_capture_status='parse_error'`, `truncated` and the other
+non-`captured` statuses keep no counts. The model is the observed one, else the job's
+`requested_model` (`pricing_model_source` `observed_event` / `cli_model`), else `missing_model`.
+Only a fresh result writes usage, inside the transaction that finishes it; an exact replay changes
+nothing. A late result of the same attempt after cancellation (whose canonical result was written at
+stop) records its usage once, when the job has none yet, and leaves the canonical result untouched.
+Without `usage` (an older supervisor, the recovery routes) the columns stay empty. A service older
+than T-1972 refuses the field, so this service rolls out before a supervisor that sends it.
 A replay of the same result answers with the same `result_id` and the same canonical bytes.
 
 The child's capability is minted by the service at `POST /attempts/start` and returned beside the

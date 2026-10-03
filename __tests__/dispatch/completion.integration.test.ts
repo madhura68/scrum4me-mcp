@@ -198,3 +198,37 @@ it('keeps a second cancel with a fresh action id idempotent and moves the candid
  expect((await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_outbox WHERE request_id=$1',[v.id])).rows[0].n).toBe(outbox)
  expect((await h.dispatch.query("SELECT count(*)::int n FROM queue_dispatch_events WHERE request_id=$1 AND type='cancel_requested'",[v.id])).rows[0].n).toBe(1)
 })
+// T-1972 (review mcp#179): a cancelled attempt's canonical result is written at stop, without usage.
+// The supervisor's later result is late, but its usage is this attempt's real consumption: recorded once.
+it('records the usage of a late result on a cancelled attempt once, without touching the canonical result',async()=>{
+ const x=await running();await x.completion.verifyStopEvidence(x.f.actor,x.proof,x.stop)
+ const v=await x.requests.getDispatch(x.f.actor,x.proof.request_id);await x.cancel.cancelDispatch(x.f.actor,v.id,randomUUID(),v.version)
+ expect((await x.requests.getDispatch(x.f.actor,x.proof.request_id)).state).toBe('CANCELLED')
+ const usage={version:1,runtime:'CODEX',status:'captured',model:'gpt-6.1-sol',input_tokens:200,output_tokens:300,cache_read_tokens:1000,cache_write_tokens:0,reasoning_output_tokens:40}
+ const job=async()=>(await h.dispatch.query('SELECT model_id,input_tokens,output_tokens,usage_capture_status FROM claude_jobs WHERE dispatch_request_id=$1',[x.proof.request_id])).rows[0]
+ const stored=async()=>(await h.dispatch.query('SELECT outcome,payload FROM queue_dispatch_results WHERE request_id=$1',[x.proof.request_id])).rows
+ const before=await stored()
+ expect(await x.completion.acceptDispatchResult(x.f.actor,x.proof,result,usage)).toMatchObject({accepted:false,reason:'terminal_result'})
+ expect(await job()).toEqual({model_id:'gpt-6.1-sol',input_tokens:200,output_tokens:300,usage_capture_status:'captured'})
+ expect(await stored()).toEqual(before)
+ await x.completion.acceptDispatchResult(x.f.actor,x.proof,{...result,summary:'again'},{...usage,input_tokens:1})
+ expect((await job()).input_tokens).toBe(200)
+})
+// Review mcp#179 round 2: cancellation can finish between accept's first and second transaction.
+// The second transaction then finds the canonical cancelled result; the usage must still be recorded once.
+it('records the usage when cancellation finishes between the two result transactions',async()=>{
+ const x=await running();await x.completion.verifyStopEvidence(x.f.actor,x.proof,x.stop)
+ const usage={version:1,runtime:'CLAUDE',status:'captured',model:'claude-opus-5-5',input_tokens:14,output_tokens:4132,cache_read_tokens:199764,cache_write_tokens:24173,reasoning_output_tokens:null}
+ let connects=0
+ const store=Object.create(h.dispatch,{connect:{value:async(...args:any[])=>{
+  // Second transaction of accept: let the cancellation commit first, exactly in the window between them.
+  if(++connects===2){const v=await x.requests.getDispatch(x.f.actor,x.proof.request_id);await x.cancel.cancelDispatch(x.f.actor,v.id,randomUUID(),v.version)}
+  return (h.dispatch.connect as any)(...args)
+ }}})
+ const completion=createDispatchCompletion({...x.opts,store})
+ expect(await completion.acceptDispatchResult(x.f.actor,x.proof,result,usage)).toMatchObject({accepted:false,reason:'terminal_result'})
+ expect(connects).toBeGreaterThanOrEqual(2)
+ expect((await x.requests.getDispatch(x.f.actor,x.proof.request_id)).state).toBe('CANCELLED')
+ expect((await h.dispatch.query('SELECT model_id,input_tokens,usage_capture_status FROM claude_jobs WHERE dispatch_request_id=$1',[x.proof.request_id])).rows[0])
+  .toEqual({model_id:'claude-opus-5-5',input_tokens:14,usage_capture_status:'captured'})
+})

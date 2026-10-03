@@ -11,6 +11,7 @@ import {classifyDiffAgainstPlan} from '../verify/classify.js'
 import {checkVerifyGate,type VerifyRequired} from '../verify/gate.js'
 import {canonicalResult,lifecycleEvent,finishResult,unresolvedPublication} from './lifecycle.js'
 import {projectManagedTaskStatus} from './task-status.js'
+import {writeDispatchUsage} from './usage.js'
 import {withDispatchRetryTransaction,type DispatchStore} from './db.js'
 import type {DispatchAuth} from './auth.js'
 import type {DispatchActor} from './ports.js'
@@ -27,15 +28,25 @@ export type CompletionDeps={store:DispatchStore;auth:DispatchAuth;publisher?:{pu
 export {finishResult} from './lifecycle.js'
 export function createDispatchCompletion(deps:CompletionDeps){
  const stops=createStopEvidence(deps)
- async function accept(actor:DispatchActor,authority:{proof:AttemptProof}|{binding:DispatchStartBinding},value:DispatchResult):Promise<ResultReceipt>{
+ async function accept(actor:DispatchActor,authority:{proof:AttemptProof}|{binding:DispatchStartBinding},value:DispatchResult,usage?:unknown):Promise<ResultReceipt>{
   const attemptId='proof' in authority?authority.proof.attempt_id:authority.binding.attemptId
   const verify=async(db:PoolClient,x:ArtifactAttempt)=>{if('proof' in authority)verifyArtifactProof(actor,authority.proof,x);else await validateHistoricalBinding(db,x,authority.binding)}
   const original=parseDispatchResult(value),submittedHash=artifactHash(canonicalResult(original))
+  /** A request that already has its canonical result: an exact replay, or a late result. T-1972: a
+   * cancelled attempt's canonical result is written at stop, without usage — in either transaction
+   * below, since cancellation may finish between them. This attempt's late result still reports what
+   * the run consumed: recorded once, the canonical result untouched. */
+  const terminal=async(db:PoolClient,x:ArtifactAttempt,old:{id:string;payload:unknown;attempt_id:string|null}):Promise<ResultReceipt>=>{
+   const event=(await db.query("SELECT payload FROM queue_dispatch_events WHERE request_id=$1 AND attempt_id=$2 AND type='result_accepted'",[x.r.id,x.a.id])).rows[0]
+   if(event?.payload.submitted_hash===submittedHash)return {accepted:true,resultId:old.id,reason:'replayed',result:old.payload as DispatchResult}
+   await lifecycleEvent(db,x.r.id,'late_result',{submitted_hash:submittedHash,result:original},x.a.id)
+   if(usage!==undefined&&x.c.job_id&&old.attempt_id===x.a.id)await writeDispatchUsage(db,x.c.job_id,usage,{once:true})
+   return {accepted:false,resultId:old.id,reason:'terminal_result',result:old.payload as DispatchResult}
+  }
   const prepared=await withDispatchRetryTransaction(deps.store,async db=>{
    const x=await lockArtifactAttempt(db,attemptId);await verify(db,x);await authenticateHistoricalSupervisor(db,deps.auth,actor,x)
    const old=(await db.query('SELECT * FROM queue_dispatch_results WHERE request_id=$1',[x.r.id])).rows[0]
-   if(old){const event=(await db.query("SELECT payload FROM queue_dispatch_events WHERE request_id=$1 AND attempt_id=$2 AND type='result_accepted'",[x.r.id,x.a.id])).rows[0];if(event?.payload.submitted_hash===submittedHash)return {receipt:{accepted:true,resultId:old.id,reason:'replayed',result:old.payload as DispatchResult}}
-    await lifecycleEvent(db,x.r.id,'late_result',{submitted_hash:submittedHash,result:original},x.a.id);return {receipt:{accepted:false,resultId:old.id,reason:'terminal_result',result:old.payload as DispatchResult}}}
+   if(old)return {receipt:await terminal(db,x,old)}
    if(x.c.generation!==x.r.generation||!x.a.stopped_at)throw new DispatchError('DISPATCH_STATE_CONFLICT')
    if(!(await db.query("SELECT 1 FROM queue_dispatch_events WHERE request_id=$1 AND attempt_id=$2 AND type='stop_accepted'",[x.r.id,x.a.id])).rowCount)throw new DispatchError('DISPATCH_STATE_CONFLICT')
    if(artifactHash(canonicalDispatchInput(x.r.input))!==x.r.input_hash)throw new DispatchError('DISPATCH_STATE_CONFLICT')
@@ -101,14 +112,14 @@ export function createDispatchCompletion(deps:CompletionDeps){
   }
   return withDispatchRetryTransaction(deps.store,async db=>{
    const x=await lockArtifactAttempt(db,attemptId);await verify(db,x);await authenticateHistoricalSupervisor(db,deps.auth,actor,x)
-   const old=(await db.query('SELECT id,payload FROM queue_dispatch_results WHERE request_id=$1',[x.r.id])).rows[0]
-   if(old){const event=(await db.query("SELECT payload FROM queue_dispatch_events WHERE request_id=$1 AND attempt_id=$2 AND type='result_accepted'",[x.r.id,x.a.id])).rows[0];if(event?.payload.submitted_hash===submittedHash)return {accepted:true,resultId:old.id,reason:'replayed',result:old.payload as DispatchResult};await lifecycleEvent(db,x.r.id,'late_result',{submitted_hash:submittedHash,result:original},x.a.id);return {accepted:false,resultId:old.id,reason:'terminal_result',result:old.payload as DispatchResult}}
+   const old=(await db.query('SELECT id,payload,attempt_id FROM queue_dispatch_results WHERE request_id=$1',[x.r.id])).rows[0]
+   if(old)return terminal(db,x,old)
    if(x.r.generation!==x.c.generation||await unresolvedPublication(db,x.r.id))throw new DispatchError('DISPATCH_STATE_CONFLICT')
    if(x.r.state==='CANCEL_REQUESTED'){await lifecycleEvent(db,x.r.id,'late_result',{submitted_hash:submittedHash,result:original},x.a.id);result={...result,outcome:'cancelled'}}
    else if(!['CLAIMED','RUNNING'].includes(x.r.state))throw new DispatchError('DISPATCH_STATE_CONFLICT')
    else if(result.outcome==='succeeded')try{if(x.p.revoked_at)throw new DispatchError('DISPATCH_FORBIDDEN');await deps.auth.authorizeDispatch(requestActor(x.r),x.r.input,'publish',db)}catch(error){if(!(error instanceof DispatchError))throw error;result={...result,outcome:'failed',summary:'authorization_unavailable',review:undefined}}
-   return finishResult(db,x,result,submittedHash)
+   return finishResult(db,x,result,submittedHash,usage)
   })
  }
- return {...stops,acceptDispatchResult:(actor:DispatchActor,proof:AttemptProof,value:DispatchResult)=>accept(actor,{proof},value),acceptHistoricalResult:(actor:DispatchActor,binding:DispatchStartBinding,value:DispatchResult)=>accept(actor,{binding},value)}
+ return {...stops,acceptDispatchResult:(actor:DispatchActor,proof:AttemptProof,value:DispatchResult,usage?:unknown)=>accept(actor,{proof},value,usage),acceptHistoricalResult:(actor:DispatchActor,binding:DispatchStartBinding,value:DispatchResult)=>accept(actor,{binding},value)}
 }

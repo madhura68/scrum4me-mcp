@@ -6,6 +6,7 @@ import type {DispatchResult,DispatchView} from '@shared/queue-dispatch.js'
 import type {ArtifactAttempt} from './artifacts.js'
 import {artifactHash} from './artifacts.js'
 import {DispatchError} from './errors.js'
+import {writeDispatchUsage} from './usage.js'
 export function canonicalResult(value:unknown):string{
  if(Array.isArray(value))return `[${value.map(canonicalResult).join(',')}]`
  if(value!==null&&typeof value==='object')return `{${Object.entries(value).filter(([,v])=>v!==undefined).sort(([a],[b])=>a.localeCompare(b)).map(([k,v])=>`${JSON.stringify(k)}:${canonicalResult(v)}`).join(',')}}`
@@ -38,10 +39,12 @@ export async function lifecycleView(db:PoolClient,id:string):Promise<DispatchVie
 }
 /** The canonical result travels back with the receipt: the domain may rewrite the submitted
  * outcome, so a supervisor that only learned an id could not know what was actually accepted. */
-export async function finishResult(db:PoolClient,x:ArtifactAttempt,result:DispatchResult,submittedHash:string):Promise<{accepted:boolean;resultId:string|null;reason:string;result:DispatchResult}>{
+export async function finishResult(db:PoolClient,x:ArtifactAttempt,result:DispatchResult,submittedHash:string,usage?:unknown):Promise<{accepted:boolean;resultId:string|null;reason:string;result:DispatchResult}>{
  const id=await insertResult(db,x.r.id,x.a.id,result,x.r.input.review_documents),outcome=result.outcome.toUpperCase() as 'SUCCEEDED'|'FAILED'|'CANCELLED'
  await transition(db,x.r.id,outcome,id)
  await terminalizeAttempt(db,x,outcome)
+ // T-1972: only a fresh result carries usage; a replay returned before this point and changes nothing.
+ if(x.c.job_id&&usage!==undefined)await writeDispatchUsage(db,x.c.job_id,usage)
  if(x.r.input.action==='task_implementation'){
   if(outcome!=='CANCELLED')await projectManagedTaskStatus(db,x.r.input.task_id!,outcome==='SUCCEEDED'?'DONE':'FAILED')
   await db.query('UPDATE tasks SET dispatch_request_id=NULL WHERE id=$1 AND dispatch_request_id=$2',[x.r.input.task_id,x.r.id])
