@@ -751,7 +751,9 @@ Measured on this build; none of these is scheduled work in IP-14.
 - **`GET /artifacts/:id` ignores the bound-attempt proof.** Only the requester or a product
   administrator can read an artifact; a supervisor holding a valid attempt proof cannot.
 - `queue_dispatch_reply_addresses` must be populated through `POST /reply-addresses` before anyone
-  can submit, and the workers principal needs a global `ADMIN` role.
+  can submit, and the workers principal needs a global `ADMIN` role. An authenticated actor can
+  read back its own enabled addresses, sorted by address, through `GET /reply-addresses`
+  (`client.listReplyAddresses()`); the user is never a parameter.
 - `createSlot` writes version `'1'` unconditionally.
 - The generated-contract check of s4m-queue
   (`node scripts/generate-dispatch-contract.mjs --check --source <shared checkout>`) runs in no CI
