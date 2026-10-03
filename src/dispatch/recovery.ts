@@ -76,8 +76,8 @@ export function createDispatchRecovery(deps:CompletionDeps){
    return result?{status:'accepted',binding,resultId:result.id,result:result.payload}:{status:'pending',binding}
   })}
   async function submitStop(binding:DispatchStartBinding,evidence:StopEvidence){return withDispatchRetryTransaction(deps.store,async db=>{const x=await lockArtifactAttempt(db,binding.attemptId);await authenticateHistoricalSupervisor(db,deps.auth,actor,x);await validateHistoricalBinding(db,x,binding);const id=await acceptStopInTransaction(db,x,evidence,actor);await finishStoppedCancellation(db,x);return {receipt_id:id}})}
-  async function submitResult(binding:DispatchStartBinding,result:DispatchResult):Promise<RecoveryState>{
-   await completion.acceptHistoricalResult(actor,binding,result)
+  async function submitResult(binding:DispatchStartBinding,result:DispatchResult,usage?:unknown):Promise<RecoveryState>{
+   await completion.acceptHistoricalResult(actor,binding,result,usage)
    return lookup(binding)
   }
   return {lookup,submitStop,submitResult}

@@ -722,7 +722,7 @@ only place in the protocol where a caller has no dispatch identity at all.
 | `POST /attempts/result` | supervisor bearer + `AttemptProof` | `{proof,result,usage?}` | `{status:'accepted'\|'late', result_id, reason, canonical_result?}` |
 | `PUT /attempts/artifacts/:key` | supervisor bearer + `X-Dispatch-Attempt-Proof` | raw bytes + `X-Content-SHA256` | `{artifact_id,sha256,byte_size}`. Refused once the attempt is revoked |
 | `PUT /attempts/collected/:key` | **original supervisor** bearer + `X-Dispatch-Start-Binding` | raw bytes + `X-Content-SHA256`; `:key` ∈ `report`\|`checks`\|`code` | same receipt. The post-stop path: valid only after this supervisor's own stop was accepted |
-| `POST /attempts/recovery/lookup` · `/stop` · `/result` | **original supervisor** bearer, bound to the historical binding | `{key}` / `{binding,evidence}` / `{binding,result}` | `RecoveryState`; `{receipt_id}`; `RecoveryState`. No execution authority anywhere on these three |
+| `POST /attempts/recovery/lookup` · `/stop` · `/result` | **original supervisor** bearer, bound to the historical binding | `{key}` / `{binding,evidence}` / `{binding,result,usage?}` | `RecoveryState`; `{receipt_id}`; `RecoveryState`. No execution authority anywhere on these three |
 | `GET /agent/sources/:key` | child capability only | `X-Dispatch-Agent-Token`, `X-Dispatch-Attempt-Id` | exact source bytes + `X-Content-SHA256` |
 | `PUT /agent/outputs/:key` | child capability only | as above + raw bytes and `X-Content-SHA256` | `{artifact_id,sha256,byte_size}` |
 
@@ -741,9 +741,13 @@ it — an unusable value becomes `usage_capture_status='parse_error'`, `truncate
 non-`captured` statuses keep no counts. The model is the observed one, else the job's
 `requested_model` (`pricing_model_source` `observed_event` / `cli_model`), else `missing_model`.
 Only a fresh result writes usage, inside the transaction that finishes it; an exact replay changes
-nothing. A late result of the same attempt after cancellation (whose canonical result was written at
-stop) records its usage once, when the job has none yet, and leaves the canonical result untouched.
-Without `usage` (an older supervisor, the recovery routes) the columns stay empty. A service older
+nothing. A late result of the **same attempt** records its usage once, when the job has none yet, and
+leaves the canonical result untouched. That covers every canonical result the service wrote without
+usage for that attempt: a cancellation finished at stop (also when it lands between the two result
+transactions), and an operator recovery (`close_failed`/`close_cancelled`). A supervisor only ever
+resubmits its one journalled result, so the late usage is always that run's own. `POST
+/attempts/recovery/result` carries the same optional `usage` with the same rules. Without `usage` (an
+older supervisor) the columns stay empty. A service older
 than T-1972 refuses the field, so this service rolls out before a supervisor that sends it.
 A replay of the same result answers with the same `result_id` and the same canonical bytes.
 

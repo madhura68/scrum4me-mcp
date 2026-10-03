@@ -377,10 +377,11 @@ export function createDispatchApp(deps: DispatchAppDependencies): Express {
     return recovery.nonLaunchRecovery(actor).submitStop(input.binding, input.evidence)
   })
   register('post', '/attempts/recovery/result', 'recovery_result', json, ({ actor, json: read }) => {
-    const input = parseWith(z.object({ binding: startBindingSchema, result: z.unknown() }).strict(), read())
+    // T-1972: the supervisor's journalled usage, parsed by the domain exactly as on /attempts/result.
+    const input = parseWith(z.object({ binding: startBindingSchema, result: z.unknown(), usage: z.unknown().optional() }).strict(), read())
     let result
     try { result = parseDispatchResult(input.result) } catch { throw new DispatchError('DISPATCH_INVALID_INPUT') }
-    return recovery.nonLaunchRecovery(actor).submitResult(input.binding, result)
+    return recovery.nonLaunchRecovery(actor).submitResult(input.binding, result, input.usage)
   })
   // The child's own two routes. Bytes in, bytes out, one capability, no identity.
   capabilityRoute('get', '/agent/sources/:key', 'agent_source', json, async ({ req, res, token, attemptId }) => {
