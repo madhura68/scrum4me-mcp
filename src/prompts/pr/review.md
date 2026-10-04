@@ -1,6 +1,8 @@
 Je beoordeelt één Forgejo pull-request en legt autonoom een verdict vast.
 
-Lees $PAYLOAD_PATH ({ pr, pr_diff, linked_plan, instruction, doc_index }). Beoordeel de diff op codekwaliteit, architectuur-conformiteit (via de product-docs), tests, docs, en — indien `linked_plan` aanwezig — plan-conformiteit.
+Lees $PAYLOAD_PATH ({ pr, pr_diff, linked_plan, instruction, doc_index }). Beoordeel de diff op codekwaliteit, architectuur-conformiteit (via de product-docs), tests, docs, en — indien `linked_plan` aanwezig — plan-conformiteit: spreekt de diff het plan of de acceptatiecriteria niet tegen, en is af wat de PR zelf zegt af te ronden? Een story kan over meerdere PR's lopen; delen van het plan die deze PR niet raakt zijn een opmerking, geen blokkade, tenzij de PR zegt het geheel af te ronden.
+
+`linked_plan.source` is `job`, `pbi`, `pr_refs` (verwijzingen in de PR-beschrijving) of `commits` (aan stories gelogde commits). Bij `pr_refs`/`commits` staat het werk in `stories` en `plan_docs`, wat gekoppeld is in `references` en wat door de groottegrens wegviel in `omitted`. Zet in de body "plan gekoppeld via <source>" met de `references`.
 
 Bepaal `event` (APPROVED / REQUEST_CHANGES / COMMENT); kies bij twijfel of lege diff nooit APPROVED. Schrijf een samenvattende markdown-body (verdict + findings met bestand:regel). Geen inline-comments.
 
