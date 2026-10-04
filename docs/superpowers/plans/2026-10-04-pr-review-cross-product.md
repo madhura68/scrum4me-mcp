@@ -1,6 +1,6 @@
 # PR-review: plan vinden over productgrenzen heen — Implementatieplan
 
-**Status:** revisie 2 (na reviewronde 1), wacht op akkoord van JP. Vervolg op
+**Status:** plan-review dubbel GO (ronde 2, 2026-10-04); wacht op het besluit over K1 en op akkoord van JP voor de ceremonie. Vervolg op
 `docs/superpowers/plans/2026-10-04-pr-review-plan-linking.md` (ST-052, live sinds `a843a79`).
 Geen spec: de wijziging blijft binnen de plan-lookup van de PR-review en de reviewprompts.
 
@@ -70,12 +70,15 @@ het product waar het plan vandaan komt.
      (of van een taak van de story) is de repo van de PR, of de story heeft een `COMMIT`-log met een
      hash uit deze PR. Blijft er niet precies één over, dan vervalt de code.
    - `repo_url` wordt vergeleken als `{host, owner, repo}`, via `parseForgejoRemoteUrl` (taak) tegen
-     `parseForgejoPrUrl` (PR). Beide kennen https en SSH.
+     `parseForgejoPrUrl` (PR). De remoteparser kent https en SSH; de PR-parser leest de https-PR-URL.
+     Geen nieuwe URL-ondersteuning.
 4. **Commit-SHA's één keer per resolve.** De SHA's van de PR worden lazy opgehaald, pas bij de
    eerste stap die ze nodig heeft (B in het eigen product), en daarna hergebruikt door A× en B×.
-   Eén `storyLog`-query over het eigen product plus de kandidaten kan B en B× bedienen: eerst de
-   rijen van het eigen product, de rest bewaard voor B×. Eén commit kan bij meerdere stories of
-   producten gelogd zijn; B× neemt ze dan allemaal mee, elk met zijn eigen herkomst.
+   Verder deelt B in het eigen product niets met de nieuwe stappen. `resolvePlanViaCommits` houdt
+   zijn eigen query, en B× krijgt een aparte query over `candidateProductIds()`, pas na A×. Zo kan
+   een fout in de kandidaat- of token-lookup B in het eigen product nooit meenemen. Eén commit kan
+   bij meerdere stories of producten gelogd zijn; B× neemt ze dan allemaal mee, elk met zijn eigen
+   herkomst.
 5. **Interne identiteit op id, niet op code.** Codes zijn alleen uniek per product. In de
    productoverschrijdende paden (A×, B×) groeperen collector en `assembleWithinBudget` op story- en
    task-id. Dat geldt voor de groepering, `placed`, `explicitTasks` en het deduplicatie van B×. De
@@ -83,7 +86,8 @@ het product waar het plan vandaan komt.
    byte-gelijk.
 6. **Herkomst zichtbaar.** Een story uit een ander product krijgt het veld `product` (de
    productnaam); de assembler neemt dat veld mee. In `references` staat zo'n verwijzing als
-   `T-1972 (Scrum4Me)`. De budgetreservering rekent met die definitieve weergave, labels
+   `T-1972 (Scrum4Me)`, en `omitted` gebruikt dezelfde labels, zodat twee keer `ST-1` te
+   onderscheiden blijft. De budgetreservering rekent met die definitieve weergave, labels
    inbegrepen. `JSON.stringify(linked_plan).length` ≤ 100 000 blijft bindend.
 7. **Beslispunt K1, standaard "ja":** mag een unieke match zonder bevestigend signaal gebruikt
    worden? In de meting gaat het om 2 van de 30 PR's (#180 en #177). Het risico is een code die
@@ -121,7 +125,8 @@ het product waar het plan vandaan komt.
 - `candidateProductIds(userId: string, ownProductId: string): Promise<string[]>`: producten met
   `user_id = userId`, zonder het eigen product, doorsneden met `getTokenScopedProducts()` als die
   niet leeg is.
-- `ReviewJob` krijgt `user_id?`. `wait-for-job.ts` geeft `job.user_id` mee.
+- `ReviewJob` krijgt `user_id?`. `wait-for-job.ts` geeft `job.user_id` mee. Zonder `user_id`
+  worden A× en B× overgeslagen; het gedrag is dan exact dat van ST-052.
 - Een per-resolve-context met lazy `listPullRequestCommitShas`. Het tweede gebruik doet geen
   tweede Forgejo-call.
 - De story- en task-selects in de productoverschrijdende paden halen `id` en `product_id` (plus de
@@ -133,6 +138,7 @@ het product waar het plan vandaan komt.
 - token-scope: de gebruiker bezit twee producten, het token staat er één toe → het andere valt af;
   `[]` betekent geen beperking;
 - de SHA's worden maximaal één keer per resolve opgehaald (spy op `listPullRequestCommitShas`);
+- de kandidaat-lookup gooit een fout → de uitkomst van B in het eigen product blijft ongewijzigd;
 - de bestaande tests voor A en B in het eigen product blijven ongewijzigd groen met `toStrictEqual`.
 
 ### Taak 2 — Stappen A× en B×
@@ -174,8 +180,10 @@ dan op de ongescopete productieworkers.
 - `--recent 100`: dekking > 65. De nulmeting is 41, met de resolver van ST-052 (A en B binnen het
   eigen product), niet alleen routes 1–2. Daarnaast een lijst van alle koppelingen via A× zonder
   signaal; JP beoordeelt die steekproefsgewijs (K1);
-- elke PR die vóór de wijziging een plan in het eigen product kreeg, geeft exact dezelfde output
-  (vergelijk het JSON per PR met een run op `a843a79`);
+- elke PR die vóór de wijziging een plan in het eigen product kreeg, geeft exact dezelfde output.
+  De proef draait elke PR twee keer: zonder `user_id` (= ST-052-gedrag) en met. Hij print per run
+  `sha256(JSON.stringify(linked_plan))`, dus geen inhoud. Elke PR met een plan in de eerste run
+  heeft in de tweede dezelfde hash;
 - geen exception en niets boven het budget.
 
 Valt de dekking tegen of zit er een foute koppeling tussen: eerst bijsturen en JP melden, vóór
@@ -255,3 +263,31 @@ het Scrum4Me-product (IDEA-233), dus op besluit van JP via de **listener-fallbac
 - **Afgewezen:** geen.
 - **Scope-delta:** geen nieuw doel of subsysteem. Wél strenger: alleen eigen producten in plaats
   van eigenaar of lid. Het eerste bruikbare resultaat en de praktijkproef blijven gelijk.
+
+### Ronde 2 — revisie 2 @ `0879b13b`
+
+- **Verzoeken:** `mac:codex` `f4d3dc4f-eb37-41c1-8f46-3ac4cdc9e3ff` (antwoord `12f28347`),
+  `mac:claude` `cc3b46b1-0bb7-4891-9274-804995fc12d4` (antwoord `b3647264`). Pins: plan
+  `e3b4cd32…`, `CLAUDE.md` `df60a45f…`, voorganger `88bd535a…`, alle op `0879b13b`.
+- **Uitslag:** codex 0 / 0 / 1 MINOR → **GO**; claude 0 / 0 / 2 MINOR → **GO**. **Dubbel GO.**
+- **Reparaties uit ronde 1:** claude vond alle zeven standgehouden; codex zes standgehouden en
+  één gedeeltelijk (de parsertekst, zie hieronder).
+- **MINOR-bevindingen, geverifieerd en na het dubbele GO verwerkt:**
+  - De gecombineerde B/B×-query koppelde B in het eigen product aan de kandidaat- en token-lookup
+    (claude) → geschrapt. B in het eigen product houdt zijn eigen query; test "kandidaat-lookup
+    gooit → B(eigen) ongewijzigd".
+  - De vergelijking "zelfde output" was met de proef zonder inhoud niet uitvoerbaar, en het gedrag
+    zonder `user_id` was weggevallen (claude) → hash-vergelijking per PR met en zonder `user_id`;
+    zonder `user_id` worden A× en B× overgeslagen.
+  - Alleen de remoteparser kent SSH (codex, `forgejo-rest.ts:117-129` tegen `:157-165`) → tekst
+    gecorrigeerd.
+  - Polish (claude): `omitted` gebruikt dezelfde labels als `references`.
+  - Er volgde geen delta-ronde: het zijn verduidelijkingen en één schrapping binnen het ontwerp.
+    JP kan er alsnog een vragen.
+- **Afgewezen:** geen.
+- **Scope-delta:** kleiner. De gecombineerde query is geschrapt. Eerste bruikbare resultaat en
+  praktijkproef ongewijzigd.
+
+**Fase `plan` afgerond (dubbel GO).** Open: het besluit van JP over K1. Daarna volgt de
+ceremonie op SC2, alleen met akkoord van JP. Technisch GO autoriseert geen uitvoering, merge of
+deployment.
