@@ -1,6 +1,6 @@
 # PR-review: plan vinden over productgrenzen heen — Implementatieplan
 
-**Status:** plan-review dubbel GO (ronde 2, 2026-10-04); wacht op het besluit over K1 en op akkoord van JP voor de ceremonie. Vervolg op
+**Status:** plan-review dubbel GO (ronde 2, 2026-10-04); K1 = ja (JP); ceremonie op akkoord van JP. Vervolg op
 `docs/superpowers/plans/2026-10-04-pr-review-plan-linking.md` (ST-052, live sinds `a843a79`).
 Geen spec: de wijziging blijft binnen de plan-lookup van de PR-review en de reviewprompts.
 
@@ -89,7 +89,7 @@ het product waar het plan vandaan komt.
    `T-1972 (Scrum4Me)`, en `omitted` gebruikt dezelfde labels, zodat twee keer `ST-1` te
    onderscheiden blijft. De budgetreservering rekent met die definitieve weergave, labels
    inbegrepen. `JSON.stringify(linked_plan).length` ≤ 100 000 blijft bindend.
-7. **Beslispunt K1, standaard "ja":** mag een unieke match zonder bevestigend signaal gebruikt
+7. **Beslispunt K1 — besloten: "ja" (JP, 2026-10-04):** mag een unieke match zonder bevestigend signaal gebruikt
    worden? In de meting gaat het om 2 van de 30 PR's (#180 en #177). Het risico is een code die
    in de beschrijving iets anders betekent en toevallig precies één keer elders bestaat. Dat
    risico is klein: lage codes zoals `T-1` bestaan in veel producten en vallen dus als
@@ -291,3 +291,9 @@ het Scrum4Me-product (IDEA-233), dus op besluit van JP via de **listener-fallbac
 **Fase `plan` afgerond (dubbel GO).** Open: het besluit van JP over K1. Daarna volgt de
 ceremonie op SC2, alleen met akkoord van JP. Technisch GO autoriseert geen uitvoering, merge of
 deployment.
+
+### Besluit en ceremonie — 2026-10-04
+
+**K1 = ja (JP):** een unieke match in een ander product mag zonder bevestigend signaal gebruikt
+worden. De acceptatie voor `scrum4me-mcp#180` via `pr_refs` geldt dus. Daarna is de ceremonie op
+SC2 gestart, op akkoord van JP. De codes staan hieronder zodra ze er zijn.
