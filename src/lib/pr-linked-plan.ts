@@ -305,13 +305,21 @@ async function assembleWithinBudget(source: 'pr_refs' | 'commits', c: Collected)
   const size = () => JSON.stringify(plan).length
   const omitted: string[] = []
   const docRefs: string[] = []
+  // Zodra één item niet meer volledig past, gaat alles daarna naar `omitted`, ook een
+  // kort item: de vulvolgorde is de prioriteit, niet wat toevallig nog past.
+  let full = false
 
   // Zet `text` via `set` in het plan; past het niet, dan zoekt een binaire zoektocht
   // de langste prefix die nog past (escaping maakt de geserialiseerde lengte groter
   // dan de tekstlengte). Past zelfs MIN_USEFUL niet, dan draait `unset` terug.
   const fit = (set: (text: string) => void, text: string, unset: () => void, marker = MARKER): boolean => {
+    if (full) {
+      unset()
+      return false
+    }
     set(text)
     if (size() <= limit) return true
+    full = true
     set(text.slice(0, MIN_USEFUL) + marker)
     if (text.length <= MIN_USEFUL || size() > limit) {
       unset()
@@ -329,6 +337,14 @@ async function assembleWithinBudget(source: 'pr_refs' | 'commits', c: Collected)
     return true
   }
 
+  // Een item zonder tekst (story zonder acceptatiecriteria, taak zonder plan).
+  const fitBare = (unset: () => void): boolean => {
+    if (!full && size() <= limit) return true
+    full = true
+    unset()
+    return false
+  }
+
   // 1. Stories met acceptatiecriteria.
   const placed = new Map<string, LinkedPlanStory>()
   for (const s of c.stories) {
@@ -336,7 +352,7 @@ async function assembleWithinBudget(source: 'pr_refs' | 'commits', c: Collected)
     plan.stories.push(entry)
     const ok = s.acceptance_criteria
       ? fit((t) => { entry.acceptance_criteria = t }, capField(s.acceptance_criteria), () => { plan.stories.pop() })
-      : size() <= limit || (plan.stories.pop(), false)
+      : fitBare(() => { plan.stories.pop() })
     if (ok) placed.set(s.code, entry)
     else omitted.push(s.code)
   }
@@ -348,7 +364,7 @@ async function assembleWithinBudget(source: 'pr_refs' | 'commits', c: Collected)
     entry.tasks.push(row)
     const ok = t.implementation_plan
       ? fit((x) => { row.implementation_plan = x }, capField(t.implementation_plan), () => { entry.tasks.pop() })
-      : size() <= limit || (entry.tasks.pop(), false)
+      : fitBare(() => { entry.tasks.pop() })
     if (!ok) omitted.push(t.code)
   }
 
@@ -357,7 +373,8 @@ async function assembleWithinBudget(source: 'pr_refs' | 'commits', c: Collected)
 
   // 3. Plan-docs, pas ophalen als ze aan de beurt zijn.
   for (const d of c.docs) {
-    if (limit - size() < MIN_USEFUL) {
+    if (full || limit - size() < MIN_USEFUL) {
+      full = true
       omitted.push(d.ref)
       continue
     }
@@ -380,9 +397,10 @@ async function assembleWithinBudget(source: 'pr_refs' | 'commits', c: Collected)
   // 4. Overige taken van de stories.
   for (const s of c.stories) for (const t of s.tasks) if (!c.explicitTasks.has(t.code)) addTask(s.code, t)
 
+  const hasText = (v: string | null) => Boolean(v?.trim())
   const hasContent =
     plan.plan_docs.length > 0 ||
-    plan.stories.some((s) => s.acceptance_criteria || s.tasks.some((t) => t.implementation_plan))
+    plan.stories.some((s) => hasText(s.acceptance_criteria) || s.tasks.some((t) => hasText(t.implementation_plan)))
   if (!hasContent) return null
 
   const placedTasks = new Set(plan.stories.flatMap((s) => s.tasks.map((t) => t.code)))

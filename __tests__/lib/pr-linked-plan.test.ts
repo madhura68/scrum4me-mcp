@@ -290,3 +290,25 @@ describe('totaalbudget voor A en B', () => {
     expect(out.omitted).toContain('docs/plans/a.md')
   })
 })
+
+describe('review-bevindingen #183', () => {
+  it('alleen witruimte in acceptatiecriteria en taakplannen telt niet als inhoud → route B', async () => {
+    findManyStory.mockResolvedValue([story('ST-1', '   \n', [task('T-1', ' \n\t')])])
+    listShas.mockResolvedValue([SHA])
+    findManyLog.mockResolvedValue([{ story: story('ST-9', 'AC9') }])
+    const out: any = await resolvePrLinkedPlan(JOB_P, { body: 'ST-1', head_sha: SHA })
+    expect(out.source).toBe('commits')
+  })
+
+  it('na het eerste item dat niet past gaat alles daarna naar omitted, ook een kort item', async () => {
+    const ac = 'x'.repeat(19_855)
+    const stories = Array.from({ length: 5 }, (_, i) => story(`ST-${i + 1}`, ac))
+    stories[4] = story('ST-5', ac, [task('T-1', 'p'.repeat(1_000)), task('T-2', 'short')])
+    findManyStory.mockResolvedValue(stories)
+    const out: any = await resolvePrLinkedPlan(JOB_P, { body: stories.map((s) => s.code).join(' '), head_sha: SHA })
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(LINKED_PLAN_BUDGET)
+    const placed = out.stories.flatMap((s: any) => s.tasks.map((t: any) => t.code))
+    expect(placed).not.toContain('T-2')
+    expect(out.omitted).toStrictEqual(expect.arrayContaining(['T-1', 'T-2']))
+  })
+})
