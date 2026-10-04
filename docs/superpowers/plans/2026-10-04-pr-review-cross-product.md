@@ -1,6 +1,6 @@
 # PR-review: plan vinden over productgrenzen heen — Implementatieplan
 
-**Status:** plan-review dubbel GO (ronde 2, 2026-10-04); K1 = ja (JP); ceremonie op akkoord van JP. Vervolg op
+**Status:** plan-review dubbel GO (ronde 2, 2026-10-04); K1 = ja (JP); ceremonie gedaan op SC2 (S-2026-10-04-2, PBI-33, ST-053, T-163…T-167); wacht op uitvoeropdracht. Vervolg op
 `docs/superpowers/plans/2026-10-04-pr-review-plan-linking.md` (ST-052, live sinds `a843a79`).
 Geen spec: de wijziging blijft binnen de plan-lookup van de PR-review en de reviewprompts.
 
@@ -296,4 +296,10 @@ deployment.
 
 **K1 = ja (JP):** een unieke match in een ander product mag zonder bevestigend signaal gebruikt
 worden. De acceptatie voor `scrum4me-mcp#180` via `pr_refs` geldt dus. Daarna is de ceremonie op
-SC2 gestart, op akkoord van JP. De codes staan hieronder zodra ze er zijn.
+SC2 uitgevoerd, op akkoord van JP:
+- sprint `S-2026-10-04-2`;
+- PBI-33, gekoppeld aan productdoc PLANS/pr-review-cross-product (revisie 1, rol PLAN);
+- story ST-053;
+- taken T-163 tot en met T-167 (Taak 1–5, in planvolgorde).
+
+**Hardstop:** uitvoeren pas na een aparte uitvoeropdracht van JP.
