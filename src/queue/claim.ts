@@ -3,6 +3,7 @@
 // with pg_notify INSIDE the transaction (fires at COMMIT) — same consensus as
 // pg-boss/Graphile Worker/River/Oban: NOTIFY is wake-up only, the claim query
 // is the single source of truth.
+import { Prisma } from '@prisma/client'
 import { prisma } from '../prisma.js'
 import { QUEUE_CHANNEL, envelopeOf } from './notify.js'
 import { QUEUE_REQUEST_TYPES, QUEUE_RESPONSE_TYPES, type QueueModel, type QueueServer } from '@shared/queue-identity.js'
@@ -16,6 +17,11 @@ export function reclaimInterval(): string {
   if (fromEnv && /^[0-9 a-zA-Z.:-]+$/.test(fromEnv)) return fromEnv
   return DEFAULT_RECLAIM_AFTER
 }
+
+/** rules-sync-berichten (agent-rules) zijn post voor `s4m-rules-apply`, niet voor een agent:
+ *  die leest ze read-only en sluit ze zelf. queue_next slaat ze over, anders kaapt een
+ *  monitor-drain ze weg. Zelfde predicaat als s4m-queue/src/db.ts (NOT_RULES_SYNC_SQL). */
+export const NOT_RULES_SYNC_SQL = Prisma.sql`(meta->>'action') IS DISTINCT FROM 'rules-sync'`
 
 export interface AgentMessageRecord {
   id: string
@@ -66,6 +72,7 @@ export async function claimNextRequest(opts: {
            AND type = ANY(${types}::text[])
            AND ${LEGACY_MARKER_SQL}
            AND ${ORDINARY_DISPATCH_SQL}
+           AND ${NOT_RULES_SYNC_SQL}
            AND (status = 'pending'
                 OR (status = 'claimed' AND claimed_at < now() - ${reclaim}::interval))
          ORDER BY created_at, id

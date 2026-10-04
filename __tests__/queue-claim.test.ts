@@ -7,7 +7,7 @@ vi.mock('../src/prisma.js', () => ({
 }))
 
 import {
-  DEFAULT_RECLAIM_AFTER, claimNextReply, claimNextRequest, reclaimInterval, rollbackQueueClaim,
+  DEFAULT_RECLAIM_AFTER, NOT_RULES_SYNC_SQL, claimNextReply, claimNextRequest, reclaimInterval, rollbackQueueClaim,
 } from '../src/queue/claim.js'
 
 const claimedRow = {
@@ -97,6 +97,13 @@ describe('claimNextRequest — FIFO-claim met FOR UPDATE SKIP LOCKED (§5.3)', (
     txMock.$queryRaw.mockResolvedValueOnce([claimedRow])
     await claimNextRequest({ server: 'mac', model: 'claude', claimedBy: 'mcp:i:t' })
     expect(txMock.$queryRaw.mock.calls[0][3]).toEqual(['task', 'info', 'review_request'])
+  })
+
+  it('slaat rules-sync-berichten over (die zijn voor s4m-rules-apply)', async () => {
+    txMock.$queryRaw.mockResolvedValueOnce([claimedRow])
+    await claimNextRequest({ server: 'mac', model: 'claude', claimedBy: 'mcp:i:t' })
+    expect(txMock.$queryRaw.mock.calls[0]).toContain(NOT_RULES_SYNC_SQL)
+    expect(NOT_RULES_SYNC_SQL.sql).toBe(`(meta->>'action') IS DISTINCT FROM 'rules-sync'`)
   })
 
   it('geeft het berekende reclaim-interval door aan de query', async () => {
