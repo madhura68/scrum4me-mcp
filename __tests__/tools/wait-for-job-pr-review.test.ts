@@ -175,4 +175,23 @@ describe('getFullJobContext PR_REVIEW', () => {
     // rollbackClaim heeft $executeRaw aangeroepen (de DB-UPDATE naar QUEUED)
     expect(mockPrisma.$executeRaw).toHaveBeenCalled()
   })
+  it('geeft product_id, PR-beschrijving en head-SHA door aan de plan-lookup', async () => {
+    mockGetPrState.mockResolvedValue({
+      state: 'OPEN', title: 'T', baseRefName: 'main', headSha: 'sha1', mergeCommit: null, body: 'ST-1',
+    })
+    await getFullJobContext('job1', 'CLAUDE')
+    expect(mockResolvePrLinkedPlan).toHaveBeenCalledWith(
+      { id: 'job1', pr_url: PR, product_id: 'prod-1' },
+      { body: 'ST-1', head_sha: 'sha1' },
+    )
+  })
+
+  it('PR-metadata onbereikbaar → lege beschrijving, zodat alleen route B overblijft', async () => {
+    mockGetPrState.mockResolvedValue({ error: 'Forgejo pr-get failed' })
+    await getFullJobContext('job1', 'CLAUDE')
+    expect(mockResolvePrLinkedPlan).toHaveBeenCalledWith(
+      { id: 'job1', pr_url: PR, product_id: 'prod-1' },
+      { body: '', head_sha: null },
+    )
+  })
 })
