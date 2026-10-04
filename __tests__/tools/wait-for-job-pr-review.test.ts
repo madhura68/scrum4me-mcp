@@ -58,6 +58,7 @@ const BASE_JOB = {
   idea: null,
   sprint_run_id: null,
   pr_url: PR,
+  user_id: 'user-1',
   manual_drafts: [
     {
       id: 'd',
@@ -181,7 +182,7 @@ describe('getFullJobContext PR_REVIEW', () => {
     })
     await getFullJobContext('job1', 'CLAUDE')
     expect(mockResolvePrLinkedPlan).toHaveBeenCalledWith(
-      { id: 'job1', pr_url: PR, product_id: 'prod-1' },
+      { id: 'job1', pr_url: PR, product_id: 'prod-1', user_id: 'user-1' },
       { body: 'ST-1', head_sha: 'sha1' },
     )
   })
@@ -190,7 +191,7 @@ describe('getFullJobContext PR_REVIEW', () => {
     mockGetPrState.mockResolvedValue({ error: 'Forgejo pr-get failed' })
     await getFullJobContext('job1', 'CLAUDE')
     expect(mockResolvePrLinkedPlan).toHaveBeenCalledWith(
-      { id: 'job1', pr_url: PR, product_id: 'prod-1' },
+      { id: 'job1', pr_url: PR, product_id: 'prod-1', user_id: 'user-1' },
       { body: '', head_sha: null },
     )
   })

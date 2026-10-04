@@ -7,6 +7,7 @@ const findManyTask = vi.fn()
 const findManyStory = vi.fn()
 const findManyPbi = vi.fn()
 const findManyLog = vi.fn()
+const findManyProduct = vi.fn()
 vi.mock('../../src/prisma.js', () => ({
   prisma: {
     claudeJob: { findFirst: (...a: any[]) => findFirstJob(...a) },
@@ -15,7 +16,13 @@ vi.mock('../../src/prisma.js', () => ({
     task: { findMany: (...a: any[]) => findManyTask(...a) },
     story: { findMany: (...a: any[]) => findManyStory(...a) },
     storyLog: { findMany: (...a: any[]) => findManyLog(...a) },
+    product: { findMany: (...a: any[]) => findManyProduct(...a) },
   },
+}))
+
+const tokenScope = vi.fn()
+vi.mock('../../src/auth.js', () => ({
+  getTokenScopedProducts: (...a: any[]) => tokenScope(...a),
 }))
 
 const listShas = vi.fn()
@@ -28,6 +35,8 @@ vi.mock('../../src/git/pr.js', () => ({
 import {
   resolvePrLinkedPlan,
   resolvePlanViaCommits,
+  candidateProductIds,
+  createResolveContext,
   LINKED_PLAN_BUDGET,
 } from '../../src/lib/pr-linked-plan.js'
 
@@ -46,6 +55,8 @@ beforeEach(() => {
   findManyLog.mockResolvedValue([])
   listShas.mockResolvedValue([])
   fetchFile.mockResolvedValue({ error: 'not found' })
+  findManyProduct.mockResolvedValue([])
+  tokenScope.mockResolvedValue([])
 })
 
 describe('resolvePrLinkedPlan', () => {
@@ -310,5 +321,38 @@ describe('review-bevindingen #183', () => {
     const placed = out.stories.flatMap((s: any) => s.tasks.map((t: any) => t.code))
     expect(placed).not.toContain('T-2')
     expect(out.omitted).toStrictEqual(expect.arrayContaining(['T-1', 'T-2']))
+  })
+})
+
+describe('ST-053 Taak 1 — productscope en SHA-context', () => {
+  it('candidateProductIds: alleen eigen producten van de gebruiker, zonder het eigen product', async () => {
+    findManyProduct.mockResolvedValue([{ id: 'p2' }, { id: 'p3' }])
+    expect(await candidateProductIds('u1', 'prod-1')).toStrictEqual(['p2', 'p3'])
+    // Eigenaarschap via Product.user_id; lidmaatschap (members) telt bewust niet mee.
+    expect(findManyProduct.mock.calls[0][0].where).toStrictEqual({ user_id: 'u1', id: { not: 'prod-1' } })
+  })
+
+  it('candidateProductIds: een gescoped token beperkt tot de toegestane producten; [] = geen beperking', async () => {
+    findManyProduct.mockResolvedValue([{ id: 'p2' }, { id: 'p3' }])
+    tokenScope.mockResolvedValue(['p3', 'p-ander'])
+    expect(await candidateProductIds('u1', 'prod-1')).toStrictEqual(['p3'])
+    tokenScope.mockResolvedValue([])
+    expect(await candidateProductIds('u1', 'prod-1')).toStrictEqual(['p2', 'p3'])
+  })
+
+  it('de commit-SHA\'s worden per resolve hooguit één keer opgehaald', async () => {
+    listShas.mockResolvedValue([SHA])
+    const ctx = createResolveContext(JOB.pr_url)
+    expect(await ctx.shas()).toStrictEqual([SHA])
+    expect(await ctx.shas()).toStrictEqual([SHA])
+    expect(listShas).toHaveBeenCalledTimes(1)
+  })
+
+  it('B binnen het eigen product gebruikt de gedeelde SHA-context', async () => {
+    listShas.mockResolvedValue([SHA])
+    const ctx = createResolveContext(JOB.pr_url)
+    await ctx.shas()
+    await resolvePlanViaCommits(JOB_P, ctx)
+    expect(listShas).toHaveBeenCalledTimes(1)
   })
 })

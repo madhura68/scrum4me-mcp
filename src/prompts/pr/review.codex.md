@@ -29,6 +29,7 @@ Schrijf één review-body:
 - Kop met het verdict.
 - Een findings-lijst; elke finding: severity + `bestand:regel` (in tekst) + korte uitleg.
 - Als `linked_plan` aanwezig is: zet erin "plan gekoppeld via <source>", met de `references` als die er zijn, en noem `omitted` als er iets is weggevallen.
+- Komt een story uit een ander product (veld `product` gezet), noem dat erbij, bv. "plan gekoppeld via pr_refs (product Scrum4Me)".
 - Als `linked_plan` ontbrak: zet expliciet "geen gekoppeld plan gevonden — beoordeeld op codekwaliteit + product-standaarden."
 Geen inline-comments.
 

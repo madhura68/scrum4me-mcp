@@ -1179,7 +1179,7 @@ export async function getFullJobContext(
     let linkedPlan: LinkedPlan | null = null
     try {
       linkedPlan = await resolvePrLinkedPlan(
-        { id: job.id, pr_url: job.pr_url, product_id: job.product.id },
+        { id: job.id, pr_url: job.pr_url, product_id: job.product.id, user_id: job.user_id },
         'error' in prInfo
           ? { body: '', head_sha: null }
           : { body: prInfo.body, head_sha: prInfo.headSha },
