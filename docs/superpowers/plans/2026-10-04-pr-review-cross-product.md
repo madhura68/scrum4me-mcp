@@ -181,3 +181,9 @@ herkomstregel.
   PR_REVIEW-jobs dezelfde eigenaar, maar er zijn twee gebruikers met producten.
 - **Uniciteit slijt** naarmate producten groeien. Dan worden meer codes dubbelzinnig en vallen ze
   terug op de signalen. Dat is veilig: hooguit minder dekking, nooit een verkeerde keuze.
+
+## Review record
+
+Formele review-loop (fase `plan`), gestart op verzoek van JP op 2026-10-04. Dispatch bedient alleen
+het Scrum4Me-product (IDEA-233), dus op besluit van JP via de **listener-fallback**: `mac:codex` en
+`mac:claude`, door JP gearmd.
