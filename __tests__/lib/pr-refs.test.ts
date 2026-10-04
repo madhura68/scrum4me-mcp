@@ -84,6 +84,9 @@ describe('extractPrRefs — randgevallen', () => {
       'docs/design/styling.md',
       'docs/plans/x.txt',
       `docs/plans/${'a'.repeat(200)}.md`,
+      'docs/plans/foo.md.bak',
+      'https://example.com/a%20/docs/plans/x.md',
+      'docs/plans/y.md~',
     ].join('\n'))
     expect(r.doc_paths).toStrictEqual([])
   })
