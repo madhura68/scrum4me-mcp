@@ -411,9 +411,12 @@ export async function resolvePlanViaCrossProductRefs(
   pr: PrContext,
   ctx: ResolveContext,
   candidates: string[],
+  // Alleen voor de proef: K1-nee draaien om koppelingen zonder signaal zichtbaar te maken.
+  opts: { allowUnsignalledUnique?: boolean } = {},
 ): Promise<LinkedPlan | null> {
   if (!job.pr_url || !job.product_id) return null
   const productId = job.product_id
+  const allowUnique = opts.allowUnsignalledUnique ?? ALLOW_UNSIGNALLED_UNIQUE
   const refs = extractPrRefs(pr.body)
   if (!refs.task_codes.length && !refs.story_codes.length && !refs.pbi_codes.length) return null
   try {
@@ -476,7 +479,7 @@ export async function resolvePlanViaCrossProductRefs(
     const ambiguous =
       taskCodes.some((c) => tasks.filter((t) => t.code === c).length > 1) ||
       storyCodes.some((c) => stories.filter((s) => s.code === c).length > 1) ||
-      !ALLOW_UNSIGNALLED_UNIQUE
+      !allowUnique
     const commitSet = ambiguous
       ? await storiesWithPrCommit([...new Set([...tasks.map((t) => t.story.id), ...stories.map((s) => s.id)])])
       : new Set<string>()
@@ -488,6 +491,7 @@ export async function resolvePlanViaCrossProductRefs(
       const t = pickMatch(
         tasks.filter((x) => x.code === code),
         (x) => sameRepo(x.repo_url, prRepo) || storyRepoSignal(x.story) || commitSet.has(x.story.id),
+        allowUnique,
       )
       if (!t) continue
       const target = byId.get(t.story.id) ?? crossStoryRow(t.story, [])
@@ -497,7 +501,7 @@ export async function resolvePlanViaCrossProductRefs(
       refKeys.push(t.id)
     }
     for (const code of storyCodes) {
-      const st = pickMatch(stories.filter((x) => x.code === code), (x) => storyRepoSignal(x) || commitSet.has(x.id))
+      const st = pickMatch(stories.filter((x) => x.code === code), (x) => storyRepoSignal(x) || commitSet.has(x.id), allowUnique)
       if (!st) continue
       const existing = byId.get(st.id)
       const row = crossStoryRow(st, st.tasks)
@@ -508,7 +512,7 @@ export async function resolvePlanViaCrossProductRefs(
     // PBI's hebben geen eigen signaal: alleen een unieke match telt.
     const docs: DocSource[] = []
     for (const code of pbiCodes) {
-      const p = pickMatch(pbis.filter((x) => x.code === code), () => false)
+      const p = pickMatch(pbis.filter((x) => x.code === code), () => false, allowUnique)
       const md = p?.docs[0]?.doc_revision?.content_md
       if (p && md?.trim()) docs.push({ ref: label(p.code, p.product.name), load: async () => md })
     }
