@@ -1,6 +1,7 @@
 import { prisma } from '../prisma.js'
 import { getTokenScopedProducts } from '../auth.js'
 import { fetchRepoFileAtRef, listPullRequestCommitShas } from '../git/pr.js'
+import { parseForgejoPrUrl, parseForgejoRemoteUrl } from '../git/forgejo-rest.js'
 import { extractPrRefs } from './pr-refs.js'
 
 export type LinkedPlanTask = { code: string; title: string; implementation_plan: string | null }
@@ -163,7 +164,24 @@ export async function resolvePrLinkedPlan(
   }
 
   if (!pr || !job.product_id) return null
-  return (await resolvePlanViaPrRefs(job, pr)) ?? (await resolvePlanViaCommits(job))
+  // Het eigen product gaat altijd vóór: A en B daarbinnen zijn ongewijzigd, zodat een PR
+  // die daar al een plan krijgt exact dezelfde uitkomst houdt.
+  const ctx = createResolveContext(job.pr_url)
+  const own = (await resolvePlanViaPrRefs(job, pr)) ?? (await resolvePlanViaCommits(job, ctx))
+  if (own || !job.user_id) return own
+
+  let candidates: string[]
+  try {
+    candidates = await candidateProductIds(job.user_id, job.product_id)
+  } catch (err) {
+    console.warn('[pr-linked-plan] kandidaatproducten niet bepaald:', err)
+    return null
+  }
+  if (candidates.length === 0) return null
+  return (
+    (await resolvePlanViaCrossProductRefs(job, pr, ctx, candidates)) ??
+    (await resolvePlanViaCrossProductCommits(job, ctx, candidates))
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +338,213 @@ export async function resolvePlanViaCommits(
     })
   } catch (err) {
     console.warn('[pr-linked-plan] route commits failed:', err)
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A× en B×: dezelfde zoektocht in andere producten van de job-eigenaar. Codes zijn
+// alleen uniek per product, dus hier is de interne sleutel het id en draagt het label
+// de productnaam. Beide best-effort.
+// ---------------------------------------------------------------------------
+
+/**
+ * K1 (JP, 2026-10-04): een unieke match in een ander product mag zonder bevestigend
+ * signaal gebruikt worden. Bij meerdere matches telt alleen precies één match met signaal.
+ */
+export const ALLOW_UNSIGNALLED_UNIQUE = true
+
+export function pickMatch<M>(matches: M[], hasSignal: (m: M) => boolean, allowUnsignalledUnique = ALLOW_UNSIGNALLED_UNIQUE): M | null {
+  if (matches.length === 1) return allowUnsignalledUnique || hasSignal(matches[0]!) ? matches[0]! : null
+  const signalled = matches.filter(hasSignal)
+  return signalled.length === 1 ? signalled[0]! : null
+}
+
+const crossTaskSelect = { id: true, code: true, title: true, implementation_plan: true } as const
+const crossStorySelect = {
+  id: true,
+  code: true,
+  title: true,
+  acceptance_criteria: true,
+  product: { select: { name: true } },
+  tasks: { select: { ...crossTaskSelect, repo_url: true }, orderBy: { sort_order: 'asc' } },
+} as const
+
+type CrossTask = { id: string; code: string; title: string; implementation_plan: string | null }
+type CrossStory = {
+  id: string
+  code: string
+  title: string
+  acceptance_criteria: string | null
+  product: { name: string }
+  tasks: CrossTask[]
+}
+
+const label = (code: string, productName: string) => `${code} (${productName})`
+const crossTaskRow = (t: CrossTask, productName: string): TaskRow => ({
+  key: t.id, label: label(t.code, productName), code: t.code, title: t.title, implementation_plan: t.implementation_plan,
+})
+const crossStoryRow = (s: CrossStory, tasks: CrossTask[]): StoryRow => ({
+  key: s.id,
+  label: label(s.code, s.product.name),
+  code: s.code,
+  title: s.title,
+  product: s.product.name,
+  acceptance_criteria: s.acceptance_criteria,
+  tasks: tasks.map((t) => crossTaskRow(t, s.product.name)),
+})
+
+function sameRepo(repoUrl: string | null, pr: { host: string; owner: string; repo: string }): boolean {
+  if (!repoUrl) return false
+  try {
+    const r = parseForgejoRemoteUrl(repoUrl)
+    return r.host.toLowerCase() === pr.host.toLowerCase()
+      && r.owner.toLowerCase() === pr.owner.toLowerCase()
+      && r.repo.toLowerCase() === pr.repo.toLowerCase()
+  } catch {
+    return false
+  }
+}
+
+export async function resolvePlanViaCrossProductRefs(
+  job: ReviewJob,
+  pr: PrContext,
+  ctx: ResolveContext,
+  candidates: string[],
+): Promise<LinkedPlan | null> {
+  if (!job.pr_url || !job.product_id) return null
+  const productId = job.product_id
+  const refs = extractPrRefs(pr.body)
+  if (!refs.task_codes.length && !refs.story_codes.length && !refs.pbi_codes.length) return null
+  try {
+    // Alleen codes die in het eigen product niet bestaan.
+    const [ownTasks, ownStories, ownPbis] = await Promise.all([
+      refs.task_codes.length ? prisma.task.findMany({ where: { product_id: productId, code: { in: refs.task_codes } }, select: { code: true } }) : [],
+      refs.story_codes.length ? prisma.story.findMany({ where: { product_id: productId, code: { in: refs.story_codes } }, select: { code: true } }) : [],
+      refs.pbi_codes.length ? prisma.pbi.findMany({ where: { product_id: productId, code: { in: refs.pbi_codes } }, select: { code: true } }) : [],
+    ])
+    const missing = (codes: string[], own: Array<{ code: string }>) => codes.filter((c) => !own.some((o) => o.code === c))
+    const taskCodes = missing(refs.task_codes, ownTasks)
+    const storyCodes = missing(refs.story_codes, ownStories)
+    const pbiCodes = missing(refs.pbi_codes, ownPbis)
+    if (!taskCodes.length && !storyCodes.length && !pbiCodes.length) return null
+
+    const [tasks, stories, pbis] = await Promise.all([
+      taskCodes.length
+        ? prisma.task.findMany({
+            where: { product_id: { in: candidates }, code: { in: taskCodes } },
+            select: { ...crossTaskSelect, repo_url: true, story: { select: crossStorySelect } },
+          })
+        : [],
+      storyCodes.length
+        ? prisma.story.findMany({ where: { product_id: { in: candidates }, code: { in: storyCodes } }, select: crossStorySelect })
+        : [],
+      pbiCodes.length
+        ? prisma.pbi.findMany({
+            where: { product_id: { in: candidates }, code: { in: pbiCodes } },
+            select: {
+              code: true,
+              product: { select: { name: true } },
+              docs: {
+                where: { role: 'PLAN' },
+                orderBy: { created_at: 'desc' },
+                take: 1,
+                select: { doc_revision: { select: { content_md: true } } },
+              },
+            },
+          })
+        : [],
+    ])
+
+    // Signalen: repo_url van taak of story-taken = repo van de PR, of een PR-commit in de
+    // story_logs van de story. De commitquery draait alleen als er iets te beslechten valt.
+    const prRepo = parseForgejoPrUrl(job.pr_url)
+    let withPrCommit: Set<string> | null = null
+    const storiesWithPrCommit = async (storyIds: string[]): Promise<Set<string>> => {
+      if (withPrCommit) return withPrCommit
+      const shas = await ctx.shas()
+      const rows = shas?.length
+        ? await prisma.storyLog.findMany({
+            where: { type: 'COMMIT', commit_hash: { in: shaPrefixes(shas) }, story_id: { in: storyIds } },
+            select: { story_id: true },
+          })
+        : []
+      withPrCommit = new Set(rows.map((r) => r.story_id))
+      return withPrCommit
+    }
+    const storyRepoSignal = (st: { tasks: Array<{ repo_url: string | null }> }) => st.tasks.some((t) => sameRepo(t.repo_url, prRepo))
+    const ambiguous =
+      taskCodes.some((c) => tasks.filter((t) => t.code === c).length > 1) ||
+      storyCodes.some((c) => stories.filter((s) => s.code === c).length > 1) ||
+      !ALLOW_UNSIGNALLED_UNIQUE
+    const commitSet = ambiguous
+      ? await storiesWithPrCommit([...new Set([...tasks.map((t) => t.story.id), ...stories.map((s) => s.id)])])
+      : new Set<string>()
+
+    const byId = new Map<string, StoryRow>()
+    const explicitTasks = new Set<string>()
+    const refKeys: string[] = []
+    for (const code of taskCodes) {
+      const t = pickMatch(
+        tasks.filter((x) => x.code === code),
+        (x) => sameRepo(x.repo_url, prRepo) || storyRepoSignal(x.story) || commitSet.has(x.story.id),
+      )
+      if (!t) continue
+      const target = byId.get(t.story.id) ?? crossStoryRow(t.story, [])
+      if (!target.tasks.some((x) => x.key === t.id)) target.tasks.push(crossTaskRow(t, t.story.product.name))
+      byId.set(t.story.id, target)
+      explicitTasks.add(t.id)
+      refKeys.push(t.id)
+    }
+    for (const code of storyCodes) {
+      const st = pickMatch(stories.filter((x) => x.code === code), (x) => storyRepoSignal(x) || commitSet.has(x.id))
+      if (!st) continue
+      const existing = byId.get(st.id)
+      const row = crossStoryRow(st, st.tasks)
+      if (existing) for (const t of row.tasks) if (!existing.tasks.some((x) => x.key === t.key)) existing.tasks.push(t)
+      byId.set(st.id, existing ?? row)
+      refKeys.push(st.id)
+    }
+    // PBI's hebben geen eigen signaal: alleen een unieke match telt.
+    const docs: DocSource[] = []
+    for (const code of pbiCodes) {
+      const p = pickMatch(pbis.filter((x) => x.code === code), () => false)
+      const md = p?.docs[0]?.doc_revision?.content_md
+      if (p && md?.trim()) docs.push({ ref: label(p.code, p.product.name), load: async () => md })
+    }
+    if (byId.size === 0 && docs.length === 0) return null
+    return await assembleWithinBudget('pr_refs', { stories: [...byId.values()], explicitTasks, docs, refKeys })
+  } catch (err) {
+    console.warn('[pr-linked-plan] route pr_refs over producten failed:', err)
+    return null
+  }
+}
+
+export async function resolvePlanViaCrossProductCommits(
+  job: ReviewJob,
+  ctx: ResolveContext,
+  candidates: string[],
+): Promise<LinkedPlan | null> {
+  if (!job.pr_url) return null
+  try {
+    const shas = await ctx.shas()
+    if (!shas || shas.length === 0) return null
+    const logs = await prisma.storyLog.findMany({
+      where: { type: 'COMMIT', commit_hash: { in: shaPrefixes(shas) }, story: { product_id: { in: candidates } } },
+      orderBy: { created_at: 'asc' },
+      select: { story: { select: crossStorySelect } },
+    })
+    const byId = new Map<string, StoryRow>()
+    for (const { story } of logs) if (!byId.has(story.id)) byId.set(story.id, crossStoryRow(story, story.tasks))
+    if (byId.size === 0) return null
+    return await assembleWithinBudget('commits', {
+      stories: [...byId.values()],
+      explicitTasks: new Set(),
+      docs: [],
+      refKeys: [...byId.keys()],
+    })
+  } catch (err) {
+    console.warn('[pr-linked-plan] route commits over producten failed:', err)
     return null
   }
 }
