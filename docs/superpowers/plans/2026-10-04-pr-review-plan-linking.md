@@ -199,3 +199,9 @@ beperkt tot bovenstaande punten.
   meestal al.
 - **Payloadgrootte:** grenzen uit ontwerpkeuze 6; Taak 4 meet het echte maximum.
 - **Prompt- en codeversie lopen samen** omdat beide in deze repo en dezelfde image zitten.
+
+## Review record
+
+Formele review-loop (fase `plan`), gestart op verzoek van JP op 2026-10-04. Reviewers:
+twee dispatch-jobs (`QUEUE_REVIEW`, `runtime: CODEX` en `runtime: CLAUDE`), reply naar
+`mac:claude`. Rondes worden hieronder bijgehouden.
