@@ -1,6 +1,6 @@
 # PR-review: plan vinden over productgrenzen heen — Implementatieplan
 
-**Status:** plan-review dubbel GO (ronde 2, 2026-10-04); K1 = ja (JP); ceremonie gedaan op SC2 (S-2026-10-04-2, PBI-33, ST-053, T-163…T-167); wacht op uitvoeropdracht. Vervolg op
+**Status:** plan-review dubbel GO (ronde 2, 2026-10-04); K1 = ja (JP); ceremonie gedaan op SC2 (S-2026-10-04-2, PBI-33, ST-053, T-163…T-167); uitgevoerd, gemerged als `e017bab` (scrum4me-mcp#186) en uitgerold op 2026-10-04. Vervolg op
 `docs/superpowers/plans/2026-10-04-pr-review-plan-linking.md` (ST-052, live sinds `a843a79`).
 Geen spec: de wijziging blijft binnen de plan-lookup van de PR-review en de reviewprompts.
 
@@ -303,3 +303,27 @@ SC2 uitgevoerd, op akkoord van JP:
 - taken T-163 tot en met T-167 (Taak 1–5, in planvolgorde).
 
 **Hardstop:** uitvoeren pas na een aparte uitvoeropdracht van JP.
+
+## Merge en uitrol — 2026-10-04
+
+- **Uitvoering:** commits `8225894`, `a2081d9`, `cdc25fe` en `0953b5c`. De volledige suite slaagt:
+  251 bestanden, 2095 tests.
+- **Proef (Taak 3):** dekking over de 100 recentste PR's met een PR_REVIEW-job steeg van 41 naar
+  71. Geen enkel plan uit het eigen product kreeg een andere hash. Er zijn vijf K1-koppelingen,
+  dus unieke matches zonder signaal: scrum4me-docker#103 (PBI-175), scrum4me-mcp#180 (T-1972),
+  scrum4me-mcp#179 (PBI-175) en scrum4me-mcp#177 (T-1954 en ST-1617).
+- **PR-review van #186:** COMMENT, zonder bevindingen over de wijziging. De INFO-melding over
+  falende packaged-release- en git-lifecycle-tests ging over de omgeving van de reviewer, niet
+  over deze wijziging.
+- **Merge:** scrum4me-mcp#186 als `e017bab`. Main-CI stap "Final merge attestation and immutable
+  publication" is groen; deploy-tag `deploy/main-e017bab0bfff`.
+- **Uitrol:** op scrum4me-server `pin_mcp_to_main` en `update_codex_worker`, op max2
+  `pin_mcp_to_main` en `redeploy_codex_worker`. De Mac-checkout `scrum4me-mcp-stable` staat op
+  `e017bab`. Beide containers `scrum4me-agent-codex` draaien `e017bab` en zijn healthy.
+  - **Valkuil:** de pin op max2 liep eerst tegelijk met die op srv. max2 heeft geen token om een
+    deploy-tag aan te maken en vond `deploy/main-e017bab0bfff` nog niet, dus de redeploy bouwde
+    opnieuw `a843a79`. Na een tweede pin (hergebruikte de inmiddels door srv gemaakte tag) en
+    redeploy klopte het. Pin daarom eerst op srv en pas daarna op max2.
+- **Live-check:** deze docs-PR zelf. De beschrijving verwijst alleen naar T-1972 (product
+  Scrum4Me), zonder SC2-codes en zonder planpad. Daardoor vinden de routes in het eigen product
+  niets, en moet de review het plan via A× vinden en het product noemen.
