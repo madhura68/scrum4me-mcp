@@ -1,6 +1,6 @@
 # PR-review: plan vinden via PR-beschrijving en commits — Implementatieplan
 
-**Status:** concept, wacht op akkoord van JP. Geen spec: de wijziging blijft binnen één
+**Status:** plan-review dubbel GO (ronde 2, 2026-10-04); wacht op akkoord van JP voor de ceremonie. Geen spec: de wijziging blijft binnen één
 module plus de PR-reviewprompt van deze repo.
 
 ## Doel
@@ -76,7 +76,12 @@ met codes in de beschrijving zegt "plan gekoppeld via …" en toetst plan-confor
 
    Elk tekstveld wordt eerst afgekapt op 20 000 tekens (`truncated: true` bij plan-docs,
    markering `…[afgekapt]` bij taakplannen). Past een item niet meer in het restbudget, dan
-   wordt het tot het restbudget afgekapt; alles daarna gaat naar `omitted`. De bestaande
+   wordt het tot het restbudget afgekapt; alles daarna gaat naar `omitted`. Het budget
+   geldt voor het **geserialiseerde** resultaat: escaping (`\n`, `\"`), sleutels, markeringen,
+   `truncated` en `omitted` tellen mee. Reserveer vaste ruimte voor die metadata, kap af door
+   het geserialiseerde item te meten (afkappen, opnieuw meten, inkorten), en controleer aan
+   het eind de totale `JSON.stringify`-lengte. Plan-docs worden pas opgehaald als ze aan de
+   beurt zijn in de vulvolgorde; is het budget op, dan volgt geen fetch meer. De bestaande
    routes `job`/`pbi` krijgen geen budget (ongewijzigd gedrag); Taak 4 meet alleen hun
    grootte. Uit de beschrijving telt per lijst (taken, stories, PBI's, paden) max 20
    verwijzingen.
@@ -138,6 +143,9 @@ de verwachte lijsten. Negatieve gevallen: `docs/../x.md`, `https://…/plan.md`,
 
 **Interface:** `resolvePrLinkedPlan(job: { id; pr_url; product_id }, pr?: { body: string; head_sha: string | null })`.
 Zonder `pr` gedraagt hij zich als nu (achterwaarts compatibel voor bestaande tests).
+Routes A en B zijn ook los geëxporteerd, `resolvePlanViaPrRefs(job, pr)` en
+`resolvePlanViaCommits(job, pr)`. `resolvePrLinkedPlan` roept ze zelf aan, en de proef in
+Taak 4 gebruikt dezelfde functies: productie en proef delen één implementatie.
 
 **Gedrag:** ontwerpkeuzes 1–8. Route A: `extractPrRefs(pr.body)` → batch-queries
 (`task.findMany`/`story.findMany`/`pbi.findMany` met `product_id` + `code: { in }`) →
@@ -159,9 +167,10 @@ In `wait-for-job.ts` de al opgehaalde `prInfo` doorgeven (`body`, `headSha`) plu
 - budget: een invoer met meerdere stories, lange taakplannen en drie plan-docs blijft
   onder `JSON.stringify(linked_plan).length` ≤ 100 000, vult in de volgorde van
   ontwerpkeuze 6 en zet de weggevallen verwijzingen in `omitted` (RED-controle: de test
-  faalt zonder budget);
+  faalt zonder budget). De fixtures bevatten `\n` en `"`, zodat escaping meetelt;
 - `job`/`pbi`-routes geven exact hetzelfde object als vóór de wijziging (geen
-  `references`, geen budget);
+  `references`, geen budget). Assert met `toStrictEqual`, niet met het `toMatchObject` uit de
+  bestaande tests: dat negeert extra sleutels;
 - Forgejo-fout in A of B → volgende route, geen throw;
 - `wait-for-job-pr-review.test.ts`: resolver krijgt `product_id`, `body`, `head_sha`.
 
@@ -174,7 +183,7 @@ argumenten, en/of `--recent N` (de N recentste distinct `pr_url`'s van PR_REVIEW
 hem over te slaan. Per PR roept hij dezelfde code aan als `wait-for-job`
 (`getPullRequestState` + `resolvePrLinkedPlan`) en print hij: `source`, `references`,
 `omitted`, aantal tekens, en of route B óók iets had gevonden als A al raak was (zodat
-de meerwaarde van B zichtbaar is). Draait lokaal via `tsx` met de MCP-`DATABASE_URL` en
+de meerwaarde van B zichtbaar is; via `resolvePlanViaCommits` uit Taak 3). Draait lokaal via `tsx` met de MCP-`DATABASE_URL` en
 `FORGEJO_TOKEN`; print geen inhoud en geen tokens. Het script valt buiten beide
 tsconfig-includes; de `tsx`-run in deze taak is zijn controle.
 
@@ -272,3 +281,27 @@ daarom via de **listener-fallback**: `mac:codex` en `mac:claude`, door JP gearmd
 - **Scope-delta:** geen werk toegevoegd buiten de opdracht. Het budget vervangt de
   veldlimieten; de proef krijgt expliciete invoer en één extra kolom. Het eerste bruikbare
   resultaat en de praktijkproef (Taak 4) blijven gelijk en op dezelfde plek.
+
+### Ronde 2 — revisie 2 @ `f51754dc`
+
+- **Verzoeken:** `mac:codex` `6db0c1a1-0f66-4f2c-b7b4-e6fab364c7e3` (antwoord
+  `c2a71171`), `mac:claude` `4af68b50-3fac-4dfb-91b6-005158064dc9` (antwoord `87b062f4`).
+  Pins: plan `d31bf3ed…`, `CLAUDE.md` `df60a45f…`, phase-2-spec `38bbdf0f…`, alle op
+  `f51754dc`. Presence vooraf: beide `beschikbaar`.
+- **Uitslag:** codex 0 / 0 / 0 → **GO**; claude 0 / 0 / 3 MINOR → **GO**. **Dubbel GO.**
+- **Reparaties uit ronde 1:** volgens beide reviewers hebben alle vijf standgehouden.
+- **MINOR-bevindingen (claude), geverifieerd en na het dubbele GO verwerkt:**
+  - Het budget moet op het geserialiseerde resultaat gemeten worden (escaping, metadata), en
+    plan-docs moeten lazy opgehaald worden → toegevoegd aan ontwerpkeuze 6; de budgettest
+    gebruikt fixtures met `\n` en `"`.
+  - De test "exact hetzelfde object" kan met het `toMatchObject`-idioom (test:38/44/49/74/89)
+    geen extra sleutels vangen → `toStrictEqual` voorgeschreven.
+  - De B-kolom in de proef vereist een los aanroepbare route B → Taak 3 exporteert
+    `resolvePlanViaPrRefs` en `resolvePlanViaCommits`; de proef gebruikt die.
+  - Deze drie zijn MINOR-verduidelijkingen binnen het bestaande ontwerp, zonder nieuwe scope.
+    Er volgde geen delta-ronde; JP kan er een vragen.
+- **Afgewezen:** geen.
+- **Scope-delta:** geen. Eerste bruikbare resultaat en praktijkproef ongewijzigd.
+
+**Fase `plan` afgerond (dubbel GO).** Volgende stap: de ceremonie (sprint, PBI, story, taken
+op SC2), pas na akkoord van JP. Technisch GO autoriseert geen uitvoering, merge of deployment.
