@@ -1174,10 +1174,16 @@ export async function getFullJobContext(
     const diff = await fetchPrDiff({ prUrl: job.pr_url })
     const prInfo = await getPullRequestState({ prUrl: job.pr_url })
     // Best-effort (spec §7): een falende plan-lookup degradeert naar
-    // no-link; de review draait dan op diff + product-docs.
+    // no-link; de review draait dan op diff + product-docs. Beschrijving en
+    // head-SHA komen uit de al opgehaalde prInfo: geen extra Forgejo-call.
     let linkedPlan: LinkedPlan | null = null
     try {
-      linkedPlan = await resolvePrLinkedPlan({ id: job.id, pr_url: job.pr_url })
+      linkedPlan = await resolvePrLinkedPlan(
+        { id: job.id, pr_url: job.pr_url, product_id: job.product.id },
+        'error' in prInfo
+          ? { body: '', head_sha: null }
+          : { body: prInfo.body, head_sha: prInfo.headSha },
+      )
     } catch (err) {
       console.warn(`[wait-for-job] resolvePrLinkedPlan failed for ${job.id}:`, err)
     }

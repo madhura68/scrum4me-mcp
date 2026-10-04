@@ -42,6 +42,8 @@ export type PrInfo = {
   title: string
   /** Head SHA — bruikbaar voor `deleteRemoteBranch`-guard na een PR-close. */
   headSha: string | null
+  /** PR-beschrijving; de PR-review leest er verwijzingen naar het werk uit. */
+  body: string
 }
 
 // =========================================================================
@@ -73,7 +75,7 @@ type ForgejoPullResponse = {
   merged: boolean
   merge_commit_sha: string | null
   title: string
-  body: string
+  body: string | null
   base: { ref: string }
   head: { ref: string; sha: string }
 }
@@ -333,6 +335,64 @@ export async function getPullRequestState(opts: {
     baseRefName: pr.base?.ref ?? '',
     title: pr.title,
     headSha: pr.head?.sha ?? null,
+    body: pr.body ?? '',
+  }
+}
+
+// =========================================================================
+// listPullRequestCommitShas — commits van een PR, voor de plan-lookup van de
+// PR-review. Bewust alleen de eerste pagina van 50.
+// =========================================================================
+
+export async function listPullRequestCommitShas(opts: {
+  prUrl: string
+}): Promise<string[] | { error: string }> {
+  let prRef
+  try {
+    prRef = parseForgejoPrUrl(opts.prUrl)
+  } catch (err) {
+    return { error: `listPullRequestCommitShas: ${(err as Error).message.slice(0, 300)}` }
+  }
+  try {
+    const commits = await callForgejo<Array<{ sha?: unknown }>>(
+      `${repoPath(prRef.owner, prRef.repo)}/pulls/${prRef.index}/commits?limit=50`,
+      { host: prRef.host },
+    )
+    return Array.isArray(commits)
+      ? commits.map((c) => c.sha).filter((s): s is string => typeof s === 'string')
+      : []
+  } catch (err) {
+    return { error: `Forgejo pr-commits failed: ${(err as Error).message.slice(0, 300)}` }
+  }
+}
+
+// =========================================================================
+// fetchRepoFileAtRef — één bestand uit de repo van een PR, op een commit.
+// =========================================================================
+
+export async function fetchRepoFileAtRef(opts: {
+  prUrl: string
+  path: string
+  ref: string
+}): Promise<string | { error: string }> {
+  let prRef
+  try {
+    prRef = parseForgejoPrUrl(opts.prUrl)
+  } catch (err) {
+    return { error: `fetchRepoFileAtRef: ${(err as Error).message.slice(0, 300)}` }
+  }
+  const filePath = opts.path.split('/').map(encodePathSegment).join('/')
+  try {
+    const res = await forgejoFetch(
+      `${repoPath(prRef.owner, prRef.repo)}/raw/${filePath}?ref=${encodeURIComponent(opts.ref)}`,
+      { host: prRef.host },
+    )
+    if (!res.ok) {
+      return { error: `Forgejo raw-file failed: ${res.status}` }
+    }
+    return await res.text()
+  } catch (err) {
+    return { error: `Forgejo raw-file failed: ${(err as Error).message.slice(0, 300)}` }
   }
 }
 

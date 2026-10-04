@@ -11,7 +11,13 @@ vi.mock('../../src/git/forgejo-rest.js', async (orig) => {
 })
 
 import { forgejoFetch, callForgejo } from '../../src/git/forgejo-rest.js'
-import { fetchPrDiff, postPullRequestReview } from '../../src/git/pr.js'
+import {
+  fetchPrDiff,
+  fetchRepoFileAtRef,
+  getPullRequestState,
+  listPullRequestCommitShas,
+  postPullRequestReview,
+} from '../../src/git/pr.js'
 
 const PR = 'https://git.jp-visser.nl/janpeter/scrum4me-mcp/pulls/42'
 
@@ -68,5 +74,65 @@ describe('postPullRequestReview', () => {
     const out = await postPullRequestReview({ prUrl: 'https://github.com/x/y/pulls/1', event: 'COMMENT', body: 'x' })
     expect(out).toHaveProperty('error')
     expect(callForgejo).not.toHaveBeenCalled()
+  })
+})
+
+const PULL = {
+  number: 42,
+  html_url: PR,
+  state: 'open',
+  merged: false,
+  merge_commit_sha: null,
+  title: 'T',
+  base: { ref: 'main' },
+  head: { ref: 'feat/x', sha: 'abc123' },
+}
+
+describe('getPullRequestState — body', () => {
+  it('geeft de PR-beschrijving door', async () => {
+    vi.mocked(callForgejo).mockResolvedValue({ ...PULL, body: 'Plan: docs/plans/a.md' })
+    const out = await getPullRequestState({ prUrl: PR })
+    expect(out).toMatchObject({ body: 'Plan: docs/plans/a.md', headSha: 'abc123' })
+  })
+  it('null-body wordt een lege string', async () => {
+    vi.mocked(callForgejo).mockResolvedValue({ ...PULL, body: null })
+    const out = await getPullRequestState({ prUrl: PR })
+    expect(out).toMatchObject({ body: '' })
+  })
+})
+
+describe('listPullRequestCommitShas', () => {
+  it('GET /pulls/{index}/commits?limit=50 en geeft alleen de sha-velden', async () => {
+    vi.mocked(callForgejo).mockResolvedValue([{ sha: 'a'.repeat(40), commit: {} }, { sha: 'b'.repeat(40) }])
+    const out = await listPullRequestCommitShas({ prUrl: PR })
+    expect(out).toStrictEqual(['a'.repeat(40), 'b'.repeat(40)])
+    const path = vi.mocked(callForgejo).mock.calls[0][0] as string
+    expect(path).toBe('/repos/janpeter/scrum4me-mcp/pulls/42/commits?limit=50')
+  })
+  it('Forgejo-fout → { error }, geen throw', async () => {
+    vi.mocked(callForgejo).mockRejectedValue(new Error('boom'))
+    expect(await listPullRequestCommitShas({ prUrl: PR })).toHaveProperty('error')
+  })
+  it('ongeldige PR-URL → { error } zonder call', async () => {
+    expect(await listPullRequestCommitShas({ prUrl: 'https://github.com/x/y/pulls/1' })).toHaveProperty('error')
+    expect(callForgejo).not.toHaveBeenCalled()
+  })
+})
+
+describe('fetchRepoFileAtRef', () => {
+  it('GET /raw/{pad} met gecodeerde segmenten en ?ref=<sha>', async () => {
+    vi.mocked(forgejoFetch).mockResolvedValue(new Response('# Plan', { status: 200 }))
+    const out = await fetchRepoFileAtRef({ prUrl: PR, path: 'docs/plans/M 44#x.md', ref: 'abc123' })
+    expect(out).toBe('# Plan')
+    const path = vi.mocked(forgejoFetch).mock.calls[0][0] as string
+    expect(path).toBe('/repos/janpeter/scrum4me-mcp/raw/docs/plans/M%2044%23x.md?ref=abc123')
+  })
+  it('404 → { error }', async () => {
+    vi.mocked(forgejoFetch).mockResolvedValue(new Response('nope', { status: 404 }))
+    expect(await fetchRepoFileAtRef({ prUrl: PR, path: 'docs/plans/a.md', ref: 'abc' })).toHaveProperty('error')
+  })
+  it('netwerkfout → { error }, geen throw', async () => {
+    vi.mocked(forgejoFetch).mockRejectedValue(new Error('boom'))
+    expect(await fetchRepoFileAtRef({ prUrl: PR, path: 'docs/plans/a.md', ref: 'abc' })).toHaveProperty('error')
   })
 })
