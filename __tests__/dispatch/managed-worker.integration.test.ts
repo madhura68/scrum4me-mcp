@@ -83,6 +83,7 @@ describe('observation bounds and restart',()=>{
 })
 
 import {Pool} from 'pg'
+import {randomUUID} from 'node:crypto'
 import {bootstrapManagedWorker} from '../../src/dispatch/managed-worker-bootstrap.js'
 it('operator bootstrap creates only exact managed worker metadata and refuses conflicts/other roles',async()=>{
  const operator=new Pool({connectionString:process.env.DISPATCH_TEST_ADMIN_URL,options:'-c role=scrum4me',max:1})
@@ -94,6 +95,27 @@ it('operator bootstrap creates only exact managed worker metadata and refuses co
   expect(await bootstrapManagedWorker(operator,config)).toEqual({created:false})
   await expect(bootstrapManagedWorker(operator,{...config,runtime:'CLAUDE'})).rejects.toThrow('DISPATCH_BOOTSTRAP_BINDING_CONFLICT')
   await expect(bootstrapManagedWorker(operator,{...config,owner_user_id:f.otherUser})).rejects.toThrow()
+ }finally{await operator.end()}
+})
+
+it('operator bootstrap rebinds token/product only on explicit request and accepts an all-products binding (ISS-11)',async()=>{
+ const operator=new Pool({connectionString:process.env.DISPATCH_TEST_ADMIN_URL,options:'-c role=scrum4me',max:1})
+ const unscoped=randomUUID()
+ try{
+  await h.admin.query(`INSERT INTO api_tokens(id,user_id,token_hash,kind,scoped_products) VALUES($1,$2,$3,'IMPLEMENTATION','{}'::text[])`,[unscoped,f.actor.userId,randomUUID()])
+  h.trackToken(unscoped)
+  const config={owner_user_id:f.actor.userId,token_id:f.actor.tokenId!,instance_id:f.jobSlot.instanceId,product_id:f.input.product_id,runtime:'CODEX',capabilities:['review','code_edit'],tier:'LOW_P'}
+  await h.admin.query('DELETE FROM claude_workers WHERE instance_id=$1',[f.jobSlot.instanceId])
+  expect(await bootstrapManagedWorker(operator,config)).toEqual({created:true})
+  const moved={...config,token_id:unscoped,product_id:null}
+  await expect(bootstrapManagedWorker(operator,moved)).rejects.toThrow('DISPATCH_BOOTSTRAP_BINDING_CONFLICT')
+  await expect(bootstrapManagedWorker(operator,{...moved,runtime:'CLAUDE',rebind:true})).rejects.toThrow('DISPATCH_BOOTSTRAP_BINDING_CONFLICT')
+  expect(await bootstrapManagedWorker(operator,{...moved,rebind:true})).toEqual({created:false,rebound:true})
+  const row=(await h.admin.query('SELECT token_id,product_id,runtime,capability FROM claude_workers WHERE instance_id=$1',[f.jobSlot.instanceId])).rows[0]
+  expect(row).toEqual({token_id:unscoped,product_id:null,runtime:'CODEX',capability:'LOW_P'})
+  expect(await bootstrapManagedWorker(operator,moved)).toEqual({created:false})
+  // A scoped token pre-authorizes each scoped product; the fixture token is scoped to the fixture product.
+  await expect(bootstrapManagedWorker(operator,{...config,product_id:null,rebind:true})).resolves.toEqual({created:false,rebound:true})
  }finally{await operator.end()}
 })
 

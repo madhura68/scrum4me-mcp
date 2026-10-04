@@ -12,7 +12,19 @@ Use the existing central schema-owner privilege (`current_user = scrum4me`) only
 node --import tsx scripts/dispatch-managed-worker-bootstrap.ts /operator/managed-worker.json
 ```
 
-The command validates current token/owner/product authorization, serializes the exact instance, refuses every conflicting existing binding, inserts only a missing exact worker advertisement or refreshes its timestamp. It creates no slot/profile and changes no known quota. Output is only `{created:boolean}`; errors are redacted. Do not run the ordinary legacy worker registration/poll path to seed a managed worker.
+The command validates current token/owner/product authorization, serializes the exact instance, refuses every conflicting existing binding, inserts only a missing exact worker advertisement or refreshes its timestamp. It creates no slot/profile and changes no known quota. Output is only `{created:boolean}` (plus `rebound:true` after a rebind); errors are redacted. Do not run the ordinary legacy worker registration/poll path to seed a managed worker.
+
+### All-products binding and explicit rebind (ISS-11)
+
+- `product_id: null` binds the worker to every product its token may claim. `claude_workers.product_id = NULL` is already the "all products in scope" meaning for slot registration (`registration.ts`), selection and claim.
+  - **Scoped token:** the bootstrap pre-authorizes `claim` for each scoped product.
+  - **Unscoped token:** it only validates the token (active, owner, non-demo). Slot registration and every claim still authorize per product.
+  - Which products a review stack actually serves remains decided by the profile revision (`product_ids` / `repository_product_ids`) and `DISPATCH_PRODUCT_ALLOWLIST`.
+- `rebind: true` lets the same owner, instance, runtime, tier and capabilities move to another `token_id` and/or `product_id`.
+  - Without the flag a different token or product stays `DISPATCH_BOOTSTRAP_BINDING_CONFLICT`.
+  - A different owner, runtime, tier or capability set is refused even with the flag.
+  - After a rebind the existing slot still carries the old token. Re-post the slot (`POST /dispatch/v1/slots`, same `capacity_key`, within 30 s of the bootstrap) and restart the supervisor with the new token file. Until then, old incarnations no longer match the worker.
+  - The full rotation procedure is in Scrum4Me `docs/runbooks/queue-dispatch.md` ("Profielrevisie wisselen").
 
 After preseed, existing operator slot creation still requires fresh worker observation and freezes exact authority. Executor registration may restart an already preseeded, exactly compatible stale worker; the new authenticated incarnation refreshes only narrow observation fields. Missing/incompatible worker fails. Replaying a signed-off registration does not revive it, and old reservations/scopes remain held.
 
