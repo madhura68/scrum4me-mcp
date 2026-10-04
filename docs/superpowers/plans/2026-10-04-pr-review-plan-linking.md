@@ -179,7 +179,7 @@ beperkt tot bovenstaande punten.
 
 ### Taak 6 — Verificatie, PR en uitrol
 
-1. `npm run verify` (of de lokale equivalent: `npm test && npm run typecheck && npm run typecheck:tests`) groen.
+1. `npm test && npm run typecheck && npm run typecheck:tests` groen (deze repo heeft geen `verify`-script).
 2. Push + PR op Forgejo — pas na akkoord van JP.
 3. Na merge: vaststellen welke worker-stack de PR_REVIEW-jobs claimt
    (`claude_jobs.worker_instance_id` van recente PR_REVIEW-jobs) en die image herbouwen
