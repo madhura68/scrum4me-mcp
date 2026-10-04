@@ -1,6 +1,6 @@
 # PR-review: plan vinden via PR-beschrijving en commits — Implementatieplan
 
-**Status:** plan-review dubbel GO (ronde 2, 2026-10-04); ceremonie gedaan op SC2 (S-2026-10-04-1, PBI-32, ST-052, T-157…T-162); wacht op uitvoeropdracht. Geen spec: de wijziging blijft binnen één
+**Status:** uitgevoerd en uitgerold (2026-10-04): scrum4me-mcp#183 gemerged als `a843a79`, live op srv en max2. Ceremonie: S-2026-10-04-1, PBI-32, ST-052, T-157…T-162. Geen spec: de wijziging blijft binnen één
 module plus de PR-reviewprompt van deze repo.
 
 ## Doel
@@ -325,3 +325,25 @@ zonder PLAN-doc, en 9 niets.
 #291 alle drie `source: 'pr_refs'`. Twee bijvangsten zijn verwacht gedrag: PBI-178 en PBI-24
 hebben geen PLAN-doc, en het M44-planpad in Ops-dashboard#280 staat in de Scrum4Me-repo,
 niet in Ops-dashboard. Productoverschrijdend zoeken kan later als eigen werk.
+
+### Merge en uitrol — 2026-10-04 (op opdracht van JP)
+
+- **PR:** scrum4me-mcp#183, gemerged als `a843a79` na groene CI op `9adeb452`.
+- **Reviews:** `s4m-codex-reviewer` gaf twee keer COMMENT, zonder blokkade. Beide reviews
+  meldden "Plan gekoppeld via pbi": de bestaande PBI-route vond het plan omdat PBI-32 aan #183
+  hing. De bevindingen zijn vóór de merge verwerkt, telkens RED→groen:
+  - stopregel van het budget (`530c3741`);
+  - witruimte telt niet als inhoud (`530c3741`);
+  - planpaden worden als heel token beoordeeld (`9adeb452`).
+- **CI:** de eerste run faalde op `__tests__/http-shutdown.test.ts` (exitcode 143 bij SIGTERM).
+  Die test hangt niet met deze wijziging samen, slaagde lokaal drie keer op rij, en de
+  volgende runs waren groen.
+- **Uitrol:**
+  - srv: `pin_mcp_to_main` (sneed `deploy/main-a843a79fce0b`), daarna `update_codex_worker`.
+  - max2: `pin_mcp_to_main` (hergebruikte de tag), daarna `redeploy_codex_worker`.
+  - Beide `scrum4me-agent-codex`-containers draaien op `a843a79` en zijn healthy.
+  - De Claude-workers zijn bewust niet herbouwd: de PR-reviews van de afgelopen week liepen
+    allemaal op `runtime: CODEX`. Ze krijgen de nieuwe pin bij hun volgende rebuild.
+  - Mac: `scrum4me-mcp-stable` is bijgewerkt naar `a843a79`.
+- **Live-check:** deze docs-PR is zelf de proef. Hij hangt niet via een PBI aan het plan,
+  dus de review moet "plan gekoppeld via pr_refs" melden.
