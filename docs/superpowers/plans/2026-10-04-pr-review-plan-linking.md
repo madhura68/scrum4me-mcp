@@ -62,11 +62,24 @@ met codes in de beschrijving zegt "plan gekoppeld via …" en toetst plan-confor
    - `source: 'job' | 'pbi' | 'pr_refs' | 'commits'`
    - `stories?: Array<{ code, title, acceptance_criteria, tasks: Array<{ code, title, implementation_plan }> }>`
    - `plan_docs?: Array<{ ref, content_md, truncated }>` — `ref` is het pad of de PBI-code
-   - `references: string[]` — wat er gematcht is, zodat de reviewer het kan noemen
+   - `references?: string[]` — wat er gematcht is, zodat de reviewer het kan noemen.
+     Alleen gezet door `pr_refs` en `commits`; de bestaande routes `job`/`pbi` blijven
+     byte-gelijk en laten het veld weg.
+   - `omitted?: string[]` — verwijzingen die door het budget (keuze 6) zijn weggevallen.
    Losse taken (`T-<n>`) worden onder hun story gegroepeerd.
-6. **Grenzen:** max 8 stories, max 8 taken per story, max 3 plan-docs; elk tekstveld
-   wordt afgekapt op 20 000 tekens met `truncated: true` (plan-docs) of een markering
-   `…[afgekapt]` (taakplannen). Max 20 codes uit de beschrijving.
+6. **Eén totaalbudget voor A en B:** `JSON.stringify(linked_plan).length` ≤ 100 000
+   tekens. Het resultaat wordt in vaste volgorde gevuld:
+   1. per story titel + `acceptance_criteria`;
+   2. `implementation_plan` van expliciet genoemde taken (`T-<n>`);
+   3. plan-docs (eerst paden, dan PBI-plannen), in volgorde van voorkomen;
+   4. `implementation_plan` van de overige taken van genoemde of gematchte stories.
+
+   Elk tekstveld wordt eerst afgekapt op 20 000 tekens (`truncated: true` bij plan-docs,
+   markering `…[afgekapt]` bij taakplannen). Past een item niet meer in het restbudget, dan
+   wordt het tot het restbudget afgekapt; alles daarna gaat naar `omitted`. De bestaande
+   routes `job`/`pbi` krijgen geen budget (ongewijzigd gedrag); Taak 4 meet alleen hun
+   grootte. Uit de beschrijving telt per lijst (taken, stories, PBI's, paden) max 20
+   verwijzingen.
 7. **Best-effort blijft:** elke Forgejo- of DB-fout in A of B valt terug op de volgende
    route; de bestaande `try/catch` in `wait-for-job.ts` blijft het vangnet.
 8. **Padvalidatie:** alleen relatief, eindigt op `.md`, geen `..`-segment, geen `://`,
@@ -78,7 +91,7 @@ met codes in de beschrijving zegt "plan gekoppeld via …" en toetst plan-confor
 |---|---|
 | `src/lib/pr-refs.ts` (nieuw) | `extractPrRefs(text)` — pure parser |
 | `src/git/pr.ts` | `PrInfo.body`; `listPullRequestCommitShas`; `fetchRepoFileAtRef` |
-| `src/lib/pr-linked-plan.ts` | routes A en B, uitgebreide `LinkedPlan`, grenzen |
+| `src/lib/pr-linked-plan.ts` | routes A en B, uitgebreide `LinkedPlan`, totaalbudget |
 | `src/tools/wait-for-job.ts` | `product_id`, `body` en `head_sha` doorgeven aan de resolver |
 | `src/prompts/pr/review.codex.md`, `src/prompts/pr/review.md` | nieuwe velden, regel voor gedeeltelijke dekking |
 | `scripts/probe-pr-linked-plan.ts` (nieuw) | alleen-lezen proef op echte DB + Forgejo |
@@ -126,7 +139,7 @@ de verwachte lijsten. Negatieve gevallen: `docs/../x.md`, `https://…/plan.md`,
 **Interface:** `resolvePrLinkedPlan(job: { id; pr_url; product_id }, pr?: { body: string; head_sha: string | null })`.
 Zonder `pr` gedraagt hij zich als nu (achterwaarts compatibel voor bestaande tests).
 
-**Gedrag:** ontwerpkeuzes 1–7. Route A: `extractPrRefs(pr.body)` → batch-queries
+**Gedrag:** ontwerpkeuzes 1–8. Route A: `extractPrRefs(pr.body)` → batch-queries
 (`task.findMany`/`story.findMany`/`pbi.findMany` met `product_id` + `code: { in }`) →
 plan-docs ophalen alleen als `head_sha` bekend is. Levert A minstens één story,
 taak, of plan-doc met inhoud → `source: 'pr_refs'`. Route B: commit-SHA's ophalen →
@@ -143,39 +156,55 @@ In `wait-for-job.ts` de al opgehaalde `prInfo` doorgeven (`body`, `headSha`) plu
   matchen niet (query bevat `product_id`);
 - A levert niets bruikbaars (onbekende codes, lege velden) → B draait;
 - B: 7-tekenhash matcht volledige SHA; hash van een ander product matcht niet;
-- grenzen: afkappen en tellingen zoals ontwerpkeuze 6;
+- budget: een invoer met meerdere stories, lange taakplannen en drie plan-docs blijft
+  onder `JSON.stringify(linked_plan).length` ≤ 100 000, vult in de volgorde van
+  ontwerpkeuze 6 en zet de weggevallen verwijzingen in `omitted` (RED-controle: de test
+  faalt zonder budget);
+- `job`/`pbi`-routes geven exact hetzelfde object als vóór de wijziging (geen
+  `references`, geen budget);
 - Forgejo-fout in A of B → volgende route, geen throw;
 - `wait-for-job-pr-review.test.ts`: resolver krijgt `product_id`, `body`, `head_sha`.
 
 ### Taak 4 — Praktijkproef op echte data (vóór prompt en uitrol)
 
-`scripts/probe-pr-linked-plan.ts`: alleen lezen; neemt de N recentste distinct
-`pr_url`'s van PR_REVIEW-jobs, roept per PR dezelfde code aan als `wait-for-job`
-(`getPullRequestState` + `resolvePrLinkedPlan`) en print per PR: `source`, `references`,
-aantal tekens. Draait lokaal met de MCP-`DATABASE_URL` en `FORGEJO_TOKEN`; print geen
-inhoud, geen tokens.
+`scripts/probe-pr-linked-plan.ts`: alleen lezen. Invoer: expliciete PR-URL's als
+argumenten, en/of `--recent N` (de N recentste distinct `pr_url`'s van PR_REVIEW-jobs).
+`product_id` komt van de PR_REVIEW-job van die URL; zonder job via een match op
+`Product.repo_url`; zonder beide meldt de proef "geen job/product" voor die PR in plaats van
+hem over te slaan. Per PR roept hij dezelfde code aan als `wait-for-job`
+(`getPullRequestState` + `resolvePrLinkedPlan`) en print hij: `source`, `references`,
+`omitted`, aantal tekens, en of route B óók iets had gevonden als A al raak was (zodat
+de meerwaarde van B zichtbaar is). Draait lokaal via `tsx` met de MCP-`DATABASE_URL` en
+`FORGEJO_TOKEN`; print geen inhoud en geen tokens. Het script valt buiten beide
+tsconfig-includes; de `tsx`-run in deze taak is zijn controle.
 
 **Acceptatie:**
-- Scrum4Me#297, Ops-dashboard#280 en scrum4me-mcp#180 krijgen `source: 'pr_refs'`
-  met de verwachte verwijzingen;
-- over de 25 recentste PR's: aantal met plan vóór/na rapporteren aan JP
-  (nulmeting B: 6/25 via commits);
-- geen PR leidt tot een exception of een payload boven ~100 000 tekens voor `linked_plan`.
+- `probe https://git.jp-visser.nl/janpeter/Scrum4Me/pulls/297 …/Ops-dashboard/pulls/280
+  …/scrum4me-mcp/pulls/180`: alle drie `source: 'pr_refs'` met de verwachte verwijzingen;
+- `--recent 25`: aantal met plan vóór/na rapporteren aan JP (nulmeting B: 6/25 via commits);
+- geen PR leidt tot een exception; geen A/B-resultaat boven het budget van ontwerpkeuze 6;
+  de grootste `job`/`pbi`-payload wordt gerapporteerd.
 
 Valt de dekking tegen of blijkt een grens verkeerd, eerst bijsturen en JP melden vóór Taak 5.
 
 ### Taak 5 — Reviewprompts bijwerken
 
 `review.codex.md` en `review.md`:
-- invoerveld `linked_plan` beschrijven met `source`, `references`, `stories`, `plan_docs`;
-- bij een plan: kop "plan gekoppeld via <source>: <references>";
+- invoerveld `linked_plan` beschrijven met `source`, `references?`, `omitted?`, `stories`,
+  `plan_docs`;
+- bij een plan: kop "plan gekoppeld via <source>" plus de `references` als die er zijn;
 - **gedeeltelijke dekking:** een story kan over meerdere PR's lopen. Ontbrekende delen van
   het plan zijn een opmerking, geen blokkerende finding, tenzij de PR zegt het geheel
   af te ronden of de diff het plan tegenspreekt;
+- **plan-conformiteit herformuleren** zodat die regel niet botst met bestaande tekst:
+  `review.codex.md:12` ("correct en volledig") en `:16` ("plan-conform" als voorwaarde
+  voor `APPROVED`), en `review.md:3`. Plan-conform betekent: geen tegenspraak met het
+  plan, en niets ontbreekt van wat de PR zelf zegt af te ronden;
 - de bestaande zin bij `linked_plan: null` blijft letterlijk staan.
 
 **Acceptatie:** bestaande prompt-/kind-prompt-tests groen; diff van beide prompts
-beperkt tot bovenstaande punten.
+beperkt tot bovenstaande punten; geen resterende eis van "volledig" plan-conform
+(`grep -n "volledig" src/prompts/pr/`).
 
 ### Taak 6 — Verificatie, PR en uitrol
 
@@ -187,8 +216,9 @@ beperkt tot bovenstaande punten.
    `~/Development/scrum4me-mcp-stable` op de Mac bijwerken (`pull --ff-only` + `npm ci`).
 4. **Gate:** de eerstvolgende PR met codes in de beschrijving krijgt een reviewcomment
    met "plan gekoppeld via …". Comment-URL vastleggen.
-5. Productdoc over de PR-review (zoek met `search_product_docs "pr review linked plan"`)
-   aanvullen met de vier routes en hun volgorde.
+5. Productdoc op SC2: er bestaat nog geen doc over de PR-review (gecontroleerd met
+   `search_product_docs`). Maak er een in ARCHITECTURE met de vier routes, hun volgorde
+   en het budget.
 
 ## Risico's
 
@@ -197,11 +227,48 @@ beperkt tot bovenstaande punten.
   gedeeltelijke dekking en `references` in de body; JP ziet het meteen.
 - **> 50 commits:** route B ziet alleen de eerste pagina. Bewust; route A dekt grote PR's
   meestal al.
-- **Payloadgrootte:** grenzen uit ontwerpkeuze 6; Taak 4 meet het echte maximum.
+- **Payloadgrootte:** A en B zijn begrensd door het totaalbudget van ontwerpkeuze 6. De
+  bestaande routes en `pr_diff` blijven onbegrensd zoals nu; Taak 4 rapporteert hun
+  grootste waarde.
 - **Prompt- en codeversie lopen samen** omdat beide in deze repo en dezelfde image zitten.
 
 ## Review record
 
-Formele review-loop (fase `plan`), gestart op verzoek van JP op 2026-10-04. Reviewers:
-twee dispatch-jobs (`QUEUE_REVIEW`, `runtime: CODEX` en `runtime: CLAUDE`), reply naar
-`mac:claude`. Rondes worden hieronder bijgehouden.
+Formele review-loop (fase `plan`), gestart op verzoek van JP op 2026-10-04. Bedoeld waren
+twee dispatch-jobs (`QUEUE_REVIEW`, `runtime: CODEX` en `runtime: CLAUDE`). Die gaven
+allebei `DISPATCH_NOT_FOUND`: dispatch bedient alleen het Scrum4Me-product (allowlist,
+profielen en managed workers; uitgewerkt in IDEA-233). Op besluit van JP lopen de rondes
+daarom via de **listener-fallback**: `mac:codex` en `mac:claude`, door JP gearmd.
+
+### Ronde 1 — revisie 1 @ `2ffc27ab`
+
+- **Verzoeken:** `mac:codex` `7345d882-2bab-4f08-a35c-933bb6a4925b` (antwoord
+  `25cf7649`), `mac:claude` `8ec1ccfa-73bb-4937-bfb9-4dae9e349094` (antwoord `9b8217fc`).
+  Pins: plan `d62cf207…`, `CLAUDE.md` `df60a45f…`, phase-2-spec `38bbdf0f…`, alle op
+  `2ffc27ab`. Presence vooraf: beide `beschikbaar`.
+- **Uitslag:** codex 0 BLOCKER / 1 MAJOR / 1 MINOR → **NO-GO**; claude 0 / 0 / 4 MINOR →
+  **GO**.
+- **Bepalende bevinding (convergent):** de limieten per veld vermenigvuldigen in plaats van
+  te begrenzen (tot ~1,3–1,5 M tekens), terwijl Taak 4 ~100 000 als grens noemt. Codex MAJOR,
+  claude MINOR. Geverifieerd → **geaccepteerd**: ontwerpkeuze 6 is nu één totaalbudget
+  (`JSON.stringify(linked_plan).length` ≤ 100 000) met vaste vulvolgorde en `omitted`, plus
+  een budgettest met RED-controle in Taak 3. De routes `job`/`pbi` blijven onbegrensd en
+  ongewijzigd; Taak 4 meet hun grootte.
+- **Overige bevindingen, allemaal geverifieerd en geaccepteerd:**
+  - `references` verplicht botst met de ongewijzigde routes (codex + claude) → optioneel,
+    alleen gezet door `pr_refs`/`commits`; test dat `job`/`pbi` byte-gelijk blijven.
+  - Regel voor gedeeltelijke dekking botst met `review.codex.md:12` ("volledig") en `:16`,
+    en `review.md:3` (claude) → Taak 5 herformuleert die regels, met grep-acceptatie.
+  - De proef hoeft de drie acceptatie-PR's niet te bevatten (claude) → Taak 4 accepteert
+    expliciete URL's, met productafleiding via de job of `repo_url`, en meldt "geen
+    job/product".
+  - Codelimiet stond twee keer anders (claude) → per lijst max 20.
+  - Taak 6.5 veronderstelde een bestaande productdoc (claude) → nieuwe doc in ARCHITECTURE.
+  - Proefscript valt buiten de tsconfig-includes (claude) → expliciet: de `tsx`-run is
+    zijn controle.
+  - Optioneel (claude): de proef rapporteert ook of B iets had gevonden als A al raak was →
+    overgenomen, kost één kolom.
+- **Afgewezen:** geen.
+- **Scope-delta:** geen werk toegevoegd buiten de opdracht. Het budget vervangt de
+  veldlimieten; de proef krijgt expliciete invoer en één extra kolom. Het eerste bruikbare
+  resultaat en de praktijkproef (Taak 4) blijven gelijk en op dezelfde plek.
