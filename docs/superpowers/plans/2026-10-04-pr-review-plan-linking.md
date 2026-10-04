@@ -311,3 +311,17 @@ op SC2), pas na akkoord van JP. Technisch GO autoriseert geen uitvoering, merge 
 Op SC2: sprint `S-2026-10-04-1`, PBI-32 (gekoppeld aan productdoc PLANS/pr-review-plan-linking,
 revisie 1, rol PLAN), story ST-052 en taken T-157 tot en met T-162 (Taak 1–6, in planvolgorde).
 **Hardstop:** uitvoeren pas na een aparte uitvoeropdracht van JP.
+
+### Uitvoering — Taak 4 en het besluit van JP (2026-10-04)
+
+De proef op echte data liet `scrum4me-mcp#180` vallen: T-1972 hoort bij het product
+Scrum4Me, de review-job bij scrum4me-mcp. Productoverschrijdend zoeken is een niet-doel.
+`--recent 25`: plan vóór 0/25, na 9/25. Route B binnen het product voegde niets toe bovenop
+A. Van de 16 PR's zonder plan noemen er 6 codes die alleen in Scrum4Me bestaan, 1 een PBI
+zonder PLAN-doc, en 9 niets.
+
+**Besluit JP:** zo laten, acceptatie bijstellen. In acceptatie 1 vervangt `Scrum4Me#291`
+(dezelfde T-1972, binnen het product) `scrum4me-mcp#180`. Herhaalde proef: #297, #280 en
+#291 alle drie `source: 'pr_refs'`. Twee bijvangsten zijn verwacht gedrag: PBI-178 en PBI-24
+hebben geen PLAN-doc, en het M44-planpad in Ops-dashboard#280 staat in de Scrum4Me-repo,
+niet in Ops-dashboard. Productoverschrijdend zoeken kan later als eigen werk.
