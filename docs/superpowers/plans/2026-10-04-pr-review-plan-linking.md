@@ -1,6 +1,6 @@
 # PR-review: plan vinden via PR-beschrijving en commits — Implementatieplan
 
-**Status:** plan-review dubbel GO (ronde 2, 2026-10-04); wacht op akkoord van JP voor de ceremonie. Geen spec: de wijziging blijft binnen één
+**Status:** plan-review dubbel GO (ronde 2, 2026-10-04); ceremonie gedaan op SC2 (S-2026-10-04-1, PBI-32, ST-052, T-157…T-162); wacht op uitvoeropdracht. Geen spec: de wijziging blijft binnen één
 module plus de PR-reviewprompt van deze repo.
 
 ## Doel
@@ -305,3 +305,9 @@ daarom via de **listener-fallback**: `mac:codex` en `mac:claude`, door JP gearmd
 
 **Fase `plan` afgerond (dubbel GO).** Volgende stap: de ceremonie (sprint, PBI, story, taken
 op SC2), pas na akkoord van JP. Technisch GO autoriseert geen uitvoering, merge of deployment.
+
+### Ceremonie — 2026-10-04 (op akkoord van JP)
+
+Op SC2: sprint `S-2026-10-04-1`, PBI-32 (gekoppeld aan productdoc PLANS/pr-review-plan-linking,
+revisie 1, rol PLAN), story ST-052 en taken T-157 tot en met T-162 (Taak 1–6, in planvolgorde).
+**Hardstop:** uitvoeren pas na een aparte uitvoeropdracht van JP.
