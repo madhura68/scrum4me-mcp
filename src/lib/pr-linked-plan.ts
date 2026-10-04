@@ -1,4 +1,5 @@
 import { prisma } from '../prisma.js'
+import { getTokenScopedProducts } from '../auth.js'
 import { fetchRepoFileAtRef, listPullRequestCommitShas } from '../git/pr.js'
 import { extractPrRefs } from './pr-refs.js'
 
@@ -6,6 +7,8 @@ export type LinkedPlanTask = { code: string; title: string; implementation_plan:
 export type LinkedPlanStory = {
   code: string
   title: string
+  /** Alleen bij een story uit een ander product dan dat van de review-job. */
+  product?: string
   acceptance_criteria: string | null
   tasks: LinkedPlanTask[]
 }
@@ -33,7 +36,37 @@ export type LinkedPlan = {
 }
 
 export type PrContext = { body: string; head_sha: string | null }
-type ReviewJob = { id: string; pr_url: string | null; product_id?: string }
+type ReviewJob = { id: string; pr_url: string | null; product_id?: string; user_id?: string }
+
+/** Per resolve gedeelde state: de commit-SHA's van de PR worden hooguit één keer opgehaald. */
+export type ResolveContext = { shas: () => Promise<string[] | null> }
+
+export function createResolveContext(prUrl: string): ResolveContext {
+  let pending: Promise<string[] | null> | null = null
+  return {
+    shas: () => {
+      pending ??= listPullRequestCommitShas({ prUrl })
+        .then((out) => (Array.isArray(out) ? out : null))
+        .catch(() => null)
+      return pending
+    },
+  }
+}
+
+/**
+ * Producten waarin de productoverschrijdende stappen zoeken: die waarvan de
+ * job-eigenaar zelf eigenaar is (geen lidmaatschap: dan kon andermans plan in
+ * een Forgejo-comment belanden), zonder het eigen product, en binnen de scope
+ * van het huidige token ([] = ongescopet, zoals in access.ts).
+ */
+export async function candidateProductIds(userId: string, ownProductId: string): Promise<string[]> {
+  const owned = await prisma.product.findMany({
+    where: { user_id: userId, id: { not: ownProductId } },
+    select: { id: true },
+  })
+  const scoped = await getTokenScopedProducts()
+  return owned.map((p) => p.id).filter((id) => scoped.length === 0 || scoped.includes(id))
+}
 
 /**
  * Resolve het plan/acceptatie dat bij een PR hoort, voor een PR_REVIEW-job.
@@ -152,16 +185,23 @@ const storySelect = {
   tasks: { select: taskSelect, orderBy: { sort_order: 'asc' } },
 } as const
 
-type StoryRow = LinkedPlanStory
+// Interne rijen: `key` is de identiteit (binnen het eigen product de code, over producten
+// heen het id: codes zijn alleen uniek per product), `label` is wat in `references` en
+// `omitted` verschijnt (de code, eventueel met productnaam).
+type TaskRow = LinkedPlanTask & { key: string; label: string }
+type StoryRow = Omit<LinkedPlanStory, 'tasks'> & { key: string; label: string; tasks: TaskRow[] }
 type DocSource = { ref: string; load: () => Promise<string | null> }
 type Collected = {
   stories: StoryRow[]
-  /** Codes van taken die de beschrijving zelf noemt; die krijgen voorrang. */
+  /** Sleutels van taken die de beschrijving zelf noemt; die krijgen voorrang. */
   explicitTasks: Set<string>
   docs: DocSource[]
-  /** Gevonden codes in volgorde van de beschrijving; die geplaatst worden gaan naar `references`. */
-  codeRefs: string[]
+  /** Sleutels van gevonden stories/taken in volgorde van de beschrijving; geplaatste gaan naar `references`. */
+  refKeys: string[]
 }
+
+const ownTask = (t: LinkedPlanTask): TaskRow => ({ ...t, key: t.code, label: t.code })
+const ownStory = (s: LinkedPlanStory): StoryRow => ({ ...s, key: s.code, label: s.code, tasks: s.tasks.map(ownTask) })
 
 export async function resolvePlanViaPrRefs(job: ReviewJob, pr: PrContext): Promise<LinkedPlan | null> {
   if (!job.pr_url || !job.product_id) return null
@@ -201,16 +241,16 @@ export async function resolvePlanViaPrRefs(job: ReviewJob, pr: PrContext): Promi
     const byCode = new Map<string, StoryRow>()
     for (const code of refs.story_codes) {
       const found = stories.find((s) => s.code === code)
-      if (found) byCode.set(code, { ...found, tasks: [...found.tasks] })
+      if (found) byCode.set(code, ownStory(found))
     }
     const explicitTasks = new Set<string>()
     for (const code of refs.task_codes) {
       const t = tasks.find((x) => x.code === code)
       if (!t?.story) continue
       explicitTasks.add(t.code)
-      const target = byCode.get(t.story.code) ?? { ...t.story, tasks: [] }
+      const target = byCode.get(t.story.code) ?? ownStory({ ...t.story, tasks: [] })
       if (!target.tasks.some((x) => x.code === t.code)) {
-        target.tasks.push({ code: t.code, title: t.title, implementation_plan: t.implementation_plan })
+        target.tasks.push(ownTask({ code: t.code, title: t.title, implementation_plan: t.implementation_plan }))
       }
       byCode.set(t.story.code, target)
     }
@@ -233,43 +273,50 @@ export async function resolvePlanViaPrRefs(job: ReviewJob, pr: PrContext): Promi
       if (md?.trim()) docs.push({ ref: code, load: async () => md })
     }
 
-    const codeRefs = [
+    const refKeys = [
       ...refs.task_codes.filter((c) => explicitTasks.has(c)),
       ...refs.story_codes.filter((c) => stories.some((s) => s.code === c)),
     ]
-    return await assembleWithinBudget('pr_refs', { stories: [...byCode.values()], explicitTasks, docs, codeRefs })
+    return await assembleWithinBudget('pr_refs', { stories: [...byCode.values()], explicitTasks, docs, refKeys })
   } catch (err) {
     console.warn('[pr-linked-plan] route pr_refs failed:', err)
     return null
   }
 }
 
-export async function resolvePlanViaCommits(job: ReviewJob): Promise<LinkedPlan | null> {
+// log_commit bewaart volledige én korte hashes (7+ tekens): match op elk prefix.
+function shaPrefixes(shas: string[]): string[] {
+  const prefixes = new Set<string>()
+  for (const sha of shas) {
+    const lower = sha.toLowerCase()
+    for (let n = 7; n <= lower.length; n++) prefixes.add(lower.slice(0, n))
+  }
+  return [...prefixes]
+}
+
+export async function resolvePlanViaCommits(
+  job: ReviewJob,
+  ctx: ResolveContext = createResolveContext(job.pr_url ?? ''),
+): Promise<LinkedPlan | null> {
   if (!job.pr_url || !job.product_id) return null
   try {
-    const shas = await listPullRequestCommitShas({ prUrl: job.pr_url })
-    if (!Array.isArray(shas) || shas.length === 0) return null
-    // log_commit bewaart volledige én korte hashes (7+ tekens): match op elk prefix.
-    const prefixes = new Set<string>()
-    for (const sha of shas) {
-      const lower = sha.toLowerCase()
-      for (let n = 7; n <= lower.length; n++) prefixes.add(lower.slice(0, n))
-    }
+    const shas = await ctx.shas()
+    if (!shas || shas.length === 0) return null
     const logs = await prisma.storyLog.findMany({
-      where: { type: 'COMMIT', commit_hash: { in: [...prefixes] }, story: { product_id: job.product_id } },
+      where: { type: 'COMMIT', commit_hash: { in: shaPrefixes(shas) }, story: { product_id: job.product_id } },
       orderBy: { created_at: 'asc' },
       select: { story: { select: storySelect } },
     })
     const byCode = new Map<string, StoryRow>()
     for (const { story } of logs) {
-      if (!byCode.has(story.code)) byCode.set(story.code, { ...story, tasks: [...story.tasks] })
+      if (!byCode.has(story.code)) byCode.set(story.code, ownStory(story))
     }
     if (byCode.size === 0) return null
     return await assembleWithinBudget('commits', {
       stories: [...byCode.values()],
       explicitTasks: new Set(),
       docs: [],
-      codeRefs: [...byCode.keys()],
+      refKeys: [...byCode.keys()],
     })
   } catch (err) {
     console.warn('[pr-linked-plan] route commits failed:', err)
@@ -296,9 +343,10 @@ async function assembleWithinBudget(source: 'pr_refs' | 'commits', c: Collected)
     omitted: [],
   }
   // `references` en `omitted` worden pas aan het eind gevuld. Elke verwijzing komt in
-  // hooguit één van beide, dus reserveer precies de ruimte van alle kandidaten samen.
+  // hooguit één van beide, dus reserveer precies de ruimte van alle kandidaten samen,
+  // in hun definitieve weergave (labels met productnaam inbegrepen).
   const candidates = [
-    ...c.stories.flatMap((s) => [s.code, ...s.tasks.map((t) => t.code)]),
+    ...c.stories.flatMap((s) => [s.label, ...s.tasks.map((t) => t.label)]),
     ...c.docs.map((d) => d.ref),
   ]
   const limit = LINKED_PLAN_BUDGET - JSON.stringify(candidates).length
@@ -348,28 +396,36 @@ async function assembleWithinBudget(source: 'pr_refs' | 'commits', c: Collected)
   // 1. Stories met acceptatiecriteria.
   const placed = new Map<string, LinkedPlanStory>()
   for (const s of c.stories) {
-    const entry: LinkedPlanStory = { code: s.code, title: s.title, acceptance_criteria: null, tasks: [] }
+    const entry: LinkedPlanStory = {
+      code: s.code,
+      title: s.title,
+      ...(s.product ? { product: s.product } : {}),
+      acceptance_criteria: null,
+      tasks: [],
+    }
     plan.stories.push(entry)
     const ok = s.acceptance_criteria
       ? fit((t) => { entry.acceptance_criteria = t }, capField(s.acceptance_criteria), () => { plan.stories.pop() })
       : fitBare(() => { plan.stories.pop() })
-    if (ok) placed.set(s.code, entry)
-    else omitted.push(s.code)
+    if (ok) placed.set(s.key, entry)
+    else omitted.push(s.label)
   }
 
-  const addTask = (storyCode: string, t: LinkedPlanTask) => {
-    const entry = placed.get(storyCode)
-    if (!entry) return omitted.push(t.code)
+  const placedTasks = new Set<string>()
+  const addTask = (storyKey: string, t: TaskRow) => {
+    const entry = placed.get(storyKey)
+    if (!entry) return omitted.push(t.label)
     const row: LinkedPlanTask = { code: t.code, title: t.title, implementation_plan: null }
     entry.tasks.push(row)
     const ok = t.implementation_plan
       ? fit((x) => { row.implementation_plan = x }, capField(t.implementation_plan), () => { entry.tasks.pop() })
       : fitBare(() => { entry.tasks.pop() })
-    if (!ok) omitted.push(t.code)
+    if (ok) placedTasks.add(t.key)
+    else omitted.push(t.label)
   }
 
   // 2. Taken die de beschrijving zelf noemt.
-  for (const s of c.stories) for (const t of s.tasks) if (c.explicitTasks.has(t.code)) addTask(s.code, t)
+  for (const s of c.stories) for (const t of s.tasks) if (c.explicitTasks.has(t.key)) addTask(s.key, t)
 
   // 3. Plan-docs, pas ophalen als ze aan de beurt zijn.
   for (const d of c.docs) {
@@ -395,7 +451,7 @@ async function assembleWithinBudget(source: 'pr_refs' | 'commits', c: Collected)
   }
 
   // 4. Overige taken van de stories.
-  for (const s of c.stories) for (const t of s.tasks) if (!c.explicitTasks.has(t.code)) addTask(s.code, t)
+  for (const s of c.stories) for (const t of s.tasks) if (!c.explicitTasks.has(t.key)) addTask(s.key, t)
 
   const hasText = (v: string | null) => Boolean(v?.trim())
   const hasContent =
@@ -403,9 +459,13 @@ async function assembleWithinBudget(source: 'pr_refs' | 'commits', c: Collected)
     plan.stories.some((s) => hasText(s.acceptance_criteria) || s.tasks.some((t) => hasText(t.implementation_plan)))
   if (!hasContent) return null
 
-  const placedTasks = new Set(plan.stories.flatMap((s) => s.tasks.map((t) => t.code)))
+  const labels = new Map<string, string>()
+  for (const s of c.stories) {
+    labels.set(s.key, s.label)
+    for (const t of s.tasks) labels.set(t.key, t.label)
+  }
   plan.references = [
-    ...c.codeRefs.filter((r) => placed.has(r) || placedTasks.has(r)),
+    ...c.refKeys.filter((k) => placed.has(k) || placedTasks.has(k)).map((k) => labels.get(k) ?? k),
     ...docRefs.filter((r) => !r.includes('/')),
     ...docRefs.filter((r) => r.includes('/')),
   ]
