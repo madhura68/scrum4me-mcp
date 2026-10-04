@@ -1,6 +1,6 @@
 # PR-review: plan vinden over productgrenzen heen — Implementatieplan
 
-**Status:** concept, wacht op akkoord van JP. Vervolg op
+**Status:** revisie 2 (na reviewronde 1), wacht op akkoord van JP. Vervolg op
 `docs/superpowers/plans/2026-10-04-pr-review-plan-linking.md` (ST-052, live sinds `a843a79`).
 Geen spec: de wijziging blijft binnen de plan-lookup van de PR-review en de reviewprompts.
 
@@ -23,7 +23,10 @@ dat in een Scrum4Me-sprint staat (T-1972 voor scrum4me-mcp#180).
 | daarvan: te koppelen via unieke code óf commit | **30** |
 | daarvan: code alleen dubbelzinnig (meerdere producten); alle 7 hebben wel een commit- of `repo_url`-signaal | 7 |
 
-Gecombineerd stijgt de dekking dus van **41 naar ongeveer 71 van de 100**. `task.repo_url` wordt al
+Gecombineerd stijgt de dekking dus van **41 naar ongeveer 71 van de 100**. De meting zocht in alle
+producten; op één demoproduct van de andere gebruiker na (Scrum4MeDemo) zijn ze allemaal van de
+job-eigenaar, dus het eigenaarsfilter van ontwerpkeuze 1 verandert de uitkomst hoogstens
+ten gunste (minder dubbelzinnigheid). `task.repo_url` wordt al
 veel gebruikt: 567 van de 2236 taken in de laatste 90 dagen.
 
 **Eerst bruikbaar resultaat:** de proef geeft `scrum4me-mcp#180` (T-1972, product Scrum4Me) en
@@ -37,46 +40,65 @@ het product waar het plan vandaan komt.
 - Geen planpaden uit een andere repo. "Plan: Scrum4Me `docs/plans/…`" in een Ops-dashboard-PR
   blijft ongelezen.
 - Geen nieuwe afspraak voor PR-beschrijvingen (zoals `SCRUM4ME/T-1972`) en geen schemawijziging.
-- Geen producten buiten de toegang van de eigenaar van de review-job.
+- Geen producten die niet van de eigenaar van de review-job zijn (ook niet als die eigenaar er lid van is).
 - De bestaande routes 1 en 2 en de A-route binnen het eigen product veranderen niet.
 
 ## Ontwerpkeuzes
 
-1. **Productscope = toegang van de job-eigenaar.** De kandidaten zijn producten waarvan
-   `job.user_id` eigenaar of lid is (`Product.user_id` of `ProductMember`), zoals in
-   `src/access.ts` (`userCanAccessProduct`). Is het token gescoped (`getTokenScopedProducts`), dan
-   alleen die producten. `job.user_id` is beschikbaar in `getFullJobContext`.
-2. **Route B (commits) zoekt in alle toegankelijke producten,** in plaats van alleen het eigen
-   product. Een commit-SHA identificeert het werk ondubbelzinnig. De kans op een botsing met een
-   prefix van minstens 7 hex-tekens op ~3000 logs is verwaarloosbaar. Dit vervangt het huidige
-   B-filter, want het eigen product zit in de toegankelijke set.
-3. **Nieuwe stap A×: codes in andere producten,** alleen als A binnen het eigen product niets
-   bruikbaars opleverde. Per code die in het eigen product niet bestaat:
-   - **precies één match** in een toegankelijk ander product → gebruiken;
+1. **Productscope = producten van de job-eigenaar.** De kandidaten zijn producten met
+   `Product.user_id = job.user_id`, doorsneden met de token-scope (`getTokenScopedProducts`, zie
+   `src/access.ts`; `[]` = geen beperking). `ProductMember` telt bewust **niet** mee. Een lid van
+   andermans product zou dat plan anders in een Forgejo-comment kunnen trekken die lezers van de
+   PR-repo zien, zonder dat zij toegang tot dat product hebben. Alle gemeten doelen zijn eigen
+   producten van de job-eigenaar. `job.user_id` is beschikbaar in `getFullJobContext`
+   (`findUnique` met `include`).
+2. **Volgorde: het eigen product gaat altijd vóór andere producten.**
+   1. routes 1 en 2 (ongewijzigd);
+   2. A in het eigen product (ongewijzigd);
+   3. **B in het eigen product** (ongewijzigd);
+   4. **A×**: codes in andere producten;
+   5. **B×**: commits in andere producten;
+   6. `null`.
+
+   Elke PR die nu een plan in zijn eigen product krijgt (via A of B), houdt zo exact dezelfde
+   output. Geen van de 30 doel-PR's heeft een plan in het eigen product, dus de gemeten winst
+   blijft. A× komt vóór B×, omdat de beschrijving zegt wát het werk is.
+3. **A×: codes in andere producten.** Alleen voor codes die in het eigen product niet bestaan; A×
+   vraagt dat zelf op met één batch-query per soort code. Per code:
+   - **precies één match** in een kandidaat-product → gebruiken (zie K1);
    - **meerdere matches** → alleen de match met een bevestigend signaal: de `repo_url` van de taak
      (of van een taak van de story) is de repo van de PR, of de story heeft een `COMMIT`-log met een
      hash uit deze PR. Blijft er niet precies één over, dan vervalt de code.
-   - De commit-SHA's van de PR worden alleen opgehaald als dat nodig is voor die beslechting.
-   - Hergebruik de groepering, PLAN-docs en het budget van route A.
-4. **Volgorde:** routes 1 en 2 → A (eigen product) → A× → B (toegankelijke producten) → `null`.
-   A× komt vóór B, omdat de beschrijving zegt wát het werk is. B blijft het vangnet zonder codes.
-5. **Herkomst zichtbaar maken.** Een story uit een ander product krijgt het veld `product`
-   (de productnaam). In `references` staat zo'n verwijzing als `T-1972 (Scrum4Me)`. De reviewer
-   ziet zo dat het plan van elders komt en kan een verkeerde koppeling herkennen.
-6. **Beslispunt K1, standaard "ja":** mag een unieke match zonder bevestigend signaal gebruikt
+   - `repo_url` wordt vergeleken als `{host, owner, repo}`, via `parseForgejoRemoteUrl` (taak) tegen
+     `parseForgejoPrUrl` (PR). Beide kennen https en SSH.
+4. **Commit-SHA's één keer per resolve.** De SHA's van de PR worden lazy opgehaald, pas bij de
+   eerste stap die ze nodig heeft (B in het eigen product), en daarna hergebruikt door A× en B×.
+   Eén `storyLog`-query over het eigen product plus de kandidaten kan B en B× bedienen: eerst de
+   rijen van het eigen product, de rest bewaard voor B×. Eén commit kan bij meerdere stories of
+   producten gelogd zijn; B× neemt ze dan allemaal mee, elk met zijn eigen herkomst.
+5. **Interne identiteit op id, niet op code.** Codes zijn alleen uniek per product. In de
+   productoverschrijdende paden (A×, B×) groeperen collector en `assembleWithinBudget` op story- en
+   task-id. Dat geldt voor de groepering, `placed`, `explicitTasks` en het deduplicatie van B×. De
+   id's komen niet in de output, en de bestaande paden (A en B in het eigen product) blijven
+   byte-gelijk.
+6. **Herkomst zichtbaar.** Een story uit een ander product krijgt het veld `product` (de
+   productnaam); de assembler neemt dat veld mee. In `references` staat zo'n verwijzing als
+   `T-1972 (Scrum4Me)`. De budgetreservering rekent met die definitieve weergave, labels
+   inbegrepen. `JSON.stringify(linked_plan).length` ≤ 100 000 blijft bindend.
+7. **Beslispunt K1, standaard "ja":** mag een unieke match zonder bevestigend signaal gebruikt
    worden? In de meting gaat het om 2 van de 30 PR's (#180 en #177). Het risico is een code die
    in de beschrijving iets anders betekent en toevallig precies één keer elders bestaat. Dat
    risico is klein: lage codes zoals `T-1` bestaan in veel producten en vallen dus als
-   dubbelzinnig af, en de herkomst staat in de review. Zegt JP "nee", dan vereist A× altijd een
-   signaal.
-7. **Best-effort blijft:** een fout in A× of B valt door naar de volgende stap. Het budget van
-   100 000 tekens geldt ongewijzigd voor alles wat A, A× en B opleveren.
+   dubbelzinnig af, en de herkomst staat in de review. Beide reviewers van ronde 1 vonden "ja"
+   verdedigbaar. Zegt JP "nee", dan vereist A× altijd een signaal, en vervalt de acceptatie voor
+   #180 via `pr_refs` (zie Taak 3). De beslissing is één functie, zodat de keuze één regel blijft.
+8. **Best-effort blijft:** een fout in A× of B× valt door naar de volgende stap.
 
 ## Bestanden
 
 | Bestand | Wijziging |
 |---|---|
-| `src/lib/pr-linked-plan.ts` | `accessibleProductIds(userId)`, stap A× (`resolvePlanViaCrossProductRefs`), B over toegankelijke producten, `product`-label op stories |
+| `src/lib/pr-linked-plan.ts` | `candidateProductIds(userId, ownProductId)`, gedeelde SHA-cache per resolve, stappen A× en B×, interne id-sleutels, `product`-label door de assembler |
 | `src/tools/wait-for-job.ts` | `user_id` meegeven aan de resolver |
 | `src/prompts/pr/review.codex.md`, `src/prompts/pr/review.md` | herkomstregel: noem het product als het plan uit een ander product komt |
 | `scripts/probe-pr-linked-plan.ts` | `user_id` meegeven; kolom `product` |
@@ -87,63 +109,73 @@ het product waar het plan vandaan komt.
 - TypeScript NodeNext: relatieve imports mét `.js`.
 - Testidioom als in `__tests__/lib/pr-linked-plan.test.ts`: `vi.mock` op prisma en `src/git/pr.js`.
   Gebruik `toStrictEqual` waar het om exacte output gaat.
-- Bestaande routes en de A-route binnen het eigen product geven byte-gelijke output.
+- Routes 1–2 en A en B binnen het eigen product geven byte-gelijke output.
 - Per taak: `npx vitest run <testbestand>`, daarna `npm run typecheck && npm run typecheck:tests`.
   Commit per taak; push en PR alleen met akkoord van JP.
 
 ---
 
-### Taak 1 — Productscope en route B over toegankelijke producten
+### Taak 1 — Productscope, SHA-cache en id-sleutels
 
-**Interface:** `accessibleProductIds(userId: string): Promise<string[]>`. Dat zijn de producten
-waarvan de gebruiker eigenaar of lid is, doorsneden met de token-scope als die er is. Een lege
-token-scope betekent geen beperking, zoals in `src/access.ts`.
-
-`ReviewJob` krijgt `user_id?`. `resolvePlanViaCommits` filtert op
-`story: { product_id: { in: ids } }`. Zonder `user_id` valt hij terug op alleen het eigen product
-(achterwaarts compatibel). Een story uit een ander product dan `job.product_id` krijgt `product`
-(naam) mee.
-
-**Acceptatie (tests):**
-- B vindt een story in een toegankelijk ander product en zet `product`;
-- B vindt niets in een product waar de gebruiker geen toegang toe heeft (staat niet in de `in`-lijst);
-- zonder `user_id` hetzelfde gedrag als nu;
-- `references` noemt de herkomst.
-
-### Taak 2 — Stap A×: codes in andere producten
-
-**Interface:** `resolvePlanViaCrossProductRefs(job, pr)`. `resolvePrLinkedPlan` roept hem aan
-tussen A en B.
-
-**Gedrag:** ontwerpkeuzes 3, 5 en 6.
-- Batch-queries per soort code over `product_id: { in: ids, not: job.product_id }`, alleen voor
-  codes die in het eigen product niet bestaan.
-- Beslechting met `repo_url` (taak, of taken van de story) tegen de repo van de PR, genormaliseerd
-  zonder `.git` en hoofdletters. Daarna pas de commit-SHA's (`listPullRequestCommitShas`, lazy).
-- Het resultaat gaat via dezelfde `assembleWithinBudget` met `source: 'pr_refs'`.
+**Interfaces:**
+- `candidateProductIds(userId: string, ownProductId: string): Promise<string[]>`: producten met
+  `user_id = userId`, zonder het eigen product, doorsneden met `getTokenScopedProducts()` als die
+  niet leeg is.
+- `ReviewJob` krijgt `user_id?`. `wait-for-job.ts` geeft `job.user_id` mee.
+- Een per-resolve-context met lazy `listPullRequestCommitShas`. Het tweede gebruik doet geen
+  tweede Forgejo-call.
+- De story- en task-selects in de productoverschrijdende paden halen `id` en `product_id` (plus de
+  productnaam) op. De assembler sleutelt intern op id en neemt `product` mee.
 
 **Acceptatie (tests):**
-- unieke match in een ander product → plan, met `product` en de herkomst in `references`;
-- twee matches waarvan één met `repo_url` = repo van de PR → die ene;
-- twee matches waarvan één met een PR-commit in zijn `story_logs` → die ene, en de SHA's worden
-  pas dan opgehaald;
-- twee matches zonder signaal → code vervalt, door naar B;
-- een code die in het eigen product bestaat wordt hier niet opnieuw gezocht;
-- een product zonder toegang telt niet mee;
-- K1 "nee"-variant als aparte test van de beslisfunctie, zodat het besluit één regel blijft.
+- `candidateProductIds`: producten van een andere eigenaar en producten waarvan de gebruiker
+  alleen lid is, vallen af;
+- token-scope: de gebruiker bezit twee producten, het token staat er één toe → het andere valt af;
+  `[]` betekent geen beperking;
+- de SHA's worden maximaal één keer per resolve opgehaald (spy op `listPullRequestCommitShas`);
+- de bestaande tests voor A en B in het eigen product blijven ongewijzigd groen met `toStrictEqual`.
+
+### Taak 2 — Stappen A× en B×
+
+**Interfaces:** `resolvePlanViaCrossProductRefs(job, pr, ctx)` en
+`resolvePlanViaCrossProductCommits(job, ctx)`. `resolvePrLinkedPlan` roept ze in de volgorde van
+ontwerpkeuze 2 aan, ná B in het eigen product.
+
+**Gedrag:** ontwerpkeuzes 3 tot en met 7. Het resultaat gaat via `assembleWithinBudget` met
+`source: 'pr_refs'` (A×) of `'commits'` (B×).
+
+**Acceptatie (tests):**
+- volgorde: een PR met een gelogde commit in het eigen product én een code die alleen elders
+  bestaat → het resultaat van B in het eigen product, byte-gelijk aan nu (`toStrictEqual`);
+- A×, unieke match in een ander product → plan met `product`, en `references` met herkomst;
+- A×, twee matches waarvan één met `repo_url` = repo van de PR (https-taak tegen PR, en SSH-taak
+  tegen PR) → die ene;
+- A×, twee matches waarvan één met een PR-commit in zijn `story_logs` → die ene;
+- A×, twee matches zonder signaal → code vervalt, door naar B×;
+- A×, een code die in het eigen product bestaat → niet elders gezocht;
+- **dezelfde storycode in twee producten:** B× met twee verschillende PR-commits bij `ST-1` in
+  product X en `ST-1` in product Y → twee stories, elk met de eigen taken en acceptatiecriteria en
+  de juiste herkomst; A× met unieke taakcodes onder `ST-1` in X en Y → niet gemengd;
+- budget met lange productnamen in de labels → ≤ 100 000;
+- K1 "nee"-variant als aparte test van de beslisfunctie;
+- een product van een andere eigenaar telt in A× en B× niet mee.
 
 ### Taak 3 — Praktijkproef (vóór prompt en uitrol)
 
 Breid `scripts/probe-pr-linked-plan.ts` uit. `user_id` komt van de PR_REVIEW-job, of van de
-eigenaar van het product. Toon per PR de herkomst (`product`).
+eigenaar van het product. Toon per PR de herkomst (`product`) en de stap (A, B, A× of B×). De proef
+meldt aan het begin of het lokale token gescoped is: een gescoped token zou de dekking lager tonen
+dan op de ongescopete productieworkers.
 
 **Acceptatie:**
-- `scrum4me-mcp#180` → `pr_refs` met `T-1972 (Scrum4Me)`;
+- `scrum4me-mcp#180` → `pr_refs` met `T-1972 (Scrum4Me)`. Dit hangt af van K1 = "ja"; bij "nee"
+  vervalt dit punt en blijft #180 zonder plan;
 - `scrum4me-docker#104` → `pr_refs` (T-1973) of `commits`, met herkomst Scrum4Me;
-- `--recent 100`: dekking > 65 (nulmeting 41), en een lijst van alle koppelingen die via A×
-  zonder signaal zijn gemaakt. JP beoordeelt die steekproefsgewijs (K1);
-- een PR waarvan het plan in het eigen product staat, verandert niet (vergelijk met de stand vóór
-  de wijziging);
+- `--recent 100`: dekking > 65. De nulmeting is 41, met de resolver van ST-052 (A en B binnen het
+  eigen product), niet alleen routes 1–2. Daarnaast een lijst van alle koppelingen via A× zonder
+  signaal; JP beoordeelt die steekproefsgewijs (K1);
+- elke PR die vóór de wijziging een plan in het eigen product kreeg, geeft exact dezelfde output
+  (vergelijk het JSON per PR met een run op `a843a79`);
 - geen exception en niets boven het budget.
 
 Valt de dekking tegen of zit er een foute koppeling tussen: eerst bijsturen en JP melden, vóór
@@ -176,9 +208,10 @@ herkomstregel.
   zichtbare herkomst, en gemeten in Taak 3.
 - **Meer databasewerk per review:** hooguit drie extra batch-queries en, bij dubbelzinnigheid,
   één Forgejo-call. Dat is te verwaarlozen naast de diff-fetch.
-- **Toegang:** zonder `user_id`-filter zou een review plannen van een product van een andere
-  gebruiker kunnen lezen. Ontwerpkeuze 1 is daarom verplicht en getest. Nu hebben alle
-  PR_REVIEW-jobs dezelfde eigenaar, maar er zijn twee gebruikers met producten.
+- **Toegang:** zonder eigenaarsfilter zou een review plannen van een product van een andere
+  gebruiker kunnen lezen en in een comment kunnen zetten. Ontwerpkeuze 1 beperkt daarom tot
+  eigen producten plus de token-scope, en dat is getest. Nu hebben alle PR_REVIEW-jobs dezelfde
+  eigenaar, maar er zijn twee gebruikers met producten.
 - **Uniciteit slijt** naarmate producten groeien. Dan worden meer codes dubbelzinnig en vallen ze
   terug op de signalen. Dat is veilig: hooguit minder dekking, nooit een verkeerde keuze.
 
@@ -187,3 +220,38 @@ herkomstregel.
 Formele review-loop (fase `plan`), gestart op verzoek van JP op 2026-10-04. Dispatch bedient alleen
 het Scrum4Me-product (IDEA-233), dus op besluit van JP via de **listener-fallback**: `mac:codex` en
 `mac:claude`, door JP gearmd.
+
+### Ronde 1 — revisie 1 @ `b0fbc851`
+
+- **Verzoeken:** `mac:codex` `7d795ba3-96fb-4378-afd9-abd118dfd238` (antwoord `520ffa53`),
+  `mac:claude` `d0409026-67dc-47c1-aa45-916ffd9283a4` (antwoord `13f02bb7`). Pins: plan
+  `e8f44248…`, `CLAUDE.md` `df60a45f…`, voorganger `88bd535a…`, alle op `b0fbc851`. Presence
+  vooraf: codex `beschikbaar`, claude `bezig` (toch gepusht).
+- **Uitslag:** codex 0 BLOCKER / 1 MAJOR / 1 MINOR → **NO-GO**; claude 0 / 1 / 4 → **NO-GO**.
+- **Bepalende bevindingen, geverifieerd en geaccepteerd:**
+  - **Volgorde (claude MAJOR).** Een verbrede B en A× vóór B veranderden de uitkomst van de
+    bestaande B in het eigen product (`pr-linked-plan.ts:133`, `:259`), tegen de eigen eis van
+    byte-gelijkheid in. Fix: volgorde A(eigen) → B(eigen) → A× → B× (ontwerpkeuze 2). De SHA's
+    worden één keer per resolve opgehaald (ontwerpkeuze 4).
+  - **Identiteit op code (codex MAJOR, claude MINOR).** Groepering, `placed` en `explicitTasks`
+    sleutelen op code (`:201-215`, `:263-265`, `:349-372`), en codes zijn alleen uniek per product.
+    Fix: in A×/B× intern op id sleutelen (ontwerpkeuze 5), met tests voor dezelfde storycode in
+    twee producten.
+- **Overige bevindingen, allemaal geaccepteerd:**
+  - De budgetreservering telde kale codes, terwijl `references` labels krijgt (claude) → reserveren
+    met de definitieve weergave.
+  - Lidmaatschap als kandidaat kon andermans plan in een comment lekken (claude) → alleen eigen
+    producten (ontwerpkeuze 1).
+  - De token-scope was niet apart getest (codex) → test met twee eigen producten, waarvan het
+    token er één toestaat.
+  - `repo_url`-vergelijking zonder SSH-vormen (claude) → `parseForgejoRemoteUrl` tegen
+    `parseForgejoPrUrl`.
+  - A× moet zelf weten welke codes in het eigen product bestaan (claude) → één batch-query.
+  - Proef met gescoped lokaal token (claude) → de proef meldt de scope.
+  - Nulmeting = de ST-052-resolver, niet alleen routes 1–2 (codex) → in Taak 3 verduidelijkt.
+  - Het label moet door de assembler (codex) → ontwerpkeuze 6.
+  - De acceptatie voor #180 hangt af van K1 (claude) → in Taak 3 vermeld.
+- **K1:** beide reviewers vinden "ja" verdedigbaar. Het besluit blijft bij JP.
+- **Afgewezen:** geen.
+- **Scope-delta:** geen nieuw doel of subsysteem. Wél strenger: alleen eigen producten in plaats
+  van eigenaar of lid. Het eerste bruikbare resultaat en de praktijkproef blijven gelijk.
