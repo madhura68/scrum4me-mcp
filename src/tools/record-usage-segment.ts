@@ -17,7 +17,7 @@ import type { Prisma, UsageEndedReason } from '@prisma/client'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
-import { toolError, toolJson, withToolErrors } from '../errors.js'
+import { formatZodError, toolError, toolJson, withToolErrors } from '../errors.js'
 import { UNIQUE_VIOLATION, driverAdapterCause } from '../lib/prisma-driver-error.js'
 import { taskStatusFromApi } from '../status.js'
 
@@ -40,6 +40,9 @@ const lineSchema = z.object({
   requests: count,
 })
 
+// The strict contract, checked by the handler itself: a schema error must carry the REJECTED
+// prefix like every other permanent error, so the SDK may not reject the call first (it would
+// answer with a bare -32602 that the mod would retry forever). Registered loosely below.
 const inputSchema = z.object({
   id: z.string().uuid(),
   task_id: z.string().min(1).nullable(),
@@ -56,6 +59,8 @@ const inputSchema = z.object({
 })
 
 type RecordUsageSegmentInput = z.infer<typeof inputSchema>
+
+const registeredSchema = z.object({}).passthrough()
 
 function endedReasonToDb(reason: (typeof ENDED_REASONS)[number]): UsageEndedReason {
   return OWN_REASONS[reason] ?? (taskStatusFromApi(reason) as UsageEndedReason)
@@ -119,7 +124,7 @@ async function record(input: RecordUsageSegmentInput, userId: string, retried = 
   const close = closing(input)
   const existing = await prisma.usageSegment.findUnique({
     where: { id: input.id },
-    select: { user_id: true, product_id: true, ended_at: true },
+    select: { user_id: true, product_id: true, started_at: true, ended_at: true },
   })
 
   if (existing) {
@@ -130,6 +135,10 @@ async function record(input: RecordUsageSegmentInput, userId: string, retried = 
     // (2) lifecycle.
     if (existing.ended_at !== null || close === null) {
       return toolJson({ id: input.id, state: existing.ended_at ? 'closed' : 'open', effect: 'none' })
+    }
+    // The stored start counts, not the one in this message (spec §6: ended_at ≥ started_at).
+    if (close.ended_at < existing.started_at) {
+      return toolError(`${REJECTED}: ended_at is before the stored started_at`)
     }
     const closed = await closeOpen(input.id, close)
     return toolJson({ id: input.id, state: 'closed', effect: closed ? 'closed' : 'none' })
@@ -175,12 +184,14 @@ async function record(input: RecordUsageSegmentInput, userId: string, retried = 
   return toolJson({ id: input.id, state: close ? 'closed' : 'open', effect: 'created' })
 }
 
-export async function handleRecordUsageSegment(input: RecordUsageSegmentInput) {
+export async function handleRecordUsageSegment(raw: unknown) {
   return withToolErrors(async () => {
     const auth = await requireWriteAccess()
-    const invalid = validate(input)
+    const parsed = inputSchema.safeParse(raw)
+    if (!parsed.success) return toolError(`${REJECTED}: ${formatZodError(parsed.error)}`)
+    const invalid = validate(parsed.data)
     if (invalid) return toolError(`${REJECTED}: ${invalid}`)
-    return record(input, auth.userId)
+    return record(parsed.data, auth.userId)
   })
 }
 
@@ -190,8 +201,8 @@ export function registerRecordUsageSegmentTool(server: McpServer) {
     {
       title: 'Record usage segment',
       description:
-        'Store one usage segment of an interactive Claude Code session (IDEA-235, written by the usage-ledger mod). A header (no ended_at) opens the segment and fixes owner, product and sprint from anchor_task_id; a closing message (ended_at, ended_reason, active_ms, cost_start_usd/cost_end_usd, lines) closes it once. Repeats and messages on a closed segment succeed without effect. task_id null = sprint overhead. ended_reason uses API spelling (done, todo, review, failed, excluded, switched, session_end, untracked). Errors starting with USAGE_SEGMENT_REJECTED are permanent. Forbidden for demo accounts.',
-      inputSchema,
+        'Store one usage segment of an interactive Claude Code session (IDEA-235, written by the usage-ledger mod). Fields: id (uuid), task_id (string or null for overhead), anchor_task_id, session_id, started_at (ISO), mod_version; to close also ended_at (ISO), ended_reason, active_ms, cost_start_usd, cost_end_usd, lines[{agent_key, agent_label, model_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, requests}] (max 50). A header (no ended_at) opens the segment and fixes owner, product and sprint from anchor_task_id; a closing message (ended_at, ended_reason, active_ms, cost_start_usd/cost_end_usd, lines) closes it once. Repeats and messages on a closed segment succeed without effect. task_id null = sprint overhead. ended_reason uses API spelling (done, todo, review, failed, excluded, switched, session_end, untracked). Errors starting with USAGE_SEGMENT_REJECTED are permanent. Forbidden for demo accounts.',
+      inputSchema: registeredSchema,
     },
     handleRecordUsageSegment,
   )
