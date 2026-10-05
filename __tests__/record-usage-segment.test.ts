@@ -16,9 +16,13 @@ vi.mock('../src/prisma.js', () => ({
   },
 }))
 
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { prisma } from '../src/prisma.js'
 import { userCanAccessProduct } from '../src/access.js'
-import { handleRecordUsageSegment } from '../src/tools/record-usage-segment.js'
+import { handleRecordUsageSegment, registerRecordUsageSegmentTool } from '../src/tools/record-usage-segment.js'
 import { toolText } from './helpers/tool-result.js'
 
 const mockPrisma = prisma as unknown as {
@@ -65,6 +69,42 @@ describe('record_usage_segment validation', () => {
   })
 })
 
+// Through a real MCP client: the SDK must not reject invalid input before the handler, or the
+// error would lack the REJECTED prefix and the mod's outbox would retry it forever.
+describe('record_usage_segment over MCP tools/call', () => {
+  const call = async (args: Record<string, unknown>) => {
+    const server = new McpServer({ name: 'test', version: '0' })
+    registerRecordUsageSegmentTool(server)
+    const client = new Client({ name: 'test-client', version: '0' })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
+    try {
+      return (await client.callTool({ name: 'record_usage_segment', arguments: args })) as CallToolResult
+    } finally {
+      await client.close()
+    }
+  }
+
+  it.each([
+    ['a negative active_ms', { ...closing, active_ms: -1 }],
+    ['an id that is not a uuid', { ...header, id: 'not-a-uuid' }],
+    ['a missing mod_version', { ...header, mod_version: undefined }],
+    ['an unknown ended_reason', { ...closing, ended_reason: 'in_progress' }],
+    ['more than 50 lines', { ...closing, lines: Array.from({ length: 51 }, (_, i) => ({ ...line, agent_key: `a${i}` })) }],
+  ])('rejects %s permanently', async (_name, args) => {
+    const result = await call(args as Record<string, unknown>)
+    expect(result.isError).toBe(true)
+    expect(toolText(result)).toMatch(/^USAGE_SEGMENT_REJECTED: /)
+    expect(mockPrisma.usageSegment.create).not.toHaveBeenCalled()
+  })
+
+  it('stores a valid header', async () => {
+    const result = await call(header)
+    expect(result.isError).not.toBe(true)
+    expect(JSON.parse(toolText(result))).toEqual({ id: ID, state: 'open', effect: 'created' })
+  })
+})
+
 describe('record_usage_segment new segment', () => {
   it('fixes owner, product and sprint from the anchor', async () => {
     const result = await handleRecordUsageSegment(header)
@@ -106,7 +146,7 @@ describe('record_usage_segment new segment', () => {
     mockPrisma.usageSegment.create.mockRejectedValueOnce(Object.assign(new Error('unique'), { code: 'P2002' }))
     mockPrisma.usageSegment.findUnique
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ user_id: 'user-1', product_id: 'prod-1', ended_at: null })
+      .mockResolvedValueOnce({ user_id: 'user-1', product_id: 'prod-1', started_at: new Date(header.started_at), ended_at: null })
     const result = await handleRecordUsageSegment(closing)
     expect(JSON.parse(toolText(result))).toEqual({ id: ID, state: 'closed', effect: 'closed' })
     expect(mockPrisma.usageSegment.updateMany).toHaveBeenCalledTimes(1)
@@ -115,26 +155,26 @@ describe('record_usage_segment new segment', () => {
 
 describe('record_usage_segment existing segment', () => {
   it('rejects another user before looking at the lifecycle, also on a closed segment (RR4-6)', async () => {
-    mockPrisma.usageSegment.findUnique.mockResolvedValue({ user_id: 'user-2', product_id: 'prod-1', ended_at: new Date() })
+    mockPrisma.usageSegment.findUnique.mockResolvedValue({ user_id: 'user-2', product_id: 'prod-1', started_at: new Date(header.started_at), ended_at: new Date() })
     const result = await handleRecordUsageSegment(closing)
     expect(toolText(result)).toMatch(/^USAGE_SEGMENT_REJECTED: /)
     expect(mockPrisma.usageSegment.updateMany).not.toHaveBeenCalled()
   })
 
   it('a header on an existing segment has no effect', async () => {
-    mockPrisma.usageSegment.findUnique.mockResolvedValue({ user_id: 'user-1', product_id: 'prod-1', ended_at: null })
+    mockPrisma.usageSegment.findUnique.mockResolvedValue({ user_id: 'user-1', product_id: 'prod-1', started_at: new Date(header.started_at), ended_at: null })
     expect(JSON.parse(toolText(await handleRecordUsageSegment(header)))).toEqual({ id: ID, state: 'open', effect: 'none' })
     expect(mockPrisma.$transaction).not.toHaveBeenCalled()
   })
 
   it('any message on a closed segment succeeds without effect', async () => {
-    mockPrisma.usageSegment.findUnique.mockResolvedValue({ user_id: 'user-1', product_id: 'prod-1', ended_at: new Date() })
+    mockPrisma.usageSegment.findUnique.mockResolvedValue({ user_id: 'user-1', product_id: 'prod-1', started_at: new Date(header.started_at), ended_at: new Date() })
     expect(JSON.parse(toolText(await handleRecordUsageSegment(closing)))).toEqual({ id: ID, state: 'closed', effect: 'none' })
     expect(mockPrisma.$transaction).not.toHaveBeenCalled()
   })
 
   it('closes an open segment and replaces its lines in one transaction, without touching the anchor task', async () => {
-    mockPrisma.usageSegment.findUnique.mockResolvedValue({ user_id: 'user-1', product_id: 'prod-1', ended_at: null })
+    mockPrisma.usageSegment.findUnique.mockResolvedValue({ user_id: 'user-1', product_id: 'prod-1', started_at: new Date(header.started_at), ended_at: null })
     const result = await handleRecordUsageSegment(closing)
     expect(JSON.parse(toolText(result))).toEqual({ id: ID, state: 'closed', effect: 'closed' })
     expect(mockPrisma.usageSegment.updateMany).toHaveBeenCalledWith({
@@ -145,8 +185,17 @@ describe('record_usage_segment existing segment', () => {
     expect(mockPrisma.task.findUnique).not.toHaveBeenCalled()
   })
 
+  it('rejects a closing that ends before the stored start, whatever start the message carries', async () => {
+    mockPrisma.usageSegment.findUnique.mockResolvedValue({
+      user_id: 'user-1', product_id: 'prod-1', started_at: new Date('2026-10-05T10:00:00.000Z'), ended_at: null,
+    })
+    const early = { ...closing, started_at: '2026-10-05T08:00:00.000Z', ended_at: '2026-10-05T09:00:00.000Z' }
+    expect(toolText(await handleRecordUsageSegment(early))).toMatch(/^USAGE_SEGMENT_REJECTED: .*stored started_at/)
+    expect(mockPrisma.usageSegment.updateMany).not.toHaveBeenCalled()
+  })
+
   it('a closing that lost the race replaces no lines', async () => {
-    mockPrisma.usageSegment.findUnique.mockResolvedValue({ user_id: 'user-1', product_id: 'prod-1', ended_at: null })
+    mockPrisma.usageSegment.findUnique.mockResolvedValue({ user_id: 'user-1', product_id: 'prod-1', started_at: new Date(header.started_at), ended_at: null })
     mockPrisma.usageSegment.updateMany.mockResolvedValue({ count: 0 })
     expect(JSON.parse(toolText(await handleRecordUsageSegment(closing)))).toEqual({ id: ID, state: 'closed', effect: 'none' })
     expect(mockPrisma.usageLine.deleteMany).not.toHaveBeenCalled()

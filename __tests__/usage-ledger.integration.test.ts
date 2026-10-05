@@ -171,6 +171,28 @@ describeWithDatabase('IDEA-235 usage ledger (TEST_DATABASE_URL)', () => {
     expect((await stored(h.id))!.lines.map((l) => l.input_tokens)).toEqual([winner])
   })
 
+  it('two messages creating the same segment at once: the unique violation becomes "existing"', async () => {
+    const task = await newTask(sprint1)
+    const h = header(task, task)
+    const results = (await Promise.all([record(h), record(closeOf(h, 7))])).map(body)
+    // Whichever create lost hit a real 23505 and was handled as an existing segment.
+    expect(results.filter((r) => r.effect === 'created')).toHaveLength(1)
+    expect(await db.usageSegment.count({ where: { id: h.id } })).toBe(1)
+    const s = await stored(h.id)
+    // Either order is valid; the closing is never lost.
+    expect(s!.ended_at).not.toBeNull()
+    expect(s!.lines.map((l) => l.input_tokens)).toEqual([7])
+  })
+
+  it('a closing that ends before the stored start is refused, whatever start it carries', async () => {
+    const task = await newTask(sprint1)
+    const h = header(task, task)
+    body(await record(h))
+    const early = { ...closeOf(h), started_at: '2026-10-05T08:00:00.000Z', ended_at: '2026-10-05T09:00:00.000Z' }
+    expect(toolText(await record(early))).toMatch(/^USAGE_SEGMENT_REJECTED: .*stored started_at/)
+    expect((await stored(h.id))!.ended_at).toBeNull()
+  })
+
   it('a task without sprint is a permanent error and stores nothing', async () => {
     const task = await newTask(null)
     const h = header(task, task)
