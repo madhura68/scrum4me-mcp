@@ -339,6 +339,7 @@ model User {
   hub_approvals             HubApproval[]
   notes                     Note[]
   note_keywords             NoteKeyword[]
+  usage_segments            UsageSegment[]
 
   @@index([active_product_id])
   @@map("users")
@@ -443,6 +444,7 @@ model Product {
   review_logs               ReviewLog[]         @relation("ProductReviewLogs")
   issues                    Issue[]
   notes                     Note[]
+  usage_segments            UsageSegment[]
 
   @@unique([user_id, name])
   @@unique([user_id, code])
@@ -539,6 +541,7 @@ model Sprint {
   tasks        Task[]
   sprint_runs  SprintRun[]
   idea_builds  Idea[]       @relation("IdeaBuildSprint")
+  usage_segments UsageSegment[]
 
   @@unique([product_id, code])
   @@index([product_id, status])
@@ -607,6 +610,9 @@ model Task {
   sprint_run_failures    SprintRun[]           @relation("SprintRunFailedTask")
   sprint_task_executions SprintTaskExecution[]
   review_logs            ReviewLog[]           @relation("TaskReviewLogs")
+  // IDEA-235: virtuele relaties, geen kolommen op tasks (IDEA-213-adoptiepin).
+  estimate               TaskEstimate?
+  usage_segments         UsageSegment[]
 
   @@unique([product_id, code])
   @@index([story_id, sort_order])
@@ -2293,4 +2299,82 @@ model NoteKeywordLink {
   @@id([note_id, keyword_id])
   @@index([keyword_id])
   @@map("note_keyword_links")
+}
+
+// IDEA-235: schatting per taak en sessie-usage uit interactieve Claude Code-sessies
+// (spec docs/superpowers/specs/2026-10-04-session-usage-estimates-design.md §3 in Scrum4Me).
+// Alleen tokens; USD wordt bij het lezen berekend met ModelPrice (USD_PROXY).
+
+/// Eén schatting per taak, gezet door create_task en daarna nooit gewijzigd
+/// (de app-rollen krijgen alleen SELECT en INSERT, via het db-access-profiel).
+model TaskEstimate {
+  task                    Task     @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  task_id                 String   @id
+  estimate_active_minutes Int
+  estimate_usd            Decimal  @db.Decimal(10, 4)
+  estimate_basis          String   @db.VarChar(1000)
+  estimated_at            DateTime @default(now())
+
+  @@map("task_estimates")
+}
+
+/// Waarom een segment sloot: de taakstatus in DB-spelling, of een eigen reden.
+enum UsageEndedReason {
+  DONE
+  REVIEW
+  FAILED
+  TO_DO
+  EXCLUDED
+  SWITCHED
+  SESSION_END
+  UNTRACKED
+}
+
+/// Eén aaneengesloten stuk sessietijd, toegerekend aan een taak of (task_id null) aan
+/// sprint-overhead. Het id komt van de mod en is de idempotentiesleutel; user, product
+/// en sprint worden bij openen vastgelegd en veranderen daarna niet.
+model UsageSegment {
+  id                String            @id
+  user              User              @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id           String
+  product           Product           @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id        String
+  sprint            Sprint            @relation(fields: [sprint_id], references: [id], onDelete: Cascade)
+  sprint_id         String
+  task              Task?             @relation(fields: [task_id], references: [id], onDelete: Cascade)
+  task_id           String?
+  // De taak waarmee sprint en toegang bepaald zijn; geen FK, het segment overleeft haar.
+  anchor_task_id    String
+  session_id        String
+  started_at        DateTime
+  ended_at          DateTime?
+  active_ms         Int               @default(0)
+  ended_reason      UsageEndedReason?
+  reported_cost_usd Decimal?          @db.Decimal(10, 4)
+  mod_version       String            @db.VarChar(40)
+  created_at        DateTime          @default(now())
+  lines             UsageLine[]
+
+  @@index([sprint_id, started_at])
+  @@index([task_id])
+  @@index([session_id])
+  @@map("usage_segments")
+}
+
+/// Tokens per opgestarte agent × model binnen een segment.
+model UsageLine {
+  id                 String       @id @default(cuid())
+  segment            UsageSegment @relation(fields: [segment_id], references: [id], onDelete: Cascade)
+  segment_id         String
+  agent_key          String
+  agent_label        String
+  model_id           String
+  input_tokens       Int
+  output_tokens      Int
+  cache_read_tokens  Int
+  cache_write_tokens Int
+  requests           Int
+
+  @@unique([segment_id, agent_key, model_id])
+  @@map("usage_lines")
 }

@@ -31,6 +31,8 @@ import { registerLogCommitTool } from './tools/log-commit.js'
 import { registerCreatePbiTool } from './tools/create-pbi.js'
 import { registerCreateStoryTool } from './tools/create-story.js'
 import { registerCreateTaskTool } from './tools/create-task.js'
+import { registerRecordUsageSegmentTool } from './tools/record-usage-segment.js'
+import { registerGetEstimateHistoryTool } from './tools/get-estimate-history.js'
 import { registerCreateSprintTool } from './tools/create-sprint.js'
 import { registerUpdateSprintTool } from './tools/update-sprint.js'
 import { registerAskUserQuestionTool } from './tools/ask-user-question.js'
@@ -128,6 +130,9 @@ export function registerSharedTools(server: McpServer): void {
   registerCreatePbiTool(server)
   registerCreateStoryTool(server)
   registerCreateTaskTool(server)
+  // IDEA-235: session usage per task and estimate history
+  registerRecordUsageSegmentTool(server)
+  registerGetEstimateHistoryTool(server)
   // PBI-12: sprint lifecycle tools
   registerCreateSprintTool(server)
   registerUpdateSprintTool(server)
