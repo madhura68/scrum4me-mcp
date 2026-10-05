@@ -73,6 +73,26 @@ export async function acceptClaimBoundStopInTransaction(db:PoolClient,x:Artifact
  await db.query('UPDATE queue_dispatch_attempts SET stopped_at=$2,revoked_at=COALESCE(revoked_at,now()) WHERE id=$1',[x.a.id,observedAt]);x.a.stopped_at=new Date(observedAt)
  return id
 }
+/** ISS-12: the supervisor that claimed this attempt was replaced (a new registration signed its
+ * incarnation off) before the attempt ever started. A start permit is only signed by
+ * `startDispatchAttempt`, in the same transaction that sets `started_at` and emits `started_scope`;
+ * the broker refuses any start without one; and `active()` refuses every permit to a signed-off
+ * incarnation. So this exact signature proves nothing ran and nothing can: at most a created,
+ * never-started container remains. The service records that proof itself, bound to the claim. */
+export const SIGNED_OFF_UNSTARTED_STOP_KIND='signed_off_unstarted'
+export const SIGNED_OFF_UNSTARTED_REASON='DISPATCH_INCARNATION_SIGNED_OFF_BEFORE_START'
+export async function acceptSignedOffUnstartedStopInTransaction(db:PoolClient,x:ArtifactAttempt):Promise<boolean>{
+ if(!x.i.signed_off_at||x.a.scope_id!==null||x.a.started_at||x.a.stopped_at||x.r.generation!==x.c.generation||!x.c.first_claimed_at
+  ||!['CLAIMED','UNCERTAIN','CANCEL_REQUESTED'].includes(x.r.state)||!['CLAIMED','UNCERTAIN','CANCEL_REQUESTED'].includes(x.a.state))return false
+ if((await db.query("SELECT 1 FROM queue_dispatch_events WHERE request_id=$1 AND type='started_scope' AND payload->>'attempt_id'=$2",[x.r.id,x.a.id])).rowCount)return false
+ if((await db.query("SELECT 1 FROM queue_dispatch_events WHERE request_id=$1 AND attempt_id=$2 AND type='stop_accepted'",[x.r.id,x.a.id])).rowCount)return false
+ if((await db.query('SELECT 1 FROM queue_dispatch_results WHERE request_id=$1',[x.r.id])).rowCount||await unresolvedPublication(db,x.r.id))return false
+ const binding=sourceBindingSchema.parse({requestId:x.r.id,candidateId:x.c.id,generation:x.c.generation,attemptId:x.a.id,incarnationId:x.i.id})
+ const observedAt=(await db.query<{now:Date}>('SELECT clock_timestamp() now')).rows[0].now.toISOString()
+ await lifecycleEvent(db,x.r.id,'stop_accepted',{kind:SIGNED_OFF_UNSTARTED_STOP_KIND,binding,reason:SIGNED_OFF_UNSTARTED_REASON,signed_off_at:new Date(x.i.signed_off_at).toISOString(),observed_at:observedAt},x.a.id)
+ await db.query('UPDATE queue_dispatch_attempts SET stopped_at=$2,revoked_at=COALESCE(revoked_at,now()) WHERE id=$1',[x.a.id,observedAt]);x.a.stopped_at=new Date(observedAt)
+ return true
+}
 export function createStopEvidence(deps:{store:DispatchStore;auth:DispatchAuth}){
  async function submitStop(actor:DispatchActor,proof:AttemptProof,evidence:StopEvidence){
   return withDispatchRetryTransaction(deps.store,async db=>{const x=await lockArtifactAttempt(db,proof.attempt_id);verifyArtifactProof(actor,proof,x);await authenticateHistoricalSupervisor(db,deps.auth,actor,x);const id=await acceptStopInTransaction(db,x,evidence,actor);await finishStoppedCancellation(db,x);return {receipt_id:id}})

@@ -3,7 +3,7 @@ import { createDispatchTickRunner } from '../../src/dispatch/server.js'
 import type { DispatchTickResult } from '../../src/dispatch/tick.js'
 
 const empty: DispatchTickResult = {
-  prepared: 0, reserved: 0, retired: 0, uncertain: 0, publications: 0, publicationsFailed: 0,
+  prepared: 0, reserved: 0, retired: 0, uncertain: 0, orphansClosed: 0, publications: 0, publicationsFailed: 0,
   delivered: 0, deliveryFailed: 0, replyReadsRecovered: 0, threadsArchived: 0, threadsRefused: 0, errors: 0,
 }
 /** An explicit gate instead of a sleep: the tick hangs until the test releases it. */
