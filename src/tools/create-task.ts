@@ -49,6 +49,11 @@ const inputSchema = z.object({
   repo_url: z.string().url().optional(),
   ceremony_object_key: z.string().min(1).optional(),
   ppe: ppeInputSchema.optional(),
+  // IDEA-235 (spec §5.2): the ceremony's estimate, all three or none. Stored once as a
+  // task_estimates row in the task's transaction and never changed afterwards.
+  estimate_active_minutes: z.number().int().min(1).max(100_000).optional(),
+  estimate_usd: z.number().positive().max(999_999).optional(),
+  estimate_basis: z.string().trim().min(1).max(1000).optional(),
 })
 
 type CreateTaskInput = z.infer<typeof inputSchema>
@@ -62,9 +67,23 @@ export async function handleCreateTask({
   repo_url,
   ceremony_object_key,
   ppe,
+  estimate_active_minutes,
+  estimate_usd,
+  estimate_basis,
 }: CreateTaskInput) {
   return withToolErrors(async () => {
     const auth = await requireWriteAccess()
+
+    const estimateFields = [estimate_active_minutes, estimate_usd, estimate_basis].filter((v) => v !== undefined)
+    if (estimateFields.length === 1 || estimateFields.length === 2) {
+      return toolError('ESTIMATE_INCOMPLETE: give estimate_active_minutes, estimate_usd and estimate_basis together, or none')
+    }
+    const estimate = estimateFields.length === 3
+      ? { estimate_active_minutes: estimate_active_minutes!, estimate_usd: estimate_usd!.toFixed(4), estimate_basis: estimate_basis! }
+      : null
+    if (estimate && Number(estimate.estimate_usd) <= 0) {
+      return toolError('ESTIMATE_INCOMPLETE: estimate_usd must be at least 0.0001')
+    }
 
     const story = await prisma.story.findUnique({
       where: { id: story_id },
@@ -81,6 +100,8 @@ export async function handleCreateTask({
       story_id, title, description: description ?? null,
       implementation_plan: implementation_plan ?? null, priority,
       repo_url: repo_url ?? null, ceremony_object_key: ceremony_object_key ?? null,
+      // Only when present, so the payload hash of a call without an estimate is unchanged.
+      ...(estimate && { estimate }),
     }
     return executePpeMutation({
       ppe,
@@ -104,7 +125,7 @@ export async function handleCreateTask({
             })
           }
 
-          return tx.task.create({
+          const task = await tx.task.create({
             data: {
               story_id,
               product_id: story.product_id,
@@ -131,6 +152,12 @@ export async function handleCreateTask({
               created_at: true,
             },
           })
+          if (!estimate) return task
+          const stored = await tx.taskEstimate.create({
+            data: { task_id: task.id, ...estimate },
+            select: { estimate_active_minutes: true, estimate_usd: true, estimate_basis: true, estimated_at: true },
+          })
+          return { ...task, estimate: { ...stored, estimate_usd: stored.estimate_usd.toFixed(4) } }
         })
         const task = await withCodeUniqueRetry('tasks_product_id_code_key', createTask)
         return toolJson(task)
@@ -145,7 +172,7 @@ export function registerCreateTaskTool(server: McpServer) {
     {
       title: 'Create task',
       description:
-        'Add a task under an existing story. Inherits sprint_id from the story (denormalized). Status defaults to TO_DO. Priority is team importance only; execution order appends within the parent and can be changed through backlog reorder. Optional repo_url overrides the product.repo_url for cross-repo work (e.g. tasks targeting scrum4me-mcp under a Scrum4Me PBI). Forbidden for demo accounts.',
+        'Add a task under an existing story. Inherits sprint_id from the story (denormalized). Status defaults to TO_DO. Priority is team importance only; execution order appends within the parent and can be changed through backlog reorder. Optional repo_url overrides the product.repo_url for cross-repo work (e.g. tasks targeting scrum4me-mcp under a Scrum4Me PBI). Optional estimate (all three or none): estimate_active_minutes (expected active model time), estimate_usd (expected USD-equivalent) and estimate_basis (one or two sentences: plan size, comparable task, expected models); read get_estimate_history first. The estimate is frozen at creation. Forbidden for demo accounts.',
       inputSchema,
     },
     handleCreateTask,

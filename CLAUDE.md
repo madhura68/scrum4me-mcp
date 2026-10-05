@@ -204,6 +204,12 @@ Or add to `~/.scrum4me-agent-config.json`:
 
 If no local root is found, `wait_for_job` tries an **on-demand clone** of `product.repo_url` (spec: `docs/superpowers/specs/2026-07-08-on-demand-repo-clone-fallback-design.md`). Only if the clone also fails does it roll the claim back to QUEUED and return an error. Explicit configuration is therefore optional for any product with a valid `repo_url`. Exception: a `local_llm` job (`required_capability = 'local_llm'`) resolves **only** from an explicitly configured root (env var or config entry) — no `~/Projects/<name>` convention lookup and no on-demand clone, and a cross-repo task never falls back to the product root. Without one the job goes straight to `FAILED` (no rollback to QUEUED).
 
+## Session usage and estimates (IDEA-235)
+
+- `record_usage_segment` (written by the usage-ledger mod): monotonic per segment id. Ownership and access are checked first; then a header creates or is a no-op, a closing message closes an open segment once (`updateMany … where ended_at IS NULL`, lines replaced in the same transaction), and anything on a closed segment succeeds without effect. Owner, product and sprint are fixed from `anchor_task_id` at creation and never change. Errors starting with `USAGE_SEGMENT_REJECTED` are permanent (the mod drops the segment); every other failure is transient (the mod retries from its outbox).
+- `create_task` takes an optional estimate (`estimate_active_minutes`, `estimate_usd`, `estimate_basis`: all three or none) and writes one `task_estimates` row in the task's transaction. No other code writes `task_estimates` (`__tests__/create-task-estimate.test.ts` enforces it). With PPE the estimate is part of the hashed request, only when present.
+- `get_estimate_history` uses the shared SQL in `vendor/scrum4me-shared/lib/usage-sql.ts`; USD only when every line is priced. Real-Postgres coverage: `__tests__/usage-ledger.integration.test.ts` (`TEST_DATABASE_URL`, skips without it).
+
 ## Token-usage capture (PostToolUse hook)
 
 `update_job_status` accepts optional fields `model_id`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`. The agent never has to pass them — `scripts/persist-job-usage.ts` runs as a PostToolUse hook, reads the local Claude Code transcript JSONL (no Anthropic API needed), sums per-job usage, and writes directly to `claude_jobs` via Prisma. Window detection: from the most-recent `wait_for_job` tool_use to EOF.
