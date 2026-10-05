@@ -90,7 +90,7 @@ it('tick touches at most 25 request ids and never wires timers on import', async
   const reserve = vi.fn(async () => null), retire = vi.fn(async () => true), waiting = vi.fn(async (limit: number) => Array.from({ length: limit }, (_, i) => String(i)))
   const store = { query: vi.fn(async () => ({ rows: Array.from({ length: 10 }, (_, i) => ({ request_id: String(i) })) })) }
   const tick = createDispatchTick({ store: store as never, selection: { reserveRequest: reserve, retireExpiredCandidate: retire, waitingRequestIds: waiting } as never })
-  expect(await tick()).toEqual({ prepared: 0, reserved: 0, retired: 10, uncertain: 0, publications: 0, publicationsFailed: 0, delivered: 0, deliveryFailed: 0, replyReadsRecovered: 0, threadsArchived: 0, threadsRefused: 0, errors: 0 })
+  expect(await tick()).toEqual({ prepared: 0, reserved: 0, retired: 10, uncertain: 0, orphansClosed: 0, publications: 0, publicationsFailed: 0, delivered: 0, deliveryFailed: 0, replyReadsRecovered: 0, threadsArchived: 0, threadsRefused: 0, errors: 0 })
   expect(waiting).toHaveBeenCalledWith(15); expect(reserve).toHaveBeenCalledTimes(15); expect(retire).toHaveBeenCalledTimes(10)
 })
 
@@ -110,7 +110,7 @@ it('prepares sources before selection, bounds the outbox and survives one poison
     delivery: { deliverDispatchOutbox: vi.fn(async (limit: number) => ({ delivered: limit, failed: 0 })) } as never,
     onError: stage => { stages.push(stage) },
   })
-  expect(await tick()).toEqual({ prepared: 2, reserved: 2, retired: 0, uncertain: 0, publications: 2, publicationsFailed: 1, delivered: 100, deliveryFailed: 0, replyReadsRecovered: 0, threadsArchived: 0, threadsRefused: 0, errors: 3 })
+  expect(await tick()).toEqual({ prepared: 2, reserved: 2, retired: 0, uncertain: 0, orphansClosed: 0, publications: 2, publicationsFailed: 1, delivered: 100, deliveryFailed: 0, replyReadsRecovered: 0, threadsArchived: 0, threadsRefused: 0, errors: 3 })
   // Preparation runs first and for every waiting request, so selection never sees an unprepared one.
   expect(prepareRequestSources.mock.calls.map(call => call[0])).toEqual(['a', 'b', 'c'])
   expect(prepared).toEqual(['a', 'c'])

@@ -2,6 +2,7 @@ import type { DispatchStore } from './db.js'
 import type { DispatchAttempts } from './attempts.js'
 import type { DispatchSelection } from './selection.js'
 import type { createDispatchDelivery } from './delivery.js'
+import { closeSignedOffUnstartedAttempts } from './orphans.js'
 
 /** Per §2.1 one tick touches at most 25 requests and at most 100 outbox items. */
 export const DISPATCH_TICK_REQUEST_LIMIT = 25
@@ -13,7 +14,7 @@ export const DISPATCH_TICK_MAINTENANCE_LIMIT = 100
 export const DISPATCH_TICK_RETENTION_LIMIT = 25
 
 export type DispatchTickResult = {
-  prepared: number; reserved: number; retired: number; uncertain: number
+  prepared: number; reserved: number; retired: number; uncertain: number; orphansClosed: number
   publications: number; publicationsFailed: number
   delivered: number; deliveryFailed: number
   replyReadsRecovered: number; threadsArchived: number; threadsRefused: number
@@ -69,6 +70,8 @@ export function createDispatchTick(deps: DispatchTickDependencies) {
       if (await unit('sources', false, async () => { await deps.sources!.prepareRequestSources(id); return true })) prepared++
     }
     for (const id of waiting) if (await unit('reserve', null, () => deps.selection.reserveRequest(id))) reserved++
+    // ISS-12: before leases expire, close what a replaced supervisor provably never started.
+    const orphansClosed = deps.attempts ? await unit('orphans', 0, () => closeSignedOffUnstartedAttempts(deps.store, DISPATCH_TICK_REQUEST_LIMIT)) : 0
     const uncertain = deps.attempts ? await unit('lease', 0, () => deps.attempts!.markExpiredAttempts(DISPATCH_TICK_REQUEST_LIMIT)) : 0
     const publication = deps.publications
       ? await unit('publication', { processed: 0, failed: 0 }, () => deps.publications!.reconcileIncompletePublications())
@@ -94,7 +97,7 @@ export function createDispatchTick(deps: DispatchTickDependencies) {
         }
       }
     }
-    return { prepared, reserved, retired, uncertain, publications: publication.processed,
+    return { prepared, reserved, retired, uncertain, orphansClosed, publications: publication.processed,
       publicationsFailed: publication.failed, delivered: projected.delivered, deliveryFailed: projected.failed,
       replyReadsRecovered, threadsArchived, threadsRefused, errors }
   }
