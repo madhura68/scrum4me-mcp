@@ -6,6 +6,7 @@ import { createDispatchRequests } from '../../src/dispatch/requests.js'
 import { createReadyFixtureSelection as createDispatchSelection } from './source-fixtures.js'
 import { createDispatchRegistration } from '../../src/dispatch/registration.js'
 import { createDispatchAttempts } from '../../src/dispatch/attempts.js'
+import { createDispatchCancellation } from '../../src/dispatch/cancel.js'
 import { createDispatchTick } from '../../src/dispatch/tick.js'
 import { verifyStartPermit } from '../../src/dispatch/credentials.js'
 import type { ExecutorSession } from '../../src/dispatch/client.js'
@@ -199,4 +200,59 @@ it('cancels an unattended uncertain scope at maximum duration exactly once witho
  expect((await h.dispatch.query("SELECT count(*)::int n FROM queue_dispatch_events WHERE type='stop_required' AND payload->>'reason'='maximum_duration'")).rows[0].n).toBe(1)
  expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations')).rows).toEqual([{released_at:null}])
  expect((await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_candidates')).rows[0].n).toBe(1)
+})
+// ISS-12: a supervisor restarted (OOM) after its claim and before start registers a new incarnation,
+// which signs the old one off. No start permit was issued (started_at/scope_id null, no started_scope)
+// and a signed-off incarnation can never get one, so nothing ran and nothing can: the tick closes it.
+describe('signed-off incarnation with an unstarted attempt (ISS-12)',()=>{
+ const tick=()=>createDispatchTick({store:h.dispatch,selection,attempts})()
+ const closed=async(r:{id:string},attemptId:string,outcome:'FAILED'|'CANCELLED')=>{
+  expect((await requests.getDispatch(f.actor,r.id)).state).toBe(outcome)
+  expect((await h.dispatch.query('SELECT state FROM queue_dispatch_attempts WHERE id=$1',[attemptId])).rows[0].state).toBe(outcome)
+  expect((await h.dispatch.query('SELECT j.status FROM claude_jobs j JOIN queue_dispatch_candidates c ON c.job_id=j.id JOIN queue_dispatch_attempts a ON a.candidate_id=c.id WHERE a.id=$1',[attemptId])).rows[0].status).toBe(outcome)
+  expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations')).rows[0].released_at).not.toBeNull()
+  expect((await h.dispatch.query("SELECT payload->>'kind' kind,payload->>'reason' reason FROM queue_dispatch_events WHERE attempt_id=$1 AND type='stop_accepted'",[attemptId])).rows)
+   .toEqual([{kind:'signed_off_unstarted',reason:'DISPATCH_INCARNATION_SIGNED_OFF_BEFORE_START'}])
+  expect((await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_results WHERE request_id=$1',[r.id])).rows[0].n).toBe(1)
+ }
+ it('closes a CLAIMED attempt as FAILED once a restart signed its incarnation off',async()=>{
+  const {r,context}=await claimed()
+  await h.registerNextIncarnation(f.jobSlot.id)
+  expect((await tick()).orphansClosed).toBe(1)
+  await closed(r,context.proof.attempt_id,'FAILED')
+  expect((await h.dispatch.query("SELECT payload->>'summary' summary FROM queue_dispatch_results WHERE request_id=$1",[r.id])).rows[0].summary).toBe('DISPATCH_INCARNATION_SIGNED_OFF_BEFORE_START')
+  expect((await tick()).orphansClosed).toBe(0)
+ })
+ it('closes an attempt that already went UNCERTAIN on lease expiry (the observed incident order)',async()=>{
+  const {r,context}=await claimed()
+  await h.registerNextIncarnation(f.jobSlot.id)
+  await h.dispatch.query("UPDATE queue_dispatch_attempts SET heartbeat_at=now()-interval '121 seconds' WHERE id=$1",[context.proof.attempt_id])
+  expect(await attempts.markExpiredAttempts()).toBe(1)
+  expect((await requests.getDispatch(f.actor,r.id)).state).toBe('UNCERTAIN')
+  await tick()
+  await closed(r,context.proof.attempt_id,'FAILED')
+ })
+ it('finishes a stuck cancellation as CANCELLED',async()=>{
+  const {r,context}=await claimed()
+  const v=await requests.getDispatch(f.actor,r.id)
+  await createDispatchCancellation({store:h.dispatch,auth:createDispatchAuth({store:h.dispatch})}).cancelDispatch(f.actor,r.id,randomUUID(),v.version)
+  expect((await requests.getDispatch(f.actor,r.id)).state).toBe('CANCEL_REQUESTED')
+  await h.registerNextIncarnation(f.jobSlot.id)
+  await tick()
+  await closed(r,context.proof.attempt_id,'CANCELLED')
+ })
+ it('leaves an unstarted attempt of a live incarnation alone',async()=>{
+  const {r,context}=await claimed()
+  expect((await tick()).orphansClosed).toBe(0)
+  expect((await requests.getDispatch(f.actor,r.id)).state).toBe('CLAIMED')
+  expect((await h.dispatch.query("SELECT count(*)::int n FROM queue_dispatch_events WHERE attempt_id=$1 AND type='stop_accepted'",[context.proof.attempt_id])).rows[0].n).toBe(0)
+ })
+ it('never closes a started attempt, even when its incarnation is signed off',async()=>{
+  const {r,context}=await claimed();await attempts.startDispatchAttempt(f.actor,context.proof,scope)
+  await h.registerNextIncarnation(f.jobSlot.id)
+  expect((await tick()).orphansClosed).toBe(0)
+  expect((await requests.getDispatch(f.actor,r.id)).state).toBe('RUNNING')
+  expect((await h.dispatch.query("SELECT count(*)::int n FROM queue_dispatch_events WHERE attempt_id=$1 AND type='stop_accepted'",[context.proof.attempt_id])).rows[0].n).toBe(0)
+  expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations')).rows).toEqual([{released_at:null}])
+ })
 })
