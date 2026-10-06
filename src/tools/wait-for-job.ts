@@ -1205,8 +1205,10 @@ export async function getFullJobContext(
   // Een lus is aanvaard: alleen bij een filterfout claimt een Claude- of Codex-worker dezelfde job bij elke poll
   // opnieuw, zichtbaar als runtime_mismatch in de claimlog; de harness stopt op deze fout zonder herstart.
   if (runtime !== undefined && job.runtime !== runtime) {
-    await releaseMismatchedClaim(job.id, ownerIdentity(ownerCtx))
+    // Eerst loggen, dan teruggeven: runtime_mismatch is het signaal waarop het plan rekent om een fout in het
+    // claimfilter te zien, en het mag niet verloren gaan als de teruggave zelf faalt (een databasefout gaat omhoog).
     claimLog('runtime_mismatch', { jobId: job.id, jobRuntime: job.runtime, workerRuntime: runtime })
+    await releaseMismatchedClaim(job.id, ownerIdentity(ownerCtx))
     throw new RuntimeMismatchError(job.id, job.runtime, runtime)
   }
 

@@ -471,6 +471,29 @@ describe('getFullJobContext — de runtime van de job moet die van de worker zij
     expect(entry).toEqual({ scope: 'claim', event: 'runtime_mismatch', jobId: JOB_ID, jobRuntime, workerRuntime })
   })
 
+  // runtime_mismatch is het signaal waarop het plan rekent om een fout in het claimfilter te zien. Faalt de teruggave zelf
+  // (een databasefout), dan mag dat signaal niet verloren gaan: de log is geschreven vóór de teruggave begint.
+  it.each(MISMATCHES)('een %s-worker met een %s-job: faalt de teruggave, dan staat runtime_mismatch toch in de claimlog en gaat de databasefout omhoog', async (workerRuntime, jobRuntime) => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue(ideaGrillJob(jobRuntime))
+    const failure = new Error('deadlock detected')
+    tx.$executeRaw.mockRejectedValue(failure)
+
+    await expect(getFullJobContext(JOB_ID, workerRuntime, OWNER)).rejects.toBe(failure)
+
+    const entry = claimLogLines(errorSpy).find((line) => line.event === 'runtime_mismatch')
+    expect(entry).toEqual({ scope: 'claim', event: 'runtime_mismatch', jobId: JOB_ID, jobRuntime, workerRuntime })
+  })
+
+  it('de claimlog wordt geschreven vóór de teruggave begint: eerst runtime_mismatch, dan de transactie', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue(ideaGrillJob('CLAUDE'))
+
+    await expect(getFullJobContext(JOB_ID, 'HARNESS', OWNER)).rejects.toBeInstanceOf(RuntimeMismatchError)
+
+    const logCall = errorSpy.mock.calls.findIndex(([line]: unknown[]) => String(line).includes('"event":"runtime_mismatch"'))
+    expect(logCall).toBeGreaterThanOrEqual(0)
+    expect(errorSpy.mock.invocationCallOrder[logCall]).toBeLessThan(mockPrisma.$transaction.mock.invocationCallOrder[0])
+  })
+
   it.each(['CLAUDE', 'CODEX'] as const)('een %s-worker met een job van dezelfde runtime gaat door: geen teruggave, wel de payload', async (runtime) => {
     mockPrisma.claudeJob.findUnique.mockResolvedValue(ideaGrillJob(runtime))
 
