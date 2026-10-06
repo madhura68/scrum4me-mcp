@@ -19,8 +19,9 @@ describe('runtime-aware claim filter', () => {
     expect(parseWorkerRuntime('codex')).toBe('CODEX')
     expect(parseWorkerRuntime(' claude ')).toBe('CLAUDE')
     expect(parseWorkerRuntime('')).toBe('CLAUDE')
-    expect(parseWorkerRuntime('gpt-5')).toBe('CLAUDE')
     expect(parseWorkerRuntime(undefined)).toBe('CLAUDE')
+    // Een onbekende waarde (bv. 'gpt-5') werd hier vroeger stil CLAUDE. Dat is een fout
+    // geworden (UNKNOWN_AGENT_RUNTIME, M45-2b); zie __tests__/worker-runtime.test.ts.
   })
 
   it('filters by runtime', () => {

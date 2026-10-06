@@ -1638,7 +1638,8 @@ export async function getFullJobContext(
       repo_url: job.product.repo_url,
       plan_chat: questionPayload,
       user_question: questionPayload,
-      prompt_text: getIdeaPromptText('PLAN_CHAT'),
+      // HARNESS krijgt geen Claude-prompt (kind-prompts.ts); de runtime is de effectieve van deze claim.
+      prompt_text: getIdeaPromptText('PLAN_CHAT', effectiveRuntime),
       branch_suggestion: `feat/idea-${idea.code.toLowerCase()}-chat`,
     }
   }
@@ -1772,7 +1773,8 @@ export async function getFullJobContext(
           created_at: q.created_at.toISOString(),
         })),
       },
-      prompt_text: getIdeaPromptText('IDEA_CHAT'),
+      // HARNESS krijgt geen Claude-prompt (kind-prompts.ts); de runtime is de effectieve van deze claim.
+      prompt_text: getIdeaPromptText('IDEA_CHAT', effectiveRuntime),
     }
   }
 

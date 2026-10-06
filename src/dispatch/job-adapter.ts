@@ -34,6 +34,10 @@ export async function lockManagedTask(db: PoolClient, request: ManagedRequest) {
   if (!repo?.repo_url || (task.repo_url ?? main?.repo_url) !== repo.repo_url || accepted?.repo_url !== repo.repo_url) throw new DispatchError('DISPATCH_FORBIDDEN')
 }
 export async function enqueueManagedJob(db: PoolClient, request: ManagedRequest, candidate: { id: string; profileRevisionId: string; runtime: 'CODEX' | 'CLAUDE' }, snapshot: RuntimeJobConfig): Promise<string> {
+  // M45: managed dispatch stays closed to HARNESS (CLAUDE | CODEX only). readManagedJobSnapshot
+  // resolves just those two, so this is unreachable; refusing makes that explicit and narrows the
+  // union (the HARNESS member has no thinking_budget) without a cast. First, before any lock or write.
+  if (snapshot.runtime === 'HARNESS') throw new Error('UNKNOWN_AGENT_RUNTIME')
   // The selection transaction already owns the Task lock before candidate locks.
   // Reentrant acquisition keeps this public adapter safe when called directly.
   await lockManagedTask(db, request)

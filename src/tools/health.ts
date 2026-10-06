@@ -5,6 +5,7 @@ import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
 import { toolJson, withToolErrors } from '../errors.js'
+import { AGENT_RUNTIMES } from '@shared/agent-runtime.js'
 
 // Read once at module-load. Health is hot-path enough that we don't want
 // disk-IO per call, and the version string is fixed for the running process.
@@ -44,6 +45,10 @@ export function registerHealthTool(server: McpServer) {
           version: VERSION,
           time: new Date().toISOString(),
           database,
+          // The worker runtimes this MCP release knows (SCRUM4ME_WORKER_RUNTIME). A copy: toolJson
+          // hands the object itself back as structuredContent, so a reader that mutates the list
+          // would otherwise mutate the shared constant.
+          runtimes: [...AGENT_RUNTIMES],
         })
       }),
   )

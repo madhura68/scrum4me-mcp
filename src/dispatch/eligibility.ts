@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client'
 import { managedWorkerPollScope } from '../presence/worker-mode.js'
 import type { DispatchInput, DispatchProfileConfig } from '@shared/queue-dispatch.js'
-type WorkerRuntime = 'CLAUDE' | 'CODEX'
+import type { WorkerRuntime } from '../worker-runtime.js'
 
 export type ClaimFilterInput = {
   runtime: WorkerRuntime

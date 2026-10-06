@@ -57,6 +57,10 @@ const RUNTIME_PROMPT_OVERRIDES: Partial<Record<WorkerRuntime, Partial<Record<Cla
 }
 
 export function getKindPromptText(kind: ClaudeJobKind, runtime: WorkerRuntime = 'CLAUDE'): string {
+  // M45: HARNESS draait een LiteLLM-model, geen Claude Code. De Claude-prompts (met hun
+  // MCP-tools en werkwijze) gelden daar niet, en zonder deze tak viel HARNESS via
+  // KIND_TO_PROMPT_PATH terug op die tekst. Leeg is de bestaande vorm voor "geen prompt".
+  if (runtime === 'HARNESS') return ''
   const rel = RUNTIME_PROMPT_OVERRIDES[runtime]?.[kind] ?? KIND_TO_PROMPT_PATH[kind]
   if (!rel) return ''
   const key = `${runtime}:${kind}`
