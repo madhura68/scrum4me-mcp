@@ -513,8 +513,9 @@ export async function attachWorktreeToJob(
       // Mirror the LocalLlmWorktreeRefused path below: FAILED, no
       // rollbackClaim (that would hot-loop claim → fail → rollback), and
       // nothing to clean up since no worktree/clone was ever created.
+      // De tekst komt in claude_jobs.error en geldt voor beide bewaakte soorten (HARNESS en local_llm).
       const message =
-        `geen repo-root voor ${repoHint} op deze host (local_llm vereist een expliciete SCRUM4ME_REPO_ROOT_*)`
+        `geen repo-root voor ${repoHint} op deze host (een HARNESS- of local_llm-job vereist een expliciete SCRUM4ME_REPO_ROOT_*)`
       await prisma.claudeJob.update({
         where: { id: jobId },
         data: { status: 'FAILED', error: message.slice(0, 2000), finished_at: new Date() },

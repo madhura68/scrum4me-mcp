@@ -97,7 +97,7 @@ describe('attachWorktreeToJob: local_llm-job zonder repo-root (P13)', () => {
     expect('error' in result).toBe(true)
     expect((result as { error: string }).error).toBe(
       `geen repo-root voor product ${LOCAL_PRODUCT_ID} op deze host ` +
-        '(local_llm vereist een expliciete SCRUM4ME_REPO_ROOT_*)',
+        '(een HARNESS- of local_llm-job vereist een expliciete SCRUM4ME_REPO_ROOT_*)',
     )
     // Never clones/runs npm ci on the host for a local_llm job.
     expect(cloneMock).not.toHaveBeenCalled()
@@ -207,7 +207,7 @@ describe('attachWorktreeToJob: task-route explicitRootsOnly regression (P13 foll
     expect('error' in result).toBe(true)
     expect((result as { error: string }).error).toBe(
       `geen repo-root voor task.repo_url=${TASK_REPO_URL} op deze host ` +
-        '(local_llm vereist een expliciete SCRUM4ME_REPO_ROOT_*)',
+        '(een HARNESS- of local_llm-job vereist een expliciete SCRUM4ME_REPO_ROOT_*)',
     )
     expect(mockCreateWorktree).not.toHaveBeenCalled()
     expect(cloneMock).not.toHaveBeenCalled()
