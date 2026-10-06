@@ -100,7 +100,10 @@ export async function dispatchIdeaJob(opts: {
     where: {
       user_id: opts.userId,
       last_seen_at: { gt: new Date(Date.now() - WORKER_FRESH_MS) },
-      ...(isReviewKind ? { runtime: 'CODEX', capabilities: { has: 'review' } } : {}),
+      // M45-2b: een worker met runtime HARNESS claimt alleen IDEA_CHAT en een losse taak, nooit IDEA_GRILL,
+      // IDEA_MAKE_PLAN of IDEA_MAKE_SPEC; met alleen zo'n worker bleef de job eeuwig QUEUED. IDEA_REVIEW_PLAN
+      // filtert al op CODEX, daar valt HARNESS dus al buiten.
+      ...(isReviewKind ? { runtime: 'CODEX', capabilities: { has: 'review' } } : { NOT: { runtime: 'HARNESS' } }),
     },
   })
   if (workers === 0) {

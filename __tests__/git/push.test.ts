@@ -14,10 +14,10 @@ vi.mock('node:child_process', () => ({
   execFile: vi.fn(),
 }))
 
-// Deze tests dekken de niet-lokale weg (geen local_llm-job); de findUnique-mock
-// zorgt dat isLocalLlmJob() altijd false teruggeeft zonder een echte DB nodig
-// te hebben. Het local_llm-pad (SAFE_GIT_CONFIG + --no-verify) zit in het
-// 'pushBranchForJob: local_llm-vlaggen'-blok hieronder.
+// Deze tests dekken de niet-lokale weg (geen HARNESS- of local_llm-job); de findUnique-mock
+// zorgt dat isHarnessJob() altijd false teruggeeft zonder een echte DB nodig
+// te hebben. Het bewaakte pad (SAFE_GIT_CONFIG + --no-verify) zit in het
+// 'pushBranchForJob: local_llm-vlaggen'-blok hieronder, voor beide soorten job.
 vi.mock('../../src/prisma.js', () => ({
   prisma: { claudeJob: { findUnique: vi.fn().mockResolvedValue(null) } },
 }))
@@ -26,6 +26,7 @@ import { execFile } from 'node:child_process'
 import { prisma } from '../../src/prisma.js'
 import { pushBranchForJob } from '../../src/git/push.js'
 import { SAFE_GIT_CONFIG } from '../../src/git/local-llm.js'
+import { GUARDED_JOBS } from '../helpers/guarded-jobs.js'
 
 // promisify(execFile) will call execFile(cmd, args, opts, cb) internally
 type ExecCallback = (err: Error | null, result?: { stdout: string; stderr: string }) => void
@@ -125,11 +126,9 @@ describe('pushBranchForJob: local_llm-vlaggen (Taak 4)', () => {
     else process.env.SCRUM4ME_AGENT_WORKTREE_DIR = originalEnv
   })
 
-  it('voegt SAFE_GIT_CONFIG en --no-verify toe voor een local_llm-job', async () => {
+  it.each(GUARDED_JOBS)('voegt SAFE_GIT_CONFIG en --no-verify toe voor een $label', async ({ job }) => {
     process.env.SCRUM4ME_AGENT_WORKTREE_DIR = '/wt'
-    findUnique.mockResolvedValue(
-      { required_capability: 'local_llm' } as unknown as Awaited<ReturnType<typeof findUnique>>,
-    )
+    findUnique.mockResolvedValue(job as unknown as Awaited<ReturnType<typeof findUnique>>)
     mockExec.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: ExecCallback) => {
       if (args.includes('HEAD')) return cb(null, { stdout: `${SHA_HEAD}\n`, stderr: '' })
       if (args.includes('origin/main')) return cb(null, { stdout: `${SHA_BASE}\n`, stderr: '' })

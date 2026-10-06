@@ -21,6 +21,7 @@ describe('getFullJobContext manual jobs', () => {
       kind: 'PLAN_CHAT',
       source: 'MANUAL',
       status: 'CLAIMED',
+      runtime: 'CLAUDE',
       requested_model: 'claude-haiku-4-5-20251001',
       requested_thinking_budget: 3000,
       requested_permission_mode: 'plan',

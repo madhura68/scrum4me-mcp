@@ -1,17 +1,22 @@
-// local_llm-bewaking (spec docs/specs/2026-09-27-task-implementation-local-llm-design.md
-// §4.5, §5.3): voor een job met required_capability = 'local_llm' draait
-// model-geschreven code later in containers die de worktree read-write
-// mounten. Die containers kunnen de worktree's .git-gitlink (en submodule-
-// gitlinks) hebben omgebogen naar zelfgemaakte git-administratie met
-// executable config (core.fsmonitor, core.sshCommand, …). Daarom mag de MCP
-// voor zo'n job nooit git draaien met de worktree als werkmap buiten de claim
-// (vóór de eerste container) en het groene pad ná de harness-scan — die twee
-// momenten worden elders afgehandeld (Taak 4/5). Deze module legt de regel in
-// de gedeelde helpers zodat elke aanroeper hem erft.
+// Bewaking van jobs waarvan model-geschreven code buiten de MCP draait (spec
+// docs/specs/2026-09-27-task-implementation-local-llm-design.md §4.5, §5.3; voor
+// de HARNESS-runtime M45 spec §5.6): voor een job met runtime = 'HARNESS' of
+// required_capability = 'local_llm' draait model-geschreven code later in
+// containers die de worktree read-write mounten. Die containers kunnen de
+// worktree's .git-gitlink (en submodule-gitlinks) hebben omgebogen naar
+// zelfgemaakte git-administratie met executable config (core.fsmonitor,
+// core.sshCommand, …). Daarom mag de MCP voor zo'n job nooit git draaien met de
+// worktree als werkmap buiten de claim (vóór de eerste container) en het groene
+// pad ná de harness-scan — die twee momenten worden elders afgehandeld
+// (Taak 4/5). Deze module legt de regel in de gedeelde helpers zodat elke
+// aanroeper hem erft.
 //
-// "Is dit een local_llm-job?" wordt altijd uit de database beslist
-// (claude_jobs.required_capability), nooit uit iets in de worktree zelf —
-// die is precies het onvertrouwde stuk.
+// "Is dit een bewaakte job?" is één predicaat (isHarnessJob / isHarnessJobRow)
+// en wordt altijd uit de database beslist (claude_jobs.runtime en
+// claude_jobs.required_capability), nooit uit iets in de worktree zelf — die is
+// precies het onvertrouwde stuk. De namen hieronder die nog "local_llm"
+// zeggen (isLocalLlmWorktree, gitPrefixFor, SAFE_GIT_CONFIG, …) dateren van
+// vóór M45 en volgen dat predicaat.
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -24,9 +29,12 @@ import { assertTrustedLocalJobWorktree } from './worktree-gitlink.js'
 
 const exec = promisify(execFile)
 
-// Veilige host-git-config (spec §4.5): hooks, fsmonitor en submodule-
-// verwerking uitgeschakeld zodat een omgebogen gitlink of submodule-config
-// geen executable hook kan laten draaien via een host-git-aanroep.
+/**
+ * Veilige host-git-config (spec §4.5): hooks, fsmonitor en submodule-
+ * verwerking uitgeschakeld zodat een omgebogen gitlink of submodule-config
+ * geen executable hook kan laten draaien via een host-git-aanroep. Geldt voor
+ * elke job waarvoor `isHarnessJob` waar is (HARNESS én local_llm).
+ */
 export const SAFE_GIT_CONFIG = [
   '-c', 'core.hooksPath=/dev/null',
   '-c', 'core.fsmonitor=false',
@@ -35,13 +43,27 @@ export const SAFE_GIT_CONFIG = [
   '-c', 'submodule.recurse=false',
 ] as const
 
-/** DB-lookup; onbekende job ⇒ false. */
-export async function isLocalLlmJob(jobId: string): Promise<boolean> {
+/**
+ * Spec §5.6: één predicaat voor alle bewaking; de local_llm-tak blijft permanent.
+ *
+ * Een HARNESS-job (`runtime`) en een local_llm-job (`required_capability`) krijgen dezelfde
+ * git-bescherming. De local_llm-tak blijft ook als die capability niet meer wordt uitgegeven: de
+ * worktrees van oude, afgesloten local_llm-jobs kunnen nog op een branch staan en blijven bewaakt.
+ */
+export function isHarnessJobRow(job: { runtime: string; required_capability: string | null }): boolean {
+  return job.runtime === 'HARNESS' || job.required_capability === 'local_llm'
+}
+
+/**
+ * DB-lookup van beide velden (nooit uit de worktree); onbekende job ⇒ false. Geen statusfilter:
+ * ook een afgesloten job blijft bewaakt.
+ */
+export async function isHarnessJob(jobId: string): Promise<boolean> {
   const job = await prisma.claudeJob.findUnique({
     where: { id: jobId },
-    select: { required_capability: true },
+    select: { runtime: true, required_capability: true },
   })
-  return job?.required_capability === 'local_llm'
+  return !!job && isHarnessJobRow(job)
 }
 
 // Best-effort realpath: valt terug op het onopgeloste pad wanneer het (nog)
@@ -85,16 +107,20 @@ export function jobIdFromWorktreePath(worktreePath: string): string | null {
   )
 }
 
-/** true als het pad de worktree van een local_llm-job is. */
+/**
+ * true als het pad de worktree van een bewaakte job is (`isHarnessJob`: HARNESS of local_llm; de
+ * naam is van vóór M45).
+ */
 export async function isLocalLlmWorktree(worktreePath: string): Promise<boolean> {
   const jobId = jobIdFromWorktreePath(worktreePath)
   if (!jobId) return false
-  return isLocalLlmJob(jobId)
+  return isHarnessJob(jobId)
 }
 
 /**
  * fs.rm(recursive, force) van de map, daarna `git <SAFE_GIT_CONFIG> worktree
- * prune` met cwd = repoRoot. Nooit git in de worktree.
+ * prune` met cwd = repoRoot. Nooit git in de worktree. Voor de worktree van een
+ * job waarvoor `isHarnessJob` waar is (de naam is van vóór M45).
  */
 export async function removeWorktreeWithoutGit(
   repoRoot: string,
@@ -114,18 +140,19 @@ export {
 } from './worktree-gitlink.js'
 
 /**
- * SAFE_GIT_CONFIG als de worktree van een local_llm-job is, anders [].
+ * SAFE_GIT_CONFIG als de worktree van een bewaakte job is (`isHarnessJob`: HARNESS
+ * of local_llm), anders [].
  *
- * Voor een local_llm-worktree controleert dit eerst de gitlink tegen de clone
+ * Voor zo'n worktree controleert dit eerst de gitlink tegen de clone
  * (assertTrustedLocalJobWorktree) en gooit UntrustedWorktreeGitlinkError als
- * die niet klopt. Elke host-git-aanroep in een local_llm-worktree bouwt zijn
+ * die niet klopt. Elke host-git-aanroep in een bewaakte worktree bouwt zijn
  * argumenten via deze functie, dus de controle loopt vóór elke zulke git-
- * aanroep (push, set-head, rev-parse, diff). Niet-lokale jobs: dezelfde
+ * aanroep (push, set-head, rev-parse, diff). Gewone jobs: dezelfde
  * DB-lookups als vóór deze wijziging, geen controle, prefix [].
  */
 export async function gitPrefixFor(worktreePath: string): Promise<string[]> {
   const jobId = jobIdFromWorktreePath(worktreePath)
-  if (!jobId || !(await isLocalLlmJob(jobId))) return []
+  if (!jobId || !(await isHarnessJob(jobId))) return []
   await assertTrustedLocalJobWorktree(jobId, worktreePath)
   return [...SAFE_GIT_CONFIG]
 }

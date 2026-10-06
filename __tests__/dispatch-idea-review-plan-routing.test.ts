@@ -82,3 +82,40 @@ describe('dispatchIdeaJob routing', () => {
     expect(createdData.requested_model).toBe('codex-default')
   })
 })
+
+// M45-2b (Taak 2, deel 1): een worker met runtime HARNESS claimt nooit IDEA_GRILL, IDEA_MAKE_PLAN of
+// IDEA_MAKE_SPEC (alleen IDEA_CHAT en een losse taak). De "is er een worker?"-precheck telt hem dus niet
+// mee: met alleen een harness-worker bleef de job anders eeuwig QUEUED. De echte telling tegen een
+// database staat in dispatch/harness-claim.integration.test.ts.
+describe('dispatchIdeaJob precheck sluit HARNESS-workers uit', () => {
+  const STATUS_FOR = { IDEA_GRILL: 'DRAFT', IDEA_MAKE_PLAN: 'GRILLED', IDEA_MAKE_SPEC: 'GRILLED' } as const
+
+  it.each(['IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_MAKE_SPEC'] as const)(
+    '%s telt elke verse worker van de gebruiker, behalve runtime HARNESS',
+    async (kind) => {
+      p.idea.findFirst.mockResolvedValue({
+        id: 'idea-1', status: STATUS_FOR[kind], product_id: 'prod-1', title: 't', description: 'd',
+        product: { id: 'prod-1', repo_url: 'https://git/x/y', content_policy: null },
+      })
+      const res = await dispatchIdeaJob({ kind, ideaId: 'idea-1', productId: 'prod-1', userId: 'u1' })
+      expect(res.job_id).toBe('job-1')
+      expect(p.claudeWorker.count).toHaveBeenCalledTimes(1)
+      expect(p.claudeWorker.count.mock.calls[0][0].where).toEqual({
+        user_id: 'u1',
+        last_seen_at: { gt: expect.any(Date) },
+        NOT: { runtime: 'HARNESS' },
+      })
+    },
+  )
+
+  it('IDEA_REVIEW_PLAN blijft op CODEX met capability review gescoped (HARNESS valt daar al buiten)', async () => {
+    p.claudeWorker.count.mockResolvedValue(1)
+    await dispatchIdeaJob({ kind: 'IDEA_REVIEW_PLAN', ideaId: 'idea-1', productId: 'prod-1', userId: 'u1' })
+    expect(p.claudeWorker.count.mock.calls[0][0].where).toEqual({
+      user_id: 'u1',
+      last_seen_at: { gt: expect.any(Date) },
+      runtime: 'CODEX',
+      capabilities: { has: 'review' },
+    })
+  })
+})

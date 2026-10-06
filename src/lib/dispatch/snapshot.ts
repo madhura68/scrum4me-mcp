@@ -43,6 +43,10 @@ export async function getJobConfigSnapshot(opts: {
   // CLAUDE-tak heeft permission_mode (de CODEX-tak heeft sandbox_mode), en het
   // literal 'CLAUDE'-argument versmalt het returntype niet — narrow dus op de
   // discriminant, anders TS2339 op de pretest-typecheck.
+  // M45: de union heeft nu ook een HARNESS-lid, zonder thinking_budget. Dit pad resolvet altijd
+  // als 'CLAUDE', dus HARNESS komt hier niet uit; weigeren maakt dat expliciet, waar een cast een
+  // HARNESS-config met undefined als token-budget zou laten doorlopen.
+  if (cfg.runtime === 'HARNESS') throw new Error('UNKNOWN_AGENT_RUNTIME')
   return {
     requested_model: cfg.model,
     requested_thinking_budget: cfg.thinking_budget,

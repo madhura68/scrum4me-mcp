@@ -168,6 +168,9 @@ export async function startStdioServer(
     return
   }
 
+  // The worker identity is fixed first: an unknown SCRUM4ME_WORKER_RUNTIME throws
+  // UNKNOWN_AGENT_RUNTIME here, before anything is authenticated or registered, and index.ts turns
+  // that rejection into exit code 1.
   const ctx = resolveRuntimeContext(env)
   const lifecycle = options.lifecycle ?? createRuntimeLifecycle(ctx)
   const server = createStdioServer({ mode, lifecycle })

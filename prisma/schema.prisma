@@ -40,6 +40,7 @@ enum ApiTokenKind {
 enum AgentRuntime {
   CLAUDE
   CODEX
+  HARNESS
 }
 
 enum WorkerCapability {
@@ -445,6 +446,7 @@ model Product {
   issues                    Issue[]
   notes                     Note[]
   usage_segments            UsageSegment[]
+  harness_choices           ProductHarnessChoice[]
 
   @@unique([user_id, name])
   @@unique([user_id, code])
@@ -693,6 +695,7 @@ model ClaudeJob {
   task_executions           SprintTaskExecution[] @relation("SprintJobExecutions")
   manual_drafts             ManualJobDraft[]
   idea_notification         IdeaNotification?
+  cost_report               JobCostReport?
   review_log                ReviewLog?            @relation("JobReviewLog")
   chat_messages             IdeaChatMessage[]
   created_at                DateTime              @default(now())
@@ -2377,4 +2380,37 @@ model UsageLine {
 
   @@unique([segment_id, agent_key, model_id])
   @@map("usage_lines")
+}
+
+// M45-2a: runtime HARNESS (een LiteLLM-model als derde runtime naast CLAUDE en CODEX): de keuze
+// per product en jobsoort, en het gemelde bedrag per job
+// (spec docs/superpowers/specs/2026-10-05-harness-runtime-design.md §5.1 en §6.2 in Scrum4Me).
+// Alleen additief: de CHECKs staan hieronder als `// SQL:`-commentaar, de SQL schrijft de migratie.
+
+/// M45: keuze per product en jobsoort voor runtime HARNESS (spec §5.1); geen rij = huidig gedrag.
+// SQL: CHECK kind IN ('IDEA_CHAT','TASK_IMPLEMENTATION'); CHECK configuration ~ '^[a-z0-9][a-z0-9.-]{0,63}$'; CHECK max_cost_usd > 0
+model ProductHarnessChoice {
+  product       Product       @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id    String
+  kind          ClaudeJobKind
+  configuration String        @db.VarChar(64)
+  max_cost_usd  Decimal       @db.Decimal(10, 4)
+  updated_at    DateTime      @updatedAt
+
+  @@id([product_id, kind])
+  @@map("product_harness_choices")
+}
+
+/// M45: gemeld bedrag per HARNESS-job (spec §6.2); één rij per job, upsert door update_job_status.
+// SQL: CHECK cost_source IN ('provider_reported','litellm_computed','local','none'); CHECK reported_cost_usd IS NULL OR reported_cost_usd >= 0
+model JobCostReport {
+  job               ClaudeJob @relation(fields: [job_id], references: [id], onDelete: Cascade)
+  job_id            String    @id
+  reported_cost_usd Decimal?  @db.Decimal(12, 6)
+  cost_source       String    @db.VarChar(32)
+  provider          String?   @db.VarChar(200)
+  configuration     String    @db.VarChar(64)
+  reported_at       DateTime  @default(now())
+
+  @@map("job_cost_reports")
 }

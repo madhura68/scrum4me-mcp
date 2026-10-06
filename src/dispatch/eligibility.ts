@@ -1,7 +1,7 @@
 import { Prisma } from '@prisma/client'
 import { managedWorkerPollScope } from '../presence/worker-mode.js'
 import type { DispatchInput, DispatchProfileConfig } from '@shared/queue-dispatch.js'
-type WorkerRuntime = 'CLAUDE' | 'CODEX'
+import type { WorkerRuntime } from '../worker-runtime.js'
 
 export type ClaimFilterInput = {
   runtime: WorkerRuntime
@@ -32,6 +32,23 @@ const CLAIMABLE_JOB_KIND_FILTER = `AND (
 
 export function buildClaimableJobWhereClause(input: ClaimFilterInput): string {
   const productScope = input.hasProductScope ? 'AND cj.product_id = ${productId}' : ''
+
+  // M45-2b: een worker met runtime HARNESS claimt alleen HARNESS-jobs van twee soorten en nooit een job met een
+  // required_capability. De tak wordt gekozen op de runtime van de worker, vóór de capability-takken: zijn
+  // capabilities tellen niet mee (de runtime wint). Dezelfde twee soort/bron-combinaties als de local_llm-tak
+  // hieronder; die tak blijft de oude harness bedienen tot de cutover.
+  if (input.runtime === 'HARNESS') {
+    return `
+          WHERE cj.user_id = \${userId}
+            ${productScope}
+            AND cj.runtime = '${input.runtime}'
+            AND cj.status = 'QUEUED'
+            AND cj.dispatch_request_id IS NULL
+            AND cj.required_capability IS NULL
+            AND ((cj.kind = 'IDEA_CHAT' AND cj.source = 'SYSTEM')
+              OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'COPILOT' AND cj.sprint_run_id IS NULL))
+  `
+  }
 
   // M17 (opus plan-review): een worker met exact ['deploy'] is een dedicated
   // deploy-worker — hard beperken tot DEPLOY. Sluit de NULL-capability-tak
@@ -122,7 +139,7 @@ export function buildClaimableJobWhereFragment(input: ClaimSqlFilterInput): Pris
     ${input.hasProductScope ? Prisma.sql`AND cj.product_id = ${input.productId}` : Prisma.empty}
     AND ${claimConditions.runtime.sql(e)} AND ${claimConditions.queued.sql(e)}
     AND ${claimConditions.binding.sql(e)} AND ${claimConditions.capability.sql(e)}
-    ${e.capabilities.length === 1 && ['deploy', 'docs_audit', 'local_llm'].includes(e.capabilities[0]) ? Prisma.empty : Prisma.sql`AND ${claimConditions.kind.sql(e)}`}`
+    ${e.runtime === 'HARNESS' || (e.capabilities.length === 1 && ['deploy', 'docs_audit', 'local_llm'].includes(e.capabilities[0])) ? Prisma.empty : Prisma.sql`AND ${claimConditions.kind.sql(e)}`}`
 }
 
 export type HigherTierIdleInput = {
@@ -242,6 +259,15 @@ export const claimPredicates = {
     ? !!e.incarnationId && j.dispatchRequestId !== null && j.profileRevisionId !== null && e.profileRevisionIds.includes(j.profileRevisionId)
     : j.dispatchRequestId === null,
   capability: (j: ClaimJob, e: ClaimExecutor) => {
+    // M45-2b: de runtime van de executor wint van zijn capabilities. Een HARNESS-executor claimt alleen
+    // HARNESS-jobs (de runtime-conditie) van twee soorten en nooit een job met een required_capability: precies de
+    // soorten van de local_llm-tak hieronder. Beheerde executors zijn per validatie CLAUDE of CODEX; de tak staat
+    // hier omdat predicaat en SQL-condities één contract vormen.
+    if (e.runtime === 'HARNESS') {
+      return j.requiredCapability === null && (
+        (j.kind === 'IDEA_CHAT' && j.source === 'SYSTEM') ||
+        (j.kind === 'TASK_IMPLEMENTATION' && j.source === 'COPILOT' && j.sprintRunId === null))
+    }
     if (e.capabilities.length === 1 && ['deploy', 'docs_audit'].includes(e.capabilities[0])) {
       return j.requiredCapability === e.capabilities[0] && j.kind === e.capabilities[0].toUpperCase() && ['SYSTEM', 'MANUAL'].includes(j.source)
     }
@@ -283,6 +309,7 @@ const claimConditionSql: Record<keyof typeof claimPredicates, (e: ClaimExecutor)
    WHERE di.id=${e.incarnationId ?? null}::uuid AND di.signed_off_at IS NULL AND dp.revoked_at IS NULL
     AND di.runtime_scope->'profile_revision_ids' ? dc.profile_revision_id::text)`: Prisma.sql`cj.dispatch_request_id IS NULL`,
   capability: e => {
+    if (e.runtime === 'HARNESS') return Prisma.sql`cj.required_capability IS NULL AND ((cj.kind = 'IDEA_CHAT' AND cj.source = 'SYSTEM') OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'COPILOT' AND cj.sprint_run_id IS NULL))`
     if (e.capabilities.length === 1 && e.capabilities[0] === 'deploy') return Prisma.sql`cj.required_capability = 'deploy' AND cj.kind = 'DEPLOY' AND cj.source IN ('SYSTEM', 'MANUAL')`
     if (e.capabilities.length === 1 && e.capabilities[0] === 'docs_audit') return Prisma.sql`cj.required_capability = 'docs_audit' AND cj.kind = 'DOCS_AUDIT' AND cj.source IN ('SYSTEM', 'MANUAL')`
     if (e.capabilities.length === 1 && e.capabilities[0] === 'local_llm') return Prisma.sql`cj.required_capability = 'local_llm' AND ((cj.kind = 'IDEA_CHAT' AND cj.source = 'SYSTEM') OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'COPILOT' AND cj.sprint_run_id IS NULL))`

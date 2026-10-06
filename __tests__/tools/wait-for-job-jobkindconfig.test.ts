@@ -27,6 +27,7 @@ const BASE_ORCH_JOB = {
   kind: 'IDEA_GRILL',
   source: 'ORCHESTRATOR',
   status: 'CLAIMED',
+  runtime: 'CLAUDE',
   requested_model: null,
   requested_thinking_budget: null,
   requested_permission_mode: null,
@@ -83,6 +84,7 @@ describe('getFullJobContext — live JobKindConfig-resolutie', () => {
   })
 
   it('CODEX: gebruikt codex_model + sandbox_mode en heeft geen allowed_tools', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({ ...BASE_ORCH_JOB, runtime: 'CODEX' })
     mockPrisma.jobKindConfig.findUnique.mockResolvedValue({
       kind: 'IDEA_GRILL',
       claude_model: 'claude-opus-4-8',
@@ -122,6 +124,7 @@ describe('getFullJobContext — live JobKindConfig-resolutie', () => {
   })
 
   it('CODEX zonder DB-rij resolveert claim-time naar GPT-5.5', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({ ...BASE_ORCH_JOB, runtime: 'CODEX' })
     mockPrisma.jobKindConfig.findUnique.mockResolvedValue(null)
 
     const ctx = (await getFullJobContext('job-jkc-1', 'CODEX')) as any
@@ -130,6 +133,7 @@ describe('getFullJobContext — live JobKindConfig-resolutie', () => {
   })
 
   it('CODEX behoudt ook een expliciete legacy DB-waarde ongewijzigd', async () => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({ ...BASE_ORCH_JOB, runtime: 'CODEX' })
     mockPrisma.jobKindConfig.findUnique.mockResolvedValue({
       kind: 'IDEA_GRILL',
       claude_model: null,

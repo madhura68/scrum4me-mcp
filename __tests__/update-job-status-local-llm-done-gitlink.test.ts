@@ -5,6 +5,9 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+// M45-2b (Taak 3, spec §5.6): alles hieronder geldt ook voor een HARNESS-job
+// (isHarnessJob), dus beide tests draaien voor beide soorten job.
+//
 // Done-pad-regressie (Forgejo-review PR #169, s4m-codex-reviewer BLOCKER):
 // een GESLAAGDE local_llm-job draaide in prepareDoneUpdate → pushBranchForJob
 // → resolveOriginDefaultRef `git remote set-head` en `git push` met cwd in de
@@ -101,6 +104,7 @@ import { registerUpdateJobStatusTool } from '../src/tools/update-job-status.js'
 import { propagateStatusUpwards } from '../src/lib/tasks-status-update.js'
 import { cancelPbiOnFailure } from '../src/cancel/pbi-cascade.js'
 import { createWorktreeForJob } from '../src/git/worktree.js'
+import { GUARDED_JOBS } from './helpers/guarded-jobs.js'
 
 const exec = promisify(execFile)
 const git = (cwd: string, ...args: string[]) => exec('git', args, { cwd })
@@ -217,7 +221,7 @@ function tmpfixture() {
   }
 }
 
-describe('local_llm done-pad: git alleen tegen een vertrouwde worktree-gitlink', () => {
+describe.each(GUARDED_JOBS)('done-pad van een $label: git alleen tegen een vertrouwde worktree-gitlink', ({ job }) => {
   const f = tmpfixture()
   const jobId = 'local-chain-1'
   const branchName = 'feat/local-chain-1'
@@ -299,7 +303,7 @@ describe('local_llm done-pad: git alleen tegen een vertrouwde worktree-gitlink',
     await fs.chmod(fsmonitorScript, 0o755)
     await fs.chmod(sshScript, 0o755)
 
-    installJobFixture(baseFixture({ id: jobId, branch: branchName }))
+    installJobFixture(baseFixture({ id: jobId, branch: branchName, ...job }))
     const created = await createWorktreeForJob({
       repoRoot: f.clone,
       jobId,

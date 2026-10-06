@@ -59,16 +59,26 @@ const inputSchema = z.object({
   doc_slug: z.string().min(1).optional(),
   doc_id: z.string().min(1).optional(),
   pr_url: z.string().url().optional(),
-  required_capability: z.enum(['local_llm']).optional(),
+  // M45-2b: de local_llm-route is vervangen door een HARNESS-configuratie per product. De sleutel blijft in het schema
+  // (een niet-strikt z.object zou hem anders stil weggooien) en elke waarde wordt geweigerd, bij elke soort
+  // (validateRequiredCapability). De beschrijving is wat een MCP-client in het schema leest.
+  required_capability: z
+    .enum(['local_llm'])
+    .optional()
+    .describe(
+      'No longer accepted: any value is refused with a VALIDATION_ERROR, for every kind. The local_llm route is ' +
+        'replaced by a HARNESS configuration, which is chosen per product, not per job.',
+    ),
 })
 
 type Input = z.infer<typeof inputSchema>
 
+// Elke waarde van required_capability bij elke soort geeft deze ene weigering. Alleen TASK_IMPLEMENTATION kende de route
+// ooit, maar een aanroeper die de sleutel bij een andere soort meegeeft, hoort niet te lezen dat hij "alleen bij
+// TASK_IMPLEMENTATION" mag: dat suggereert dat de route daar nog bestaat.
 function validateRequiredCapability(input: Input): string | null {
-  if (input.required_capability !== undefined && input.kind !== 'TASK_IMPLEMENTATION') {
-    return 'required_capability is alleen toegestaan bij TASK_IMPLEMENTATION.'
-  }
-  return null
+  if (input.required_capability === undefined) return null
+  return 'required_capability local_llm wordt niet meer aangenomen; kies per product een HARNESS-configuratie.'
 }
 
 function validateRefs(input: Input): string | null {
@@ -119,7 +129,6 @@ export async function handleDispatchJob(rawInput: Input) {
         case 'TASK_IMPLEMENTATION':
           return toolJson(await dispatchTaskImplementation({
             taskId: input.task_id!, productId: input.product_id, userId: auth.userId,
-            requiredCapability: input.required_capability,
           }))
         case 'SPRINT_IMPLEMENTATION':
           return toolJson(await dispatchSprintRun({
@@ -159,12 +168,18 @@ export function registerDispatchJobTool(server: McpServer) {
     {
       title: 'Dispatch job',
       description:
-        'Queue a job for the existing runners (source COPILOT). Refs per kind: ' +
+        'Queue a job for the existing runners, with source COPILOT, except DEPLOY and DOCS_AUDIT (source MANUAL). ' +
+        'Refs per kind: ' +
         'IDEA_* → idea_id; TASK_IMPLEMENTATION/TASK_REVIEW → task_id; ' +
         'SPRINT_IMPLEMENTATION → sprint_id; PR_REVIEW → pr_url (must belong to the product repo); ' +
         'SPEC_REVIEW → doc_slug or doc_id (SPECS folder of this product); ' +
         'DEPLOY → no refs (deploys current main; requires product.deploy_flow); ' +
         'DOCS_AUDIT → no refs (audits docs vs merged PRs since the last run). ' +
+        "A standalone TASK_IMPLEMENTATION becomes a HARNESS job on the product's HARNESS configuration when the " +
+        'product has a choice for TASK_IMPLEMENTATION (set per product, not per job); without one it is an ordinary ' +
+        'Claude job. ' +
+        'required_capability is no longer accepted for any kind: it is refused with a VALIDATION_ERROR before ' +
+        'anything else happens (the local_llm route is replaced by a HARNESS configuration per product). ' +
         'PLAN_CHAT and IDEA_CHAT are not dispatchable. Forbidden for demo accounts.',
       inputSchema,
     },

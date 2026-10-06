@@ -98,6 +98,23 @@ export function classifyRepoBootstrapError(
 //                     existing null/rollback→requeue path.
 // OwnershipLostError→ another worker reclaimed the job mid-clone; abort silently,
 //                     the runner must NOT rollback (it no longer owns the row).
+// RuntimeMismatchError → the claimed job belongs to another runtime than the worker that
+//                     claimed it (M45-2b; only a bug in the claim filter can cause it). The
+//                     claim has already been given back (releaseMismatchedClaim), so the job
+//                     is QUEUED again for the right worker: a runner must NOT mark it FAILED and
+//                     has no reason to rollback. Deliberately not a TerminalJobError.
+//                     Today the docker runner (scrum4me-docker bin/run-one-job.ts, master 77a00a7)
+//                     does not handle it: it passes a runtime to getFullJobContext, so the error
+//                     reaches its generic catch, which calls rollbackClaim(jobId, { tokenId,
+//                     instanceId }). That call is ownership-fenced: after the give-back it updates
+//                     0 rows (claim log rollback.ownership_lost) and stops, a no-op. Docker should
+//                     handle RuntimeMismatchError explicitly in part 2d.
+// HarnessJobConfigError → a HARNESS job whose configuration can never be used (M45-2b: the
+//                     resolver rejected it, `reason` is the error code, e.g. HARNESS_COST_LIMIT_INVALID).
+//                     A TerminalJobError, so a runner that handles TerminalJobError marks the job
+//                     FAILED with the code instead of letting it run into the lease expiry; the
+//                     wait_for_job handler catches it BEFORE the generic TerminalJobError branch,
+//                     because that branch words the failure as an unresolvable repo.
 // ---------------------------------------------------------------------------
 export class TerminalJobError extends Error {
   readonly reason: string
@@ -105,6 +122,13 @@ export class TerminalJobError extends Error {
     super(reason)
     this.name = 'TerminalJobError'
     this.reason = reason
+  }
+}
+
+export class HarnessJobConfigError extends TerminalJobError {
+  constructor(code: string) {
+    super(code)
+    this.name = 'HarnessJobConfigError'
   }
 }
 
@@ -121,6 +145,19 @@ export class OwnershipLostError extends Error {
   constructor(jobId: string) {
     super(`ownership lost for job ${jobId} — reclaimed by another worker; aborting clone`)
     this.name = 'OwnershipLostError'
+  }
+}
+
+export class RuntimeMismatchError extends Error {
+  readonly jobId: string
+  readonly jobRuntime: string
+  readonly workerRuntime: string
+  constructor(jobId: string, jobRuntime: string, workerRuntime: string) {
+    super(`RUNTIME_MISMATCH: job ${jobId} is ${jobRuntime}, worker is ${workerRuntime}`)
+    this.name = 'RuntimeMismatchError'
+    this.jobId = jobId
+    this.jobRuntime = jobRuntime
+    this.workerRuntime = workerRuntime
   }
 }
 

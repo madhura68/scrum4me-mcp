@@ -4,6 +4,7 @@ import { prisma } from '../../prisma.js'
 import { getJobConfigSnapshot } from './snapshot.js'
 import { notifyJobEnqueued } from './notify.js'
 import { DispatchError } from './errors.js'
+import { readHarnessChoice } from '../harness-choice.js'
 // The managed-row matcher lives with the guards in dispatch/managed-job.js; re-export it so existing
 // importers of this module keep working without a second copy of the matcher.
 import { isManagedTaskRefusal } from '../../dispatch/managed-job.js'
@@ -19,7 +20,6 @@ export async function dispatchTaskImplementation(opts: {
   taskId: string
   productId: string
   userId: string
-  requiredCapability?: 'local_llm'
 }, dependencies: { db?: typeof prisma; notify?: typeof notifyJobEnqueued } = {}): Promise<{ job_id: string }> {
   const db = dependencies.db ?? prisma
   const snapshot = await getJobConfigSnapshot({
@@ -47,6 +47,10 @@ export async function dispatchTaskImplementation(opts: {
     })
     if (existing) throw new DispatchError(`${TASK_BUSY} (${existing.id}).`)
 
+    // M45 (spec §5.2): met een productkeuze voor TASK_IMPLEMENTATION wordt dit een HARNESS-job met de gekozen
+    // configuratie, zonder de Claude-snapshot en zonder required_capability. Zonder keuze (er is echt geen rij) blijft
+    // het object zoals vóór M45; een leesfout gaat omhoog en is nooit "geen keuze".
+    const choice = await readHarnessChoice(tx, opts.productId, 'TASK_IMPLEMENTATION')
     return tx.claudeJob.create({
       data: {
         user_id: opts.userId,
@@ -55,10 +59,7 @@ export async function dispatchTaskImplementation(opts: {
         kind: 'TASK_IMPLEMENTATION',
         status: 'QUEUED',
         source: 'COPILOT',
-        ...snapshot,
-        ...(opts.requiredCapability
-          ? { required_capability: opts.requiredCapability, runtime: 'CLAUDE' }
-          : {}),
+        ...(choice ? { runtime: 'HARNESS' as const, requested_model: choice.configuration } : snapshot),
       },
       select: { id: true },
     })

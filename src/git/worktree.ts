@@ -7,12 +7,13 @@ import { withRetry, isTransientGitError } from './retry.js'
 import { localTipContainedInRemote, maybeBackupPushBranch } from './branch-safety.js'
 import { resolveOriginDefaultRef } from './default-branch.js'
 import { claimLog } from '../lib/claim-log.js'
-import { isLocalLlmJob, isLocalLlmWorktree, removeWorktreeWithoutGit, SAFE_GIT_CONFIG } from './local-llm.js'
+import { isHarnessJob, isLocalLlmWorktree, removeWorktreeWithoutGit, SAFE_GIT_CONFIG } from './local-llm.js'
 
 const exec = promisify(execFile)
 
 /**
- * Geworpen wanneer .gitmodules van een local_llm-worktree afwijkt van de
+ * Geworpen wanneer .gitmodules van de worktree van een bewaakte job (`isHarnessJob`:
+ * HARNESS of local_llm; de naam is van vóór M45) afwijkt van de
  * versie in de vertrouwde default-ref (spec §4.5/§5.3, Taak 4): submodule-
  * init zou anders een omgebogen submodule-URL/config uit een gemanipuleerde
  * branch vertrouwen. attachWorktreeToJob zet de job hierop op FAILED i.p.v.
@@ -115,7 +116,7 @@ async function linkNodeModules(repoRoot: string, worktreePath: string, jobId: st
 // a no-op for repos without submodules. Best-effort: never fail worktree
 // creation over setup — verify will surface a genuine init failure instead.
 //
-// local_llm-bewaking (spec §4.5, Taak 4): voor zo'n job draait submodule-init
+// Bewaking van een HARNESS- of local_llm-job (isHarnessJob; spec §4.5, Taak 4): voor zo'n job draait submodule-init
 // nog vóór elke container, dus vertrouwt de submodule-URL's/config uit
 // .gitmodules. Dat mag alleen wanneer .gitmodules van de worktree byte-gelijk
 // is aan de versie in de vertrouwde `defaultRef` (cwd = repoRoot) — anders
@@ -218,7 +219,7 @@ async function runWorktreePrepare(worktreePath: string, jobId: string): Promise<
 // repo-specific gitignored codegen. Order matters — node_modules first so the
 // prepare hook can run its npm script.
 //
-// local_llm-bewaking (spec §4.5, Taak 4): repo-code (npm-scripts, codegen)
+// Bewaking van een HARNESS- of local_llm-job (isHarnessJob; spec §4.5, Taak 4): repo-code (npm-scripts, codegen)
 // draait nooit op de host voor zo'n job — alleen later, in de containers.
 // `runWorktreePrepare` (npm run prepare:worktree) wordt daarom overgeslagen;
 // linkNodeModules blijft (een symlink, geen repo-code) en initSubmodules
@@ -230,7 +231,7 @@ async function prepareWorktree(
   defaultRef: string,
 ): Promise<void> {
   await linkNodeModules(repoRoot, worktreePath, jobId)
-  const isLocal = await isLocalLlmJob(jobId)
+  const isLocal = await isHarnessJob(jobId)
   await initSubmodules(repoRoot, worktreePath, jobId, defaultRef, isLocal)
   if (isLocal) return
   await runWorktreePrepare(worktreePath, jobId)
@@ -297,8 +298,8 @@ export async function createWorktreeForJob(opts: {
     // If the branch is still attached to a stale sibling worktree, drop that first.
     const occupant = await findWorktreeForBranch(repoRoot, branchName)
     if (occupant) {
-      // local_llm-bewaking (spec §5.3): een oude bezetter kan de worktree van
-      // een local_llm-job zijn, waarvan de .git-gitlink door een container is
+      // Bewaking van een HARNESS- of local_llm-job (spec §5.3): een oude bezetter kan de worktree van
+      // zo'n job zijn (ook een afgesloten), waarvan de .git-gitlink door een container is
       // omgebogen — nooit git draaien met dat pad als werkmap.
       if (await isLocalLlmWorktree(occupant)) {
         await removeWorktreeWithoutGit(repoRoot, occupant)
@@ -360,8 +361,8 @@ export async function createWorktreeForJob(opts: {
     if (occupant) {
       // Branch is currently checked out elsewhere — likely a sibling worktree
       // that should have been cleaned up. Remove it before reusing the name.
-      // local_llm-bewaking (spec §5.3): idem als hierboven — nooit git draaien
-      // met een (mogelijk omgebogen) local_llm-worktree als werkmap.
+      // Bewaking van een HARNESS- of local_llm-job (spec §5.3): idem als hierboven — nooit git draaien
+      // met een (mogelijk omgebogen) bewaakte worktree als werkmap.
       try {
         if (await isLocalLlmWorktree(occupant)) {
           await removeWorktreeWithoutGit(repoRoot, occupant)
@@ -412,12 +413,12 @@ export async function removeWorktreeForJob(opts: {
     return { removed: false }
   }
 
-  // local_llm-bewaking (spec §4.5/§5.3): voor deze job draait git nooit met
+  // Bewaking van een HARNESS- of local_llm-job (spec §4.5/§5.3): voor deze job draait git nooit met
   // de worktree als werkmap buiten de claim en het groene pad (elders
   // afgehandeld). Geen rev-parse voor de branchName, geen `worktree remove` —
   // enkel de map weg en pruning vanuit de clone. keepBranch is dan
   // irrelevant: de branch-ref staat in de clone en blijft altijd staan.
-  if (await isLocalLlmJob(jobId)) {
+  if (await isHarnessJob(jobId)) {
     await removeWorktreeWithoutGit(repoRoot, worktreePath)
     return { removed: true }
   }

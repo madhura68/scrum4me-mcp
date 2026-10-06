@@ -7,7 +7,8 @@ import * as path from 'node:path'
 
 // Keten-test (brief Taak 5, fix-ronde 1 na review): bewijst dat het
 // FAILED-pad van de ECHTE update_job_status-handler (niet alleen
-// maybeBackupPush in isolatie) voor een local_llm-job nooit git draait in de
+// maybeBackupPush in isolatie) voor een local_llm-job (en, M45-2b Taak 3 /
+// spec §5.6, voor een HARNESS-job: isHarnessJob) nooit git draait in de
 // jobworktree — met echte branch-safety.js/worktree.js/local-llm.js/push.js
 // (geen van die vier gemockt), een echte tijdelijke repo met omgebogen
 // gitlink + fsmonitor/sshCommand-markers (Taak 3-fixture, hier niet-bare met
@@ -127,6 +128,7 @@ import { registerUpdateJobStatusTool } from '../src/tools/update-job-status.js'
 import { propagateStatusUpwards } from '../src/lib/tasks-status-update.js'
 import { cancelPbiOnFailure } from '../src/cancel/pbi-cascade.js'
 import { createWorktreeForJob } from '../src/git/worktree.js'
+import { GUARDED_JOBS } from './helpers/guarded-jobs.js'
 
 const exec = promisify(execFile)
 const git = (cwd: string, ...args: string[]) => exec('git', args, { cwd })
@@ -208,6 +210,8 @@ function baseFixture(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Een fixture van een eerdere test mag niet doorlekken naar het aanmaken van de worktree in de volgende.
+  mockPrisma.claudeJob.findUnique.mockReset()
   authMocks.requireWriteAccess.mockResolvedValue({ userId: 'user-1', tokenId: 'token-1' })
   pgMocks.connect.mockResolvedValue(undefined)
   pgMocks.query.mockResolvedValue({ rows: [] })
@@ -235,7 +239,7 @@ beforeEach(() => {
   mockPrisma.claudeJob.count.mockResolvedValue(0)
 })
 
-describe('local_llm-keten: update_job_status(failed) draait nooit git in de worktree (markerproef)', () => {
+describe('bewaakte-job-keten: update_job_status(failed) draait nooit git in de worktree (markerproef)', () => {
   let dir: string, origin: string, clone: string, wtRoot: string, scripts: string
   let worktreePath: string, evilGitDir: string, evilDotGit: string
   let fsmonitorMarker: string, sshMarker: string
@@ -333,7 +337,7 @@ describe('local_llm-keten: update_job_status(failed) draait nooit git in de work
     await expect(fs.access(sshMarker)).resolves.toBeUndefined()
   })
 
-  it('update_job_status(failed) op een local_llm-job laat geen marker achter en draait geen enkele git-aanroep met cwd in de worktree', async () => {
+  it.each(GUARDED_JOBS)('update_job_status(failed) op een $label laat geen marker achter en draait geen enkele git-aanroep met cwd in de worktree', async ({ job }) => {
     // Bewijs eerst dat de fixture leeft (zelfde proef als de vorige test,
     // herhaald binnen déze test zodat de volgorde van assertions niet
     // afhangt van test-isolatie tussen `it`-blocks).
@@ -346,7 +350,7 @@ describe('local_llm-keten: update_job_status(failed) draait nooit git in de work
     await fs.rm(fsmonitorMarker, { force: true })
     await fs.rm(sshMarker, { force: true })
 
-    installJobFixture(baseFixture({ id: jobId, branch: branchName }))
+    installJobFixture(baseFixture({ id: jobId, branch: branchName, ...job }))
     mockPrisma.claudeJob.update.mockResolvedValue({
       id: jobId,
       status: 'FAILED',

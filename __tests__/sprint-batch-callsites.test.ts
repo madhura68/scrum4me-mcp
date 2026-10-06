@@ -129,7 +129,7 @@ describe('maybeAutoDeploySprintBatchPr call-sites in update_job_status', () => {
       // Fresh pre-push managed-binding guard; ordinary fixture remains unbound.
       .mockResolvedValueOnce({ kind: 'TASK_IMPLEMENTATION', dispatch_request_id: null, dispatch_candidate_id: null })
       // Taak 4: post-push rev-parse HEAD in prepareDoneUpdate raadpleegt
-      // gitPrefixFor(worktreePath) → isLocalLlmJob — ordinary fixture is niet local_llm.
+      // gitPrefixFor(worktreePath) → isHarnessJob — ordinary fixture is geen HARNESS- of local_llm-job.
       .mockResolvedValueOnce({ required_capability: null })
       // 2: maybeCreateAutoPr sprint_run-lookup (auto-PR draait want kind=TASK_IMPLEMENTATION + pushed)
       .mockResolvedValueOnce({ sprint_run_id: 'run-1', sprint_run: { id: 'run-1', pr_strategy: 'SPRINT', sprint: { sprint_goal: 'Live' } } })
@@ -152,7 +152,7 @@ describe('maybeAutoDeploySprintBatchPr call-sites in update_job_status', () => {
       // Fresh pre-push managed-binding guard; ordinary fixture remains unbound.
       .mockResolvedValueOnce({ kind: 'TASK_IMPLEMENTATION', dispatch_request_id: null, dispatch_candidate_id: null })
       // Taak 4: post-push rev-parse HEAD in prepareDoneUpdate raadpleegt
-      // gitPrefixFor(worktreePath) → isLocalLlmJob — ordinary fixture is niet local_llm.
+      // gitPrefixFor(worktreePath) → isHarnessJob — ordinary fixture is geen HARNESS- of local_llm-job.
       .mockResolvedValueOnce({ required_capability: null })
       .mockResolvedValueOnce({ sprint_run_id: 'run-1', sprint_run: { id: 'run-1', sprint: { sprint_goal: 'Live' } } })
     mockPrisma.sprintTaskExecution.findMany.mockResolvedValue([{ id: 'exec-1', task_id: 'task-1', order: 0, status: 'DONE', verify_result: 'ALIGNED', verify_summary: null, verify_required_snapshot: 'ALIGNED_OR_PARTIAL', verify_only_snapshot: false, task: { code: 'TASK-1', title: 'Sample' } }])
@@ -178,7 +178,7 @@ describe('maybeAutoDeploySprintBatchPr call-sites in update_job_status', () => {
       // Fresh pre-push managed-binding guard; ordinary fixture remains unbound.
       .mockResolvedValueOnce({ kind: 'TASK_IMPLEMENTATION', dispatch_request_id: null, dispatch_candidate_id: null })
       // Taak 4: post-push rev-parse HEAD in prepareDoneUpdate raadpleegt
-      // gitPrefixFor(worktreePath) → isLocalLlmJob — ordinary fixture is niet local_llm.
+      // gitPrefixFor(worktreePath) → isHarnessJob — ordinary fixture is geen HARNESS- of local_llm-job.
       .mockResolvedValueOnce({ required_capability: null })
       .mockResolvedValueOnce({ sprint_run_id: 'run-1', sprint_run: { id: 'run-1', pr_strategy: 'STORY', sprint: { sprint_goal: 'Story' } } })
       .mockResolvedValueOnce({ task: { story: { status: 'DONE' } }, sprint_run: { pr_strategy: 'STORY' } })
@@ -199,7 +199,7 @@ describe('maybeAutoDeploySprintBatchPr call-sites in update_job_status', () => {
       // Fresh pre-push managed-binding guard; ordinary fixture remains unbound.
       .mockResolvedValueOnce({ kind: 'TASK_IMPLEMENTATION', dispatch_request_id: null, dispatch_candidate_id: null })
       // Taak 4: post-push rev-parse HEAD in prepareDoneUpdate raadpleegt
-      // gitPrefixFor(worktreePath) → isLocalLlmJob — ordinary fixture is niet local_llm.
+      // gitPrefixFor(worktreePath) → isHarnessJob — ordinary fixture is geen HARNESS- of local_llm-job.
       .mockResolvedValueOnce({ required_capability: null })
       .mockResolvedValueOnce({ sprint_run_id: 'run-1', sprint_run: { id: 'run-1', pr_strategy: 'STORY', sprint: { sprint_goal: 'Story' } } })
       .mockResolvedValueOnce({ task: { story: { status: 'DONE' } }, sprint_run: { pr_strategy: 'STORY' } })

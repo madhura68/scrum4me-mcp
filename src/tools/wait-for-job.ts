@@ -18,7 +18,9 @@ import { managedWorkerPollScope } from '../presence/worker-mode.js'
 import {
   cloneRepoOnDemand,
   TerminalJobError,
+  HarnessJobConfigError,
   OwnershipLostError,
+  RuntimeMismatchError,
   type CloneOwnerCtx,
 } from '../git/on-demand-clone.js'
 
@@ -27,12 +29,14 @@ import { requireWriteAccess } from '../auth.js'
 import { toolJson, toolError, withToolErrors } from '../errors.js'
 import { createWorktreeForJob, removeWorktreeForJob, LocalLlmWorktreeRefused } from '../git/worktree.js'
 import { getWorktreeRoot } from '../git/worktree-paths.js'
-import { removeWorktreeWithoutGit, gitPrefixFor, isLocalLlmJob } from '../git/local-llm.js'
+import { removeWorktreeWithoutGit, gitPrefixFor, isHarnessJob } from '../git/local-llm.js'
 import { setupProductWorktrees, releaseLocksOnTerminal } from '../git/job-locks.js'
 import { maybeBackupPush } from '../git/branch-safety.js'
 import { fetchPrDiff, fetchCompareDiff, getPullRequestState } from '../git/pr.js'
 import { parseForgejoPrUrl } from '../git/forgejo-rest.js'
 import { resolveRuntimeJobConfig } from '@shared/job-config.js'
+import { isHarnessJobKind } from '@shared/harness-config.js'
+import { readHarnessChoice } from '../lib/harness-choice.js'
 import { buildDocIndex } from '../lib/doc-index.js'
 import { buildDocsAuditPayload } from '../lib/docs-audit-payload.js'
 import { loadManualIdeaContext } from '../lib/manual-idea-context.js'
@@ -66,11 +70,12 @@ export function repoNameFromUrl(repoUrl: string | null | undefined): string | nu
  * resolution when null. Documented in CLAUDE.md.
  *
  * `explicitRootsOnly` (P13, controller ruling on the M3 whole-branch review):
- * for a `local_llm` job, repo code may only ever touch the host from a root
- * the operator explicitly configured (env var or `~/.scrum4me-agent-config.json`
- * entry). It disables BOTH steps 1/4's `~/Projects/<name>` convention lookup
- * AND the on-demand clone — a local_llm job never runs `npm ci` on the host,
- * and never silently adopts a repo that merely happens to sit in ~/Projects.
+ * for a guarded job (`isHarnessJob`: a HARNESS or `local_llm` job), repo code may
+ * only ever touch the host from a root the operator explicitly configured (env
+ * var or `~/.scrum4me-agent-config.json` entry). It disables BOTH steps 1/4's
+ * `~/Projects/<name>` convention lookup AND the on-demand clone — such a job
+ * never runs `npm ci` on the host, and never silently adopts a repo that merely
+ * happens to sit in ~/Projects.
  * It forces `allowClone` off regardless of `allowOnDemandClone`, so a caller
  * cannot accidentally combine the two.
  */
@@ -368,6 +373,62 @@ export async function rollbackClaim(
 }
 
 /**
+ * Geeft een claim terug waarvan de job een andere runtime heeft dan de worker (M45-2b, spec §5.3). Alleen
+ * database, in één transactie: de controle staat vóór elke worktree of idee-voorbereiding, dus er is niets op
+ * schijf om op te ruimen en rollbackClaim (met git-opruiming) is hier niet nodig.
+ *
+ * 1. De jobrij wordt vergrendeld (FOR UPDATE). Is de job dan niet meer CLAIMED door deze token en deze instance
+ *    (lease-verloop en een nieuwe claim, een sweep), dan verandert er niets: de job is niet meer van deze worker.
+ *    Heeft een andere transactie de rij nog open, dan wacht dit statement daarop en leest daarna de nieuwe
+ *    rijversie (READ COMMITTED), dus de eigenaarscontrole kijkt naar wat er echt staat. Zonder lock kon deze
+ *    teruggave een geldige nieuwe claim van een andere worker overschrijven.
+ * 2. De taakstatus gaat terug, maar alleen als déze claim de taak promoveerde. De trigger
+ *    claude_job_claim_to_task zet tasks.updated_at = now() in dezelfde transactie als de claim, die
+ *    claimed_at = NOW() zet; beide kolommen zijn TIMESTAMP(3), dus gelijk betekent: deze claim promoveerde. Een
+ *    taak die al IN_PROGRESS was, of daarna is aangepast, blijft staan. De vergelijking gebeurt in SQL tegen de
+ *    vergrendelde rij en moet vóór stap 3, die claimed_at leegt.
+ * 3. De job gaat terug naar QUEUED met lege claimvelden (zoals rollbackClaim).
+ *
+ * Zonder eigenaar-identiteit (`null`) valt er niets te bewijzen: de rij blijft dan staan en de lease-sweep ruimt
+ * op. Een databasefout gaat omhoog: de aanroeper moet weten dat de claim niet is teruggegeven.
+ */
+export async function releaseMismatchedClaim(
+  jobId: string,
+  owner: { tokenId: string; instanceId: string } | null,
+): Promise<void> {
+  if (!owner) return
+  await prisma.$transaction(async (tx) => {
+    const [row] = await tx.$queryRaw<
+      Array<{ status: string; claimed_by_token_id: string | null; worker_instance_id: string | null }>
+    >`
+      SELECT status::text AS status, claimed_by_token_id, worker_instance_id
+      FROM claude_jobs
+      WHERE id = ${jobId}
+      FOR UPDATE
+    `
+    if (
+      !row ||
+      row.status !== 'CLAIMED' ||
+      row.claimed_by_token_id !== owner.tokenId ||
+      row.worker_instance_id !== owner.instanceId
+    ) {
+      return
+    }
+    await tx.$executeRaw`
+      UPDATE tasks t SET status = 'TO_DO'
+      FROM claude_jobs cj
+      WHERE cj.id = ${jobId} AND t.id = cj.task_id AND t.status = 'IN_PROGRESS' AND t.updated_at = cj.claimed_at
+    `
+    await tx.$executeRaw`
+      UPDATE claude_jobs
+      SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL,
+          plan_snapshot = NULL, worker_instance_id = NULL, lease_until = NULL
+      WHERE id = ${jobId}
+    `
+  })
+}
+
+/**
  * Resolve the branch name for a newly-claimed job.
  *
  * Branch-per-story: if a sibling job in the same story already has a branch
@@ -433,11 +494,12 @@ export async function attachWorktreeToJob(
 ): Promise<{ worktree_path: string; branch_name: string; reused_branch: boolean } | { error: string }> {
   claimLog('attach.start', { jobId, productId })
   // P13 (controller ruling, M3 whole-branch review): whether this job is
-  // local_llm is decided from the DB (required_capability), never from the
-  // worktree itself. A local_llm job resolves ONLY from an explicitly
-  // configured repo root — no ~/Projects/<name> convention fallback, no
-  // on-demand clone (that would run `npm ci`/lifecycle scripts on the host).
-  const isLocal = await isLocalLlmJob(jobId)
+  // guarded (a HARNESS or local_llm job, see isHarnessJob) is decided from the
+  // DB (runtime, required_capability), never from the worktree itself. Such a
+  // job resolves ONLY from an explicitly configured repo root — no
+  // ~/Projects/<name> convention fallback, no on-demand clone (that would run
+  // `npm ci`/lifecycle scripts on the host).
+  const isLocal = await isHarnessJob(jobId)
   const repoRoot = await resolveRepoRoot(productId, taskRepoUrl, {
     ownerCtx,
     allowOnDemandClone: !isLocal,
@@ -451,8 +513,9 @@ export async function attachWorktreeToJob(
       // Mirror the LocalLlmWorktreeRefused path below: FAILED, no
       // rollbackClaim (that would hot-loop claim → fail → rollback), and
       // nothing to clean up since no worktree/clone was ever created.
+      // De tekst komt in claude_jobs.error en geldt voor beide bewaakte soorten (HARNESS en local_llm).
       const message =
-        `geen repo-root voor ${repoHint} op deze host (local_llm vereist een expliciete SCRUM4ME_REPO_ROOT_*)`
+        `geen repo-root voor ${repoHint} op deze host (een HARNESS- of local_llm-job vereist een expliciete SCRUM4ME_REPO_ROOT_*)`
       await prisma.claudeJob.update({
         where: { id: jobId },
         data: { status: 'FAILED', error: message.slice(0, 2000), finished_at: new Date() },
@@ -1009,6 +1072,27 @@ export async function resolveReviewFeedback(job: {
   }
 }
 
+// Wat de resolver gooit voor een job die nooit bruikbaar wordt (M45-2b): een jobsoort die HARNESS niet draait, een
+// ongeldige configuratienaam, een onbruikbaar plafond en een onbekende runtime. Terminaal, anders loopt de job tot
+// het lease-verloop en wordt hij twee keer opnieuw geclaimd. Elke andere fout gaat ongewijzigd omhoog.
+const HARNESS_JOB_CONFIG_ERROR_CODES: ReadonlySet<string> = new Set([
+  'HARNESS_KIND_UNSUPPORTED',
+  'HARNESS_CONFIGURATION_INVALID',
+  'HARNESS_COST_LIMIT_INVALID',
+  'UNKNOWN_AGENT_RUNTIME',
+])
+
+function resolveJobConfig(...args: Parameters<typeof resolveRuntimeJobConfig>) {
+  try {
+    return resolveRuntimeJobConfig(...args)
+  } catch (err) {
+    if (err instanceof Error && HARNESS_JOB_CONFIG_ERROR_CODES.has(err.message)) {
+      throw new HarnessJobConfigError(err.message)
+    }
+    throw err
+  }
+}
+
 export async function getFullJobContext(
   jobId: string,
   runtime?: WorkerRuntime,
@@ -1108,6 +1192,26 @@ export async function getFullJobContext(
   if (!job) return null
   assertUnmanagedJob(job)
 
+  // M45-2b: de claim hoort bij de runtime van de worker. Dit kan alleen misgaan door een fout in het
+  // claimfilter, maar dan mag de payload van een verkeerde job de worker (zeker de harness) nooit bereiken. Als
+  // eerste stap, vóór elke worktree of idee-voorbereiding, en alleen als de aanroeper een runtime meegeeft:
+  // wait_for_job doet dat, en de docker-runner ook (scrum4me-docker bin/run-one-job.ts roept
+  // getFullJobContext(jobId, runtime, ownerCtx) aan met de runtime uit getWorkerRuntimeFromEnv()). Een aanroep zonder
+  // runtime-argument heeft vandaag geen productie-aanroeper en valt erbuiten.
+  // De docker-runner (master 77a00a7) kent RuntimeMismatchError niet: de fout valt in zijn generieke catch, die
+  // rollbackClaim(jobId, { tokenId, instanceId }) aanroept. Die is eigenaar-bewaakt: na de teruggave hieronder raakt
+  // hij 0 rijen (claimlog rollback.ownership_lost) en stopt, dus een no-op. Docker hoort RUNTIME_MISMATCH in deel 2d
+  // expliciet af te handelen.
+  // Een lus is aanvaard: alleen bij een filterfout claimt een Claude- of Codex-worker dezelfde job bij elke poll
+  // opnieuw, zichtbaar als runtime_mismatch in de claimlog; de harness stopt op deze fout zonder herstart.
+  if (runtime !== undefined && job.runtime !== runtime) {
+    // Eerst loggen, dan teruggeven: runtime_mismatch is het signaal waarop het plan rekent om een fout in het
+    // claimfilter te zien, en het mag niet verloren gaan als de teruggave zelf faalt (een databasefout gaat omhoog).
+    claimLog('runtime_mismatch', { jobId: job.id, jobRuntime: job.runtime, workerRuntime: runtime })
+    await releaseMismatchedClaim(job.id, ownerIdentity(ownerCtx))
+    throw new RuntimeMismatchError(job.id, job.runtime, runtime)
+  }
+
   // JobKindConfig (fase 3): live / DB-leading per-kind config, vers op
   // claim-time geresolved. Best-effort lookup (zoals buildDocIndex hieronder):
   // een DB-fout of ontbrekende rij mag het claimen NOOIT blokkeren — dan valt
@@ -1127,12 +1231,23 @@ export async function getFullJobContext(
   // overgeslagen (Claude-semantiek lekt niet naar codex --model/--sandbox).
   //
   // Runtime-bron: expliciete caller-param wint, maar val terug op job.runtime.
-  // Zonder deze fallback resolveerde een caller die runtime NIET meegaf (bv.
-  // run-one-job's getFullJobContext(jobId)) undefined → de CODEX-tak werd
-  // overgeslagen → codex-jobs kregen een Claude-model als --model → codex 400
-  // ("model not supported when using Codex with a ChatGPT account").
+  // Zonder deze fallback resolveerde een caller die runtime NIET meegaf undefined →
+  // de CODEX-tak werd overgeslagen → codex-jobs kregen een Claude-model als --model →
+  // codex 400 ("model not supported when using Codex with a ChatGPT account").
+  // Dat was de docker-runner toen hij getFullJobContext(jobId) nog zonder runtime aanriep; hij geeft de runtime nu
+  // mee, dus de fallback dekt vandaag alleen een aanroep zonder runtime-argument (geen productie-aanroeper).
   const effectiveRuntime: WorkerRuntime = runtime ?? job.runtime
-  const config = resolveRuntimeJobConfig(
+
+  // M45-2b: het plafond van een HARNESS-job komt uit de productkeuze op het moment van de claim; de resolver leest
+  // zelf geen database. Géén .catch (anders dan de jobKindConfig-lezing hierboven): een leesfout gaat omhoog en
+  // geeft nooit de standaard van de soort, want een fout is niet hetzelfde als "geen rij" (die geeft null en dus de
+  // standaard). Alleen voor een HARNESS-soort: voor elke andere soort weigert de resolver de job zelf.
+  const harnessChoice =
+    effectiveRuntime === 'HARNESS' && isHarnessJobKind(job.kind)
+      ? await readHarnessChoice(prisma, job.product_id, job.kind)
+      : undefined
+
+  const config = resolveJobConfig(
     {
       kind: job.kind,
       requested_model: job.requested_model,
@@ -1147,6 +1262,7 @@ export async function getFullJobContext(
     job.task ? { requires_opus: job.task.requires_opus } : undefined,
     kindConfig ?? undefined,
     effectiveRuntime,
+    harnessChoice,
   )
 
   // Push a compact doc-index into every payload so the worker sees which
@@ -1638,7 +1754,8 @@ export async function getFullJobContext(
       repo_url: job.product.repo_url,
       plan_chat: questionPayload,
       user_question: questionPayload,
-      prompt_text: getIdeaPromptText('PLAN_CHAT'),
+      // HARNESS krijgt geen Claude-prompt (kind-prompts.ts); de runtime is de effectieve van deze claim.
+      prompt_text: getIdeaPromptText('PLAN_CHAT', effectiveRuntime),
       branch_suggestion: `feat/idea-${idea.code.toLowerCase()}-chat`,
     }
   }
@@ -1772,7 +1889,8 @@ export async function getFullJobContext(
           created_at: q.created_at.toISOString(),
         })),
       },
-      prompt_text: getIdeaPromptText('IDEA_CHAT'),
+      // HARNESS krijgt geen Claude-prompt (kind-prompts.ts); de runtime is de effectieve van deze claim.
+      prompt_text: getIdeaPromptText('IDEA_CHAT', effectiveRuntime),
     }
   }
 
@@ -2132,6 +2250,14 @@ export function registerWaitForJobTool(server: McpServer) {
             }
             return toolJson(ctx)
           } catch (err) {
+            // M45-2b: RuntimeMismatchError vóór de rest; de claim is al teruggegeven, de job blijft QUEUED.
+            if (err instanceof RuntimeMismatchError) return toolError('RUNTIME_MISMATCH')
+            // M45-2b: HarnessJobConfigError is een TerminalJobError en moet er dus vóór staan, anders geeft de tak
+            // hieronder de repotekst. De job wordt FAILED met de code, in plaats van te wachten op het lease-verloop.
+            if (err instanceof HarnessJobConfigError) {
+              await markJobTerminallyFailed(jobId, err.reason)
+              return toolError(err.reason)
+            }
             if (err instanceof TerminalJobError) {
               await markJobTerminallyFailed(jobId, err.reason)
               return toolError(`Job failed (unresolvable repo): ${err.reason}`)
@@ -2179,6 +2305,12 @@ export function registerWaitForJobTool(server: McpServer) {
                 }
                 return toolJson(ctx)
               } catch (err) {
+                // M45-2b: zelfde afhandeling als bij de directe claim hierboven.
+                if (err instanceof RuntimeMismatchError) return toolError('RUNTIME_MISMATCH')
+                if (err instanceof HarnessJobConfigError) {
+                  await markJobTerminallyFailed(jobId, err.reason)
+                  return toolError(err.reason)
+                }
                 if (err instanceof TerminalJobError) {
                   await markJobTerminallyFailed(jobId, err.reason)
                   return toolError(`Job failed (unresolvable repo): ${err.reason}`)

@@ -21,6 +21,7 @@ describe('getFullJobContext system PLAN_CHAT jobs', () => {
       kind: 'PLAN_CHAT',
       source: 'SYSTEM',
       status: 'CLAIMED',
+      runtime: 'CLAUDE',
       requested_model: null,
       requested_thinking_budget: null,
       requested_permission_mode: null,

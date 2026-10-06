@@ -27,7 +27,7 @@ import {
 import { releaseLocksOnTerminal } from '../git/job-locks.js'
 import { resolveRepoRoot } from './wait-for-job.js'
 import { pushBranchForJob } from '../git/push.js'
-import { gitPrefixFor, UntrustedWorktreeGitlinkError } from '../git/local-llm.js'
+import { gitPrefixFor, isHarnessJobRow, UntrustedWorktreeGitlinkError } from '../git/local-llm.js'
 import { maybeBackupPush } from '../git/branch-safety.js'
 import { notifyJobEnqueued } from '../lib/dispatch/notify.js'
 import { formatDocsAuditCursor } from '@shared/docs-audit-cursor.js'
@@ -41,6 +41,9 @@ import { executeEffects } from '../flow/effects.js'
 import { maybeEnqueueDeployJob } from '../lib/dispatch/deploy-job.js'
 import { repoBucketKey, maybeAutoDeploySprintBatchPr } from '../lib/dispatch/sprint-batch-deploy.js'
 import { dbClientConfig } from '../db-connection.js'
+import { HARNESS_COST_SOURCES } from '@shared/harness-config.js'
+import { readHarnessChoice } from '../lib/harness-choice.js'
+import { checkCostReport, type CostReportRow } from '../lib/harness-cost.js'
 
 async function fetchConflictFiles(prUrl: string): Promise<string[]> {
   const result = await listPullRequestFiles({ prUrl })
@@ -64,6 +67,16 @@ const inputSchema = z.object({
   // de canonieke marker in de summary; capped=true vereist een geldige ISO.
   processed_until: z.string().datetime().optional(),
   capped: z.boolean().optional(),
+  // M45 (spec §6.2): de kostenmelding van een HARNESS-job, alleen bij een eindstatus (done, failed, skipped). De MCP
+  // legt hem vast in job_cost_reports, in dezelfde transactie als de statusupdate; de configuratie komt uit de job.
+  cost: z
+    .object({
+      reported_cost_usd: z.string().nullable(),
+      cost_source: z.enum(HARNESS_COST_SOURCES),
+      provider: z.string().min(1).max(200).optional(),
+    })
+    .strict()
+    .optional(),
 })
 
 export async function cleanupWorktreeForTerminalStatus(
@@ -233,8 +246,8 @@ export async function prepareDoneUpdate(
   const worktreeDir = getWorktreeRoot()
   const worktreePath = path.join(worktreeDir, jobId)
 
-  // local_llm (Forgejo-review PR #169): pushBranchForJob bouwt zijn eerste
-  // git-aanroep via gitPrefixFor, dat voor een local_llm-worktree eerst de
+  // Bewaakte job, HARNESS of local_llm (Forgejo-review PR #169): pushBranchForJob bouwt zijn eerste
+  // git-aanroep via gitPrefixFor, dat voor zo'n worktree eerst de
   // gitlink tegen de clone controleert — vóór enige git. Klopt die niet, dan
   // wordt de job FAILED zonder push; de worktree blijft staan voor inspectie
   // (zoals bij een mislukte push). Niet-lokale jobs: gitPrefixFor gooit nooit.
@@ -868,6 +881,10 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         'Optionally accepts token-usage fields (model_id + input/output/cache_read/cache_write tokens) ' +
         'for cost tracking — typically populated by a PostToolUse hook from the local Claude Code transcript, ' +
         'not by the agent itself. ' +
+        'A HARNESS job reports its cost with cost = { reported_cost_usd (decimal string or null), cost_source ' +
+        '(provider_reported | litellm_computed | local | none), provider? } on done, failed or skipped only, and ' +
+        'only for a job of kind IDEA_CHAT or TASK_IMPLEMENTATION; ' +
+        'it is validated before any side effect and stored in the same transaction as the status update. ' +
         'Response includes next_action: when wait_for_job_again, immediately call wait_for_job again. When queue_empty, the agent batch is done.',
       inputSchema,
     },
@@ -885,6 +902,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
       actual_thinking_tokens,
       processed_until,
       capped,
+      cost,
     }) =>
       withToolErrors(async () => {
         const auth = await requireWriteAccess()
@@ -912,6 +930,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             chat_cutoff_message_id: true,
             chat_cutoff_at: true,
             required_capability: true,
+            requested_model: true,
             task: { select: { verify_only: true, verify_required: true, dispatch_request_id: true } },
           },
         })
@@ -932,6 +951,18 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         }
         if (!['CLAIMED', 'RUNNING'].includes(job.status)) {
           return toolError(`Job is already in terminal state: ${job.status.toLowerCase()}`)
+        }
+
+        // M45 (spec §6.2): de kostenmelding van een HARNESS-job wordt als geheel gevalideerd vóór elk neveneffect: dus
+        // vóór de verify-gate en de push van prepareDoneUpdate en vóór de eigen eindpaden hieronder. Een weigering laat
+        // dan geen gepushte branch achter bij een job die RUNNING blijft. Alleen een soort die HARNESS draait (IDEA_CHAT,
+        // TASK_IMPLEMENTATION) mag melden: de eigen eindpaden van DOCS_AUDIT en DEPLOY schrijven geen kostenrij, dus
+        // daar zou een geldig lijkende melding stil verdwijnen; checkCostReport weigert die met COST_REPORT_NOT_ALLOWED.
+        let costReport: CostReportRow | null = null
+        if (cost !== undefined) {
+          const checked = checkCostReport(job, status, cost)
+          if (!checked.allowed) return toolError(checked.error)
+          costReport = checked.row
         }
 
         // M19: DOCS_AUDIT terminaliseert via een eigen DB-only pad — VÓÓR de
@@ -1093,8 +1124,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         // Auto-PR: best-effort, only when push actually happened.
         // M12: idee-jobs hebben geen task_id en geen branch — skip auto-PR.
         // PBI-50: SPRINT_IMPLEMENTATION krijgt een eigen PR-flow (sprint-goal als title).
-        // M3 (local_llm): de harness beheert deze losse taakjobs zelf en de
-        // Claude-sessie mergt de branch met de hand — geen auto-PR.
+        // M3 (local_llm) en M45 (HARNESS), via isHarnessJobRow: de harness beheert deze losse taakjobs
+        // zelf en de Claude-sessie mergt de branch met de hand — geen auto-PR.
         let prUrl: string | null = null
         if (
           actualStatus === 'done' &&
@@ -1103,7 +1134,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           job.kind === 'TASK_IMPLEMENTATION' &&
           job.source !== 'MANUAL' &&
           job.task_id &&
-          job.required_capability !== 'local_llm'
+          !isHarnessJobRow(job)
         ) {
           const worktreeDir = getWorktreeRoot()
           prUrl = await maybeCreateAutoPr({
@@ -1157,6 +1188,13 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           ...(cache_read_tokens !== undefined ? { cache_read_tokens } : {}),
           ...(cache_write_tokens !== undefined ? { cache_write_tokens } : {}),
           ...(actual_thinking_tokens !== undefined ? { actual_thinking_tokens } : {}),
+        }
+        // M45 (spec §6.2): één kostenrij per job (PK job_id), geschreven als upsert met reported_at = nu. De aanroepen
+        // hieronder voeren hem uit in dezelfde transactie als de statusupdate.
+        const costUpsert = costReport && {
+          where: { job_id },
+          create: { job_id, ...costReport, reported_at: now },
+          update: { ...costReport, reported_at: now },
         }
         const jobUpdateSelect = {
           id: true,
@@ -1227,6 +1265,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
               data: jobUpdateData,
               select: jobUpdateSelect,
             })
+            if (costUpsert) await tx.jobCostReport.upsert(costUpsert)
 
             if (actualStatus === 'done' && ideaChatAnswer) {
               await tx.ideaChatMessage.create({
@@ -1269,6 +1308,21 @@ export function registerUpdateJobStatusTool(server: McpServer) {
               select: { id: true },
             })
             if (!newer) return { updated: u, followUpId: null as string | null }
+            // M45 (spec §5.2, §4.3): de vervolgjob volgt de keuze van het product op dit moment, niet de runtime van de
+            // afgeronde job. Met een keuze wordt hij een HARNESS-job zonder capability (een HARNESS-job draagt nooit
+            // required_capability); zonder keuze (er is echt geen rij) volgt hij de regel van vóór M45. Een
+            // HARNESS-voorganger zonder keuze geeft dus een gewone Claude-vervolgjob: de keuze is ook de toestemming.
+            // Een leesfout gaat omhoog en is nooit "geen keuze".
+            const choice = job.product_id ? await readHarnessChoice(tx, job.product_id, 'IDEA_CHAT') : null
+            // M2 (legacy local_llm): zonder keuze erft de vervolg-job de dedicated-worker-capability van de
+            // afgeronde job, zodat een local_llm-beurt niet stilzwijgend terugvalt op een generieke worker. Alleen
+            // toevoegen als niet-NULL, zodat de bestaande exacte create-verwachting voor gewone chats (zonder
+            // capability) ongewijzigd blijft.
+            const routing = choice
+              ? { runtime: 'HARNESS' as const, requested_model: choice.configuration }
+              : job.required_capability
+                ? { required_capability: job.required_capability }
+                : {}
             const followUp = await tx.claudeJob.create({
               data: {
                 user_id: job.user_id,
@@ -1276,12 +1330,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
                 idea_id: job.idea_id!,
                 kind: 'IDEA_CHAT',
                 status: 'QUEUED',
-                // M2: de vervolg-job erft de dedicated-worker-capability van de
-                // afgeronde job, zodat een local_llm-beurt niet stilzwijgend
-                // terugvalt op een generieke worker. Alleen toevoegen als
-                // niet-NULL, zodat de bestaande exacte create-verwachting voor
-                // gewone chats (zonder capability) ongewijzigd blijft.
-                ...(job.required_capability ? { required_capability: job.required_capability } : {}),
+                ...routing,
               },
               select: { id: true },
             })
@@ -1289,6 +1338,18 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           })
           updated = txResult.updated
           ideaChatFollowUpId = txResult.followUpId
+        } else if (costUpsert) {
+          // M45 (spec §6.2): met kosten gaan de statusupdate en de kostenrij als één transactie; slaagt de ene niet,
+          // dan ook de andere niet. Zonder kosten blijft het de losse update hieronder.
+          const [row] = await prisma.$transaction([
+            prisma.claudeJob.update({
+              where: { id: job_id },
+              data: jobUpdateData,
+              select: jobUpdateSelect,
+            }),
+            prisma.jobCostReport.upsert(costUpsert),
+          ])
+          updated = row
         } else {
           updated = await prisma.claudeJob.update({
             where: { id: job_id },
@@ -1327,15 +1388,15 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         // bij elke task-statusovergang (DONE of FAILED). De helper handelt ook
         // sibling-cancel binnen dezelfde SprintRun af bij FAILED.
         // Idea-jobs hebben geen task_id en worden hier overgeslagen.
-        // M3 (local_llm): de harness beheert de taakstatus zelf via
-        // update_task_status — geen dubbele doorwerking hier.
+        // M3 (local_llm) en M45 (HARNESS), via isHarnessJobRow: de harness beheert de taakstatus zelf
+        // via update_task_status — geen dubbele doorwerking hier.
         let sprintRunBecameDone = false
         if (
           (actualStatus === 'done' || actualStatus === 'failed') &&
           job.kind === 'TASK_IMPLEMENTATION' &&
           job.source !== 'MANUAL' &&
           job.task_id &&
-          job.required_capability !== 'local_llm'
+          !isHarnessJobRow(job)
         ) {
           try {
             const propagation = await propagateStatusUpwards(
@@ -1628,15 +1689,15 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         // PBI-50: SPRINT_IMPLEMENTATION SKIPS this — cascade naar tasks/stories/
         // PBIs is al gebeurd via per-task update_task_status('failed')-calls
         // van de worker. Sprint-job heeft geen task_id; cancelPbi-flow past niet.
-        // M3 (local_llm): geen PBI fail-cascade — de harness/Claude-sessie
-        // beheert deze losse taakjob zelf; siblings onder dezelfde PBI blijven
+        // M3 (local_llm) en M45 (HARNESS), via isHarnessJobRow: geen PBI fail-cascade — de
+        // harness/Claude-sessie beheert deze losse taakjob zelf; siblings onder dezelfde PBI blijven
         // ongemoeid.
         if (
           actualStatus === 'failed' &&
           job.kind === 'TASK_IMPLEMENTATION' &&
           job.source !== 'MANUAL' &&
           job.task_id &&
-          job.required_capability !== 'local_llm'
+          !isHarnessJobRow(job)
         ) {
           await cancelPbiOnFailure(job_id)
         }

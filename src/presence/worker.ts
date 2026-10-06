@@ -1,6 +1,7 @@
 import { Client } from 'pg'
 import { prisma } from '../prisma.js'
 import { dbClientConfig } from '../db-connection.js'
+import type { WorkerRuntime } from '../worker-runtime.js'
 
 export type WorkerCapability = 'HIGH_P' | 'MEDIUM_P' | 'LOW_P'
 
@@ -14,7 +15,7 @@ export type WorkerRegistrationOptions = {
   userId: string
   tokenId: string
   productId?: string | null
-  runtime?: 'CLAUDE' | 'CODEX'
+  runtime?: WorkerRuntime
   capabilities?: string[]
   capability?: WorkerCapability | null
   instanceId: string

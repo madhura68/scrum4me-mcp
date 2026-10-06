@@ -36,7 +36,7 @@ vi.mock('../src/git/worktree.js', async (importOriginal) => {
   }
 })
 
-// isLocalLlmJob/gitPrefixFor blijven echt (ze lezen via de gemockte prisma
+// isHarnessJob/gitPrefixFor blijven echt (ze lezen via de gemockte prisma
 // hierboven) — alleen removeWorktreeWithoutGit wordt gemockt zodat de
 // LocalLlmWorktreeRefused-test 'm met exacte argumenten kan asserten.
 vi.mock('../src/git/local-llm.js', async (importOriginal) => {

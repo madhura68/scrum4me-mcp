@@ -23,6 +23,7 @@ function buildJobRow(overrides: Record<string, unknown> = {}) {
     kind: 'IDEA_CHAT',
     source: 'SYSTEM',
     status: 'CLAIMED',
+    runtime: 'CLAUDE',
     created_at: new Date('2026-07-03T10:00:00.000Z'),
     chat_cutoff_message_id: 'msg2',
     chat_cutoff_at: new Date('2026-07-03T09:59:00.000Z'),

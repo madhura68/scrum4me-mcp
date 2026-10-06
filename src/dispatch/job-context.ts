@@ -1,8 +1,8 @@
 import type { DispatchInput, DispatchProfileConfig } from '@shared/queue-dispatch.js'
 import { prisma } from '../prisma.js'
 import { getKindPromptText } from '../lib/kind-prompts.js'
+import type { WorkerRuntime } from '../worker-runtime.js'
 
-type WorkerRuntime = 'CLAUDE' | 'CODEX'
 export const MANAGED_JOB_KINDS = ['QUEUE_TASK', 'QUEUE_REVIEW'] as const
 export type ManagedJobKind = (typeof MANAGED_JOB_KINDS)[number]
 

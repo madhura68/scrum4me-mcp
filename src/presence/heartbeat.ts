@@ -1,12 +1,13 @@
 import { isTokenExpired } from '../auth.js'
 import { prisma } from '../prisma.js'
 import { registerWorker } from './worker.js'
+import type { WorkerRuntime } from '../worker-runtime.js'
 
 export function startHeartbeat(opts: {
   tokenId: string
   instanceId: string
   productId?: string | null
-  runtime?: 'CLAUDE' | 'CODEX'
+  runtime?: WorkerRuntime
   capabilities?: string[]
   hostname?: string | null
   pid?: number | null
