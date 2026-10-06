@@ -16,6 +16,26 @@ vi.mock('../../src/prisma.js', () => ({
   prisma: { claudeJob: { findUnique: vi.fn() } },
 }))
 
+// Delegerende execFile-spy (zelfde patroon als __tests__/git/local-llm.test.ts): de aanroepen worden vastgelegd en
+// lopen daarna echt, zodat een test kan lezen met welke argumenten de productiecode git aanriep.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  const { promisify: p } = await import('node:util')
+  const originalPromisified = (
+    actual.execFile as unknown as Record<symbol, (...a: unknown[]) => unknown>
+  )[p.custom]
+  const execFileMock = vi.fn((...args: unknown[]) =>
+    (actual.execFile as unknown as (...a: unknown[]) => unknown)(...args),
+  )
+  Object.defineProperty(execFileMock, p.custom, {
+    value: (...args: unknown[]) => {
+      execFileMock.mock.calls.push(args as never)
+      return originalPromisified(...args)
+    },
+  })
+  return { ...actual, execFile: execFileMock }
+})
+
 import { prisma } from '../../src/prisma.js'
 import { createWorktreeForJob, LocalLlmWorktreeRefused } from '../../src/git/worktree.js'
 import { SAFE_GIT_CONFIG } from '../../src/git/local-llm.js'
@@ -33,6 +53,15 @@ function mockJobs(map: Record<string, JobRow>) {
     if (!(id in map)) return null
     return map[id]
   }) as typeof findUnique)
+}
+
+// De argumenten van de `git … submodule update`-aanroepen die de productiecode in `worktreePath` deed (uit de execFile-spy).
+function submoduleUpdateArgs(worktreePath: string): string[][] {
+  return vi.mocked(execFile).mock.calls
+    .map((call) => call as unknown as [string, string[], { cwd?: string } | undefined])
+    .filter(([file, args, opts]) =>
+      file === 'git' && args.includes('submodule') && args.includes('update') && opts?.cwd === worktreePath)
+    .map(([, args]) => args)
 }
 
 async function commit(cwd: string, name: string) {
@@ -211,40 +240,66 @@ describe('createWorktreeForJob: local_llm zonder repo-code + submodule-gate (Taa
     ).resolves.toMatchObject({ branchName: 'feat/local-nosub' })
   })
 
-  it.each(GUARDED_JOBS)('gebruikt SAFE_GIT_CONFIG voor de submodule update --init --recursive van een $label', async ({ job }) => {
-    const subOrigin = path.join(dir, 'sub2.git')
+  // Zet `vendor/<naam>` als submodule in de clone (lokale bare origin) en pusht main.
+  async function addSubmodule(name: string) {
+    const subOrigin = path.join(dir, `${name}.git`)
     await exec('git', ['init', '--bare', '-b', 'main', subOrigin])
-    const subSeed = path.join(dir, 'sub2-seed')
+    const subSeed = path.join(dir, `${name}-seed`)
     await exec('git', ['init', '-b', 'main', subSeed])
     await git(subSeed, 'remote', 'add', 'origin', subOrigin)
-    await commit(subSeed, 'sub2.txt')
+    await commit(subSeed, `${name}.txt`)
     await git(subSeed, 'push', '-u', 'origin', 'main')
 
     await commit(clone, 'base.txt')
     await exec(
       'git',
-      ['-c', 'protocol.file.allow=always', 'submodule', 'add', subOrigin, 'vendor/sub2'],
+      ['-c', 'protocol.file.allow=always', 'submodule', 'add', subOrigin, `vendor/${name}`],
       { cwd: clone },
     )
     await git(clone, 'add', '-A')
-    await git(clone, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'add submodule2')
+    await git(clone, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', `add ${name}`)
     await git(clone, 'push', '-u', 'origin', 'main')
+  }
 
+  // De aanroep zelf wordt getoetst, niet alleen het resultaat: SAFE_GIT_CONFIG is functioneel onschadelijk voor een gewone
+  // submodule-update, dus een update zonder die config geeft dezelfde submodule-inhoud. Alleen de argumenten van de
+  // `git submodule update` verraden of hooks, fsmonitor en submodule-verwerking uit staan.
+  it.each(GUARDED_JOBS)('gebruikt SAFE_GIT_CONFIG voor de submodule update --init --recursive van een $label', async ({ job }) => {
+    await addSubmodule('sub2')
     mockJobs({ 'job-local-submod-flags': job })
+    vi.mocked(execFile).mockClear() // alleen de aanroepen van de productiecode tellen mee
 
-    // SAFE_GIT_CONFIG bevat `-c core.hooksPath=/dev/null` e.a. — deze zijn
-    // functioneel onschadelijk voor een gewone submodule-update, dus we
-    // bewijzen de aanroep zelf indirect: het resultaat bestaat (init lukte
-    // met de veilige config erbij, geen fout).
     const { worktreePath } = await createWorktreeForJob({
       repoRoot: clone,
       jobId: 'job-local-submod-flags',
       branchName: 'feat/local-submod-flags',
       baseRef: 'origin/main',
     })
+
+    expect(submoduleUpdateArgs(worktreePath)).toEqual([
+      [...SAFE_GIT_CONFIG, 'submodule', 'update', '--init', '--recursive'],
+    ])
+    // En de update lukte met die config: de inhoud van de submodule staat er.
     await expect(
       fs.readFile(path.join(worktreePath, 'vendor', 'sub2', 'sub2.txt'), 'utf8'),
     ).resolves.toBe('sub2.txt')
-    expect(SAFE_GIT_CONFIG.length).toBeGreaterThan(0)
+  })
+
+  it('controle: een gewone job draait dezelfde submodule update zonder SAFE_GIT_CONFIG', async () => {
+    await addSubmodule('sub3')
+    mockJobs({ 'job-normal-submod': ORDINARY_JOB })
+    vi.mocked(execFile).mockClear()
+
+    const { worktreePath } = await createWorktreeForJob({
+      repoRoot: clone,
+      jobId: 'job-normal-submod',
+      branchName: 'feat/normal-submod',
+      baseRef: 'origin/main',
+    })
+
+    expect(submoduleUpdateArgs(worktreePath)).toEqual([['submodule', 'update', '--init', '--recursive']])
+    await expect(
+      fs.readFile(path.join(worktreePath, 'vendor', 'sub3', 'sub3.txt'), 'utf8'),
+    ).resolves.toBe('sub3.txt')
   })
 })
