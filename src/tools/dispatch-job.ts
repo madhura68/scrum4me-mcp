@@ -59,16 +59,19 @@ const inputSchema = z.object({
   doc_slug: z.string().min(1).optional(),
   doc_id: z.string().min(1).optional(),
   pr_url: z.string().url().optional(),
+  // M45-2b: de local_llm-route is vervangen door een HARNESS-configuratie per product. De sleutel blijft in het schema
+  // (een niet-strikt z.object zou hem anders stil weggooien) en elke waarde wordt geweigerd (validateRequiredCapability).
   required_capability: z.enum(['local_llm']).optional(),
 })
 
 type Input = z.infer<typeof inputSchema>
 
 function validateRequiredCapability(input: Input): string | null {
-  if (input.required_capability !== undefined && input.kind !== 'TASK_IMPLEMENTATION') {
+  if (input.required_capability === undefined) return null
+  if (input.kind !== 'TASK_IMPLEMENTATION') {
     return 'required_capability is alleen toegestaan bij TASK_IMPLEMENTATION.'
   }
-  return null
+  return 'required_capability local_llm wordt niet meer aangenomen; kies per product een HARNESS-configuratie.'
 }
 
 function validateRefs(input: Input): string | null {
@@ -119,7 +122,6 @@ export async function handleDispatchJob(rawInput: Input) {
         case 'TASK_IMPLEMENTATION':
           return toolJson(await dispatchTaskImplementation({
             taskId: input.task_id!, productId: input.product_id, userId: auth.userId,
-            requiredCapability: input.required_capability,
           }))
         case 'SPRINT_IMPLEMENTATION':
           return toolJson(await dispatchSprintRun({

@@ -113,14 +113,42 @@ it('happy paths leveren job-ids', async () => {
   expect(JSON.parse(toolText(sprint))).toMatchObject({ sprint_run_id: 'run-1' })
 })
 
-it('required_capability local_llm bij TASK_IMPLEMENTATION wordt doorgegeven', async () => {
+it('required_capability local_llm bij TASK_IMPLEMENTATION wordt geweigerd, vóór authenticatie en database, en dispatcht niets', async () => {
+  // M45-2b: de local_llm-route is vervangen door een HARNESS-configuratie per product; de sleutel blijft in het schema
+  // (een niet-strikt z.object zou hem anders stil weggooien) en elke waarde wordt geweigerd.
   const { dispatchTaskImplementation } = await import('../src/lib/dispatch/task-implementation.js')
   const res = await handleDispatchJob({
     kind: 'TASK_IMPLEMENTATION', product_id: 'p1', task_id: 't1', required_capability: 'local_llm',
   })
+  expect(res.isError).toBe(true)
+  expect(toolText(res)).toBe(
+    'VALIDATION_ERROR: required_capability local_llm wordt niet meer aangenomen; kies per product een HARNESS-configuratie.',
+  )
+  expect(dispatchTaskImplementation).not.toHaveBeenCalled()
+  // Vóór authenticatie en database: geen auth-, toegangs- of dispatchaanroep.
+  expect(requireWriteAccess).not.toHaveBeenCalled()
+  expect(userCanAccessProduct).not.toHaveBeenCalled()
+})
+
+it('een andere waarde van required_capability wordt ook geweigerd: elke waarde, niet alleen local_llm', async () => {
+  const { dispatchTaskImplementation } = await import('../src/lib/dispatch/task-implementation.js')
+  const res = await handleDispatchJob({
+    kind: 'TASK_IMPLEMENTATION', product_id: 'p1', task_id: 't1', required_capability: 'gpu' as never,
+  })
+  expect(res.isError).toBe(true)
+  expect(toolText(res)).toMatch(/^VALIDATION_ERROR: /)
+  expect(toolText(res)).toMatch(/required_capability/)
+  expect(dispatchTaskImplementation).not.toHaveBeenCalled()
+  expect(requireWriteAccess).not.toHaveBeenCalled()
+})
+
+it('TASK_IMPLEMENTATION zonder required_capability wordt gewoon gedispatcht', async () => {
+  const { dispatchTaskImplementation } = await import('../src/lib/dispatch/task-implementation.js')
+  const res = await handleDispatchJob({ kind: 'TASK_IMPLEMENTATION', product_id: 'p1', task_id: 't1' })
   expect(res.isError).toBeFalsy()
+  expect(JSON.parse(toolText(res))).toMatchObject({ job_id: 'job-5' })
   expect(dispatchTaskImplementation).toHaveBeenCalledWith(expect.objectContaining({
-    taskId: 't1', productId: 'p1', userId: 'u1', requiredCapability: 'local_llm',
+    taskId: 't1', productId: 'p1', userId: 'u1',
   }))
 })
 

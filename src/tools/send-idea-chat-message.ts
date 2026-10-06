@@ -8,6 +8,7 @@ import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { notifyJobEnqueued } from '../lib/dispatch/notify.js'
+import { readHarnessChoice } from '../lib/harness-choice.js'
 import { parseContentPolicy, checkContentPolicy, ContentPolicyError } from '@shared/content-policy.js'
 
 const inputSchema = z.object({
@@ -98,6 +99,10 @@ export function registerSendIdeaChatMessageTool(server: McpServer) {
             if (active) {
               return { messageId: message.id, jobEnqueued: false, coalesced: true, jobId: null as string | null }
             }
+            // M45 (spec §5.2): met een productkeuze voor IDEA_CHAT wordt de beurt een HARNESS-job met de gekozen
+            // configuratie. Zonder keuze (er is echt geen rij) blijft het create-object zoals vóór M45; een leesfout
+            // gaat omhoog en is nooit "geen keuze".
+            const choice = await readHarnessChoice(tx, lockedProductId, 'IDEA_CHAT')
             // Géén source-override: default SYSTEM — de isSystemIdeaChat-guard in
             // update_job_status (en de chat-payload in wait_for_job) accepteert
             // alleen SYSTEM-jobs (codex r1-P1). Herkomst-audit zit in de IdeaLog.
@@ -108,6 +113,7 @@ export function registerSendIdeaChatMessageTool(server: McpServer) {
                 idea_id: parsed.idea_id,
                 kind: 'IDEA_CHAT',
                 status: 'QUEUED',
+                ...(choice ? { runtime: 'HARNESS' as const, requested_model: choice.configuration } : {}),
               },
               select: { id: true },
             })
