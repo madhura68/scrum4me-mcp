@@ -9,7 +9,7 @@ activity and create todos via native tool calls instead of curl.
 
 | Tool | Purpose | Demo write? |
 |---|---|---|
-| `health` | Service + DB ping | n/a |
+| `health` | Service + DB ping; also `runtimes`, the worker runtimes this installation knows (`["CLAUDE","CODEX","HARNESS"]`; an installation without the field predates M45-2b) | n/a |
 | `list_products` | Active products the user owns or is a member of | n/a |
 | `get_context` | Product, all OPEN sprints, caller identity and applicable agent guide | n/a |
 | `get_sprint_context` | Compact stories/tasks of one sprint; optional task_id retrieves only that full task plan | n/a |
@@ -30,7 +30,7 @@ activity and create todos via native tool calls instead of curl.
 | `list_open_questions` | List own open/answered questions, most recent first (max 50) | n/a |
 | `cancel_question` | Cancel an own open question (asker-only) | no |
 | `wait_for_job` | Block until a QUEUED ClaudeJob is available, claim it atomically, return full task context with frozen `plan_snapshot`, `worktree_path`, and `branch_name` | no |
-| `update_job_status` | Report job transition to `running`, `done`, or `failed`; triggers SSE event to UI; cleans up worktree on terminal transitions | no |
+| `update_job_status` | Report job transition to `running`, `done`, or `failed`; triggers SSE event to UI; cleans up worktree on terminal transitions. A `HARNESS` job also reports its cost with the optional `cost` object `{ reported_cost_usd, cost_source, provider? }` — only on `done`, `failed` or `skipped` (else `COST_REPORT_NOT_ALLOWED`), validated before any side effect (`COST_REPORT_INVALID`) and stored in `job_cost_reports` in the same transaction as the status update (see [Worker runtime and HARNESS jobs](#worker-runtime-and-harness-jobs)) | no |
 | `verify_task_against_plan` | Compare frozen `plan_snapshot` against current plan + story logs + commits; returns per-AC ✓/✗/? heuristic and drift-score | yes (read-only) |
 | `cleanup_my_worktrees` | Remove stale git worktrees left by crashed or cancelled agent runs | no |
 | `check_queue_empty` | Synchronous, non-blocking count of active jobs (QUEUED/CLAIMED/RUNNING); optional `product_id` scope | no |
@@ -40,7 +40,8 @@ activity and create todos via native tool calls instead of curl.
 | `update_task_execution` | SPRINT_IMPLEMENTATION-flow: mutate `SprintTaskExecution.status` (PENDING/RUNNING/DONE/FAILED/SKIPPED). Token must own the parent SPRINT-job. Idempotent | no |
 | `job_heartbeat` | Extend `claude_jobs.lease_until` by 5 min. For SPRINT-jobs: response includes `sprint_run_status` + `sprint_run_pause_reason` so the worker can break its task-loop on UI-side cancel/pause | no |
 | `get_idea_chat_channel` | Fetch channel items (messages/logs/questions) for an idea, with composite cursor, `active_job`, and `question_states` (copilot idea-chat) | n/a |
-| `send_idea_chat_message` | Post a user message to an idea's chat channel and enqueue (or coalesce) an IDEA_CHAT job | no |
+| `send_idea_chat_message` | Post a user message to an idea's chat channel and enqueue (or coalesce) an IDEA_CHAT job. The job — and the follow-up job that `update_job_status` queues when a turn ends with newer user messages waiting — reads the product's `IDEA_CHAT` HARNESS choice: with a choice it gets runtime `HARNESS` and the configuration as `requested_model`, without one nothing changes | no |
+| `dispatch_job` | Queue a job for the existing runners (source `COPILOT`); refs per kind: `IDEA_GRILL`/`IDEA_MAKE_PLAN`/`IDEA_REVIEW_PLAN`/`IDEA_MAKE_SPEC` → `idea_id`, `TASK_IMPLEMENTATION`/`TASK_REVIEW` → `task_id`, `SPRINT_IMPLEMENTATION` → `sprint_id`, `PR_REVIEW` → `pr_url`, `SPEC_REVIEW` → `doc_slug` or `doc_id`, `DEPLOY` and `DOCS_AUDIT` → none (`IDEA_CHAT` and `PLAN_CHAT` are not dispatchable). A standalone `TASK_IMPLEMENTATION` for a product with a `TASK_IMPLEMENTATION` HARNESS choice becomes a `HARNESS` job. Since M45-2b it refuses every `required_capability` (the former `local_llm` route) with a `VALIDATION_ERROR`, before authentication and any database access: choose a HARNESS configuration per product instead | no |
 | `update_idea_spec_md` | Write the spec document (ProductDoc SPECS + immutable revision) for an idea, set `Idea.spec_doc_id`, and dispatch the SPEC_REVIEW pipeline. Called as the last step of `IDEA_MAKE_SPEC`/`IDEA_REVISE_SPEC` jobs | no |
 | `create_issue` | Register a problem for a product or system as ISS-n (server-side). A stable `fingerprint` (`<host>:<component>:<core>`) increments the existing open issue on a recurrence instead of duplicating it, and reopens a `FIXED`/`CANNOT_REPRODUCE` issue as a regression | no |
 | `update_issue` | Append research or resolution prose (timestamped, attributed to `authored_by` or the token user), change status/severity, or link a PBI or idea. Closing requires a resolution **code** in `resolution` (`fixed`, `wont_fix`, `duplicate`, `cannot_reproduce`, `invalid`) alongside `status=closed` — the prose explanation goes in `append_resolution`, and both may be sent in one call. A closed issue can only reopen to `investigating` | no |
@@ -532,7 +533,7 @@ Alternatively, configure repo roots in `~/.scrum4me-agent-config.json`:
 }
 ```
 
-If no repo root is configured for the product, `wait_for_job` tries an **on-demand clone** of `product.repo_url` (spec: `docs/superpowers/specs/2026-07-08-on-demand-repo-clone-fallback-design.md`). Only if the clone also fails does it roll the claim back to `QUEUED` and return an error. Explicit configuration is therefore optional for any product with a valid `repo_url`. Exception: a `local_llm` job (`required_capability = 'local_llm'`) resolves **only** from an explicitly configured root (env var or config entry) — no `~/Projects/<name>` convention lookup and no on-demand clone, and a cross-repo task never falls back to the product root. Without one the job goes straight to `FAILED` (no rollback to QUEUED).
+If no repo root is configured for the product, `wait_for_job` tries an **on-demand clone** of `product.repo_url` (spec: `docs/superpowers/specs/2026-07-08-on-demand-repo-clone-fallback-design.md`). Only if the clone also fails does it roll the claim back to `QUEUED` and return an error. Explicit configuration is therefore optional for any product with a valid `repo_url`. Exception: a `HARNESS` job or a `local_llm` job (`isHarnessJob`: `runtime = 'HARNESS'` or `required_capability = 'local_llm'`) resolves **only** from an explicitly configured root (env var or config entry) — no `~/Projects/<name>` convention lookup and no on-demand clone, and a cross-repo task never falls back to the product root. Without one the job goes straight to `FAILED` (no rollback to QUEUED). The same predicate switches on the other git protections for such a job; see [Worker runtime and HARNESS jobs](#worker-runtime-and-harness-jobs).
 
 ### Smoke-test checklist
 
@@ -543,6 +544,85 @@ After starting the server on the feature branch:
 3. In the **main checkout**: `git worktree list` → the agent worktree appears.
 4. In the **main checkout**: `git status` → clean (no agent changes).
 5. Call `update_job_status(done)` → worktree directory disappears.
+
+## Worker runtime and HARNESS jobs
+
+Every worker process has a **runtime**, set with `SCRUM4ME_WORKER_RUNTIME` and registered with
+its presence record:
+
+| `SCRUM4ME_WORKER_RUNTIME` | Result |
+|---|---|
+| unset or empty | `CLAUDE` (the default) |
+| `CLAUDE`, `CODEX` or `HARNESS` | that runtime; case-insensitive, surrounding whitespace ignored |
+| anything else | **the process does not start**: `UNKNOWN_AGENT_RUNTIME` and exit code 1, before it authenticates or registers a worker |
+
+Until M45-2b every value except `CODEX` silently became `CLAUDE`, so a typo registered a Claude
+worker that then claimed Claude jobs. Check the variable on an installation before you update it:
+only the values above still start. The `health` tool returns `runtimes: ["CLAUDE","CODEX","HARNESS"]`,
+the runtimes the running release knows (the plain `GET /health` route of the HTTP server is
+unchanged). `HARNESS` is a worker runtime only: `agent.runtime` of `get_context` and
+`get_agent_guide`, and the runtimes of managed dispatch, stay `CLAUDE` or `CODEX`.
+
+`HARNESS` (Scrum4Me M45) is a LiteLLM model on a per-product configuration, run by the harness
+instead of Claude Code. It exists for two job kinds only: `IDEA_CHAT` and a standalone
+`TASK_IMPLEMENTATION` (source `COPILOT`, no sprint run). A product picks a configuration and a cost
+ceiling per kind in `product_harness_choices`. **Without a row for a kind nothing changes**: the job
+stays an ordinary Claude job.
+
+- **Routing.** A standalone `TASK_IMPLEMENTATION` (`dispatch_job`), `send_idea_chat_message` and the
+  idea-chat follow-up job of `update_job_status` read the product's choice. With one, the job is
+  created with runtime `HARNESS` and the configuration as `requested_model`, never with a
+  `required_capability`. A failing read is an error, never "no choice". `dispatch_job` itself refuses
+  every `required_capability` (a `VALIDATION_ERROR`): the `local_llm` route is replaced by a
+  configuration per product.
+- **Claim.** A `HARNESS` worker claims only `HARNESS` jobs — `IDEA_CHAT` (source `SYSTEM`) and a
+  standalone `TASK_IMPLEMENTATION` (source `COPILOT`, not in a sprint run) — whatever its
+  capabilities, and no Claude or Codex worker claims them. Right after a claim `wait_for_job`
+  compares the job's runtime with the worker's; a mismatch (only possible through a claim-filter
+  bug) gives the claim back in one transaction and returns `RUNTIME_MISMATCH`.
+- **Payload.** `wait_for_job` returns `config: { "runtime": "HARNESS", "model": "<configuration>",
+  "max_cost_usd": "<decimal>" }` and an empty `prompt_text`; the rest of the payload has the shape of a
+  Claude job. `model` is the job's `requested_model`. `max_cost_usd` is the ceiling in
+  `product_harness_choices`, read at claim time (`0.2000` is returned as `0.2`); without a row it is
+  the default of the kind, `0.05` for `IDEA_CHAT` and `0.50` for `TASK_IMPLEMENTATION`.
+- **Cost report.** `update_job_status` accepts `cost: { reported_cost_usd, cost_source, provider? }`
+  from a `HARNESS` job (not a `local_llm` job) on `done`, `failed` or `skipped`; any other job or
+  status gets `COST_REPORT_NOT_ALLOWED`. `reported_cost_usd` is a decimal string or `null`, and
+  `cost_source` is one of `provider_reported`, `litellm_computed` (an amount `>= 0`), `local` (exactly
+  `0`) and `none` (`null`). A report that breaks these rules, has an amount that is not a plain
+  decimal (no exponent, no sign, at most 6 digits before the point) or belongs to a job without
+  `requested_model` gives `COST_REPORT_INVALID`. An amount with more than 6 decimals is rounded **up**
+  to 6: a float sum such as `0.00031200000000000005` would otherwise block the end status, and
+  rounding up never reports too little. The whole object is checked before any side effect (a
+  refusal leaves no pushed branch behind a job that stays `RUNNING`), and the row in
+  `job_cost_reports` (one per job, the configuration taken from the job itself) is written in the
+  same transaction as the status update.
+- **Git protection.** One predicate, `isHarnessJob` — `runtime = 'HARNESS'` or
+  `required_capability = 'local_llm'`, read from the database and never from the worktree — gives such
+  a job the protections of a `local_llm` job: an explicitly configured repo root only (no on-demand
+  clone, so no `npm ci` on the host), no `prepare:worktree`, a refusal when the worktree's
+  `.gitmodules` differs from the trusted default ref's, git only with hooks, fsmonitor and submodule
+  recursion off and the worktree's gitlink checked first, no git in a worktree that is being removed,
+  no backup push, and in `update_job_status` no auto-PR, no status propagation to task/story/PBI and no
+  PBI fail-cascade — the harness manages its loose task jobs itself.
+
+Tool errors of `wait_for_job` for a `HARNESS` job:
+
+| Error | Cause | Job afterwards |
+|---|---|---|
+| `RUNTIME_MISMATCH` | the claimed job's runtime differs from the worker's | `QUEUED` again, claim fields empty |
+| `HARNESS_CONFIGURATION_INVALID` | `requested_model` is not a valid configuration name | `FAILED` with that code |
+| `HARNESS_COST_LIMIT_INVALID` | the stored ceiling is not a usable amount | `FAILED` with that code |
+| `HARNESS_KIND_UNSUPPORTED` | a job kind other than `IDEA_CHAT` or `TASK_IMPLEMENTATION` | `FAILED` with that code |
+
+**Updating an installation.** The release needs the Scrum4Me M45-2a migrations in the database
+(`20261006120000_agent_runtime_harness` and `20261006120100_harness_choices_cost_reports`: the enum
+member and the tables `product_harness_choices` and `job_cost_reports`) and `vendor/scrum4me-shared`
+at `132656b` or later with a regenerated Prisma client. The enqueue paths read `product_harness_choices`
+even when a product has no choice, so the database role of an installation needs `SELECT` on it, and
+`INSERT` and `UPDATE` on `job_cost_reports` to report costs. `postinstall` swallows a failed
+`prisma generate` and `health.runtimes` comes from a TypeScript constant, so it does not prove the
+generated client knows the models: check that `Prisma.ModelName.ProductHarnessChoice` exists.
 
 ## Batch-loop
 

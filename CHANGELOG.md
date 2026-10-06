@@ -2,6 +2,34 @@
 
 All notable changes to scrum4me-mcp.
 
+## [Unreleased]
+
+M45-2b: `HARNESS`, a LiteLLM model on a per-product configuration, becomes a third worker runtime beside `CLAUDE` and `CODEX`. Without a product choice nothing changes, and no `HARNESS` row exists in a shared database before the cutover.
+
+### Added
+
+- **`HARNESS` worker runtime** — `SCRUM4ME_WORKER_RUNTIME=HARNESS`. A HARNESS worker claims only HARNESS jobs (`IDEA_CHAT`, standalone `TASK_IMPLEMENTATION`) and no other worker claims them. `wait_for_job` returns `config: { runtime: 'HARNESS', model, max_cost_usd }` (ceiling from `product_harness_choices`) and an empty `prompt_text`. New tool errors: `RUNTIME_MISMATCH` (claim given back, job `QUEUED` again) and `HARNESS_CONFIGURATION_INVALID` / `HARNESS_COST_LIMIT_INVALID` / `HARNESS_KIND_UNSUPPORTED` (job `FAILED`).
+- **`health`** — returns `runtimes: ['CLAUDE', 'CODEX', 'HARNESS']`.
+- **`update_job_status`** — optional `cost: { reported_cost_usd, cost_source, provider? }` for a HARNESS job on `done`/`failed`/`skipped` (else `COST_REPORT_NOT_ALLOWED`; invalid: `COST_REPORT_INVALID`; both checked before any side effect). The amount is rounded up to 6 decimals and stored in `job_cost_reports` in the same transaction as the status update.
+- **Routing** — a standalone `TASK_IMPLEMENTATION`, `send_idea_chat_message` and the idea-chat follow-up job read the product's HARNESS choice (`product_harness_choices`): with one, the job gets runtime `HARNESS` and the configuration as `requested_model`.
+
+### Changed
+
+- **`SCRUM4ME_WORKER_RUNTIME`** — an unknown value now stops the process at startup (`UNKNOWN_AGENT_RUNTIME`, exit code 1) instead of silently becoming `CLAUDE`. Empty or unset is still `CLAUDE`.
+- **`dispatch_job`** — refuses every `required_capability`: the `local_llm` route is replaced by a HARNESS configuration per product.
+- **Git protection** — one predicate, `isHarnessJob` (`runtime = 'HARNESS'` or `required_capability = 'local_llm'`), now drives all git protection and the `update_job_status` exemptions (no auto-PR, no status propagation, no PBI fail-cascade) for both kinds of job.
+- **Dispatch integration gate** — its test database gets the two M45-2a migrations (Scrum4Me `ae6483b2`) as an additive overlay, so `DISPATCH_TEST_SCHEMA_ROOT` must be a full clone that contains that commit.
+
+### Schema
+
+- `vendor/scrum4me-shared` bumped to `132656b`; `prisma/schema.prisma` regenerated with `AgentRuntime.HARNESS` and the models `ProductHarnessChoice` and `JobCostReport`.
+
+### Migration notes
+
+- Requires the Scrum4Me M45-2a migrations (`20261006120000_agent_runtime_harness`, `20261006120100_harness_choices_cost_reports`) and a Prisma client regenerated against `scrum4me-shared` `132656b`.
+- Before updating an installation, check `SCRUM4ME_WORKER_RUNTIME`: only empty, `CLAUDE`, `CODEX` or `HARNESS` (any case) still starts.
+- The database role needs `SELECT` on `product_harness_choices` (read on every enqueue path, also without a choice) and `INSERT`/`UPDATE` on `job_cost_reports`.
+
 ## [0.6.0] — 2026-05-04
 
 Adds support for Scrum4Me M12 (Idea entity + Grill/Plan jobs).

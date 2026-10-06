@@ -130,7 +130,7 @@ When a `TASK_IMPLEMENTATION` job ends in `FAILED`, `cancelPbiOnFailure` (`src/ca
 - **Merged PR** → revert-PR opened against the base branch via `git revert` (parent-count-aware: `-m 1` for merge-commits, plain revert for squash-merges with 1 parent). **No** auto-merge on the revert PR — review by hand.
 - **Branch without PR** → best-effort `git push origin --delete <branch>` with `expectedHeadSha`-guard, subject to the same M38 gate: an unmerged tip is kept as a backup rather than deleted.
 
-`local_llm` task jobs are exempt: they get no auto-PR, no status propagation to task/story/PBI and no PBI fail-cascade on `done`/`failed` — the harness manages those loose task jobs itself.
+A loose task job that is a `HARNESS` job or a `local_llm` job (`isHarnessJob`, see "HARNESS runtime" below) is exempt: it gets no auto-PR, no status propagation to task/story/PBI and no PBI fail-cascade on `done`/`failed` — the harness manages those loose task jobs itself.
 
 A trace (cancelled job count, closed/reverted PRs, deleted branches) is written to the original failed job's `error` column. Race-protection: if a parallel worker tries to `update_job_status` on a job that the cascade already set to `CANCELLED`, the call is rejected with a `JOB_CANCELLED` error so the agent discards local work and calls `wait_for_job` again. The cascade is idempotent and never throws — failures become warnings on the failed-job's trace.
 
@@ -202,7 +202,52 @@ Or add to `~/.scrum4me-agent-config.json`:
 }
 ```
 
-If no local root is found, `wait_for_job` tries an **on-demand clone** of `product.repo_url` (spec: `docs/superpowers/specs/2026-07-08-on-demand-repo-clone-fallback-design.md`). Only if the clone also fails does it roll the claim back to QUEUED and return an error. Explicit configuration is therefore optional for any product with a valid `repo_url`. Exception: a `local_llm` job (`required_capability = 'local_llm'`) resolves **only** from an explicitly configured root (env var or config entry) — no `~/Projects/<name>` convention lookup and no on-demand clone, and a cross-repo task never falls back to the product root. Without one the job goes straight to `FAILED` (no rollback to QUEUED).
+If no local root is found, `wait_for_job` tries an **on-demand clone** of `product.repo_url` (spec: `docs/superpowers/specs/2026-07-08-on-demand-repo-clone-fallback-design.md`). Only if the clone also fails does it roll the claim back to QUEUED and return an error. Explicit configuration is therefore optional for any product with a valid `repo_url`. Exception: a `HARNESS` job or a `local_llm` job (`isHarnessJob`: `runtime = 'HARNESS'` or `required_capability = 'local_llm'`) resolves **only** from an explicitly configured root (env var or config entry) — no `~/Projects/<name>` convention lookup and no on-demand clone, and a cross-repo task never falls back to the product root. Without one the job goes straight to `FAILED` (no rollback to QUEUED).
+
+## HARNESS runtime (M45-2b)
+
+`HARNESS` is the third worker runtime beside `CLAUDE` and `CODEX`: a LiteLLM model on a per-product configuration, run by the harness instead of Claude Code (Scrum4Me spec `docs/superpowers/specs/2026-10-05-harness-runtime-design.md`, plan `docs/plans/M45-2b-harness-mcp.md`). It exists for two job kinds only: `IDEA_CHAT` and a standalone `TASK_IMPLEMENTATION` (source `COPILOT`, no sprint run). `WorkerRuntime` is the shared `AgentRuntime` (`@shared/agent-runtime.js`), not a list of its own. `HARNESS` is a worker runtime only: the caller identity of `get_context`/`get_agent_guide` and managed dispatch (`dispatch_task`, `dispatch_review`) stay `CLAUDE | CODEX`. Without a product choice nothing changes, and no `HARNESS` row exists in a shared database before the cutover (M45 increment 2e).
+
+### Worker identity
+
+- `SCRUM4ME_WORKER_RUNTIME` accepts `CLAUDE`, `CODEX` and `HARNESS`, case-insensitive, surrounding whitespace ignored. Empty or unset is `CLAUDE`.
+- **Any other value is fatal.** `parseWorkerRuntime` throws `UNKNOWN_AGENT_RUNTIME` (the value is never in the message). `startStdioServer` resolves the runtime before authentication and registration, so the process exits with code 1 and registers no worker. Before M45-2b every value except `CODEX` silently became `CLAUDE`: a typo registered a Claude worker that claimed Claude jobs. Check the variable on an installation before updating it; only an empty value or one of the three above still starts.
+- `health` returns `runtimes: ['CLAUDE', 'CODEX', 'HARNESS']` (a fresh copy per call, also when the database is down). An installation without that field predates M45-2b. The plain `GET /health` route of `src/http.ts` is unchanged.
+
+### Claim
+
+- A `HARNESS` worker claims only `HARNESS` jobs: `required_capability IS NULL` and either `IDEA_CHAT` (source `SYSTEM`) or a standalone `TASK_IMPLEMENTATION` (source `COPILOT`, `sprint_run_id IS NULL`). The branch is chosen on the worker's runtime, before the capability branches, so its capabilities do not count. No Claude or Codex worker claims a `HARNESS` job. The branch exists in every mirror of the claim filter in `src/dispatch/eligibility.ts` (string SQL, Prisma fragment, TS predicate, SQL condition); the tier fragment needs none (peers already filter on the worker's own runtime). `__tests__/dispatch/harness-claim.integration.test.ts` pins the filter in both directions on a real Postgres in the dispatch gate.
+- `getFullJobContext` compares the job's runtime with the worker's as the first step after loading the job, before any worktree or idea preparation, and only when the caller passes a runtime (the docker runner calls it without one). A job whose runtime differs is given back by `releaseMismatchedClaim` and `wait_for_job` returns the tool error `RUNTIME_MISMATCH` (not a `TerminalJobError`: the job is not failed). The give-back is one database-only transaction: `SELECT … FOR UPDATE` on the job row (nothing changes when the claim is no longer this token and instance), the task back to `TO_DO` only if this claim promoted it (`tasks.updated_at = claude_jobs.claimed_at`), then the job back to `QUEUED` with empty claim fields. Only a claim-filter bug can cause this. The harness is to stop on the error without restarting (increment 2d); a Claude or Codex worker would claim and give back the same job on every poll, visible as `runtime_mismatch` in the claim log.
+- The payload `config` of a `HARNESS` job is `{ runtime: 'HARNESS', model, max_cost_usd }`: `model` is the configuration name from the job's `requested_model`, `max_cost_usd` the ceiling that `readHarnessChoice` (`src/lib/harness-choice.ts`) reads from `product_harness_choices` at claim time, as a plain decimal string (`'0.2000'` becomes `'0.2'`). No row means the default of the kind (`IDEA_CHAT` `0.05`, `TASK_IMPLEMENTATION` `0.50`); a failing read is an error and never the default. `prompt_text` is empty (`''`): the harness has its own prompts, and `HARNESS` never gets a Claude prompt. The rest of the payload has the same shape as for a Claude job.
+- An unusable `HARNESS` configuration is terminal. The resolver errors `HARNESS_CONFIGURATION_INVALID`, `HARNESS_COST_LIMIT_INVALID`, `HARNESS_KIND_UNSUPPORTED` and `UNKNOWN_AGENT_RUNTIME` become a `HarnessJobConfigError` (a `TerminalJobError`): `markJobTerminallyFailed` sets the job to `FAILED` with that code and `wait_for_job` returns the bare code, on both claim paths (direct and after waiting). Both catch blocks test `HarnessJobConfigError` before `TerminalJobError`, which would otherwise word the failure as an unresolvable repo. Without this the job would stay `CLAIMED` until the lease expires and be claimed twice more.
+- The "is there a worker for this idea job?" precheck of `IDEA_GRILL`, `IDEA_MAKE_PLAN` and `IDEA_MAKE_SPEC` (`src/lib/dispatch/idea-jobs.ts`) does not count `HARNESS` workers: they never claim those kinds, so counting them left the job `QUEUED` for ever.
+
+### Git protection: `isHarnessJob`
+
+One predicate decides all git protection (`src/git/local-llm.ts`): `isHarnessJobRow({ runtime, required_capability })` is true for `runtime = 'HARNESS'` **or** `required_capability = 'local_llm'`, and `isHarnessJob(jobId)` reads both fields from the database — never from the worktree, and without a status filter. The `local_llm` branch stays permanent: the worktree of a closed `local_llm` job can still occupy a branch, and that directory stays guarded. A guarded job gets:
+
+- an explicitly configured repo root only, no on-demand clone (so no `npm ci` on the host) — `attachWorktreeToJob`, `resolveRepoRoot({ explicitRootsOnly })`;
+- no `prepare:worktree`, and a refusal (`LocalLlmWorktreeRefused`) when the worktree's `.gitmodules` differs from the trusted default ref's;
+- removal of a stale branch occupant, for an existing and for a fresh branch, and removal of its own worktree on a terminal status, without running git in the worktree (`removeWorktreeWithoutGit`; the branch ref stays in the clone);
+- `SAFE_GIT_CONFIG` (hooks, fsmonitor and submodule recursion off) plus the gitlink check before every host-git call with the worktree as working directory (`gitPrefixFor`: push with `--no-verify`, set-head, rev-parse, diff);
+- no backup push (`maybeBackupPush` skips it);
+- in `update_job_status`: no auto-PR, no status propagation and no PBI fail-cascade, through `!isHarnessJobRow(job)` at the three former `local_llm` checks.
+
+The derived names keep their pre-M45 spelling (`isLocalLlmWorktree`, `gitPrefixFor`, `SAFE_GIT_CONFIG`, `LocalLlmWorktreeRefused`, `removeWorktreeWithoutGit`) and follow the predicate. Four git paths do not consult it and rely on the job kind (`update-task-execution`, the sprint claim, the product-worktrees of idea kinds, the sprint-batch PR): the claim branch, the resolver (`HARNESS_KIND_UNSUPPORTED`) and the enqueue paths admit only `IDEA_CHAT` and a standalone `TASK_IMPLEMENTATION`, so a `HARNESS` job never reaches them. A grep for `local_llm` in `src/` should find only the predicate, the five `local_llm` spots of the claim filter and the legacy capability inheritance of the idea-chat follow-up job (both until increment 3), the `dispatch_job` refusal, and comments, error texts and log keys (`backup-push.skip_local_llm`); any other hit is a protection that still reads `required_capability` alone.
+
+### Routing at enqueue
+
+- `dispatch_job` refuses every `required_capability` (`VALIDATION_ERROR`, before authentication and any database access): the `local_llm` route is replaced by a `HARNESS` configuration per product. The key stays in the input schema so zod does not drop it silently. `dispatchTaskImplementation` no longer has a `requiredCapability` option.
+- Three paths read the product's choice with `readHarnessChoice` inside their own transaction, after their guards and before the create: a standalone `TASK_IMPLEMENTATION` (`dispatchTaskImplementation`), `send_idea_chat_message` (after the coalescing check) and the idea-chat follow-up job that `update_job_status` creates when a turn ends with newer user messages waiting. With a choice the job gets `runtime: 'HARNESS'` and the configuration as `requested_model`, no Claude snapshot and never a `required_capability`. Without a row the create object stays exactly as before M45 (existing tests pin those shapes); a read error propagates and is never "no choice".
+- The follow-up job follows the choice at that moment, not the runtime of the job that just finished. Without a choice it still inherits `required_capability` (the legacy `local_llm` route). A `HARNESS` job never carries a `required_capability`, so a `HARNESS` predecessor without a choice yields an ordinary Claude follow-up job: the choice is also the permission.
+
+### Cost report
+
+`update_job_status` takes an optional strict `cost: { reported_cost_usd: string | null, cost_source: 'provider_reported' | 'litellm_computed' | 'local' | 'none', provider?: string }` (`src/lib/harness-cost.ts`).
+
+- Only a job with `runtime = 'HARNESS'` reports (a `local_llm` job does not), and only with status `done`, `failed` or `skipped`; otherwise `VALIDATION_ERROR: COST_REPORT_NOT_ALLOWED`. The whole object is validated right after the job is read, before the verify gate, the push and the own end paths of `DOCS_AUDIT` and `DEPLOY`, so a refusal leaves no pushed branch behind a job that stays `RUNNING`; a mismatch gives `VALIDATION_ERROR: COST_REPORT_INVALID`.
+- Rules per source: `none` has no amount, `local` needs `0`, `provider_reported` and `litellm_computed` need an amount `>= 0`. The amount is a plain decimal string (no exponent, no sign, at most 6 digits before the point) and is **rounded up** to 6 decimals (`'0.00031200000000000005'` becomes `'0.000313'`): a refusal would block the whole end status, and rounding up never reports too little. String and `BigInt` arithmetic only, never a float. The MCP never invents an amount.
+- The row in `job_cost_reports` (one per job, upsert on `job_id`, `reported_at` = now) carries the configuration from the job's own `requested_model`, never from the report. It is written in the same transaction as the status update: inside the existing transaction of an idea-chat turn, otherwise as `prisma.$transaction([update, upsert])`, and only when a cost is reported — without one the plain single update stays. A row the database refuses rolls the status update back with it.
 
 ## Session usage and estimates (IDEA-235)
 
@@ -289,8 +334,13 @@ een ontvanger stil `&lt;` naar schijf. Queue-berichten bevatten routinematig
 | `src/tools/queue-archive.ts` | `queue_archive` / `queue_unarchive` — M32-archivering: transitieve reply-subtree in één `$transaction` (`FOR UPDATE`), alleen terminale rijen archiveerbaar (`QUEUE_NOT_TERMINAL`), per rij idempotent, géén NOTIFY. Zelfde semantiek als de s4m-queue-CLI |
 | `src/git/worktree.ts` | `createWorktreeForJob` + `removeWorktreeForJob` |
 | `src/git/on-demand-clone.ts` | `cloneRepoOnDemand` — on-demand clone fallback voor `resolveRepoRoot` |
-| `src/tools/wait-for-job.ts` | `resolveRepoRoot`, `rollbackClaim`, `attachWorktreeToJob` |
-| `src/tools/update-job-status.ts` | `cleanupWorktreeForTerminalStatus` |
+| `src/git/local-llm.ts` | `isHarnessJobRow` / `isHarnessJob` — the one predicate for all git protection (`HARNESS` or `local_llm`), plus `SAFE_GIT_CONFIG`, `gitPrefixFor`, `removeWorktreeWithoutGit` |
+| `src/worker-runtime.ts` | `parseWorkerRuntime` / `getWorkerRuntimeFromEnv` — `SCRUM4ME_WORKER_RUNTIME`; an unknown value throws `UNKNOWN_AGENT_RUNTIME` |
+| `src/dispatch/eligibility.ts` | The claim filter in all its mirrors (string SQL, Prisma fragment, TS predicate, SQL condition), including the `HARNESS` branch |
+| `src/lib/harness-choice.ts` | `readHarnessChoice` — the product's choice (configuration + cost ceiling) for the claim and the three enqueue paths |
+| `src/lib/harness-cost.ts` | `checkCostReport` / `parseReportedCostUsd` — validation of the `cost` object of `update_job_status` |
+| `src/tools/wait-for-job.ts` | `resolveRepoRoot`, `rollbackClaim`, `releaseMismatchedClaim`, `attachWorktreeToJob` |
+| `src/tools/update-job-status.ts` | `cleanupWorktreeForTerminalStatus`; the cost row of a `HARNESS` job |
 | `src/tools/cleanup-my-worktrees.ts` | `cleanup_my_worktrees` tool — scans + removes stale worktrees |
 
 ## Testing
@@ -354,6 +404,24 @@ checkout of the pinned Scrum4Me schema commit, and it refuses any target that is
 not a throwaway. CI provisions both and drives the whole gate through
 `node scripts/run-dispatch-ci.mjs`, which creates a fresh `s4m_dispatch_test`
 database and then calls `npm run test:dispatch`.
+
+The test database is the historical schema of `DISPATCH_SCHEMA_COMMIT`
+(`6dc581da`) plus two additive overlays. Each is an immutable pin of commit, path
+and sha256 that `scripts/dispatch-test-db.mjs` reads with `git show` from the
+schema source, never a replacement baseline: the token-usage migration
+(`TOKEN_USAGE_MIGRATION_COMMIT`) and, since M45-2b, the two M45-2a migrations of
+Scrum4Me commit `ae6483b2` (`HARNESS_MIGRATION_COMMIT`): the `AgentRuntime.HARNESS`
+enum member and the tables `product_harness_choices` and `job_cost_reports`. The
+enum member and the tables go in as two separate queries, on one admin connection,
+under a temporary `CREATE` right on `public` that a `finally` revokes again (the
+schema belongs to `pg_database_owner`), followed by grants equal to the 2a
+contracts. So `DISPATCH_TEST_SCHEMA_ROOT` must be a **full** clone of Scrum4Me — not
+shallow, and recent enough to contain `ae6483b2` — checked out clean at
+`DISPATCH_SCHEMA_COMMIT`. `check` and `provision` refuse a source without that
+commit (`DISPATCH_HARNESS_MIGRATION_SOURCE_REFUSED`) and a file with another hash
+(`DISPATCH_HARNESS_MIGRATION_HASH_REFUSED`). CI already clones fully
+(`git clone --no-checkout`, no `--depth`), so `.forgejo/workflows/ci.yml` needs
+nothing extra.
 
 All worktree helpers have unit tests under `__tests__/git/worktree.test.ts`, `__tests__/wait-for-job-worktree.test.ts`, and `__tests__/update-job-status-worktree.test.ts`.
 
