@@ -24,6 +24,72 @@ export function readTokenUsageMigration(root) {
   return sql
 }
 
+// M45-2a: the two additive migrations of the HARNESS runtime (the enum member, then the tables
+// product_harness_choices and job_cost_reports), on top of the same historical schema. Same rule as the token-usage
+// migration above: an immutable pin of commit, path and sha256, read with `git show` from the schema source, never a
+// replacement baseline. The order matters: a new enum member cannot be used in the transaction that adds it, so the
+// two files are two separate queries.
+export const HARNESS_MIGRATION_COMMIT = 'ae6483b294522803eadf97937842cd7c2456ff31'
+export const HARNESS_MIGRATIONS = [
+  {
+    path: 'prisma/migrations/20261006120000_agent_runtime_harness/migration.sql',
+    sha256: '9a9e23cccf151a4548419ede24727da29ca71c3f8110328b0766e6dce10203b5',
+  },
+  {
+    path: 'prisma/migrations/20261006120100_harness_choices_cost_reports/migration.sql',
+    sha256: '2f5127079fb6b02352d5a6ae1c1059fffe871ead2650b3db77c82275e6d7ceac',
+  },
+]
+
+// Rights equal to the 2a contracts (scripts/db-access/profiles/scrum4me.json on the commit above): web and
+// prepared-web read and write product_harness_choices, job_cost_reports has no DELETE (the cascade from claude_jobs
+// does not need it) and the observer only reads. The dispatch, queue and projector roles get nothing.
+export const HARNESS_GRANTS = [
+  'GRANT SELECT, INSERT, UPDATE, DELETE ON public.product_harness_choices TO scrum4me_web_runtime, scrum4me_app',
+  'GRANT SELECT, INSERT, UPDATE ON public.job_cost_reports TO scrum4me_web_runtime, scrum4me_app',
+  'GRANT SELECT ON public.product_harness_choices, public.job_cost_reports TO ops_readonly',
+]
+
+/**
+ * @param {string} root
+ * @param {{ commit?: string, migrations?: ReadonlyArray<{ path: string, sha256: string }> }} [pins]
+ *   Only a test passes pins of its own; the defaults are the immutable pins above.
+ * @returns {string[]} the migrations in pin order
+ */
+export function readHarnessMigrations(root, pins = {}) {
+  const commit = pins.commit ?? HARNESS_MIGRATION_COMMIT
+  return (pins.migrations ?? HARNESS_MIGRATIONS).map(({ path, sha256 }) => {
+    let sql
+    try {
+      sql = execFileSync('git', ['show', `${commit}:${path}`], {
+        cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+      })
+    } catch { throw new Error('DISPATCH_HARNESS_MIGRATION_SOURCE_REFUSED') }
+    if (createHash('sha256').update(sql).digest('hex') !== sha256) {
+      throw new Error('DISPATCH_HARNESS_MIGRATION_HASH_REFUSED')
+    }
+    return sql
+  })
+}
+
+/**
+ * Applies the migrations as the schema owner under a temporary CREATE right on `public` (that schema belongs to
+ * pg_database_owner, so CREATE TABLE as `scrum4me` fails without it), the same pattern as the additive migrations of
+ * the provisioner. The right is revoked in `finally`: a failure halfway never leaves `scrum4me` with a lasting
+ * CREATE. SET ROLE lives in the session, so this needs ONE connection, not a pool.
+ * @param {{ query: (sql: string) => Promise<unknown> }} client
+ * @param {readonly string[]} migrations in order, the enum member first, each as its own query
+ */
+export async function applyHarnessOverlay(client, migrations) {
+  try {
+    await client.query('GRANT CREATE ON SCHEMA public TO scrum4me; SET ROLE scrum4me')
+    for (const sql of migrations) await client.query(sql)
+  } finally {
+    await client.query('RESET ROLE; REVOKE CREATE ON SCHEMA public FROM scrum4me')
+  }
+  for (const grant of HARNESS_GRANTS) await client.query(grant)
+}
+
 export const requiredUrls = [
   'DISPATCH_TEST_ADMIN_URL',
   'DISPATCH_TEST_URL',
@@ -91,6 +157,7 @@ export async function assertTestCluster(client) {
 export async function checkDispatchTestTarget(env = process.env) {
   const root = assertDispatchSchemaRoot(env.DISPATCH_TEST_SCHEMA_ROOT)
   readTokenUsageMigration(root)
+  readHarnessMigrations(root)
   const urls = requiredUrls.map((key) => assertDispatchTestUrl(env[key], env))
   if (new Set(urls.map((url) => `${url.hostname}:${url.port}`)).size !== 1) {
     throw new Error('DISPATCH_TEST_TARGET_REFUSED')
@@ -137,6 +204,8 @@ export async function provisionDispatchTestTarget(env = process.env) {
   // Repeat the source check immediately before execution so changes made while
   // the cluster sentinel was checked cannot reach the provisioning process.
   assertDispatchSchemaRoot(root)
+  // Verified before the provisioner touches the database, so a wrong source fails fast.
+  const harnessMigrations = readHarnessMigrations(root)
   const result = spawnSync(
     process.execPath,
     [
@@ -156,6 +225,9 @@ export async function provisionDispatchTestTarget(env = process.env) {
     await overlay.query(readTokenUsageMigration(root))
     // JP approved only this column right for the existing dispatch role.
     await overlay.query('GRANT UPDATE(last_used_at) ON public.api_tokens TO scrum4me_dispatch')
+    // M45-2a: the HARNESS enum member and tables, on one connection (SET ROLE lives in the session).
+    const client = await overlay.connect()
+    try { await applyHarnessOverlay(client, harnessMigrations) } finally { client.release() }
   } finally { await overlay.end() }
 
   const fresh = readGeneratedRuntimeEnv(env.DISPATCH_TEST_ENV_FILE)
