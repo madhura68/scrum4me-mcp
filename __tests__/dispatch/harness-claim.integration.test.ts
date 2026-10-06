@@ -19,6 +19,11 @@
 // `world`, dus een volgend describe-blok kan zonder voorbereiding dezelfde hulpfuncties gebruiken. `holder.db` is
 // de PrismaClient van de web-rol (scrum4me_web_runtime): de MCP draait met die rol, en de gemockte
 // `src/prisma.js` geeft hem aan tryClaimJob, dispatchIdeaJob, getFullJobContext en releaseMismatchedClaim.
+//
+// Het deel van M45-2b Taak 4 staat helemaal onderaan: de enqueue-paden (losse taak en idee-chat) lezen de productkeuze
+// en maken een HARNESS-job die de claim van een HARNESS-worker vindt, en `update_job_status` schrijft de kostenrij
+// in dezelfde echte transactie als de statusupdate (beide paden, en de vervolgjob van een idee-chat). De gemockte
+// `src/auth.js` geeft de seed-gebruiker en -token (`holder.actor`) aan de tools.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { Prisma, PrismaClient } from '@prisma/client'
@@ -27,12 +32,26 @@ import { makeDispatchHarness, type DispatchHarness } from './harness.js'
 import { buildClaimableJobWhereFragment } from '../../src/dispatch/eligibility.js'
 import type { WorkerRuntime } from '../../src/worker-runtime.js'
 
-const holder = vi.hoisted(() => ({ db: null as unknown as PrismaClient }))
+const holder = vi.hoisted(() => ({
+  db: null as unknown as PrismaClient,
+  actor: null as unknown as { userId: string; tokenId: string },
+}))
 vi.mock('../../src/prisma.js', () => ({ get prisma() { return holder.db } }))
+vi.mock('../../src/auth.js', async (original) => ({
+  ...(await original<typeof import('../../src/auth.js')>()),
+  requireWriteAccess: async () => holder.actor,
+}))
 
 import { getFullJobContext, releaseMismatchedClaim, tryClaimJob } from '../../src/tools/wait-for-job.js'
 import { RuntimeMismatchError } from '../../src/git/on-demand-clone.js'
 import { dispatchIdeaJob } from '../../src/lib/dispatch/idea-jobs.js'
+import { dispatchTaskImplementation } from '../../src/lib/dispatch/task-implementation.js'
+import { registerSendIdeaChatMessageTool } from '../../src/tools/send-idea-chat-message.js'
+import { registerUpdateJobStatusTool } from '../../src/tools/update-job-status.js'
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 // ---------------------------------------------------------------------------------------------------------
 // Hulpfuncties: een wegwerpwereld per test
@@ -54,6 +73,7 @@ async function makeWorld(): Promise<World> {
   const h = await makeDispatchHarness()
   const seed = await h.seed()
   holder.db = new PrismaClient({ adapter: new PrismaPg(h.web) })
+  holder.actor = { userId: seed.actor.userId, tokenId: seed.actor.tokenId! }
   return {
     h,
     userId: seed.actor.userId,
@@ -80,6 +100,7 @@ async function dropWorld(world: World | undefined): Promise<void> {
       )
       await client.query('DELETE FROM product_harness_choices WHERE product_id = $1', [world.productId])
       await client.query('DELETE FROM idea_logs WHERE idea_id = ANY($1::text[])', [world.ideaIds])
+      await client.query('DELETE FROM idea_chat_messages WHERE idea_id = ANY($1::text[])', [world.ideaIds])
       await client.query('DELETE FROM claude_jobs WHERE product_id = $1', [world.productId])
       await client.query('DELETE FROM ideas WHERE id = ANY($1::text[])', [world.ideaIds])
       await client.query('DELETE FROM sprint_runs WHERE id = ANY($1::text[])', [world.sprintRunIds])
@@ -731,5 +752,260 @@ describe('plafond van een HARNESS-job tegen de echte database', () => {
     const context = await contextOf(jobId)
 
     expect(context).toMatchObject({ config: { runtime: 'HARNESS', model: 'gsq-lokaal', max_cost_usd: '0.3' } })
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------
+// Taak 4 (M45-2b): enqueue en kostenmelding tegen de echte database
+// ---------------------------------------------------------------------------------------------------------
+
+type ToolResult = { isError?: boolean; content: Array<{ text: string }> }
+type ToolHandler = (input: Record<string, unknown>) => Promise<ToolResult>
+
+/** De handler die een register*Tool(server)-functie aan de server hangt, zonder echte MCP-server. */
+function toolHandlerOf(register: (server: McpServer) => void): ToolHandler {
+  let handler: ToolHandler | undefined
+  register({ registerTool: (_name: string, _config: unknown, callback: ToolHandler) => { handler = callback } } as unknown as McpServer)
+  return handler!
+}
+
+/** De keuze van het product voor een jobsoort, zoals de ops-UI haar zou zetten (updated_at heeft geen default). */
+async function chooseConfiguration(kind: 'IDEA_CHAT' | 'TASK_IMPLEMENTATION', configuration = 'gsq-lokaal') {
+  await world.h.admin.query(
+    'INSERT INTO product_harness_choices(product_id, kind, configuration, max_cost_usd, updated_at) VALUES($1, $2, $3, 0.5, now())',
+    [world.productId, kind, configuration],
+  )
+}
+
+async function jobRowOf(jobId: string) {
+  return (await world.h.admin.query(
+    `SELECT kind::text AS kind, source::text AS source, status::text AS status, runtime::text AS runtime, requested_model,
+            required_capability, requested_thinking_budget, requested_permission_mode
+     FROM claude_jobs WHERE id = $1`, [jobId],
+  )).rows[0]
+}
+
+describe('enqueue volgt de productkeuze: het resultaat is een job die de claim vindt', () => {
+  async function dispatchTask(): Promise<string> {
+    const taskId = await insertTask(world)
+    const { job_id } = await dispatchTaskImplementation(
+      { taskId, productId: world.productId, userId: world.userId },
+      { db: holder.db, notify: async () => undefined },
+    )
+    return job_id
+  }
+
+  async function sendChatMessage(): Promise<string> {
+    const ideaId = await insertIdea(world)
+    const result = await toolHandlerOf(registerSendIdeaChatMessageTool)({ product_id: world.productId, idea_id: ideaId, content: 'hallo' })
+    expect(result.isError).toBeFalsy()
+    const { rows } = await world.h.admin.query<{ id: string }>('SELECT id FROM claude_jobs WHERE idea_id = $1', [ideaId])
+    expect(rows).toHaveLength(1)
+    return rows[0].id
+  }
+
+  it('een losse taak met een keuze wordt een HARNESS-job zonder Claude-snapshot of capability, en een HARNESS-worker claimt hem', async () => {
+    await chooseConfiguration('TASK_IMPLEMENTATION')
+
+    const jobId = await dispatchTask()
+
+    expect(await jobRowOf(jobId)).toEqual({
+      kind: 'TASK_IMPLEMENTATION', source: 'COPILOT', status: 'QUEUED', runtime: 'HARNESS', requested_model: 'gsq-lokaal',
+      required_capability: null, requested_thinking_budget: null, requested_permission_mode: null,
+    })
+    expect(await visibleTo(world, { runtime: 'CLAUDE' })).toEqual([])
+    expect(await visibleTo(world, { runtime: 'HARNESS' })).toEqual([jobId])
+    expect(await tryClaimJob(world.userId, world.tokenId, 'harness-enqueue', undefined, 'HARNESS', [], null)).toBe(jobId)
+  })
+
+  it.each([
+    ['er is geen keuze', null],
+    ['de keuze geldt voor een andere jobsoort (IDEA_CHAT)', 'IDEA_CHAT'],
+  ] as const)('een losse taak waarvoor %s wordt een Claude-job met de snapshot, die geen HARNESS-worker ziet', async (_reden, otherKind) => {
+    if (otherKind) await chooseConfiguration(otherKind)
+
+    const jobId = await dispatchTask()
+
+    const row = await jobRowOf(jobId)
+    expect(row).toMatchObject({ kind: 'TASK_IMPLEMENTATION', source: 'COPILOT', status: 'QUEUED', runtime: 'CLAUDE', required_capability: null })
+    expect(row.requested_model).not.toBeNull()
+    expect(row.requested_permission_mode).not.toBeNull()
+    expect(await visibleTo(world, { runtime: 'HARNESS' })).toEqual([])
+  })
+
+  it('send_idea_chat_message met een keuze maakt een HARNESS-job (SYSTEM) die een HARNESS-worker claimt', async () => {
+    await chooseConfiguration('IDEA_CHAT', 'qwen3-coder')
+
+    const jobId = await sendChatMessage()
+
+    expect(await jobRowOf(jobId)).toMatchObject({
+      kind: 'IDEA_CHAT', source: 'SYSTEM', status: 'QUEUED', runtime: 'HARNESS', requested_model: 'qwen3-coder', required_capability: null,
+    })
+    expect(await visibleTo(world, { runtime: 'CLAUDE' })).toEqual([])
+    expect(await tryClaimJob(world.userId, world.tokenId, 'harness-enqueue', undefined, 'HARNESS', [], null)).toBe(jobId)
+  })
+
+  it.each([
+    ['er is geen keuze', null],
+    ['de keuze geldt voor een andere jobsoort (TASK_IMPLEMENTATION)', 'TASK_IMPLEMENTATION'],
+  ] as const)('send_idea_chat_message waarvoor %s maakt een gewone Claude-job', async (_reden, otherKind) => {
+    if (otherKind) await chooseConfiguration(otherKind)
+
+    const jobId = await sendChatMessage()
+
+    expect(await jobRowOf(jobId)).toMatchObject({ kind: 'IDEA_CHAT', source: 'SYSTEM', runtime: 'CLAUDE', required_capability: null, requested_model: null })
+    expect(await visibleTo(world, { runtime: 'HARNESS' })).toEqual([])
+    expect(await tryClaimJob(world.userId, world.tokenId, 'claude-enqueue', undefined, 'CLAUDE', [], null)).toBe(jobId)
+  })
+})
+
+describe('kostenmelding van een HARNESS-job: de kostenrij en de statusupdate zijn één echte transactie', () => {
+  const update = toolHandlerOf(registerUpdateJobStatusTool)
+  const COST = { reported_cost_usd: '0.00031200000000000005', cost_source: 'provider_reported', provider: 'openrouter' } as const
+  // Het schema van de tool begrenst provider op 200 tekens, maar een directe aanroep van de handler passeert dat schema niet:
+  // zo wordt de kostenrij pas door de database geweigerd, ná de validatie en op het moment van het schrijven.
+  const COST_REFUSED_BY_DATABASE = { ...COST, provider: 'x'.repeat(201) }
+  let worktreeRoot: string
+
+  beforeEach(async () => {
+    // Het failed-pad markeert de worktree voor opruiming: in een eigen tijdelijke map, nooit in de echte worktree-root.
+    worktreeRoot = await mkdtemp(join(tmpdir(), 'm45-cost-'))
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = worktreeRoot
+  })
+  afterEach(async () => {
+    delete process.env.SCRUM4ME_AGENT_WORKTREE_DIR
+    await rm(worktreeRoot, { recursive: true, force: true })
+  })
+
+  /** Een HARNESS-job die een HARNESS-worker echt claimt (status CLAIMED, geclaimd door de token van de seed-gebruiker). */
+  async function claimedJob(kind: 'IDEA_CHAT' | 'TASK_IMPLEMENTATION'): Promise<string> {
+    const jobId = await insertJob(
+      world,
+      kind === 'IDEA_CHAT'
+        ? { runtime: 'HARNESS', kind, source: 'SYSTEM', idea: true, requestedModel: 'gsq-lokaal' }
+        : { runtime: 'HARNESS', kind, source: 'COPILOT', task: true, requestedModel: 'gsq-lokaal' },
+    )
+    expect(await tryClaimJob(world.userId, world.tokenId, 'harness-cost', undefined, 'HARNESS', [], null)).toBe(jobId)
+    return jobId
+  }
+
+  const costRowOf = async (jobId: string) => (await world.h.admin.query(
+    `SELECT job_id, reported_cost_usd::text AS reported_cost_usd, cost_source, provider, configuration, reported_at
+     FROM job_cost_reports WHERE job_id = $1`, [jobId],
+  )).rows[0]
+
+  const assistantMessagesOf = async (jobId: string) =>
+    (await world.h.admin.query('SELECT content FROM idea_chat_messages WHERE job_id = $1', [jobId])).rows
+
+  describe('gewoon pad (losse taak)', () => {
+    it('failed + cost: de job is FAILED en de kostenrij staat er met het naar boven afgeronde bedrag en de configuratie van de job', async () => {
+      const jobId = await claimedJob('TASK_IMPLEMENTATION')
+
+      const result = await update({ job_id: jobId, status: 'failed', error: 'COST_LIMIT_EXCEEDED', cost: COST })
+
+      expect(result.isError).toBeFalsy()
+      expect((await statusOf(world, jobId)).status).toBe('FAILED')
+      expect(await costRowOf(jobId)).toEqual({
+        job_id: jobId, reported_cost_usd: '0.000313', cost_source: 'provider_reported', provider: 'openrouter',
+        configuration: 'gsq-lokaal', reported_at: expect.any(Date),
+      })
+    })
+
+    it('een bron zonder bedrag schrijft een rij zonder bedrag en zonder aanbieder', async () => {
+      const jobId = await claimedJob('TASK_IMPLEMENTATION')
+
+      const result = await update({ job_id: jobId, status: 'failed', error: 'COST_UNKNOWN', cost: { reported_cost_usd: null, cost_source: 'none' } })
+
+      expect(result.isError).toBeFalsy()
+      expect(await costRowOf(jobId)).toMatchObject({ reported_cost_usd: null, cost_source: 'none', provider: null, configuration: 'gsq-lokaal' })
+    })
+
+    it('zonder cost schrijft de handler geen kostenrij en blijft het de gewone statusupdate', async () => {
+      const jobId = await claimedJob('TASK_IMPLEMENTATION')
+
+      const result = await update({ job_id: jobId, status: 'failed', error: 'model faalde' })
+
+      expect(result.isError).toBeFalsy()
+      expect((await statusOf(world, jobId)).status).toBe('FAILED')
+      expect(await costRowOf(jobId)).toBeUndefined()
+    })
+
+    it('een kostenrij die de database weigert, laat de job ongewijzigd: de statusupdate gaat mee terug', async () => {
+      const jobId = await claimedJob('TASK_IMPLEMENTATION')
+
+      const result = await update({ job_id: jobId, status: 'failed', error: 'COST_LIMIT_EXCEEDED', cost: COST_REFUSED_BY_DATABASE })
+      // De fout komt van het schrijven van de kostenrij zelf (niet van een eerdere stap): daarna is de update teruggedraaid.
+      expect(result.isError).toBe(true)
+      expect(result.content[0].text).toMatch(/jobCostReport\.upsert\(\)/)
+      expect((await statusOf(world, jobId)).status).toBe('CLAIMED')
+      expect(await costRowOf(jobId)).toBeUndefined()
+    })
+
+    it('een geweigerde melding (een Claude-job met cost) schrijft niets en laat de job staan', async () => {
+      const jobId = await insertJob(world, { runtime: 'CLAUDE', kind: 'TASK_IMPLEMENTATION', source: 'COPILOT', task: true })
+      expect(await tryClaimJob(world.userId, world.tokenId, 'claude-cost', undefined, 'CLAUDE', [], null)).toBe(jobId)
+
+      const result = await update({ job_id: jobId, status: 'failed', error: 'model faalde', cost: COST })
+
+      expect(result.isError).toBe(true)
+      expect(result.content[0].text).toBe('VALIDATION_ERROR: COST_REPORT_NOT_ALLOWED')
+      expect((await statusOf(world, jobId)).status).toBe('CLAIMED')
+      expect(await costRowOf(jobId)).toBeUndefined()
+    })
+  })
+
+  describe('idee-chat-pad (transactie onder de per-idea lock)', () => {
+    it('done + cost: de job is DONE, het antwoord staat in het kanaal en de kostenrij staat er', async () => {
+      const jobId = await claimedJob('IDEA_CHAT')
+
+      const result = await update({ job_id: jobId, status: 'done', summary: 'Het antwoord.', cost: { ...COST, reported_cost_usd: '0.0042', cost_source: 'litellm_computed' } })
+
+      expect(result.isError).toBeFalsy()
+      expect((await statusOf(world, jobId)).status).toBe('DONE')
+      expect(await assistantMessagesOf(jobId)).toEqual([{ content: 'Het antwoord.' }])
+      expect(await costRowOf(jobId)).toMatchObject({
+        reported_cost_usd: '0.004200', cost_source: 'litellm_computed', provider: 'openrouter', configuration: 'gsq-lokaal',
+      })
+    })
+
+    it('een kostenrij die de database weigert, laat de job, het kanaal en de kostenrij ongewijzigd', async () => {
+      const jobId = await claimedJob('IDEA_CHAT')
+
+      const result = await update({ job_id: jobId, status: 'done', summary: 'Het antwoord.', cost: COST_REFUSED_BY_DATABASE })
+
+      expect(result.isError).toBe(true)
+      expect(result.content[0].text).toMatch(/jobCostReport\.upsert\(\)/)
+      expect((await statusOf(world, jobId)).status).toBe('CLAIMED')
+      expect(await assistantMessagesOf(jobId)).toEqual([])
+      expect(await costRowOf(jobId)).toBeUndefined()
+    })
+
+    // Een USER-bericht dat tijdens de beurt binnenkwam, geeft bij de afronding precies één vervolgjob. De productkeuze
+    // van dat moment bepaalt of hij HARNESS wordt; zonder keuze is het een gewone Claude-job.
+    it.each([
+      ['met een keuze', 'HARNESS', 'nieuw-model'],
+      ['zonder keuze', 'CLAUDE', null],
+    ] as const)('de vervolgjob %s is een %s-job', async (_met, runtime, requestedModel) => {
+      if (requestedModel) await chooseConfiguration('IDEA_CHAT', requestedModel)
+      const jobId = await claimedJob('IDEA_CHAT')
+      const { rows } = await world.h.admin.query<{ idea_id: string }>('SELECT idea_id FROM claude_jobs WHERE id = $1', [jobId])
+      await world.h.admin.query(
+        `INSERT INTO idea_chat_messages(id, idea_id, role, kind, content, created_at)
+         VALUES($1, $2, 'USER', 'TEXT', 'nog een vraag', now() + interval '1 minute')`,
+        [randomUUID(), rows[0].idea_id],
+      )
+
+      const result = await update({ job_id: jobId, status: 'done', summary: 'Het antwoord.' })
+
+      expect(result.isError).toBeFalsy()
+      const followUps = (await world.h.admin.query<{ id: string }>(
+        "SELECT id FROM claude_jobs WHERE idea_id = $1 AND status = 'QUEUED'", [rows[0].idea_id],
+      )).rows
+      expect(followUps).toHaveLength(1)
+      expect(await jobRowOf(followUps[0].id)).toMatchObject({
+        kind: 'IDEA_CHAT', source: 'SYSTEM', runtime, requested_model: requestedModel, required_capability: null,
+      })
+      expect(await visibleTo(world, { runtime: 'HARNESS' })).toEqual(runtime === 'HARNESS' ? [followUps[0].id] : [])
+    })
   })
 })
