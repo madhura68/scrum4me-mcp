@@ -55,6 +55,87 @@ describe('shared claim eligibility', () => {
   })
 })
 
+// M45-2b (Taak 2, deel 1): een executor met runtime HARNESS claimt alleen HARNESS-jobs van de soorten van de
+// local_llm-tak, maar zonder required_capability. De tak wordt gekozen op de runtime van de executor, vóór de
+// capability-takken: zijn capabilities tellen niet mee. Beheerde executors zijn per validatie CLAUDE of CODEX;
+// de tak staat in het predicaat omdat predicaat en SQL-condities één contract vormen.
+describe('claim-predicaten: HARNESS-executor', () => {
+  const harnessExecutor = { userId: 'u', productIds: ['p'], runtime: 'HARNESS' as const, capabilities: [] as string[], profileRevisionIds: [] as string[], managed: false, quotaPct: null, minQuotaPct: 10 }
+  const harnessChat = { userId: 'u', productId: 'p', runtime: 'HARNESS' as string, status: 'QUEUED', kind: 'IDEA_CHAT', source: 'SYSTEM', requiredCapability: null as string | null, dispatchRequestId: null, profileRevisionId: null, sprintRunId: null as string | null, sprintStatus: null as string | null, earlierSibling: false, taskId: null as string | null, ideaId: 'idea-1' as string | null }
+  const harnessTask = { ...harnessChat, kind: 'TASK_IMPLEMENTATION', source: 'COPILOT', ideaId: null, taskId: 'task-1' }
+
+  it('claimt IDEA_CHAT/SYSTEM en een losse TASK_IMPLEMENTATION/COPILOT zonder sprint-run, zonder required_capability', () => {
+    expect(evaluateClaimPredicates(harnessChat, harnessExecutor)).toEqual([])
+    expect(evaluateClaimPredicates(harnessTask, harnessExecutor)).toEqual([])
+  })
+
+  it.each([[], ['local_llm'], ['deploy'], ['docs_audit'], ['code_edit', 'review']].map((capabilities) => [capabilities]))(
+    'de capabilities %j van de executor tellen niet mee: de runtime wint',
+    (capabilities) => {
+      expect(evaluateClaimPredicates(harnessChat, { ...harnessExecutor, capabilities })).toEqual([])
+      expect(evaluateClaimPredicates(harnessTask, { ...harnessExecutor, capabilities })).toEqual([])
+    },
+  )
+
+  it('weigert een Claude-job en een Codex-job (de runtime-gelijkheid blijft gelden)', () => {
+    for (const runtime of ['CLAUDE', 'CODEX']) {
+      expect(evaluateClaimPredicates({ ...harnessChat, runtime }, harnessExecutor)).toContain('runtime')
+      expect(evaluateClaimPredicates({ ...harnessTask, runtime }, harnessExecutor)).toContain('runtime')
+    }
+  })
+
+  it('weigert een local_llm-job, ook met de capabilities local_llm op de executor', () => {
+    for (const capabilities of [[], ['local_llm']]) {
+      expect(evaluateClaimPredicates({ ...harnessChat, requiredCapability: 'local_llm' }, { ...harnessExecutor, capabilities })).toContain('capability')
+      expect(evaluateClaimPredicates({ ...harnessTask, requiredCapability: 'local_llm' }, { ...harnessExecutor, capabilities })).toContain('capability')
+      // De oude harness-job: runtime CLAUDE én local_llm. Die is niet van de HARNESS-executor.
+      expect(evaluateClaimPredicates({ ...harnessChat, runtime: 'CLAUDE', requiredCapability: 'local_llm' }, { ...harnessExecutor, capabilities })).toContain('runtime')
+    }
+  })
+
+  it('weigert een HARNESS-job met een required_capability (een HARNESS-job draagt er nooit een)', () => {
+    for (const requiredCapability of ['review', 'code_edit', 'deploy']) {
+      expect(evaluateClaimPredicates({ ...harnessChat, requiredCapability }, harnessExecutor)).toContain('capability')
+      expect(evaluateClaimPredicates({ ...harnessTask, requiredCapability }, harnessExecutor)).toContain('capability')
+    }
+  })
+
+  it('weigert een taak in een sprint-run', () => {
+    expect(evaluateClaimPredicates({ ...harnessTask, sprintRunId: 'run-1', sprintStatus: 'RUNNING' }, harnessExecutor)).toContain('capability')
+    expect(evaluateClaimPredicates({ ...harnessTask, sprintRunId: 'run-1', sprintStatus: 'QUEUED' }, harnessExecutor)).toContain('capability')
+  })
+
+  it.each([
+    'IDEA_GRILL', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'IDEA_MAKE_SPEC', 'IDEA_REVISE_SPEC', 'PLAN_CHAT',
+    'PR_REVIEW', 'SPEC_REVIEW', 'TASK_REVIEW', 'DEPLOY', 'DOCS_AUDIT', 'SPRINT_IMPLEMENTATION',
+  ])('weigert elke andere soort: %s', (kind) => {
+    for (const source of ['SYSTEM', 'MANUAL', 'COPILOT', 'ORCHESTRATOR']) {
+      expect(evaluateClaimPredicates({ ...harnessChat, kind, source }, harnessExecutor)).toContain('capability')
+    }
+  })
+
+  it('weigert de verkeerde bron bij de twee soorten', () => {
+    for (const source of ['COPILOT', 'MANUAL', 'ORCHESTRATOR']) {
+      expect(evaluateClaimPredicates({ ...harnessChat, source }, harnessExecutor)).toContain('capability')
+    }
+    for (const source of ['SYSTEM', 'MANUAL', 'ORCHESTRATOR']) {
+      expect(evaluateClaimPredicates({ ...harnessTask, source }, harnessExecutor)).toContain('capability')
+    }
+  })
+
+  it('geen enkele andere executor claimt een HARNESS-job: Claude, Codex en de local_llm-executor', () => {
+    for (const executor of [
+      { ...harnessExecutor, runtime: 'CLAUDE' as const },
+      { ...harnessExecutor, runtime: 'CODEX' as const },
+      { ...harnessExecutor, runtime: 'CLAUDE' as const, capabilities: ['local_llm'] },
+      { ...harnessExecutor, runtime: 'CODEX' as const, capabilities: ['local_llm'] },
+    ]) {
+      expect(evaluateClaimPredicates(harnessChat, executor)).toContain('runtime')
+      expect(evaluateClaimPredicates(harnessTask, executor)).toContain('runtime')
+    }
+  })
+})
+
 import { eligibleExecutors, type RegisteredSlot, type RegisteredProfile } from '../../src/dispatch/eligibility.js'
 import type { DispatchInput } from '@shared/queue-dispatch.js'
 describe('fair registered pool ranking', () => {

@@ -58,6 +58,58 @@ describe('runtime-aware claim filter', () => {
     expect(sqlValues(productionFragment)).not.toContain('CLAUDE')
   })
 
+  // M45-2b (Taak 2, deel 1): HARNESS is een derde runtime met een eigen tak (zie
+  // wait-for-job-harness-claim.test.ts). Hier staat de runtime-gelijkheid in beide richtingen.
+  it('builds HARNESS claim SQL that cannot match CLAUDE or CODEX jobs', () => {
+    const specSql = buildClaimableJobWhereClause({ runtime: 'HARNESS', hasProductScope: false })
+    const productionFragment = buildClaimableJobWhereFragment({
+      userId: 'user-1',
+      runtime: 'HARNESS',
+      hasProductScope: false,
+    })
+
+    expect(specSql).toContain("cj.runtime = 'HARNESS'")
+    expect(specSql).not.toContain("cj.runtime = 'CLAUDE'")
+    expect(specSql).not.toContain("cj.runtime = 'CODEX'")
+    expect(sqlText(productionFragment)).toContain('cj.runtime = ')
+    expect(sqlValues(productionFragment)).toContain('HARNESS')
+    expect(sqlValues(productionFragment)).not.toContain('CLAUDE')
+    expect(sqlValues(productionFragment)).not.toContain('CODEX')
+  })
+
+  it.each(['CLAUDE', 'CODEX'] as const)('builds %s claim SQL that cannot match HARNESS jobs, whatever the capabilities', (runtime) => {
+    // Alle capability-takken: leeg, de dedicated workers (deploy, docs_audit, local_llm) en het generieke pad.
+    for (const capabilities of [[], ['deploy'], ['docs_audit'], ['local_llm'], ['review'], ['code_edit', 'planning']]) {
+      for (const hasProductScope of [false, true]) {
+        const productionFragment = buildClaimableJobWhereFragment(
+          hasProductScope
+            ? { userId: 'user-1', productId: 'product-1', runtime, hasProductScope, capabilities }
+            : { userId: 'user-1', runtime, hasProductScope, capabilities },
+        )
+        // De enige gebonden runtime is de eigen runtime; geen HARNESS in waarden of tekst.
+        expect(sqlValues(productionFragment)).toContain(runtime)
+        expect(sqlValues(productionFragment).flat()).not.toContain('HARNESS')
+        expect(sqlText(productionFragment)).not.toContain('HARNESS')
+        const specSql = buildClaimableJobWhereClause({ runtime, hasProductScope, capabilities })
+        expect(specSql).toContain(`cj.runtime = '${runtime}'`)
+        expect(specSql).not.toContain('HARNESS')
+      }
+    }
+  })
+
+  it.each(['CLAUDE', 'CODEX'] as const)('a %s worker with exactly [local_llm] keeps the local_llm branch and never gets the HARNESS branch', (runtime) => {
+    const specSql = buildClaimableJobWhereClause({ runtime, hasProductScope: false, capabilities: ['local_llm'] })
+    const productionSql = sqlText(
+      buildClaimableJobWhereFragment({ userId: 'user-1', runtime, hasProductScope: false, capabilities: ['local_llm'] }),
+    )
+
+    for (const sql of [specSql, productionSql]) {
+      expect(sql).toContain("cj.required_capability = 'local_llm'")
+      // De HARNESS-tak begint met `cj.required_capability IS NULL AND ((cj.kind = 'IDEA_CHAT'`.
+      expect(sql).not.toMatch(/cj\.required_capability IS NULL\s+AND \(\(cj\.kind = 'IDEA_CHAT'/)
+    }
+  })
+
   it('allows standalone task jobs through source MANUAL or COPILOT', () => {
     const sql = buildClaimableJobWhereClause({ runtime: 'CLAUDE', hasProductScope: false })
 
