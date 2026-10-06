@@ -11,6 +11,11 @@ const SCALE = 6
 // 0-9, en $ zonder m-vlag alleen het einde van de string (dus ook geen afsluitende newline).
 const PLAIN_DECIMAL = /^\d+(\.\d+)?$/
 
+// Een geldig bedrag is veel korter: zes cijfers, een punt, zes decimalen en een staart die alleen meetelt als hij naar
+// boven afrondt (een JS-som geeft '0.00031200000000000005', 22 tekens). Het schema van update_job_status begrenst de
+// lengte van de string niet, dus de parser doet het zelf, als allereerste stap.
+const MAX_INPUT_LENGTH = 64
+
 /**
  * Een bedrag ≥ 0 in gewone decimale notatie, naar boven afgerond op 6 decimalen, dat in Decimal(12,6) past,
  * genormaliseerd; anders null. Alleen stringbewerkingen (BigInt), geen float.
@@ -18,10 +23,13 @@ const PLAIN_DECIMAL = /^\d+(\.\d+)?$/
  * Geen exponent, geen teken, hoogstens 6 cijfers vóór de komma (ook na het afronden). Meer dan 6 decimalen wordt naar
  * boven afgerond: een JS-som van bedragen geeft al snel '0.00031200000000000005', en een weigering zou de hele
  * eindstatus van de job blokkeren. Naar boven afronden verzint geen bedrag en meldt nooit te weinig. Nullen achter de
- * zesde decimaal tellen niet: dat is geen extra bedrag.
+ * zesde decimaal tellen niet: dat is geen extra bedrag. Een invoer van meer dan 64 tekens is nooit een bedrag (null),
+ * ook niet als hij uit alleen nullen en een enkel cijfer bestaat.
  */
 export function parseReportedCostUsd(value: string): string | null {
-  // De invoer is een string zonder lengtegrens: elke bewerking hieronder is lineair (geen patroon dat terugloopt).
+  // Eerst de lengte, vóór elk patroon en elke BigInt-bewerking: een lange invoer kost zo niets. Daarna is de invoer
+  // hoogstens 64 tekens, dus elke bewerking hieronder is begrensd (en geen enkel patroon loopt terug).
+  if (value.length > MAX_INPUT_LENGTH) return null
   if (!PLAIN_DECIMAL.test(value)) return null
 
   const dot = value.indexOf('.')

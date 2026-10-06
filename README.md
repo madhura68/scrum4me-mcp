@@ -594,7 +594,7 @@ job stays an ordinary Claude job, and the claim of Claude and Codex jobs is as b
   paths of `DOCS_AUDIT` and `DEPLOY` never write a cost row, so a report there would vanish). `reported_cost_usd` is a decimal string or `null`, and
   `cost_source` is one of `provider_reported`, `litellm_computed` (an amount `>= 0`), `local` (exactly
   `0`) and `none` (`null`). A report that breaks these rules, has an amount that is not a plain
-  decimal (no exponent, no sign, at most 6 digits before the point) or belongs to a job without
+  decimal (no exponent, no sign, at most 6 digits before the point, at most 64 characters) or belongs to a job without
   `requested_model` gives `COST_REPORT_INVALID`. An amount with more than 6 decimals is rounded **up**
   to 6: a float sum such as `0.00031200000000000005` would otherwise block the end status, and
   rounding up never reports too little. The whole object is checked before any side effect (a

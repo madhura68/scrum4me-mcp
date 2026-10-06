@@ -3,7 +3,7 @@
 // checkCostReport beslist of deze job kosten mag melden en of de melding klopt. De handler-bedrading (vóór elk
 // neveneffect, in dezelfde transactie) staat in update-job-status-harness-cost.test.ts en
 // update-job-status-idea-chat.test.ts.
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ClaudeJobKind } from '@prisma/client'
 import { checkCostReport, parseReportedCostUsd } from '../src/lib/harness-cost.js'
 
@@ -56,14 +56,66 @@ describe('parseReportedCostUsd: meer dan zes decimalen wordt naar boven afgerond
     expect(parseReportedCostUsd('0.0000010000000000000001')).toBe('0.000002')
   })
 
-  it('verwerkt een zeer lange invoer snel (geen regex die kwadratisch terugloopt)', () => {
-    // De invoer is een string zonder lengtegrens; een patroon als /0+$/ over een lange rij nullen gevolgd door een 1 loopt
-    // kwadratisch terug. 100.000 nullen kosten dan tientallen seconden en de test loopt in zijn tijdslimiet.
+  it('weigert een zeer lange invoer snel (geen regex die kwadratisch terugloopt)', () => {
+    // Het schema van de tool begrenst de string niet; een patroon als /0+$/ over een lange rij nullen gevolgd door een 1 loopt
+    // kwadratisch terug. De parser weigert elke invoer boven 64 tekens vóór enig patroon of BigInt-werk (zie het blok
+    // hieronder), dus 100.000 tekens kosten niets en de test loopt niet in zijn tijdslimiet.
     const long = '0.' + '0'.repeat(100_000) + '1'
-    expect(parseReportedCostUsd(long)).toBe('0.000001')
-    expect(parseReportedCostUsd('0'.repeat(100_000) + '5')).toBe('5')
-    expect(parseReportedCostUsd('1.5' + '0'.repeat(100_000))).toBe('1.5')
+    expect(parseReportedCostUsd(long)).toBeNull()
+    expect(parseReportedCostUsd('0'.repeat(100_000) + '5')).toBeNull()
+    expect(parseReportedCostUsd('1.5' + '0'.repeat(100_000))).toBeNull()
   }, 2_000)
+})
+
+describe('parseReportedCostUsd: de lengte van de invoer is begrensd op 64 tekens', () => {
+  // Een geldig bedrag is veel korter: zes cijfers, een punt, zes decimalen en een staart die alleen meetelt als hij naar
+  // boven afrondt. Het schema van de tool begrenst de lengte niet, dus de parser doet het zelf, als allereerste stap.
+  const padded = (length: number) => '0.' + '0'.repeat(length - 3) + '1' // geldig bedrag, rondt af naar 0.000001
+
+  it('neemt een invoer van precies 64 tekens nog aan', () => {
+    expect(padded(64)).toHaveLength(64)
+    expect(parseReportedCostUsd(padded(64))).toBe('0.000001')
+  })
+
+  it('weigert een invoer van 65 tekens, ook als hij verder een geldig bedrag is', () => {
+    expect(padded(65)).toHaveLength(65)
+    expect(parseReportedCostUsd(padded(65))).toBeNull()
+    expect(parseReportedCostUsd('0'.repeat(65))).toBeNull()
+    expect(parseReportedCostUsd('1' + '0'.repeat(64))).toBeNull()
+  })
+
+  it.each([100, 1_000, 100_000])('weigert een invoer van %i tekens zonder BigInt- of patroonwerk', (length) => {
+    // Deterministisch, geen tijdmeting: een lange invoer mag geen enkele BigInt-aanroep en geen enkel patroon raken. De
+    // spionnen staan alleen om de parser heen: de assertions zelf (die intern ook patronen gebruiken) komen erna.
+    const bigInt = vi.spyOn(globalThis, 'BigInt')
+    const test = vi.spyOn(RegExp.prototype, 'test')
+    let result: string | null
+    let bigIntCalls: number
+    let testCalls: number
+    try {
+      result = parseReportedCostUsd(padded(length))
+    } finally {
+      bigIntCalls = bigInt.mock.calls.length
+      testCalls = test.mock.calls.length
+      bigInt.mockRestore()
+      test.mockRestore()
+    }
+    expect(result).toBeNull()
+    expect(bigIntCalls).toBe(0)
+    expect(testCalls).toBe(0)
+  })
+
+  it('de grens zit in de parser, dus ook checkCostReport weigert een bedrag van 65 tekens als ongeldig', () => {
+    const job = { kind: 'TASK_IMPLEMENTATION', runtime: 'HARNESS', requested_model: 'gsq-lokaal' }
+    expect(checkCostReport(job, 'done', { reported_cost_usd: padded(65), cost_source: 'provider_reported' })).toEqual({
+      allowed: false,
+      error: INVALID,
+    })
+    expect(checkCostReport(job, 'done', { reported_cost_usd: padded(64), cost_source: 'provider_reported' })).toMatchObject({
+      allowed: true,
+      row: { reported_cost_usd: '0.000001' },
+    })
+  })
 })
 
 describe('parseReportedCostUsd: past in Decimal(12,6), hoogstens zes cijfers vóór de komma', () => {
