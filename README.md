@@ -622,8 +622,10 @@ Tool errors of `wait_for_job` for a `HARNESS` job:
 **Updating an installation.** The release needs the Scrum4Me M45-2a migrations in the database
 (`20261006120000_agent_runtime_harness` and `20261006120100_harness_choices_cost_reports`: the enum
 member and the tables `product_harness_choices` and `job_cost_reports`) and `vendor/scrum4me-shared`
-at `132656b` or later with a regenerated Prisma client. The enqueue paths read `product_harness_choices`
-even when a product has no choice, so the database role of an installation needs `SELECT` on it, and
+at `132656b` or later with a regenerated Prisma client. The three routing paths (a standalone
+`TASK_IMPLEMENTATION`, `send_idea_chat_message` and the idea-chat follow-up job of `update_job_status`) read
+`product_harness_choices` even when a product has no choice (`dispatch_job` for other kinds, sprint runs and
+managed dispatch do not; `wait_for_job` reads it when it claims a `HARNESS` job), so the database role of an installation needs `SELECT` on it, and
 `SELECT`, `INSERT` and `UPDATE` on `job_cost_reports` to report costs (the rights the M45-2a contract
 grants the web role). `postinstall` swallows a failed `prisma generate` and `health.runtimes` comes
 from a TypeScript constant, so it does not prove the generated client knows the models: check that

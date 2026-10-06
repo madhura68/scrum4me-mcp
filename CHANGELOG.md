@@ -28,7 +28,7 @@ M45-2b: `HARNESS`, a LiteLLM model on a per-product configuration, becomes a thi
 
 - Requires the Scrum4Me M45-2a migrations (`20261006120000_agent_runtime_harness`, `20261006120100_harness_choices_cost_reports`) and a Prisma client regenerated against `scrum4me-shared` `132656b`.
 - Before updating an installation, check `SCRUM4ME_WORKER_RUNTIME`: only empty, `CLAUDE`, `CODEX` or `HARNESS` (any case) still starts.
-- The database role needs `SELECT` on `product_harness_choices` (read on every enqueue path, also without a choice) and `SELECT`/`INSERT`/`UPDATE` on `job_cost_reports`.
+- The database role needs `SELECT` on `product_harness_choices` (read by the three routing paths — a standalone `TASK_IMPLEMENTATION`, `send_idea_chat_message` and the idea-chat follow-up job of `update_job_status` — also without a choice; `dispatch_job` for other kinds, sprint runs and managed dispatch do not read it; `wait_for_job` reads it when it claims a HARNESS job) and `SELECT`/`INSERT`/`UPDATE` on `job_cost_reports`.
 
 ## [0.6.0] — 2026-05-04
 
