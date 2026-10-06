@@ -1,7 +1,7 @@
 // De kostenmelding van een HARNESS-job (M45, spec §6.2): de harness meldt bij de eindstatus van een job een bedrag in
 // USD, de bron ervan en de aanbieder; update_job_status legt dat vast in job_cost_reports. Deze module is Prisma-vrij
 // en puur: bedragen zijn decimale strings, nooit een number of een Decimal, en de MCP verzint er nooit een.
-import type { HarnessCostSource } from '@shared/harness-config.js'
+import { isHarnessJobKind, type HarnessCostSource } from '@shared/harness-config.js'
 
 // Decimal(12,6): hoogstens 6 cijfers vóór en 6 cijfers na de komma.
 const MAX_INTEGER_DIGITS = 6
@@ -63,19 +63,23 @@ const INVALID = 'VALIDATION_ERROR: COST_REPORT_INVALID'
 
 /**
  * Mag deze job kosten melden, en klopt de melding? Alleen een job met runtime HARNESS (niet een local_llm-job: die
- * heeft runtime CLAUDE en meldt geen kosten) en alleen bij een eindstatus. De configuratie is die van de job
- * (`requested_model`, gezet bij de enqueue), nooit die uit de melding. Regels per bron: `none` ⇔ geen bedrag, `local`
- * vraagt bedrag 0, `provider_reported` en `litellm_computed` vragen een bedrag ≥ 0.
+ * heeft runtime CLAUDE en meldt geen kosten), alleen van een soort die HARNESS draait (isHarnessJobKind: IDEA_CHAT en
+ * TASK_IMPLEMENTATION) en alleen bij een eindstatus. De eigen eindpaden van DOCS_AUDIT en DEPLOY (en van elke andere
+ * soort) schrijven nooit een kostenrij: een melding die daar geldig leek, zou stil verdwijnen, dus geen melding. De
+ * configuratie is die van de job (`requested_model`, gezet bij de enqueue), nooit die uit de melding. Regels per bron:
+ * `none` ⇔ geen bedrag, `local` vraagt bedrag 0, `provider_reported` en `litellm_computed` vragen een bedrag ≥ 0.
  *
  * De aanroeper roept dit aan vóór elk neveneffect (de verify-gate en de push), zodat een weigering geen gepushte branch
  * achterlaat bij een job die RUNNING blijft.
  */
 export function checkCostReport(
-  job: { runtime: string; requested_model: string | null },
+  job: { kind: string; runtime: string; requested_model: string | null },
   status: 'running' | 'done' | 'failed' | 'skipped',
   cost: CostReportInput,
 ): { allowed: true; row: CostReportRow } | { allowed: false; error: string } {
-  if (job.runtime !== 'HARNESS' || status === 'running') return { allowed: false, error: NOT_ALLOWED }
+  if (job.runtime !== 'HARNESS' || !isHarnessJobKind(job.kind) || status === 'running') {
+    return { allowed: false, error: NOT_ALLOWED }
+  }
   if (!job.requested_model) return { allowed: false, error: INVALID }
 
   const amount = cost.reported_cost_usd === null ? null : parseReportedCostUsd(cost.reported_cost_usd)

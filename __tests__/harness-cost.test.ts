@@ -4,6 +4,7 @@
 // neveneffect, in dezelfde transactie) staat in update-job-status-harness-cost.test.ts en
 // update-job-status-idea-chat.test.ts.
 import { describe, expect, it } from 'vitest'
+import { ClaudeJobKind } from '@prisma/client'
 import { checkCostReport, parseReportedCostUsd } from '../src/lib/harness-cost.js'
 
 const NOT_ALLOWED = 'VALIDATION_ERROR: COST_REPORT_NOT_ALLOWED'
@@ -124,27 +125,62 @@ describe('checkCostReport: wie mag kosten melden', () => {
     { label: 'een Claude-job', runtime: 'CLAUDE' },
     { label: 'een Codex-job', runtime: 'CODEX' },
   ])('weigert $label: alleen een HARNESS-job meldt kosten', ({ runtime }) => {
-    expect(checkCostReport({ runtime, requested_model: 'gsq-lokaal' }, 'done', cost)).toEqual({
+    expect(checkCostReport({ kind: 'TASK_IMPLEMENTATION', runtime, requested_model: 'gsq-lokaal' }, 'done', cost)).toEqual({
       allowed: false,
       error: NOT_ALLOWED,
     })
   })
 
   it('weigert een melding bij running: kosten horen bij de eindstatus', () => {
-    expect(checkCostReport({ runtime: 'HARNESS', requested_model: 'gsq-lokaal' }, 'running', cost)).toEqual({
+    expect(checkCostReport({ kind: 'TASK_IMPLEMENTATION', runtime: 'HARNESS', requested_model: 'gsq-lokaal' }, 'running', cost)).toEqual({
       allowed: false,
       error: NOT_ALLOWED,
     })
   })
 
   it.each(['done', 'failed', 'skipped'] as const)('staat een melding toe bij %s', (status) => {
-    const result = checkCostReport({ runtime: 'HARNESS', requested_model: 'gsq-lokaal' }, status, cost)
+    const result = checkCostReport({ kind: 'TASK_IMPLEMENTATION', runtime: 'HARNESS', requested_model: 'gsq-lokaal' }, status, cost)
     expect(result.allowed).toBe(true)
   })
 })
 
+describe('checkCostReport: de soort van de job begrenst de melding', () => {
+  const cost = { reported_cost_usd: '0.000313', cost_source: 'provider_reported', provider: 'openrouter' } as const
+  const HARNESS_KINDS = ['IDEA_CHAT', 'TASK_IMPLEMENTATION']
+
+  it.each(HARNESS_KINDS)('staat een melding van een HARNESS-job van soort %s toe', (kind) => {
+    const result = checkCostReport({ kind, runtime: 'HARNESS', requested_model: 'gsq-lokaal' }, 'done', cost)
+    expect(result.allowed).toBe(true)
+  })
+
+  // De eindpaden van DOCS_AUDIT en DEPLOY (en van elke andere soort dan de twee HARNESS-soorten) schrijven nooit een
+  // kostenrij: een melding die daar geldig leek, zou stil verdwijnen. Dus ook bij runtime HARNESS geen melding. Een
+  // nieuwe soort in de enum valt hier vanzelf onder "geweigerd" tot iemand bewust anders beslist.
+  it.each(Object.values(ClaudeJobKind).filter((kind) => !HARNESS_KINDS.includes(kind)))(
+    'weigert een melding van een HARNESS-job van soort %s: dat eindpad schrijft geen kostenrij',
+    (kind) => {
+      for (const status of ['done', 'failed', 'skipped'] as const) {
+        expect(checkCostReport({ kind, runtime: 'HARNESS', requested_model: 'gsq-lokaal' }, status, cost)).toEqual({
+          allowed: false,
+          error: NOT_ALLOWED,
+        })
+      }
+    },
+  )
+
+  it('de soortgrens komt vóór de inhoudelijke controle: een ongeldige melding van een niet-HARNESS-soort is NOT_ALLOWED, niet INVALID', () => {
+    expect(
+      checkCostReport(
+        { kind: 'DEPLOY', runtime: 'HARNESS', requested_model: 'gsq-lokaal' },
+        'done',
+        { reported_cost_usd: '1e-5', cost_source: 'provider_reported' },
+      ),
+    ).toEqual({ allowed: false, error: NOT_ALLOWED })
+  })
+})
+
 describe('checkCostReport: de regels per bron', () => {
-  const job = { runtime: 'HARNESS', requested_model: 'gsq-lokaal' }
+  const job = { kind: 'TASK_IMPLEMENTATION', runtime: 'HARNESS', requested_model: 'gsq-lokaal' }
 
   it.each([
     // none ⇔ geen bedrag: de harness verzint er geen.
@@ -194,7 +230,7 @@ describe('checkCostReport: de regels per bron', () => {
 describe('checkCostReport: de rij die geschreven wordt', () => {
   it('neemt de configuratie van de job, niet van de melding', () => {
     const result = checkCostReport(
-      { runtime: 'HARNESS', requested_model: 'qwen3-coder' },
+      { kind: 'TASK_IMPLEMENTATION', runtime: 'HARNESS', requested_model: 'qwen3-coder' },
       'done',
       { reported_cost_usd: '0.5', cost_source: 'provider_reported', provider: 'openrouter' },
     )
@@ -209,7 +245,7 @@ describe('checkCostReport: de rij die geschreven wordt', () => {
     { label: 'een lege string', requested_model: '' },
   ])('weigert een job zonder configuratie ($label): de MCP verzint er geen', ({ requested_model }) => {
     const result = checkCostReport(
-      { runtime: 'HARNESS', requested_model },
+      { kind: 'TASK_IMPLEMENTATION', runtime: 'HARNESS', requested_model },
       'done',
       { reported_cost_usd: '0.5', cost_source: 'provider_reported' },
     )
@@ -218,7 +254,7 @@ describe('checkCostReport: de rij die geschreven wordt', () => {
 
   it('schrijft provider als null als de melding er geen heeft', () => {
     const result = checkCostReport(
-      { runtime: 'HARNESS', requested_model: 'gsq-lokaal' },
+      { kind: 'TASK_IMPLEMENTATION', runtime: 'HARNESS', requested_model: 'gsq-lokaal' },
       'failed',
       { reported_cost_usd: null, cost_source: 'none' },
     )

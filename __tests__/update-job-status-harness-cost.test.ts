@@ -58,6 +58,7 @@ vi.mock('../src/prisma.js', () => ({
       findUnique: vi.fn(),
       findMany: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
       count: vi.fn(),
     },
     jobCostReport: { upsert: vi.fn() },
@@ -75,6 +76,7 @@ const mockPrisma = prisma as unknown as {
     findUnique: ReturnType<typeof vi.fn>
     findMany: ReturnType<typeof vi.fn>
     update: ReturnType<typeof vi.fn>
+    updateMany: ReturnType<typeof vi.fn>
     count: ReturnType<typeof vi.fn>
   }
   jobCostReport: { upsert: ReturnType<typeof vi.fn> }
@@ -252,6 +254,27 @@ function expectNothingWritten() {
   expect(mockPrisma.$transaction).not.toHaveBeenCalled()
 }
 
+// Een HARNESS-job van een soort met een eigen eindpad (DOCS_AUDIT, DEPLOY): zonder taak, bron SYSTEM, geen verify.
+function ownEndPathJob(kind: string) {
+  return jobFixture({ kind, runtime: 'HARNESS', task_id: null, source: 'SYSTEM', verify_result: null, task: null })
+}
+
+// Laat de eigen eindpaden van DOCS_AUDIT (updateMany) en DEPLOY (een callback-transactie met een eigen tx) slagen.
+function letOwnEndPathsSucceed() {
+  mockPrisma.claudeJob.updateMany.mockResolvedValue({ count: 1 })
+  const tx = {
+    $executeRaw: vi.fn().mockResolvedValue(1),
+    claudeJob: {
+      update: vi.fn().mockResolvedValue({ id: 'job-h1', status: 'DONE', summary: 'Klaar.', error: null, pr_url: null }),
+      findMany: vi.fn().mockResolvedValue([]),
+      updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
+  }
+  mockPrisma.$transaction.mockImplementation((async (arg: unknown) =>
+    typeof arg === 'function' ? arg(tx) : Promise.all(arg as Promise<unknown>[])) as never)
+  return tx
+}
+
 describe('update_job_status: kostenmelding van een HARNESS-job op het gewone pad', () => {
   it('done + cost: de statusupdate en de kostenrij zijn twee operaties van één $transaction, met alle velden', async () => {
     installJobFixture(jobFixture())
@@ -407,15 +430,40 @@ describe('update_job_status: een kostenmelding die niet mag, wordt geweigerd zon
     expectNothingWritten()
   })
 
+  // DOCS_AUDIT en DEPLOY hebben een eigen eindpad dat nooit een kostenrij schrijft. Een HARNESS-job van zo'n soort (die
+  // bestaat vandaag niet, maar de handler hoort er niet op te rekenen) mag dus geen kosten melden: een melding die de
+  // runtimecontrole doorstaat, zou daar stil verdwijnen. De fixture heeft runtime HARNESS en een geldige melding, zodat
+  // alleen de soortcontrole van checkCostReport de handler nog tegenhoudt; de eigen eindpaden slagen hier (zie
+  // letOwnEndPathsSucceed), dus zonder die controle komt de job gewoon op DONE en verdwijnt de melding.
   it.each(['DOCS_AUDIT', 'DEPLOY'])(
-    'een %s-job heeft een eigen eindpad, maar cost wordt daar niet stil genegeerd: geweigerd',
+    'een HARNESS-job van soort %s heeft een eigen eindpad zonder kostenrij: cost wordt geweigerd, niet stil genegeerd',
     async (kind) => {
-      installJobFixture(jobFixture({ kind, runtime: 'CLAUDE', task_id: null, source: 'SYSTEM', verify_result: null, task: null }))
+      installJobFixture(ownEndPathJob(kind))
+      letOwnEndPathsSucceed()
       const result = await registerHandler()({ job_id: 'job-h1', status: 'done', summary: 'Klaar.', cost: COST })
 
       expect(result).toMatchObject({ isError: true })
       expect(result.content[0].text).toBe(NOT_ALLOWED)
       expectNothingWritten()
+      expect(mockPrisma.claudeJob.updateMany).not.toHaveBeenCalled()
+    },
+  )
+
+  // Controle op de fixture: zonder cost slaagt dezelfde job op zijn eigen eindpad. De weigering hierboven komt dus van
+  // de kostenmelding en de soort, niet van een fixture die het eindpad toch al zou breken.
+  it.each(['DOCS_AUDIT', 'DEPLOY'])(
+    'controle: dezelfde HARNESS-job van soort %s zonder cost slaagt op zijn eigen eindpad',
+    async (kind) => {
+      installJobFixture(ownEndPathJob(kind))
+      const tx = letOwnEndPathsSucceed()
+      const result = await registerHandler()({ job_id: 'job-h1', status: 'done', summary: 'Klaar.' })
+
+      expect(result).not.toMatchObject({ isError: true })
+      // DOCS_AUDIT geeft de databasestatus terug (DONE), DEPLOY de toolstatus (done): beide zijn "klaar".
+      expect(result.structuredContent).toMatchObject({ job_id: 'job-h1' })
+      expect(String(result.structuredContent?.status).toLowerCase()).toBe('done')
+      expect(kind === 'DOCS_AUDIT' ? mockPrisma.claudeJob.updateMany : tx.claudeJob.update).toHaveBeenCalledTimes(1)
+      expect(mockPrisma.jobCostReport.upsert).not.toHaveBeenCalled()
     },
   )
 

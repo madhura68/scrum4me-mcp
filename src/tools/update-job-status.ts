@@ -882,7 +882,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         'for cost tracking — typically populated by a PostToolUse hook from the local Claude Code transcript, ' +
         'not by the agent itself. ' +
         'A HARNESS job reports its cost with cost = { reported_cost_usd (decimal string or null), cost_source ' +
-        '(provider_reported | litellm_computed | local | none), provider? } on done, failed or skipped only; ' +
+        '(provider_reported | litellm_computed | local | none), provider? } on done, failed or skipped only, and ' +
+        'only for a job of kind IDEA_CHAT or TASK_IMPLEMENTATION; ' +
         'it is validated before any side effect and stored in the same transaction as the status update. ' +
         'Response includes next_action: when wait_for_job_again, immediately call wait_for_job again. When queue_empty, the agent batch is done.',
       inputSchema,
@@ -953,9 +954,10 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         }
 
         // M45 (spec §6.2): de kostenmelding van een HARNESS-job wordt als geheel gevalideerd vóór elk neveneffect: dus
-        // vóór de verify-gate en de push van prepareDoneUpdate en vóór de eigen eindpaden hieronder (DOCS_AUDIT, DEPLOY),
-        // waar een melding anders stil verloren ging. Een weigering laat dan geen gepushte branch achter bij een job
-        // die RUNNING blijft.
+        // vóór de verify-gate en de push van prepareDoneUpdate en vóór de eigen eindpaden hieronder. Een weigering laat
+        // dan geen gepushte branch achter bij een job die RUNNING blijft. Alleen een soort die HARNESS draait (IDEA_CHAT,
+        // TASK_IMPLEMENTATION) mag melden: de eigen eindpaden van DOCS_AUDIT en DEPLOY schrijven geen kostenrij, dus
+        // daar zou een geldig lijkende melding stil verdwijnen; checkCostReport weigert die met COST_REPORT_NOT_ALLOWED.
         let costReport: CostReportRow | null = null
         if (cost !== undefined) {
           const checked = checkCostReport(job, status, cost)

@@ -30,7 +30,7 @@ activity and create todos via native tool calls instead of curl.
 | `list_open_questions` | List own open/answered questions, most recent first (max 50) | n/a |
 | `cancel_question` | Cancel an own open question (asker-only) | no |
 | `wait_for_job` | Block until a QUEUED ClaudeJob is available, claim it atomically, return full task context with frozen `plan_snapshot`, `worktree_path`, and `branch_name` | no |
-| `update_job_status` | Report job transition to `running`, `done`, `failed` or `skipped`; triggers SSE event to UI; cleans up worktree on terminal transitions. A `HARNESS` job also reports its cost with the optional `cost` object `{ reported_cost_usd, cost_source, provider? }` — only on `done`, `failed` or `skipped` (else `COST_REPORT_NOT_ALLOWED`), validated before any side effect (`COST_REPORT_INVALID`) and stored in `job_cost_reports` in the same transaction as the status update (see [Worker runtime and HARNESS jobs](#worker-runtime-and-harness-jobs)) | no |
+| `update_job_status` | Report job transition to `running`, `done`, `failed` or `skipped`; triggers SSE event to UI; cleans up worktree on terminal transitions. A `HARNESS` job also reports its cost with the optional `cost` object `{ reported_cost_usd, cost_source, provider? }` — only on `done`, `failed` or `skipped`, and only for a `HARNESS` job of kind `IDEA_CHAT` or `TASK_IMPLEMENTATION` (else `COST_REPORT_NOT_ALLOWED`), validated before any side effect (`COST_REPORT_INVALID`) and stored in `job_cost_reports` in the same transaction as the status update (see [Worker runtime and HARNESS jobs](#worker-runtime-and-harness-jobs)) | no |
 | `verify_task_against_plan` | Compare frozen `plan_snapshot` against current plan + story logs + commits; returns per-AC ✓/✗/? heuristic and drift-score | yes (read-only) |
 | `cleanup_my_worktrees` | Remove stale git worktrees left by crashed or cancelled agent runs | no |
 | `check_queue_empty` | Synchronous, non-blocking count of active jobs (QUEUED/CLAIMED/RUNNING); optional `product_id` scope | no |
@@ -589,8 +589,9 @@ job stays an ordinary Claude job, and the claim of Claude and Codex jobs is as b
   `prompt_text: ""` (a `HARNESS` job gets no Claude prompt); a standalone `TASK_IMPLEMENTATION`
   payload has no `prompt_text` key, for a `HARNESS` job as for a Claude job.
 - **Cost report.** `update_job_status` accepts `cost: { reported_cost_usd, cost_source, provider? }`
-  from a `HARNESS` job (not a `local_llm` job) on `done`, `failed` or `skipped`; any other job or
-  status gets `COST_REPORT_NOT_ALLOWED`. `reported_cost_usd` is a decimal string or `null`, and
+  from a `HARNESS` job (not a `local_llm` job) of kind `IDEA_CHAT` or `TASK_IMPLEMENTATION` on `done`,
+  `failed` or `skipped`; any other job, kind or status gets `COST_REPORT_NOT_ALLOWED` (the own end
+  paths of `DOCS_AUDIT` and `DEPLOY` never write a cost row, so a report there would vanish). `reported_cost_usd` is a decimal string or `null`, and
   `cost_source` is one of `provider_reported`, `litellm_computed` (an amount `>= 0`), `local` (exactly
   `0`) and `none` (`null`). A report that breaks these rules, has an amount that is not a plain
   decimal (no exponent, no sign, at most 6 digits before the point) or belongs to a job without
