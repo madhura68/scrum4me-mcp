@@ -24,7 +24,7 @@ activity and create todos via native tool calls instead of curl.
 | `create_todo` | Add a todo, optionally scoped to a product | no |
 | `create_pbi` | Add a Product Backlog Item to a product (parent-scoped append) | no |
 | `create_story` | Add a story under a PBI (status=OPEN, lands in product backlog) | no |
-| `create_task` | Add a task under a story (status=TO_DO, inherits sprint_id) | no |
+| `create_task` | Add a task under a story (status=TO_DO, inherits sprint_id). Optional estimate — `estimate_active_minutes`, `estimate_usd` and `estimate_basis`, all three or none (`ESTIMATE_INCOMPLETE`) — stored once as a `task_estimates` row in the task's transaction and never changed afterwards | no |
 | `ask_user_question` | Post a question to the active user about a story; optional `wait_seconds` (max 600) polls for the answer | no |
 | `get_question_answer` | Fetch the current status + answer of a previously-asked question | n/a |
 | `list_open_questions` | List own open/answered questions, most recent first (max 50) | n/a |
@@ -45,6 +45,8 @@ activity and create todos via native tool calls instead of curl.
 | `create_issue` | Register a problem for a product or system as ISS-n (server-side). A stable `fingerprint` (`<host>:<component>:<core>`) increments the existing open issue on a recurrence instead of duplicating it, and reopens a `FIXED`/`CANNOT_REPRODUCE` issue as a regression | no |
 | `update_issue` | Append research or resolution prose (timestamped, attributed to `authored_by` or the token user), change status/severity, or link a PBI or idea. Closing requires a resolution **code** in `resolution` (`fixed`, `wont_fix`, `duplicate`, `cannot_reproduce`, `invalid`) alongside `status=closed` — the prose explanation goes in `append_resolution`, and both may be sent in one call. A closed issue can only reopen to `investigating` | no |
 | `list_issues` | List a product's or system's issues (max 50, most-recently-seen first); closed issues are excluded unless `include_closed` is set | n/a |
+| `record_usage_segment` | IDEA-235, written by the usage-ledger mod: store one usage segment of an interactive Claude Code session. A header (no `ended_at`) opens the segment and fixes owner, product and sprint from `anchor_task_id`; a closing message closes it once; repeats and messages on a closed segment succeed without effect. `task_id: null` = sprint overhead. Errors starting with `USAGE_SEGMENT_REJECTED` are permanent, anything else is transient and retried | no |
+| `get_estimate_history` | IDEA-235, read-only: the latest measurable tasks of a product with estimate vs actual active minutes and USD-equivalent, ratios (actual ÷ estimate) and the estimate basis; `limit` 1–100 (default 20). A task without a price for every usage line has no actual USD, only a time ratio. Worker-job tasks are never measurable. Read before giving tasks an estimate in `create_task` | n/a |
 | `get_issue` | Fetch one issue with its research, resolution, links, and the last 50 log entries | n/a |
 | `create_note` | Create a private note for the token's user: `title`, `body`, optional `product_id` (must be accessible and inside `scoped_products`), 0–10 keywords (unknown names become the user's own keywords); returns the full note | no |
 | `update_note` | Partially update an own note: omitted fields stay, `product_id: null` unlinks, `keywords` replaces the whole set (`[]` clears); an empty update or `null` for title/body/keywords is a validation error | no |
