@@ -32,6 +32,7 @@ const BASE_JOB = {
   id: 'job-deploy-1234',
   kind: 'DEPLOY',
   status: 'CLAIMED',
+  runtime: 'CLAUDE',
   requested_model: null,
   requested_thinking_budget: null,
   requested_permission_mode: null,

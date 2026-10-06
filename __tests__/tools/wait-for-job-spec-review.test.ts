@@ -43,6 +43,7 @@ const BASE_JOB = {
   kind: 'SPEC_REVIEW',
   source: 'MANUAL',
   status: 'CLAIMED',
+  runtime: 'CLAUDE',
   requested_model: null,
   requested_thinking_budget: null,
   requested_permission_mode: null,

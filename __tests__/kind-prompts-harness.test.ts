@@ -71,6 +71,7 @@ function buildChatJobRow(kind: 'IDEA_CHAT' | 'PLAN_CHAT', overrides: Record<stri
     kind,
     source: 'SYSTEM',
     status: 'CLAIMED',
+    runtime: 'CLAUDE',
     created_at: new Date('2026-07-03T10:00:00.000Z'),
     chat_cutoff_message_id: 'msg1',
     chat_cutoff_at: new Date('2026-07-03T09:59:00.000Z'),
@@ -126,7 +127,7 @@ describe('getFullJobContext — de chat-prompts volgen de effectieve runtime', (
   describe('IDEA_CHAT', () => {
     it('HARNESS (parameter van de aanroeper): lege prompt_text, config van de HARNESS-tak', async () => {
       mockPrisma.claudeJob.findUnique.mockResolvedValue(
-        buildChatJobRow('IDEA_CHAT', { requested_model: 'gsq-lokaal' }),
+        buildChatJobRow('IDEA_CHAT', { requested_model: 'gsq-lokaal', runtime: 'HARNESS' }),
       )
 
       const context = await getFullJobContext('job-idea_chat-1234', 'HARNESS')
@@ -169,7 +170,7 @@ describe('getFullJobContext — de chat-prompts volgen de effectieve runtime', (
 
   describe('PLAN_CHAT', () => {
     it('CODEX (parameter van de aanroeper): geeft CODEX door', async () => {
-      mockPrisma.claudeJob.findUnique.mockResolvedValue(buildChatJobRow('PLAN_CHAT'))
+      mockPrisma.claudeJob.findUnique.mockResolvedValue(buildChatJobRow('PLAN_CHAT', { runtime: 'CODEX' }))
 
       const context = await getFullJobContext('job-plan_chat-1234', 'CODEX')
 

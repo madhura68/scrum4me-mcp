@@ -19,6 +19,7 @@ import {
   cloneRepoOnDemand,
   TerminalJobError,
   OwnershipLostError,
+  RuntimeMismatchError,
   type CloneOwnerCtx,
 } from '../git/on-demand-clone.js'
 
@@ -365,6 +366,62 @@ export async function rollbackClaim(
         AND dispatch_request_id IS NULL
       `
   if (requeued === 0) claimLog('rollback.final_update_lost_ownership', { jobId })
+}
+
+/**
+ * Geeft een claim terug waarvan de job een andere runtime heeft dan de worker (M45-2b, spec §5.3). Alleen
+ * database, in één transactie: de controle staat vóór elke worktree of idee-voorbereiding, dus er is niets op
+ * schijf om op te ruimen en rollbackClaim (met git-opruiming) is hier niet nodig.
+ *
+ * 1. De jobrij wordt vergrendeld (FOR UPDATE). Is de job dan niet meer CLAIMED door deze token en deze instance
+ *    (lease-verloop en een nieuwe claim, een sweep), dan verandert er niets: de job is niet meer van deze worker.
+ *    Heeft een andere transactie de rij nog open, dan wacht dit statement daarop en leest daarna de nieuwe
+ *    rijversie (READ COMMITTED), dus de eigenaarscontrole kijkt naar wat er echt staat. Zonder lock kon deze
+ *    teruggave een geldige nieuwe claim van een andere worker overschrijven.
+ * 2. De taakstatus gaat terug, maar alleen als déze claim de taak promoveerde. De trigger
+ *    claude_job_claim_to_task zet tasks.updated_at = now() in dezelfde transactie als de claim, die
+ *    claimed_at = NOW() zet; beide kolommen zijn TIMESTAMP(3), dus gelijk betekent: deze claim promoveerde. Een
+ *    taak die al IN_PROGRESS was, of daarna is aangepast, blijft staan. De vergelijking gebeurt in SQL tegen de
+ *    vergrendelde rij en moet vóór stap 3, die claimed_at leegt.
+ * 3. De job gaat terug naar QUEUED met lege claimvelden (zoals rollbackClaim).
+ *
+ * Zonder eigenaar-identiteit (`null`) valt er niets te bewijzen: de rij blijft dan staan en de lease-sweep ruimt
+ * op. Een databasefout gaat omhoog: de aanroeper moet weten dat de claim niet is teruggegeven.
+ */
+export async function releaseMismatchedClaim(
+  jobId: string,
+  owner: { tokenId: string; instanceId: string } | null,
+): Promise<void> {
+  if (!owner) return
+  await prisma.$transaction(async (tx) => {
+    const [row] = await tx.$queryRaw<
+      Array<{ status: string; claimed_by_token_id: string | null; worker_instance_id: string | null }>
+    >`
+      SELECT status::text AS status, claimed_by_token_id, worker_instance_id
+      FROM claude_jobs
+      WHERE id = ${jobId}
+      FOR UPDATE
+    `
+    if (
+      !row ||
+      row.status !== 'CLAIMED' ||
+      row.claimed_by_token_id !== owner.tokenId ||
+      row.worker_instance_id !== owner.instanceId
+    ) {
+      return
+    }
+    await tx.$executeRaw`
+      UPDATE tasks t SET status = 'TO_DO'
+      FROM claude_jobs cj
+      WHERE cj.id = ${jobId} AND t.id = cj.task_id AND t.status = 'IN_PROGRESS' AND t.updated_at = cj.claimed_at
+    `
+    await tx.$executeRaw`
+      UPDATE claude_jobs
+      SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL,
+          plan_snapshot = NULL, worker_instance_id = NULL, lease_until = NULL
+      WHERE id = ${jobId}
+    `
+  })
 }
 
 /**
@@ -1107,6 +1164,18 @@ export async function getFullJobContext(
   })
   if (!job) return null
   assertUnmanagedJob(job)
+
+  // M45-2b: de claim hoort bij de runtime van de worker. Dit kan alleen misgaan door een fout in het
+  // claimfilter, maar dan mag de payload van een verkeerde job de worker (zeker de harness) nooit bereiken. Als
+  // eerste stap, vóór elke worktree of idee-voorbereiding, en alleen als de aanroeper een runtime meegeeft: de
+  // docker-runner roept getFullJobContext(jobId) zonder aan en valt erbuiten. Een lus is aanvaard: alleen bij een
+  // filterfout claimt een Claude- of Codex-worker dezelfde job bij elke poll opnieuw, zichtbaar als
+  // runtime_mismatch in de claimlog; de harness stopt op deze fout zonder herstart.
+  if (runtime !== undefined && job.runtime !== runtime) {
+    await releaseMismatchedClaim(job.id, ownerIdentity(ownerCtx))
+    claimLog('runtime_mismatch', { jobId: job.id, jobRuntime: job.runtime, workerRuntime: runtime })
+    throw new RuntimeMismatchError(job.id, job.runtime, runtime)
+  }
 
   // JobKindConfig (fase 3): live / DB-leading per-kind config, vers op
   // claim-time geresolved. Best-effort lookup (zoals buildDocIndex hieronder):
@@ -2134,6 +2203,8 @@ export function registerWaitForJobTool(server: McpServer) {
             }
             return toolJson(ctx)
           } catch (err) {
+            // M45-2b: RuntimeMismatchError vóór de rest; de claim is al teruggegeven, de job blijft QUEUED.
+            if (err instanceof RuntimeMismatchError) return toolError('RUNTIME_MISMATCH')
             if (err instanceof TerminalJobError) {
               await markJobTerminallyFailed(jobId, err.reason)
               return toolError(`Job failed (unresolvable repo): ${err.reason}`)
@@ -2181,6 +2252,8 @@ export function registerWaitForJobTool(server: McpServer) {
                 }
                 return toolJson(ctx)
               } catch (err) {
+                // M45-2b: zelfde afhandeling als bij de directe claim hierboven.
+                if (err instanceof RuntimeMismatchError) return toolError('RUNTIME_MISMATCH')
                 if (err instanceof TerminalJobError) {
                   await markJobTerminallyFailed(jobId, err.reason)
                   return toolError(`Job failed (unresolvable repo): ${err.reason}`)

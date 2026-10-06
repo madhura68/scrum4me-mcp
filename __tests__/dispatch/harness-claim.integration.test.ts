@@ -5,12 +5,17 @@
 // alleen de Codex-job en de local_llm-worker (Claude, exact [local_llm]) alleen zijn eigen job. Daarnaast: het
 // tier-fragment met een HARNESS-worker als zichzelf en de idee-job-precheck, die geen harness-workers meetelt.
 //
-// Opzet voor aanvullingen (het deel na de claim volgt in een volgende taak): `makeWorld()` zet per test een
-// wegwerp-gebruiker, -product en -token neer (de harness-seed) en geeft de hulpfuncties `insertJob`, `insertWorker`,
-// `insertIdea`, `insertTask` en `insertSprintRun` hun context; `dropWorld()` ruimt alles op wat zij aanmaakten.
-// Er is geen toestand buiten `world`, dus een volgend describe-blok kan zonder voorbereiding dezelfde hulpfuncties
-// gebruiken. `holder.db` is de PrismaClient van de web-rol (scrum4me_web_runtime): de MCP draait met die rol, en
-// de gemockte `src/prisma.js` geeft hem aan tryClaimJob, dispatchIdeaJob en wat er nog volgt.
+// Het deel na de claim (M45-2b, Taak 2 deel 2) staat onderaan: een claim waarvan de job een andere runtime heeft dan
+// de worker wordt door getFullJobContext in één transactie teruggegeven (releaseMismatchedClaim): de job weer
+// QUEUED met lege claimvelden, de taak alleen terug op TO_DO als déze claim hem promoveerde, en niets als de
+// worker de job intussen kwijt is. Dat laatste bewijst een tweede verbinding die de jobrij vergrendelt.
+//
+// Opzet voor aanvullingen: `makeWorld()` zet per test een wegwerp-gebruiker, -product en -token neer (de
+// harness-seed) en geeft de hulpfuncties `insertJob`, `insertWorker`, `insertIdea`, `insertTask` en
+// `insertSprintRun` hun context; `dropWorld()` ruimt alles op wat zij aanmaakten. Er is geen toestand buiten
+// `world`, dus een volgend describe-blok kan zonder voorbereiding dezelfde hulpfuncties gebruiken. `holder.db` is
+// de PrismaClient van de web-rol (scrum4me_web_runtime): de MCP draait met die rol, en de gemockte
+// `src/prisma.js` geeft hem aan tryClaimJob, dispatchIdeaJob, getFullJobContext en releaseMismatchedClaim.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { Prisma, PrismaClient } from '@prisma/client'
@@ -22,7 +27,8 @@ import type { WorkerRuntime } from '../../src/worker-runtime.js'
 const holder = vi.hoisted(() => ({ db: null as unknown as PrismaClient }))
 vi.mock('../../src/prisma.js', () => ({ get prisma() { return holder.db } }))
 
-import { tryClaimJob } from '../../src/tools/wait-for-job.js'
+import { getFullJobContext, releaseMismatchedClaim, tryClaimJob } from '../../src/tools/wait-for-job.js'
+import { RuntimeMismatchError } from '../../src/git/on-demand-clone.js'
 import { dispatchIdeaJob } from '../../src/lib/dispatch/idea-jobs.js'
 
 // ---------------------------------------------------------------------------------------------------------
@@ -433,5 +439,214 @@ describe('idee-job-precheck tegen de echte database', () => {
     await expect(
       dispatchIdeaJob({ kind: 'IDEA_GRILL', ideaId, productId: world.productId, userId: world.userId }),
     ).rejects.toThrow(/Geen actieve worker/)
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------
+// Na de claim: een claim met de verkeerde runtime wordt in één transactie teruggegeven (RUNTIME_MISMATCH)
+// ---------------------------------------------------------------------------------------------------------
+
+describe('teruggave van een claim bij RUNTIME_MISMATCH tegen de echte database', () => {
+  const WORKER_A = 'worker-A'
+
+  const ownerOf = (jobId: string, instanceId = WORKER_A, tokenId = world.tokenId) => ({ jobId, instanceId, tokenId })
+
+  /** Een taak-job die een worker echt claimt: de trigger claude_job_claim_to_task promoveert de taak dan naar IN_PROGRESS. */
+  async function claimTaskJob(spec: { runtime: WorkerRuntime; instanceId?: string; tokenId?: string; taskStatus?: string }) {
+    const jobId = await insertJob(world, { runtime: spec.runtime, kind: 'TASK_IMPLEMENTATION', source: 'COPILOT', task: true })
+    const { rows } = await world.h.admin.query<{ task_id: string }>('SELECT task_id FROM claude_jobs WHERE id = $1', [jobId])
+    const taskId = rows[0].task_id
+    // Een taak die al onderweg was vóór de claim: de trigger promoveert alleen een taak die nog TO_DO is.
+    if (spec.taskStatus) await world.h.admin.query('UPDATE tasks SET status = $2 WHERE id = $1', [taskId, spec.taskStatus])
+    expect(await tryClaimJob(world.userId, spec.tokenId ?? world.tokenId, spec.instanceId ?? WORKER_A, undefined, spec.runtime, [], null)).toBe(jobId)
+    return { jobId, taskId }
+  }
+
+  /** De claimvelden van de job en de taakstatus; `stamped_by_claim` is wat de teruggave in SQL vergelijkt (updated_at = claimed_at). */
+  async function stateOf(jobId: string, taskId: string | null) {
+    const job = (await world.h.admin.query(
+      `SELECT status::text AS status, claimed_by_token_id, claimed_at, plan_snapshot, worker_instance_id, lease_until
+       FROM claude_jobs WHERE id = $1`, [jobId],
+    )).rows[0]
+    const task = taskId
+      ? (await world.h.admin.query(
+          `SELECT t.status::text AS status, (t.updated_at = cj.claimed_at) AS stamped_by_claim
+           FROM tasks t, claude_jobs cj WHERE t.id = $1 AND cj.id = $2`, [taskId, jobId],
+        )).rows[0]
+      : null
+    return { job, task }
+  }
+
+  const EMPTY_CLAIM = {
+    status: 'QUEUED', claimed_by_token_id: null, claimed_at: null, plan_snapshot: null, worker_instance_id: null, lease_until: null,
+  }
+
+  // [runtime van de job, runtime van de worker die hem kreeg]
+  it.each([
+    ['CLAUDE', 'HARNESS'],
+    ['HARNESS', 'CLAUDE'],
+  ] as const)('een %s-job die een %s-worker kreeg: job weer QUEUED met lege claimvelden, taak weer TO_DO', async (jobRuntime, workerRuntime) => {
+    const { jobId, taskId } = await claimTaskJob({ runtime: jobRuntime })
+    const claimed = await stateOf(jobId, taskId)
+    expect(claimed.job).toMatchObject({ status: 'CLAIMED', claimed_by_token_id: world.tokenId, worker_instance_id: WORKER_A, plan_snapshot: 'plan' })
+    expect(claimed.job.claimed_at).not.toBeNull()
+    expect(claimed.job.lease_until).not.toBeNull()
+    // De voorwaarde van de teruggave: de trigger promoveerde de taak in dezelfde transactie als de claim.
+    expect(claimed.task).toEqual({ status: 'IN_PROGRESS', stamped_by_claim: true })
+
+    await expect(getFullJobContext(jobId, workerRuntime, ownerOf(jobId))).rejects.toBeInstanceOf(RuntimeMismatchError)
+
+    const released = await stateOf(jobId, taskId)
+    expect(released.job).toEqual(EMPTY_CLAIM)
+    expect(released.task!.status).toBe('TO_DO')
+  })
+
+  it('na de teruggave claimt de juiste worker de job opnieuw, en de taak gaat weer naar IN_PROGRESS', async () => {
+    const { jobId, taskId } = await claimTaskJob({ runtime: 'CLAUDE' })
+    await expect(getFullJobContext(jobId, 'HARNESS', ownerOf(jobId))).rejects.toBeInstanceOf(RuntimeMismatchError)
+
+    expect(await tryClaimJob(world.userId, world.tokenId, 'worker-C', undefined, 'CLAUDE', [], null)).toBe(jobId)
+
+    const reclaimed = await stateOf(jobId, taskId)
+    expect(reclaimed.job).toMatchObject({ status: 'CLAIMED', claimed_by_token_id: world.tokenId, worker_instance_id: 'worker-C' })
+    expect(reclaimed.task).toEqual({ status: 'IN_PROGRESS', stamped_by_claim: true })
+  })
+
+  it('een taak die vóór de claim al IN_PROGRESS was, blijft staan: de claim stempelde haar updated_at niet', async () => {
+    const { jobId, taskId } = await claimTaskJob({ runtime: 'CLAUDE', taskStatus: 'IN_PROGRESS' })
+    expect((await stateOf(jobId, taskId)).task).toEqual({ status: 'IN_PROGRESS', stamped_by_claim: false })
+
+    await expect(getFullJobContext(jobId, 'HARNESS', ownerOf(jobId))).rejects.toBeInstanceOf(RuntimeMismatchError)
+
+    const released = await stateOf(jobId, taskId)
+    expect(released.job).toEqual(EMPTY_CLAIM)
+    expect(released.task!.status).toBe('IN_PROGRESS')
+  })
+
+  it('een job zonder taak (idee-chat) gaat ook terug naar QUEUED', async () => {
+    const jobId = await insertJob(world, { runtime: 'HARNESS', kind: 'IDEA_CHAT', source: 'SYSTEM', idea: true })
+    expect(await tryClaimJob(world.userId, world.tokenId, WORKER_A, undefined, 'HARNESS', [], null)).toBe(jobId)
+
+    await expect(getFullJobContext(jobId, 'CLAUDE', ownerOf(jobId))).rejects.toBeInstanceOf(RuntimeMismatchError)
+
+    expect((await stateOf(jobId, null)).job).toEqual(EMPTY_CLAIM)
+  })
+
+  // De claim is van een andere worker (lease-verloop en een nieuwe claim): dan is de job niet meer van A en
+  // verandert de teruggave van A niets, ook niet aan de taak.
+  describe('verandert niets als de worker de job niet meer heeft', () => {
+    async function secondToken(): Promise<string> {
+      const id = randomUUID()
+      await world.h.admin.query(
+        "INSERT INTO api_tokens(id, user_id, token_hash, kind, scoped_products) VALUES($1, $2, $3, 'IMPLEMENTATION', $4::text[])",
+        [id, world.userId, randomUUID(), [world.productId]],
+      )
+      world.h.trackToken(id)
+      return id
+    }
+
+    it('een andere worker_instance_id (dezelfde token)', async () => {
+      const { jobId, taskId } = await claimTaskJob({ runtime: 'CLAUDE', instanceId: 'worker-B' })
+      const before = await stateOf(jobId, taskId)
+
+      await releaseMismatchedClaim(jobId, { tokenId: world.tokenId, instanceId: WORKER_A })
+
+      expect(await stateOf(jobId, taskId)).toEqual(before)
+      expect(before.job).toMatchObject({ status: 'CLAIMED', worker_instance_id: 'worker-B' })
+      expect(before.task!.status).toBe('IN_PROGRESS')
+    })
+
+    it('een andere token (dezelfde worker_instance_id)', async () => {
+      const otherToken = await secondToken()
+      const { jobId, taskId } = await claimTaskJob({ runtime: 'CLAUDE', tokenId: otherToken })
+      const before = await stateOf(jobId, taskId)
+
+      await releaseMismatchedClaim(jobId, { tokenId: world.tokenId, instanceId: WORKER_A })
+
+      expect(await stateOf(jobId, taskId)).toEqual(before)
+      expect(before.job).toMatchObject({ status: 'CLAIMED', claimed_by_token_id: otherToken })
+      expect(before.task!.status).toBe('IN_PROGRESS')
+    })
+
+    it('een job die al QUEUED is (de sweep gaf de claim al terug): de taak blijft zoals ze is', async () => {
+      const { jobId, taskId } = await claimTaskJob({ runtime: 'CLAUDE' })
+      await world.h.admin.query(
+        `UPDATE claude_jobs SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL, plan_snapshot = NULL,
+                                worker_instance_id = NULL, lease_until = NULL WHERE id = $1`, [jobId],
+      )
+      const before = await stateOf(jobId, taskId)
+
+      await releaseMismatchedClaim(jobId, { tokenId: world.tokenId, instanceId: WORKER_A })
+
+      expect(await stateOf(jobId, taskId)).toEqual(before)
+      expect(before.task!.status).toBe('IN_PROGRESS')
+    })
+  })
+
+  // ---------------------------------------------------------------------------------------------------------
+  // Concurrentie: het eigenaarschap wordt onder de lock gecontroleerd
+  //
+  // Verbinding B vergrendelt de jobrij en zet de job op een nieuwe eigenaar (zoals een lease-verloop gevolgd door
+  // een nieuwe claim). Dan start A's teruggave. B commit pas als de database laat zien dat A op B's lock wacht.
+  // Daarna verandert A niets: de job blijft van B en de taak blijft IN_PROGRESS.
+  // ---------------------------------------------------------------------------------------------------------
+
+  /**
+   * Wacht tot de database meldt dat een sessie door `blockerPid` wordt tegengehouden in een statement dat aan `statement`
+   * voldoet (pg_blocking_pids), en geeft de wachtende rijen terug. Faalt na de deadline: dan wacht A niet op B.
+   * Dit is een poll op de toestand van de database, geen slaap in de hoop dat A inmiddels wacht.
+   */
+  async function waitUntilBlockedBy(blockerPid: number, statement: RegExp, deadlineMs = 5_000) {
+    const deadline = Date.now() + deadlineMs
+    let blocked: Array<{ pid: number; wait_event_type: string | null; query: string }> = []
+    while (Date.now() < deadline) {
+      blocked = (await world.h.admin.query(
+        'SELECT pid, wait_event_type, query FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))', [blockerPid],
+      )).rows
+      const waiting = blocked.filter((row) => statement.test(row.query))
+      if (waiting.length > 0) return waiting
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+    throw new Error(
+      `A wacht niet op de lock van B in een statement dat ${statement} bevat; ` +
+      `sessies die door B worden tegengehouden: ${JSON.stringify(blocked.map((row) => ({ wait_event_type: row.wait_event_type, query: row.query.replace(/\s+/g, ' ').slice(0, 80) })))}`,
+    )
+  }
+
+  it('A wacht op de lock van B en verandert daarna niets: de job blijft van B en de taak IN_PROGRESS', async () => {
+    const { jobId, taskId } = await claimTaskJob({ runtime: 'CLAUDE', instanceId: WORKER_A })
+    const b = await world.h.admin.connect()
+    let releasing: Promise<void> | undefined
+    let bFinished = false
+    try {
+      await b.query('BEGIN')
+      const pidOfB = Number((await b.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0].pid)
+      await b.query('SELECT 1 FROM claude_jobs WHERE id = $1 FOR UPDATE', [jobId])
+      await b.query(
+        "UPDATE claude_jobs SET worker_instance_id = 'worker-B', claimed_at = now(), lease_until = now() + interval '5 minutes' WHERE id = $1",
+        [jobId],
+      )
+
+      // A start zijn teruggave: de SELECT ... FOR UPDATE moet op B wachten.
+      releasing = releaseMismatchedClaim(jobId, { tokenId: world.tokenId, instanceId: WORKER_A })
+      releasing.catch(() => undefined) // een fout komt na de commit van B uit `await releasing`; geen losse rejection ondertussen
+      const waiting = await waitUntilBlockedBy(pidOfB, /FOR UPDATE/i)
+      expect(waiting.map((row) => row.wait_event_type)).toEqual(['Lock'])
+
+      await b.query('COMMIT')
+      bFinished = true
+      await releasing // A krijgt de lock nu en rondt af
+    } finally {
+      // Wat er ook misgaat: B laat zijn locks los en A rondt af, zodat de opruiming niet blijft hangen.
+      if (!bFinished) await b.query('ROLLBACK').catch(() => undefined)
+      b.release()
+      await releasing?.catch(() => undefined)
+    }
+
+    const after = await stateOf(jobId, taskId)
+    expect(after.job).toMatchObject({ status: 'CLAIMED', claimed_by_token_id: world.tokenId, worker_instance_id: 'worker-B' })
+    expect(after.job.claimed_at).not.toBeNull()
+    expect(after.job.plan_snapshot).toBe('plan')
+    expect(after.task!.status).toBe('IN_PROGRESS')
   })
 })
