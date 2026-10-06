@@ -4,6 +4,10 @@ import { ClaudeJobKind } from '@prisma/client'
 vi.mock('../src/prisma.js', () => ({
   prisma: {
     claudeJob: { findUnique: vi.fn(), findFirst: vi.fn() },
+    // getFullJobContext leest voor een HARNESS-job de productkeuze (zonder .catch), en voor elke job de
+    // JobKindConfig (met .catch, maar dat print dan een stacktrace): beide zonder rij.
+    productHarnessChoice: { findUnique: vi.fn().mockResolvedValue(null) },
+    jobKindConfig: { findUnique: vi.fn().mockResolvedValue(null) },
     ideaChatMessage: { findMany: vi.fn() },
     claudeQuestion: { findMany: vi.fn() },
   },

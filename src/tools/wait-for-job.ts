@@ -18,6 +18,7 @@ import { managedWorkerPollScope } from '../presence/worker-mode.js'
 import {
   cloneRepoOnDemand,
   TerminalJobError,
+  HarnessJobConfigError,
   OwnershipLostError,
   RuntimeMismatchError,
   type CloneOwnerCtx,
@@ -34,6 +35,8 @@ import { maybeBackupPush } from '../git/branch-safety.js'
 import { fetchPrDiff, fetchCompareDiff, getPullRequestState } from '../git/pr.js'
 import { parseForgejoPrUrl } from '../git/forgejo-rest.js'
 import { resolveRuntimeJobConfig } from '@shared/job-config.js'
+import { isHarnessJobKind } from '@shared/harness-config.js'
+import { readHarnessChoice } from '../lib/harness-choice.js'
 import { buildDocIndex } from '../lib/doc-index.js'
 import { buildDocsAuditPayload } from '../lib/docs-audit-payload.js'
 import { loadManualIdeaContext } from '../lib/manual-idea-context.js'
@@ -1066,6 +1069,27 @@ export async function resolveReviewFeedback(job: {
   }
 }
 
+// Wat de resolver gooit voor een job die nooit bruikbaar wordt (M45-2b): een jobsoort die HARNESS niet draait, een
+// ongeldige configuratienaam, een onbruikbaar plafond en een onbekende runtime. Terminaal, anders loopt de job tot
+// het lease-verloop en wordt hij twee keer opnieuw geclaimd. Elke andere fout gaat ongewijzigd omhoog.
+const HARNESS_JOB_CONFIG_ERROR_CODES: ReadonlySet<string> = new Set([
+  'HARNESS_KIND_UNSUPPORTED',
+  'HARNESS_CONFIGURATION_INVALID',
+  'HARNESS_COST_LIMIT_INVALID',
+  'UNKNOWN_AGENT_RUNTIME',
+])
+
+function resolveJobConfig(...args: Parameters<typeof resolveRuntimeJobConfig>) {
+  try {
+    return resolveRuntimeJobConfig(...args)
+  } catch (err) {
+    if (err instanceof Error && HARNESS_JOB_CONFIG_ERROR_CODES.has(err.message)) {
+      throw new HarnessJobConfigError(err.message)
+    }
+    throw err
+  }
+}
+
 export async function getFullJobContext(
   jobId: string,
   runtime?: WorkerRuntime,
@@ -1201,7 +1225,17 @@ export async function getFullJobContext(
   // overgeslagen → codex-jobs kregen een Claude-model als --model → codex 400
   // ("model not supported when using Codex with a ChatGPT account").
   const effectiveRuntime: WorkerRuntime = runtime ?? job.runtime
-  const config = resolveRuntimeJobConfig(
+
+  // M45-2b: het plafond van een HARNESS-job komt uit de productkeuze op het moment van de claim; de resolver leest
+  // zelf geen database. Géén .catch (anders dan de jobKindConfig-lezing hierboven): een leesfout gaat omhoog en
+  // geeft nooit de standaard van de soort, want een fout is niet hetzelfde als "geen rij" (die geeft null en dus de
+  // standaard). Alleen voor een HARNESS-soort: voor elke andere soort weigert de resolver de job zelf.
+  const harnessChoice =
+    effectiveRuntime === 'HARNESS' && isHarnessJobKind(job.kind)
+      ? await readHarnessChoice(prisma, job.product_id, job.kind)
+      : undefined
+
+  const config = resolveJobConfig(
     {
       kind: job.kind,
       requested_model: job.requested_model,
@@ -1216,6 +1250,7 @@ export async function getFullJobContext(
     job.task ? { requires_opus: job.task.requires_opus } : undefined,
     kindConfig ?? undefined,
     effectiveRuntime,
+    harnessChoice,
   )
 
   // Push a compact doc-index into every payload so the worker sees which
@@ -2205,6 +2240,12 @@ export function registerWaitForJobTool(server: McpServer) {
           } catch (err) {
             // M45-2b: RuntimeMismatchError vóór de rest; de claim is al teruggegeven, de job blijft QUEUED.
             if (err instanceof RuntimeMismatchError) return toolError('RUNTIME_MISMATCH')
+            // M45-2b: HarnessJobConfigError is een TerminalJobError en moet er dus vóór staan, anders geeft de tak
+            // hieronder de repotekst. De job wordt FAILED met de code, in plaats van te wachten op het lease-verloop.
+            if (err instanceof HarnessJobConfigError) {
+              await markJobTerminallyFailed(jobId, err.reason)
+              return toolError(err.reason)
+            }
             if (err instanceof TerminalJobError) {
               await markJobTerminallyFailed(jobId, err.reason)
               return toolError(`Job failed (unresolvable repo): ${err.reason}`)
@@ -2254,6 +2295,10 @@ export function registerWaitForJobTool(server: McpServer) {
               } catch (err) {
                 // M45-2b: zelfde afhandeling als bij de directe claim hierboven.
                 if (err instanceof RuntimeMismatchError) return toolError('RUNTIME_MISMATCH')
+                if (err instanceof HarnessJobConfigError) {
+                  await markJobTerminallyFailed(jobId, err.reason)
+                  return toolError(err.reason)
+                }
                 if (err instanceof TerminalJobError) {
                   await markJobTerminallyFailed(jobId, err.reason)
                   return toolError(`Job failed (unresolvable repo): ${err.reason}`)

@@ -103,6 +103,12 @@ export function classifyRepoBootstrapError(
 //                     claim has already been given back (releaseMismatchedClaim), so the job
 //                     is QUEUED again for the right worker: the runner must NOT mark it FAILED
 //                     and must NOT rollback. Deliberately not a TerminalJobError.
+// HarnessJobConfigError → a HARNESS job whose configuration can never be used (M45-2b: the
+//                     resolver rejected it, `reason` is the error code, e.g. HARNESS_COST_LIMIT_INVALID).
+//                     A TerminalJobError, so a runner that handles TerminalJobError marks the job
+//                     FAILED with the code instead of letting it run into the lease expiry; the
+//                     wait_for_job handler catches it BEFORE the generic TerminalJobError branch,
+//                     because that branch words the failure as an unresolvable repo.
 // ---------------------------------------------------------------------------
 export class TerminalJobError extends Error {
   readonly reason: string
@@ -110,6 +116,13 @@ export class TerminalJobError extends Error {
     super(reason)
     this.name = 'TerminalJobError'
     this.reason = reason
+  }
+}
+
+export class HarnessJobConfigError extends TerminalJobError {
+  constructor(code: string) {
+    super(code)
+    this.name = 'HarnessJobConfigError'
   }
 }
 

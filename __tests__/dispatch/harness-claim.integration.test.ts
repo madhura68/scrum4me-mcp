@@ -5,10 +5,13 @@
 // alleen de Codex-job en de local_llm-worker (Claude, exact [local_llm]) alleen zijn eigen job. Daarnaast: het
 // tier-fragment met een HARNESS-worker als zichzelf en de idee-job-precheck, die geen harness-workers meetelt.
 //
-// Het deel na de claim (M45-2b, Taak 2 deel 2) staat onderaan: een claim waarvan de job een andere runtime heeft dan
-// de worker wordt door getFullJobContext in één transactie teruggegeven (releaseMismatchedClaim): de job weer
-// QUEUED met lege claimvelden, de taak alleen terug op TO_DO als déze claim hem promoveerde, en niets als de
-// worker de job intussen kwijt is. Dat laatste bewijst een tweede verbinding die de jobrij vergrendelt.
+// Het deel na de claim (M45-2b, Taak 2 deel 2) staat onderaan:
+// - een claim waarvan de job een andere runtime heeft dan de worker wordt door getFullJobContext in één transactie
+//   teruggegeven (releaseMismatchedClaim): de job weer QUEUED met lege claimvelden, de taak alleen terug op TO_DO
+//   als déze claim hem promoveerde, en niets als de worker de job intussen kwijt is. Dat laatste bewijst een
+//   tweede verbinding die de jobrij vergrendelt;
+// - het plafond van een HARNESS-job komt uit product_harness_choices: de Decimal(10,4) uit de echte database wordt
+//   een korte decimale string, en zonder rij geldt de standaard van de soort.
 //
 // Opzet voor aanvullingen: `makeWorld()` zet per test een wegwerp-gebruiker, -product en -token neer (de
 // harness-seed) en geeft de hulpfuncties `insertJob`, `insertWorker`, `insertIdea`, `insertTask` en
@@ -147,6 +150,8 @@ interface JobSpec {
   task?: boolean
   sprintRunId?: string
   requiredCapability?: string
+  /** De configuratienaam van een HARNESS-job (de snapshot van de enqueue). */
+  requestedModel?: string
   status?: string
   /** Hoe lang geleden de job is aangemaakt; oudere jobs worden eerder geclaimd. */
   ageSeconds?: number
@@ -158,11 +163,12 @@ async function insertJob(world: World, spec: JobSpec): Promise<string> {
   const taskId = spec.task ? await insertTask(world) : null
   await world.h.admin.query(
     `INSERT INTO claude_jobs(id, user_id, product_id, idea_id, task_id, sprint_run_id, kind, source, status, runtime,
-                             required_capability, created_at, updated_at)
-     VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now() - ($12::int * interval '1 second'), now())`,
+                             required_capability, requested_model, created_at, updated_at)
+     VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $13, now() - ($12::int * interval '1 second'), now())`,
     [
       id, world.userId, world.productId, ideaId, taskId, spec.sprintRunId ?? null, spec.kind, spec.source,
       spec.status ?? 'QUEUED', spec.runtime, spec.requiredCapability ?? null, spec.ageSeconds ?? 0,
+      spec.requestedModel ?? null,
     ],
   )
   return id
@@ -648,5 +654,82 @@ describe('teruggave van een claim bij RUNTIME_MISMATCH tegen de echte database',
     expect(after.job.claimed_at).not.toBeNull()
     expect(after.job.plan_snapshot).toBe('plan')
     expect(after.task!.status).toBe('IN_PROGRESS')
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------
+// Na de claim: het plafond van een HARNESS-job komt uit de productkeuze
+// ---------------------------------------------------------------------------------------------------------
+
+describe('plafond van een HARNESS-job tegen de echte database', () => {
+  const INSTANCE = 'harness-ceiling'
+  type HarnessKind = 'IDEA_CHAT' | 'TASK_IMPLEMENTATION'
+
+  /** Een HARNESS-job die een HARNESS-worker echt claimt, met de configuratienaam van de enqueue als requested_model. */
+  async function claimHarnessJob(kind: HarnessKind): Promise<string> {
+    const jobId = await insertJob(
+      world,
+      kind === 'IDEA_CHAT'
+        ? { runtime: 'HARNESS', kind, source: 'SYSTEM', idea: true, requestedModel: 'gsq-lokaal' }
+        : { runtime: 'HARNESS', kind, source: 'COPILOT', task: true, requestedModel: 'gsq-lokaal' },
+    )
+    expect(await tryClaimJob(world.userId, world.tokenId, INSTANCE, undefined, 'HARNESS', [], null)).toBe(jobId)
+    return jobId
+  }
+
+  /** De keuze van het product voor een jobsoort, zoals de ops-UI haar zou zetten (Decimal(10,4), updated_at zonder default). */
+  async function chooseCeiling(kind: HarnessKind, maxCostUsd: string, configuration = 'gsq-lokaal') {
+    await world.h.admin.query(
+      'INSERT INTO product_harness_choices(product_id, kind, configuration, max_cost_usd, updated_at) VALUES($1, $2, $3, $4::numeric, now())',
+      [world.productId, kind, configuration, maxCostUsd],
+    )
+  }
+
+  const contextOf = async (jobId: string) =>
+    (await getFullJobContext(jobId, 'HARNESS', { jobId, instanceId: INSTANCE, tokenId: world.tokenId })) as { kind: string; config: unknown }
+
+  it.each([
+    ['IDEA_CHAT', '0.05'],
+    ['TASK_IMPLEMENTATION', '0.50'],
+  ] as const)('%s zonder keuze krijgt het standaardplafond %s', async (kind, defaultCost) => {
+    const jobId = await claimHarnessJob(kind)
+
+    const context = await contextOf(jobId)
+
+    expect(context).toMatchObject({ kind, config: { runtime: 'HARNESS', model: 'gsq-lokaal', max_cost_usd: defaultCost } })
+  })
+
+  // De Decimal(10,4) uit de database ('0.2000') is een Prisma-Decimal; de MCP geeft de gewone korte string door.
+  it.each([
+    ['IDEA_CHAT', '0.2000', '0.2'],
+    ['TASK_IMPLEMENTATION', '1.2500', '1.25'],
+    ['TASK_IMPLEMENTATION', '0.0001', '0.0001'],
+    ['IDEA_CHAT', '999999.9999', '999999.9999'],
+  ] as const)('%s met een keuze van %s krijgt het plafond %s als string', async (kind, stored, expected) => {
+    await chooseCeiling(kind, stored)
+    const jobId = await claimHarnessJob(kind)
+
+    const context = await contextOf(jobId)
+
+    expect(context).toMatchObject({ kind, config: { runtime: 'HARNESS', model: 'gsq-lokaal', max_cost_usd: expected } })
+    expect(typeof (context.config as { max_cost_usd: unknown }).max_cost_usd).toBe('string')
+  })
+
+  it('de keuze geldt per jobsoort: de keuze voor IDEA_CHAT raakt de standaard van TASK_IMPLEMENTATION niet', async () => {
+    await chooseCeiling('IDEA_CHAT', '0.2000')
+    const jobId = await claimHarnessJob('TASK_IMPLEMENTATION')
+
+    const context = await contextOf(jobId)
+
+    expect(context).toMatchObject({ config: { max_cost_usd: '0.50' } })
+  })
+
+  it('de configuratienaam komt uit de job, niet uit de keuze van het product', async () => {
+    await chooseCeiling('IDEA_CHAT', '0.3000', 'een-andere-naam')
+    const jobId = await claimHarnessJob('IDEA_CHAT')
+
+    const context = await contextOf(jobId)
+
+    expect(context).toMatchObject({ config: { runtime: 'HARNESS', model: 'gsq-lokaal', max_cost_usd: '0.3' } })
   })
 })
