@@ -327,7 +327,7 @@ describe('getFullJobContext — het plafond van een HARNESS-job komt uit de prod
     expect(config).not.toHaveProperty('max_cost_usd')
   })
 
-  it('zonder runtime-argument (het docker-pad) geldt de runtime van de job: een HARNESS-job leest de keuze', async () => {
+  it('zonder runtime-argument (geen productie-aanroeper) geldt de runtime van de job: een HARNESS-job leest de keuze', async () => {
     mockPrisma.claudeJob.findUnique.mockResolvedValue(ideaChatJob('HARNESS'))
     mockPrisma.productHarnessChoice.findUnique.mockResolvedValue(choiceRow('0.0700'))
 

@@ -1193,10 +1193,16 @@ export async function getFullJobContext(
 
   // M45-2b: de claim hoort bij de runtime van de worker. Dit kan alleen misgaan door een fout in het
   // claimfilter, maar dan mag de payload van een verkeerde job de worker (zeker de harness) nooit bereiken. Als
-  // eerste stap, vóór elke worktree of idee-voorbereiding, en alleen als de aanroeper een runtime meegeeft: de
-  // docker-runner roept getFullJobContext(jobId) zonder aan en valt erbuiten. Een lus is aanvaard: alleen bij een
-  // filterfout claimt een Claude- of Codex-worker dezelfde job bij elke poll opnieuw, zichtbaar als
-  // runtime_mismatch in de claimlog; de harness stopt op deze fout zonder herstart.
+  // eerste stap, vóór elke worktree of idee-voorbereiding, en alleen als de aanroeper een runtime meegeeft:
+  // wait_for_job doet dat, en de docker-runner ook (scrum4me-docker bin/run-one-job.ts roept
+  // getFullJobContext(jobId, runtime, ownerCtx) aan met de runtime uit getWorkerRuntimeFromEnv()). Een aanroep zonder
+  // runtime-argument heeft vandaag geen productie-aanroeper en valt erbuiten.
+  // De docker-runner (master 77a00a7) kent RuntimeMismatchError niet: de fout valt in zijn generieke catch, die
+  // rollbackClaim(jobId, { tokenId, instanceId }) aanroept. Die is eigenaar-bewaakt: na de teruggave hieronder raakt
+  // hij 0 rijen (claimlog rollback.ownership_lost) en stopt, dus een no-op. Docker hoort RUNTIME_MISMATCH in deel 2d
+  // expliciet af te handelen.
+  // Een lus is aanvaard: alleen bij een filterfout claimt een Claude- of Codex-worker dezelfde job bij elke poll
+  // opnieuw, zichtbaar als runtime_mismatch in de claimlog; de harness stopt op deze fout zonder herstart.
   if (runtime !== undefined && job.runtime !== runtime) {
     await releaseMismatchedClaim(job.id, ownerIdentity(ownerCtx))
     claimLog('runtime_mismatch', { jobId: job.id, jobRuntime: job.runtime, workerRuntime: runtime })
@@ -1222,10 +1228,11 @@ export async function getFullJobContext(
   // overgeslagen (Claude-semantiek lekt niet naar codex --model/--sandbox).
   //
   // Runtime-bron: expliciete caller-param wint, maar val terug op job.runtime.
-  // Zonder deze fallback resolveerde een caller die runtime NIET meegaf (bv.
-  // run-one-job's getFullJobContext(jobId)) undefined → de CODEX-tak werd
-  // overgeslagen → codex-jobs kregen een Claude-model als --model → codex 400
-  // ("model not supported when using Codex with a ChatGPT account").
+  // Zonder deze fallback resolveerde een caller die runtime NIET meegaf undefined →
+  // de CODEX-tak werd overgeslagen → codex-jobs kregen een Claude-model als --model →
+  // codex 400 ("model not supported when using Codex with a ChatGPT account").
+  // Dat was de docker-runner toen hij getFullJobContext(jobId) nog zonder runtime aanriep; hij geeft de runtime nu
+  // mee, dus de fallback dekt vandaag alleen een aanroep zonder runtime-argument (geen productie-aanroeper).
   const effectiveRuntime: WorkerRuntime = runtime ?? job.runtime
 
   // M45-2b: het plafond van een HARNESS-job komt uit de productkeuze op het moment van de claim; de resolver leest

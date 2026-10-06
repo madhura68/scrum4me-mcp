@@ -482,10 +482,11 @@ describe('getFullJobContext — de runtime van de job moet die van de worker zij
     expect(claimLogLines(errorSpy).some((line) => line.event === 'runtime_mismatch')).toBe(false)
   })
 
-  it('zonder runtime-argument (het docker-pad) wordt er niets gecontroleerd of teruggegeven, ook niet met een eigenaar', async () => {
+  it('zonder runtime-argument (geen productie-aanroeper) wordt er niets gecontroleerd of teruggegeven, ook niet met een eigenaar', async () => {
     mockPrisma.claudeJob.findUnique.mockResolvedValue(ideaGrillJob('CODEX'))
 
-    // De docker-runner roept getFullJobContext(jobId) aan; de effectieve runtime is dan die van de job zelf.
+    // Alleen een aanroep zonder runtime-argument: de effectieve runtime is dan die van de job zelf. Geen enkele
+    // productie-aanroeper doet dit nog: wait_for_job en de docker-runner geven de runtime mee.
     const withoutOwner = await getFullJobContext(JOB_ID)
     const withOwner = await getFullJobContext(JOB_ID, undefined, OWNER)
 

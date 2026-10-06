@@ -101,8 +101,14 @@ export function classifyRepoBootstrapError(
 // RuntimeMismatchError → the claimed job belongs to another runtime than the worker that
 //                     claimed it (M45-2b; only a bug in the claim filter can cause it). The
 //                     claim has already been given back (releaseMismatchedClaim), so the job
-//                     is QUEUED again for the right worker: the runner must NOT mark it FAILED
-//                     and must NOT rollback. Deliberately not a TerminalJobError.
+//                     is QUEUED again for the right worker: a runner must NOT mark it FAILED and
+//                     has no reason to rollback. Deliberately not a TerminalJobError.
+//                     Today the docker runner (scrum4me-docker bin/run-one-job.ts, master 77a00a7)
+//                     does not handle it: it passes a runtime to getFullJobContext, so the error
+//                     reaches its generic catch, which calls rollbackClaim(jobId, { tokenId,
+//                     instanceId }). That call is ownership-fenced: after the give-back it updates
+//                     0 rows (claim log rollback.ownership_lost) and stops, a no-op. Docker should
+//                     handle RuntimeMismatchError explicitly in part 2d.
 // HarnessJobConfigError → a HARNESS job whose configuration can never be used (M45-2b: the
 //                     resolver rejected it, `reason` is the error code, e.g. HARNESS_COST_LIMIT_INVALID).
 //                     A TerminalJobError, so a runner that handles TerminalJobError marks the job
