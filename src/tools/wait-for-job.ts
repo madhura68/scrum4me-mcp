@@ -29,7 +29,7 @@ import { requireWriteAccess } from '../auth.js'
 import { toolJson, toolError, withToolErrors } from '../errors.js'
 import { createWorktreeForJob, removeWorktreeForJob, LocalLlmWorktreeRefused } from '../git/worktree.js'
 import { getWorktreeRoot } from '../git/worktree-paths.js'
-import { removeWorktreeWithoutGit, gitPrefixFor, isLocalLlmJob } from '../git/local-llm.js'
+import { removeWorktreeWithoutGit, gitPrefixFor, isHarnessJob } from '../git/local-llm.js'
 import { setupProductWorktrees, releaseLocksOnTerminal } from '../git/job-locks.js'
 import { maybeBackupPush } from '../git/branch-safety.js'
 import { fetchPrDiff, fetchCompareDiff, getPullRequestState } from '../git/pr.js'
@@ -70,11 +70,12 @@ export function repoNameFromUrl(repoUrl: string | null | undefined): string | nu
  * resolution when null. Documented in CLAUDE.md.
  *
  * `explicitRootsOnly` (P13, controller ruling on the M3 whole-branch review):
- * for a `local_llm` job, repo code may only ever touch the host from a root
- * the operator explicitly configured (env var or `~/.scrum4me-agent-config.json`
- * entry). It disables BOTH steps 1/4's `~/Projects/<name>` convention lookup
- * AND the on-demand clone — a local_llm job never runs `npm ci` on the host,
- * and never silently adopts a repo that merely happens to sit in ~/Projects.
+ * for a guarded job (`isHarnessJob`: a HARNESS or `local_llm` job), repo code may
+ * only ever touch the host from a root the operator explicitly configured (env
+ * var or `~/.scrum4me-agent-config.json` entry). It disables BOTH steps 1/4's
+ * `~/Projects/<name>` convention lookup AND the on-demand clone — such a job
+ * never runs `npm ci` on the host, and never silently adopts a repo that merely
+ * happens to sit in ~/Projects.
  * It forces `allowClone` off regardless of `allowOnDemandClone`, so a caller
  * cannot accidentally combine the two.
  */
@@ -493,11 +494,12 @@ export async function attachWorktreeToJob(
 ): Promise<{ worktree_path: string; branch_name: string; reused_branch: boolean } | { error: string }> {
   claimLog('attach.start', { jobId, productId })
   // P13 (controller ruling, M3 whole-branch review): whether this job is
-  // local_llm is decided from the DB (required_capability), never from the
-  // worktree itself. A local_llm job resolves ONLY from an explicitly
-  // configured repo root — no ~/Projects/<name> convention fallback, no
-  // on-demand clone (that would run `npm ci`/lifecycle scripts on the host).
-  const isLocal = await isLocalLlmJob(jobId)
+  // guarded (a HARNESS or local_llm job, see isHarnessJob) is decided from the
+  // DB (runtime, required_capability), never from the worktree itself. Such a
+  // job resolves ONLY from an explicitly configured repo root — no
+  // ~/Projects/<name> convention fallback, no on-demand clone (that would run
+  // `npm ci`/lifecycle scripts on the host).
+  const isLocal = await isHarnessJob(jobId)
   const repoRoot = await resolveRepoRoot(productId, taskRepoUrl, {
     ownerCtx,
     allowOnDemandClone: !isLocal,

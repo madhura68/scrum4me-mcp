@@ -1,9 +1,17 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
+
+// Alleen de bewaakte-job-tests hieronder lezen de job uit de database (het worktree-pad ligt dan onder de
+// worktree-root); voor elk ander pad raakt maybeBackupPush de database niet.
+vi.mock('../src/prisma.js', () => ({
+  prisma: { claudeJob: { findUnique: vi.fn() } },
+}))
+
+import { prisma } from '../src/prisma.js'
 import {
   resolveWorktreeHead,
   maybeBackupPush,
@@ -11,6 +19,7 @@ import {
   localTipContainedInRemote,
   remoteTipMergedIntoMain,
 } from '../src/git/branch-safety.js'
+import { GUARDED_JOBS, ORDINARY_JOB } from './helpers/guarded-jobs.js'
 
 const exec = promisify(execFile)
 const git = (cwd: string, ...args: string[]) => exec('git', args, { cwd })
@@ -71,6 +80,52 @@ describe('maybeBackupPush', () => {
       context: 't',
     })
     expect(r).toBe('skipped')
+  })
+})
+
+// Spec §4.5/§5.3: voor een bewaakte job (HARNESS of local_llm) draait de MCP geen git met de worktree als werkmap
+// buiten de claim en het groene pad; de backup-push slaat dan over. De job-id komt uit het pad
+// (<worktree-root>/<job-id>); of de job bewaakt is, beslist de database.
+describe('maybeBackupPush: bewaakte jobs', () => {
+  const originalEnv = process.env.SCRUM4ME_AGENT_WORKTREE_DIR
+
+  beforeEach(() => {
+    // `clone` ligt direct onder `dir`: met dir als worktree-root is `clone` de jobworktree van de job 'clone'.
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = dir
+  })
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env.SCRUM4ME_AGENT_WORKTREE_DIR
+    else process.env.SCRUM4ME_AGENT_WORKTREE_DIR = originalEnv
+    vi.mocked(prisma.claudeJob.findUnique).mockReset()
+  })
+
+  function mockJob(row: { runtime: string; required_capability: string | null }) {
+    vi.mocked(prisma.claudeJob.findUnique).mockImplementation((async (args: { where: { id: string } }) =>
+      args.where.id === 'clone' ? row : null) as never)
+  }
+
+  it.each(GUARDED_JOBS)('slaat een $label over: geen push naar origin', async ({ job }) => {
+    mockJob(job)
+    await git(clone, 'checkout', '-b', 'feat/x')
+    await commit(clone, 'w1.txt')
+
+    const r = await maybeBackupPush({ worktreePath: clone, branchName: 'feat/x', context: 't' })
+
+    expect(r).toBe('skipped')
+    const { stdout } = await exec('git', ['ls-remote', origin, 'refs/heads/feat/x'])
+    expect(stdout.trim()).toBe('')
+  })
+
+  it('controle: dezelfde opzet met een gewone job pusht wél', async () => {
+    mockJob(ORDINARY_JOB)
+    await git(clone, 'checkout', '-b', 'feat/x')
+    await commit(clone, 'w1.txt')
+
+    const r = await maybeBackupPush({ worktreePath: clone, branchName: 'feat/x', context: 't' })
+
+    expect(r).toBe('pushed')
+    const { stdout } = await exec('git', ['ls-remote', origin, 'refs/heads/feat/x'])
+    expect(stdout.trim()).not.toBe('')
   })
 })
 

@@ -87,7 +87,7 @@ describe('getGitDiff', () => {
 
   it('laat de argumenten ongewijzigd wanneer het pad geen jobworktree is (geen DB-lookup)', async () => {
     // Geen SCRUM4ME_AGENT_WORKTREE_DIR-match ⇒ jobIdFromWorktreePath geeft
-    // null, dus isLocalLlmJob wordt nooit aangeroepen.
+    // null, dus isHarnessJob wordt nooit aangeroepen.
     await getGitDiff('/elsewhere/job-3', 'abc..def')
 
     expect(findUnique).not.toHaveBeenCalled()

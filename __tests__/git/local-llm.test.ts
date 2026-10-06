@@ -55,25 +55,37 @@ import { prisma } from '../../src/prisma.js'
 import {
   SAFE_GIT_CONFIG,
   UntrustedWorktreeGitlinkError,
-  isLocalLlmJob,
+  isHarnessJob,
+  isHarnessJobRow,
   jobIdFromWorktreePath,
   isLocalLlmWorktree,
   gitPrefixFor,
 } from '../../src/git/local-llm.js'
 import { createWorktreeForJob, removeWorktreeForJob } from '../../src/git/worktree.js'
 import { maybeBackupPush } from '../../src/git/branch-safety.js'
+import { GUARDED_JOBS, ORDINARY_JOB, type JobRow } from '../helpers/guarded-jobs.js'
 
 const exec = promisify(execFile)
 const git = (cwd: string, ...args: string[]) => exec('git', args, { cwd })
 
 const findUnique = vi.mocked(prisma.claudeJob.findUnique)
 
-function mockCapability(map: Record<string, string | null>) {
+// De DB-rij per job-id; een onbekend id geeft null (zoals Prisma). `status` hoort bij de rij maar telt voor het
+// predicaat niet mee: de worktree van een afgesloten job blijft bewaakt.
+function mockJobs(map: Record<string, JobRow & { status?: string }>) {
   findUnique.mockImplementation((async (args: { where: { id: string } }) => {
     const id = args.where.id
     if (!(id in map)) return null
-    return { required_capability: map[id] }
+    return map[id]
   }) as typeof findUnique)
+}
+
+// De `git worktree remove`-aanroepen sinds de laatste mockClear van de execFile-spy.
+function worktreeRemoveCalls() {
+  return vi.mocked(execFile).mock.calls.filter((call) => {
+    const [file, args] = call as unknown as [string, string[] | undefined]
+    return file === 'git' && Array.isArray(args) && args.includes('remove') && args.includes('worktree')
+  })
 }
 
 beforeEach(() => {
@@ -92,18 +104,49 @@ describe('SAFE_GIT_CONFIG', () => {
   })
 })
 
-describe('isLocalLlmJob', () => {
-  it('true wanneer required_capability = local_llm', async () => {
-    mockCapability({ 'job-1': 'local_llm' })
-    expect(await isLocalLlmJob('job-1')).toBe(true)
+describe('isHarnessJobRow', () => {
+  it.each([
+    { runtime: 'HARNESS', required_capability: null, expected: true },
+    { runtime: 'HARNESS', required_capability: 'local_llm', expected: true },
+    { runtime: 'CLAUDE', required_capability: 'local_llm', expected: true },
+    { runtime: 'CODEX', required_capability: null, expected: false },
+    { runtime: 'CLAUDE', required_capability: null, expected: false },
+    { runtime: 'CLAUDE', required_capability: 'deploy', expected: false },
+  ])('runtime $runtime met capability $required_capability ⇒ $expected', ({ expected, ...row }) => {
+    expect(isHarnessJobRow(row)).toBe(expected)
+  })
+})
+
+describe('isHarnessJob', () => {
+  it('leest runtime én required_capability uit de database (nooit uit de worktree)', async () => {
+    mockJobs({ 'job-1': ORDINARY_JOB })
+    await isHarnessJob('job-1')
+    expect(findUnique).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      select: { runtime: true, required_capability: true },
+    })
+  })
+  it.each(GUARDED_JOBS)('true voor een $label', async ({ job }) => {
+    mockJobs({ 'job-1': job })
+    expect(await isHarnessJob('job-1')).toBe(true)
+  })
+  it('false voor een gewone job', async () => {
+    mockJobs({ 'job-1': ORDINARY_JOB })
+    expect(await isHarnessJob('job-1')).toBe(false)
   })
   it('false voor een andere capability', async () => {
-    mockCapability({ 'job-2': 'deploy' })
-    expect(await isLocalLlmJob('job-2')).toBe(false)
+    mockJobs({ 'job-2': { runtime: 'CLAUDE', required_capability: 'deploy' } })
+    expect(await isHarnessJob('job-2')).toBe(false)
   })
   it('false voor een onbekende job', async () => {
-    mockCapability({})
-    expect(await isLocalLlmJob('nope')).toBe(false)
+    mockJobs({})
+    expect(await isHarnessJob('nope')).toBe(false)
+  })
+  // Spec §5.6: de local_llm-tak blijft permanent. Een afgesloten job laat een worktree achter die bewaakt blijft;
+  // het predicaat kijkt dus niet naar de status.
+  it.each(GUARDED_JOBS)('true voor een afgesloten $label (DONE)', async ({ job }) => {
+    mockJobs({ 'job-1': { ...job, status: 'DONE' } })
+    expect(await isHarnessJob('job-1')).toBe(true)
   })
 })
 
@@ -139,21 +182,24 @@ describe('isLocalLlmWorktree / gitPrefixFor', () => {
     if (originalEnv === undefined) delete process.env.SCRUM4ME_AGENT_WORKTREE_DIR
     else process.env.SCRUM4ME_AGENT_WORKTREE_DIR = originalEnv
   })
-  it('true + SAFE_GIT_CONFIG voor een local_llm-jobworktree', async () => {
-    mockCapability({ 'job-x': 'local_llm' })
+  it.each(GUARDED_JOBS)('true + SAFE_GIT_CONFIG voor de jobworktree van een $label', async ({ job }) => {
+    mockJobs({ 'job-x': job })
     expect(await isLocalLlmWorktree('/tmp/wtroot/job-x')).toBe(true)
     expect(await gitPrefixFor('/tmp/wtroot/job-x')).toEqual([...SAFE_GIT_CONFIG])
     expect(gitlinkMocks.assertTrustedLocalJobWorktree).toHaveBeenCalledWith('job-x', '/tmp/wtroot/job-x')
   })
-  it('gitPrefixFor gooit (en geeft geen prefix) wanneer de gitlink-controle faalt', async () => {
-    mockCapability({ 'job-x': 'local_llm' })
-    gitlinkMocks.assertTrustedLocalJobWorktree.mockRejectedValueOnce(
-      new UntrustedWorktreeGitlinkError('test'),
-    )
-    await expect(gitPrefixFor('/tmp/wtroot/job-x')).rejects.toBeInstanceOf(UntrustedWorktreeGitlinkError)
-  })
+  it.each(GUARDED_JOBS)(
+    'gitPrefixFor gooit (en geeft geen prefix) wanneer de gitlink-controle van een $label faalt',
+    async ({ job }) => {
+      mockJobs({ 'job-x': job })
+      gitlinkMocks.assertTrustedLocalJobWorktree.mockRejectedValueOnce(
+        new UntrustedWorktreeGitlinkError('test'),
+      )
+      await expect(gitPrefixFor('/tmp/wtroot/job-x')).rejects.toBeInstanceOf(UntrustedWorktreeGitlinkError)
+    },
+  )
   it('false + [] voor een niet-lokale jobworktree', async () => {
-    mockCapability({ 'job-y': null })
+    mockJobs({ 'job-y': ORDINARY_JOB })
     expect(await isLocalLlmWorktree('/tmp/wtroot/job-y')).toBe(false)
     expect(await gitPrefixFor('/tmp/wtroot/job-y')).toEqual([])
     expect(gitlinkMocks.assertTrustedLocalJobWorktree).not.toHaveBeenCalled()
@@ -211,7 +257,7 @@ describe('local_llm-worktree: geen git in de worktree op niet-groene paden (mark
     await fs.rm(dir, { recursive: true, force: true })
   })
 
-  it('maybeBackupPush en removeWorktreeForJob raken de omgebogen gitlink nooit aan', async () => {
+  it.each(GUARDED_JOBS)('maybeBackupPush en removeWorktreeForJob raken de omgebogen gitlink van een $label nooit aan', async ({ job }) => {
     const jobId = 'local-job-1'
     const branchName = 'feat/local-job-1'
     const { worktreePath } = await createWorktreeForJob({
@@ -264,7 +310,7 @@ describe('local_llm-worktree: geen git in de worktree op niet-groene paden (mark
     const fsmonitorMarker = path.join(dir, 'marker-fsmonitor')
     const sshMarker = path.join(dir, 'marker-ssh')
 
-    mockCapability({ [jobId]: 'local_llm' })
+    mockJobs({ [jobId]: job })
 
     const pushResult = await maybeBackupPush({ worktreePath, branchName, context: 'test' })
     expect(pushResult).toBe('skipped')
@@ -296,7 +342,7 @@ describe('local_llm-worktree: geen git in de worktree op niet-groene paden (mark
     })
     await commit(worktreePath, 'w1.txt')
 
-    mockCapability({ [jobId]: null })
+    mockJobs({ [jobId]: ORDINARY_JOB })
 
     const pushResult = await maybeBackupPush({ worktreePath, branchName, context: 'test' })
     expect(pushResult).toBe('pushed')
@@ -364,7 +410,7 @@ describe('createWorktreeForJob: bezetter-detectie onder een gesymlinkte worktree
     expect(jobIdFromWorktreePath(literalPath)).toBe('job-abc')
   })
 
-  it('herkent een local_llm-bezetter ook via het gerealpathte git-pad — geen git worktree remove', async () => {
+  it.each(GUARDED_JOBS)('herkent de bezetter van een $label ook via het gerealpathte git-pad — geen git worktree remove', async ({ job }) => {
     const branchName = 'feat/shared-symlink'
     const { worktreePath: occupantPath } = await createWorktreeForJob({
       repoRoot: clone,
@@ -382,7 +428,7 @@ describe('createWorktreeForJob: bezetter-detectie onder een gesymlinkte worktree
     expect(listOut).toContain(path.join(realRoot, 'local-occupant'))
     expect(listOut).not.toContain(path.join(linkRoot, 'local-occupant'))
 
-    mockCapability({ 'local-occupant': 'local_llm' })
+    mockJobs({ 'local-occupant': job })
 
     const execMock = vi.mocked(execFile)
     execMock.mockClear()
@@ -399,14 +445,84 @@ describe('createWorktreeForJob: bezetter-detectie onder een gesymlinkte worktree
       reuseBranch: true,
     })
 
-    const worktreeRemoveCalls = execMock.mock.calls.filter((call) => {
-      const [file, args] = call as unknown as [string, string[] | undefined]
-      return file === 'git' && Array.isArray(args) && args.includes('remove') && args.includes('worktree')
-    })
-    expect(worktreeRemoveCalls).toEqual([])
+    expect(worktreeRemoveCalls()).toEqual([])
 
     // De bezetter-map is weg — via fs.rm, ongeacht welke padvorm.
     await expect(fs.access(occupantPath)).rejects.toThrow()
     await expect(fs.access(path.join(realRoot, 'local-occupant'))).rejects.toThrow()
+  })
+})
+
+// Spec §5.6: de local_llm-tak van het predicaat blijft permanent. Een job die al is afgesloten laat zijn worktree
+// achter, en een volgende job die dezelfde branch hergebruikt, vindt die als bezetter. Die map was container-
+// beschrijfbaar en blijft dus bewaakt: opruimen zonder git, ook als de job DONE is.
+describe('createWorktreeForJob: de bezetter is de worktree van een afgesloten job', () => {
+  let dir: string, origin: string, clone: string, wtRoot: string
+  const originalEnv = process.env.SCRUM4ME_AGENT_WORKTREE_DIR
+
+  async function commit(cwd: string, name: string) {
+    await fs.writeFile(path.join(cwd, name), name)
+    await git(cwd, 'add', '-A')
+    await git(cwd, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', name)
+  }
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'local-llm-closed-occupant-'))
+    origin = path.join(dir, 'origin.git')
+    clone = path.join(dir, 'clone')
+    wtRoot = path.join(dir, 'wt')
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = wtRoot
+
+    await exec('git', ['init', '--bare', '-b', 'main', origin])
+    await exec('git', ['init', '-b', 'main', clone])
+    await git(clone, 'remote', 'add', 'origin', origin)
+    await commit(clone, 'base.txt')
+    await git(clone, 'push', '-u', 'origin', 'main')
+  })
+
+  afterEach(async () => {
+    if (originalEnv === undefined) delete process.env.SCRUM4ME_AGENT_WORKTREE_DIR
+    else process.env.SCRUM4ME_AGENT_WORKTREE_DIR = originalEnv
+    await fs.rm(dir, { recursive: true, force: true })
+  })
+
+  // Maakt de worktree van een job die daarna DONE is en laat een tweede job dezelfde branch hergebruiken.
+  async function reuseBranchOfClosedJob(closedJob: JobRow) {
+    const branchName = 'feat/shared-closed'
+    mockJobs({})
+    const { worktreePath: occupantPath } = await createWorktreeForJob({
+      repoRoot: clone,
+      jobId: 'closed-occupant',
+      branchName,
+      baseRef: 'origin/main',
+    })
+    mockJobs({ 'closed-occupant': { ...closedJob, status: 'DONE' } })
+
+    vi.mocked(execFile).mockClear()
+    await createWorktreeForJob({
+      repoRoot: clone,
+      jobId: 'next-job',
+      branchName,
+      baseRef: 'origin/main',
+      reuseBranch: true,
+    })
+    return occupantPath
+  }
+
+  it.each(GUARDED_JOBS)('ruimt de bezetter van een afgesloten $label op zonder git worktree remove', async ({ job }) => {
+    const occupantPath = await reuseBranchOfClosedJob(job)
+
+    expect(worktreeRemoveCalls()).toEqual([])
+    await expect(fs.access(occupantPath)).rejects.toThrow()
+  })
+
+  it('controle: de bezetter van een afgesloten gewone job gaat wél via git worktree remove --force', async () => {
+    const occupantPath = await reuseBranchOfClosedJob(ORDINARY_JOB)
+
+    expect(worktreeRemoveCalls()).toHaveLength(1)
+    expect(worktreeRemoveCalls()[0][1]).toEqual(
+      expect.arrayContaining(['worktree', 'remove', '--force']),
+    )
+    await expect(fs.access(occupantPath)).rejects.toThrow()
   })
 })

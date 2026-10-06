@@ -5,14 +5,38 @@ import * as os from 'node:os'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
 
-// Deze tests dekken de niet-lokale weg (geen local_llm-job); de findUnique-mock
-// zorgt dat isLocalLlmJob() altijd false teruggeeft zonder een echte DB nodig
-// te hebben. Het local_llm-pad zelf zit in __tests__/git/local-llm.test.ts.
+// Deze tests dekken de niet-lokale weg (geen HARNESS- of local_llm-job); de findUnique-mock
+// zorgt dat isHarnessJob() standaard false teruggeeft zonder een echte DB nodig
+// te hebben. Het bewaakte pad zelf zit in __tests__/git/local-llm.test.ts en in het blok
+// 'bewaakte jobs' onderaan dit bestand, dat de mock per test omzet.
 vi.mock('../../src/prisma.js', () => ({
   prisma: { claudeJob: { findUnique: vi.fn().mockResolvedValue(null) } },
 }))
 
+// Delegerende execFile-spy (zelfde patroon als __tests__/git/local-llm.test.ts): de aanroepen worden vastgelegd
+// en lopen daarna echt, zodat een test kan bewijzen dat de worktree van een bewaakte job nooit via git wordt
+// opgeruimd (het eindresultaat op schijf is voor beide wegen gelijk).
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>()
+  const { promisify: p } = await import('node:util')
+  const originalPromisified = (
+    actual.execFile as unknown as Record<symbol, (...a: unknown[]) => unknown>
+  )[p.custom]
+  const execFileMock = vi.fn((...args: unknown[]) =>
+    (actual.execFile as unknown as (...a: unknown[]) => unknown)(...args),
+  )
+  Object.defineProperty(execFileMock, p.custom, {
+    value: (...args: unknown[]) => {
+      execFileMock.mock.calls.push(args as never)
+      return originalPromisified(...args)
+    },
+  })
+  return { ...actual, execFile: execFileMock }
+})
+
+import { prisma } from '../../src/prisma.js'
 import { createWorktreeForJob, removeWorktreeForJob } from '../../src/git/worktree.js'
+import { GUARDED_JOBS, ORDINARY_JOB, type JobRow } from '../helpers/guarded-jobs.js'
 
 const exec = promisify(execFile)
 
@@ -395,5 +419,173 @@ describe('removeWorktreeForJob', () => {
 
     expect(result.removed).toBe(true)
     await expect(fs.access(leftover)).rejects.toThrow()
+  })
+})
+
+// Spec §5.6: een HARNESS-job (of local_llm-job) krijgt dezelfde bewaking: de worktree kan door een container zijn
+// omgebogen, dus draait de MCP nooit git met dat pad als werkmap of als `worktree remove`-doel. Beide soorten staan
+// per test in GUARDED_JOBS; de gewone job is steeds de controle dat de spy de aanroep wél ziet.
+describe('bewaakte jobs: oude worktrees opruimen zonder git', () => {
+  const tmpDirs: string[] = []
+  const originalWorktreeDir = process.env.SCRUM4ME_AGENT_WORKTREE_DIR
+  const findUnique = vi.mocked(prisma.claudeJob.findUnique)
+  const execMock = vi.mocked(execFile)
+
+  afterEach(async () => {
+    findUnique.mockReset()
+    findUnique.mockResolvedValue(null)
+    if (originalWorktreeDir === undefined) {
+      delete process.env.SCRUM4ME_AGENT_WORKTREE_DIR
+    } else {
+      process.env.SCRUM4ME_AGENT_WORKTREE_DIR = originalWorktreeDir
+    }
+    for (const dir of tmpDirs.splice(0)) {
+      await fs.rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  async function makeWorktreeParent(): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'scrum4me-worktrees-'))
+    tmpDirs.push(dir)
+    process.env.SCRUM4ME_AGENT_WORKTREE_DIR = dir
+    return dir
+  }
+
+  // De DB-rij per job-id; een onbekend id geeft null (zoals Prisma).
+  function mockJobs(map: Record<string, JobRow>) {
+    findUnique.mockImplementation((async (args: { where: { id: string } }) =>
+      map[args.where.id] ?? null) as typeof findUnique)
+  }
+
+  function worktreeRemoveCalls() {
+    return execMock.mock.calls.filter((call) => {
+      const [file, args] = call as unknown as [string, string[] | undefined]
+      return file === 'git' && Array.isArray(args) && args.includes('worktree') && args.includes('remove')
+    })
+  }
+
+  function callsWithCwdIn(dir: string) {
+    return execMock.mock.calls.filter((call) => {
+      const cwd = (call as unknown as [string, string[], { cwd?: string } | undefined])[2]?.cwd
+      return typeof cwd === 'string' && path.resolve(cwd) === path.resolve(dir)
+    })
+  }
+
+  // Een oude job laat zijn worktree op `branchName` achter; daarna vraagt een nieuwe job dezelfde branch.
+  async function createStaleOccupant(job: JobRow) {
+    const { repoDir, originDir } = await setupRepo()
+    tmpDirs.push(repoDir, originDir)
+    await makeWorktreeParent()
+    mockJobs({})
+    const occupant = await createWorktreeForJob({
+      repoRoot: repoDir,
+      jobId: 'job-occupant',
+      branchName: 'feat/shared',
+      baseRef: 'origin/main',
+    })
+    // Pushen, zodat de orphan-branch later op de verse-branchroute weer onder dezelfde naam kan terugkomen.
+    await git(['push', 'origin', 'feat/shared'], occupant.worktreePath)
+    mockJobs({ 'job-occupant': job })
+    execMock.mockClear()
+    return { repoDir, occupantPath: occupant.worktreePath }
+  }
+
+  it.each(GUARDED_JOBS)('reuseBranch: ruimt de bezetter van een $label op zonder git worktree remove', async ({ job }) => {
+    const { repoDir, occupantPath } = await createStaleOccupant(job)
+
+    const next = await createWorktreeForJob({
+      repoRoot: repoDir,
+      jobId: 'job-next',
+      branchName: 'feat/shared',
+      baseRef: 'origin/main',
+      reuseBranch: true,
+    })
+
+    expect(worktreeRemoveCalls()).toEqual([])
+    await expect(fs.access(occupantPath)).rejects.toThrow()
+    const { stdout } = await git(['rev-parse', '--abbrev-ref', 'HEAD'], next.worktreePath)
+    expect(stdout.trim()).toBe('feat/shared')
+  })
+
+  it.each(GUARDED_JOBS)('verse branch: ruimt de bezetter van een $label op zonder git worktree remove', async ({ job }) => {
+    const { repoDir, occupantPath } = await createStaleOccupant(job)
+
+    const next = await createWorktreeForJob({
+      repoRoot: repoDir,
+      jobId: 'job-next',
+      branchName: 'feat/shared',
+      baseRef: 'origin/main',
+    })
+
+    expect(worktreeRemoveCalls()).toEqual([])
+    await expect(fs.access(occupantPath)).rejects.toThrow()
+    // De bezetter is echt weg: anders kon de orphan-branch niet verwijderd worden en kreeg de nieuwe een suffix.
+    expect(next.branchName).toBe('feat/shared')
+  })
+
+  it.each([
+    { label: 'reuseBranch', reuseBranch: true },
+    { label: 'verse branch', reuseBranch: false },
+  ])('controle ($label): de bezetter van een gewone job gaat wél via git worktree remove --force', async ({ reuseBranch }) => {
+    const { repoDir, occupantPath } = await createStaleOccupant(ORDINARY_JOB)
+
+    await createWorktreeForJob({
+      repoRoot: repoDir,
+      jobId: 'job-next',
+      branchName: 'feat/shared',
+      baseRef: 'origin/main',
+      reuseBranch,
+    })
+
+    expect(worktreeRemoveCalls()).toHaveLength(1)
+    expect((worktreeRemoveCalls()[0] as unknown as [string, string[]])[1]).toContain('--force')
+    await expect(fs.access(occupantPath)).rejects.toThrow()
+  })
+
+  async function createJobWorktree(jobId: string) {
+    const { repoDir, originDir } = await setupRepo()
+    tmpDirs.push(repoDir, originDir)
+    await makeWorktreeParent()
+    mockJobs({})
+    const created = await createWorktreeForJob({
+      repoRoot: repoDir,
+      jobId,
+      branchName: `feat/${jobId}`,
+      baseRef: 'origin/main',
+    })
+    // Origin heeft de tip: een gewone job zou zijn branch hierna verwijderen.
+    await git(['push', 'origin', created.branchName], created.worktreePath)
+    return { repoDir, ...created }
+  }
+
+  it.each(GUARDED_JOBS)('removeWorktreeForJob: ruimt de worktree van een $label op zonder git in de worktree', async ({ job }) => {
+    const { repoDir, worktreePath, branchName } = await createJobWorktree('job-guarded-rm')
+    mockJobs({ 'job-guarded-rm': job })
+    execMock.mockClear()
+
+    const result = await removeWorktreeForJob({ repoRoot: repoDir, jobId: 'job-guarded-rm' })
+
+    expect(result.removed).toBe(true)
+    expect(callsWithCwdIn(worktreePath)).toEqual([])
+    expect(worktreeRemoveCalls()).toEqual([])
+    await expect(fs.access(worktreePath)).rejects.toThrow()
+    // De branch-ref blijft in de clone staan, ook al heeft origin de tip.
+    const { stdout } = await exec('git', ['show-ref', '--verify', `refs/heads/${branchName}`], { cwd: repoDir })
+    expect(stdout).toContain(branchName)
+  })
+
+  it('controle: removeWorktreeForJob van een gewone job draait wél git in de worktree en verwijdert de branch', async () => {
+    const { repoDir, worktreePath, branchName } = await createJobWorktree('job-ordinary-rm')
+    mockJobs({ 'job-ordinary-rm': ORDINARY_JOB })
+    execMock.mockClear()
+
+    const result = await removeWorktreeForJob({ repoRoot: repoDir, jobId: 'job-ordinary-rm' })
+
+    expect(result.removed).toBe(true)
+    expect(callsWithCwdIn(worktreePath).length).toBeGreaterThan(0)
+    expect(worktreeRemoveCalls()).toHaveLength(1)
+    await expect(
+      exec('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branchName}`], { cwd: repoDir }),
+    ).rejects.toThrow()
   })
 })

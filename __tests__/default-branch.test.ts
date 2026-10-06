@@ -9,8 +9,8 @@ import * as fs from 'node:fs/promises'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-// Deze tests dekken de niet-lokale weg (geen local_llm-job): de findUnique-mock
-// zorgt dat isLocalLlmJob() altijd false teruggeeft zonder een echte DB nodig
+// Deze tests dekken de niet-lokale weg (geen HARNESS- of local_llm-job): de findUnique-mock
+// zorgt dat isHarnessJob() altijd false teruggeeft zonder een echte DB nodig
 // te hebben, zodat resolveOriginDefaultRef/createWorktreeForJob/pushBranchForJob
 // hun argumenten ongewijzigd laten (Taak 4). Het local_llm-pad zelf zit in
 // __tests__/git/default-branch-local-llm.test.ts en __tests__/git/worktree-local-llm.test.ts.

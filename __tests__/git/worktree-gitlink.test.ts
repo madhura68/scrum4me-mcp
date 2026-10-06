@@ -56,6 +56,7 @@ import {
   UntrustedWorktreeGitlinkError,
 } from '../../src/git/local-llm.js'
 import { registerVerifyTaskAgainstPlanTool } from '../../src/tools/verify-task-against-plan.js'
+import { GUARDED_JOBS, ORDINARY_JOB } from '../helpers/guarded-jobs.js'
 
 const exec = promisify(execFile)
 const git = (cwd: string, ...args: string[]) => exec('git', args, { cwd })
@@ -239,28 +240,39 @@ describe('assertTrustedLocalJobWorktree: clone via expliciete roots (zoals de cl
   })
 })
 
-describe('gitPrefixFor: controle alleen voor local_llm', () => {
+describe('gitPrefixFor: controle alleen voor een HARNESS- of local_llm-job', () => {
   it('niet-lokale job: prefix [] en de controle wordt niet aangeroepen (ook niet bij een .git-map)', async () => {
     await fs.rm(path.join(worktreePath, '.git'))
     await fs.mkdir(path.join(worktreePath, '.git')) // zou de controle laten falen
-    mockPrisma.claudeJob.findUnique.mockResolvedValue({ required_capability: null })
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({ ...ORDINARY_JOB })
 
     await expect(gitPrefixFor(worktreePath)).resolves.toEqual([])
-    // Alleen de bestaande required_capability-lookup — geen job/repo-lookup
+    // Alleen de bestaande predicaat-lookup (runtime + required_capability) — geen job/repo-lookup
     // voor de repo-root-resolutie van de controle.
     expect(mockPrisma.claudeJob.findUnique).toHaveBeenCalledTimes(1)
     expect(mockPrisma.claudeJob.findUnique).toHaveBeenCalledWith({
       where: { id: jobId },
-      select: { required_capability: true },
+      select: { runtime: true, required_capability: true },
     })
   })
 
-  it('local_llm-job met onaangetaste worktree: SAFE_GIT_CONFIG', async () => {
+  it.each(GUARDED_JOBS)('$label met onaangetaste worktree: SAFE_GIT_CONFIG', async ({ job }) => {
     process.env['SCRUM4ME_REPO_ROOT_prod-1'] = clone
     mockPrisma.claudeJob.findUnique.mockResolvedValue({
-      required_capability: 'local_llm', product_id: 'prod-1', task: { repo_url: null },
+      ...job, product_id: 'prod-1', task: { repo_url: null },
     })
     await expect(gitPrefixFor(worktreePath)).resolves.toEqual([...SAFE_GIT_CONFIG])
+  })
+
+  it.each(GUARDED_JOBS)('$label met een omgebogen gitlink: gitPrefixFor gooit, dus er draait geen git', async ({ job }) => {
+    process.env['SCRUM4ME_REPO_ROOT_prod-1'] = clone
+    mockPrisma.claudeJob.findUnique.mockResolvedValue({
+      ...job, product_id: 'prod-1', task: { repo_url: null },
+    })
+    await fs.rm(path.join(worktreePath, '.git'))
+    await fs.mkdir(path.join(worktreePath, '.git')) // een map i.p.v. een gitlink naar de clone
+
+    await expect(gitPrefixFor(worktreePath)).rejects.toBeInstanceOf(UntrustedWorktreeGitlinkError)
   })
 })
 
@@ -275,7 +287,7 @@ describe('verify_task_against_plan: afgekeurde gitlink ⇒ fout, geen git in de 
     return handler!
   }
 
-  it('geeft een toolfout met de gitlink-melding en slaat geen verify_result op', async () => {
+  it.each(GUARDED_JOBS)('$label: geeft een toolfout met de gitlink-melding en slaat geen verify_result op', async ({ job }) => {
     process.env['SCRUM4ME_REPO_ROOT_prod-1'] = clone
     authMocks.getAuth.mockResolvedValue({ userId: 'user-1', tokenId: 'token-1' })
     resolveMocks.resolveTaskRef.mockResolvedValue({ id: 'task-1' })
@@ -285,7 +297,7 @@ describe('verify_task_against_plan: afgekeurde gitlink ⇒ fout, geen git in de 
       claude_jobs: [{ id: jobId, plan_snapshot: 'plan', base_sha: 'abc123' }],
     })
     mockPrisma.claudeJob.findUnique.mockResolvedValue({
-      required_capability: 'local_llm', product_id: 'prod-1', task: { repo_url: null },
+      ...job, product_id: 'prod-1', task: { repo_url: null },
     })
     const evil = path.join(worktreePath, '.evil')
     await exec('git', ['init', '-q', '--bare', evil])

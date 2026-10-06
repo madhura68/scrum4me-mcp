@@ -7,6 +7,8 @@
 // never runs on the host for a local_llm job (spec §4.5/§5/§6). These tests
 // pin the fix: a local_llm job resolves ONLY from an explicitly configured
 // root, and never touches cloneRepoOnDemand or rollbackClaim when none exists.
+// M45-2b (Taak 3, spec §5.6): the same rule holds for a HARNESS job (isHarnessJob),
+// so every local_llm test below runs for both kinds of job.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { execFile } from 'node:child_process'
 import * as os from 'node:os'
@@ -48,6 +50,7 @@ vi.mock('node:child_process', () => ({ execFile: vi.fn() }))
 import { prisma } from '../src/prisma.js'
 import { createWorktreeForJob } from '../src/git/worktree.js'
 import { attachWorktreeToJob } from '../src/tools/wait-for-job.js'
+import { GUARDED_JOBS, ORDINARY_JOB } from './helpers/guarded-jobs.js'
 
 const mockPrisma = prisma as unknown as {
   $executeRaw: ReturnType<typeof vi.fn>
@@ -81,12 +84,12 @@ describe('attachWorktreeToJob: local_llm-job zonder repo-root (P13)', () => {
     Object.assign(process.env, originalEnv)
   })
 
-  it('markeert de job FAILED i.p.v. on-demand clone op de host wanneer geen root geconfigureerd is', async () => {
+  it.each(GUARDED_JOBS)('markeert een $label FAILED i.p.v. on-demand clone op de host wanneer geen root geconfigureerd is', async ({ job }) => {
     delete process.env[`SCRUM4ME_REPO_ROOT_${LOCAL_PRODUCT_ID}`]
     mockPrisma.claudeJob.findUnique.mockResolvedValue({
       sprint_run_id: null,
       sprint_run: null,
-      required_capability: 'local_llm',
+      ...job,
     })
 
     const result = await attachWorktreeToJob(LOCAL_PRODUCT_ID, 'job-local-no-root', 'story-x')
@@ -108,12 +111,12 @@ describe('attachWorktreeToJob: local_llm-job zonder repo-root (P13)', () => {
     expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
   })
 
-  it('local_llm-job MET een expliciet geconfigureerde root claimt gewoon (geen clone nodig)', async () => {
+  it.each(GUARDED_JOBS)('$label MET een expliciet geconfigureerde root claimt gewoon (geen clone nodig)', async ({ job }) => {
     process.env[`SCRUM4ME_REPO_ROOT_${LOCAL_PRODUCT_ID}`] = '/repos/my-local-project'
     mockPrisma.claudeJob.findUnique.mockResolvedValue({
       sprint_run_id: null,
       sprint_run: null,
-      required_capability: 'local_llm',
+      ...job,
     })
     mockCreateWorktree.mockResolvedValue({
       worktreePath: '/wt-root/job-local-with-root',
@@ -135,7 +138,7 @@ describe('attachWorktreeToJob: local_llm-job zonder repo-root (P13)', () => {
     mockPrisma.claudeJob.findUnique.mockResolvedValue({
       sprint_run_id: null,
       sprint_run: null,
-      required_capability: null,
+      ...ORDINARY_JOB,
     })
     cloneMock.mockResolvedValue('/cloned/repo-root-zzz-nonexistent')
     mockCreateWorktree.mockResolvedValue({
@@ -183,7 +186,7 @@ describe('attachWorktreeToJob: task-route explicitRootsOnly regression (P13 foll
     Object.assign(process.env, originalEnv)
   })
 
-  it('local_llm-job met task.repo_url, geen REPO_-root, WEL een product-root → FAILED (niet de product-repo)', async () => {
+  it.each(GUARDED_JOBS)('$label met task.repo_url, geen REPO_-root, WEL een product-root → FAILED (niet de product-repo)', async ({ job }) => {
     delete process.env[TASK_REPO_ENV_KEY]
     // The product DOES have an explicitly configured root — the bug was
     // falling through to exactly this, landing the worktree in the wrong repo.
@@ -191,7 +194,7 @@ describe('attachWorktreeToJob: task-route explicitRootsOnly regression (P13 foll
     mockPrisma.claudeJob.findUnique.mockResolvedValue({
       sprint_run_id: null,
       sprint_run: null,
-      required_capability: 'local_llm',
+      ...job,
     })
 
     const result = await attachWorktreeToJob(
@@ -215,14 +218,14 @@ describe('attachWorktreeToJob: task-route explicitRootsOnly regression (P13 foll
     expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
   })
 
-  it('local_llm-job met task.repo_url EN een REPO_-root claimt met die task-root', async () => {
+  it.each(GUARDED_JOBS)('$label met task.repo_url EN een REPO_-root claimt met die task-root', async ({ job }) => {
     process.env[TASK_REPO_ENV_KEY] = '/repos/task-specific-repo'
     // Product-level root present too — must NOT win; the task-level root does.
     process.env[`SCRUM4ME_REPO_ROOT_${TASK_PRODUCT_ID}`] = '/repos/PRODUCT-should-never-be-used'
     mockPrisma.claudeJob.findUnique.mockResolvedValue({
       sprint_run_id: null,
       sprint_run: null,
-      required_capability: 'local_llm',
+      ...job,
     })
     mockCreateWorktree.mockResolvedValue({
       worktreePath: '/wt-root/job-task-route-with-repo-root',
@@ -268,11 +271,11 @@ describe('attachWorktreeToJob: ~/Projects convention skipped for local_llm task 
     await fs.rm(tmpHome, { recursive: true, force: true }).catch(() => {})
   })
 
-  it('local_llm-job resolvet NIET naar de ~/Projects-conventie voor de task-repo', async () => {
+  it.each(GUARDED_JOBS)('$label resolvet NIET naar de ~/Projects-conventie voor de task-repo', async ({ job }) => {
     mockPrisma.claudeJob.findUnique.mockResolvedValue({
       sprint_run_id: null,
       sprint_run: null,
-      required_capability: 'local_llm',
+      ...job,
     })
 
     const result = await attachWorktreeToJob(
@@ -291,7 +294,7 @@ describe('attachWorktreeToJob: ~/Projects convention skipped for local_llm task 
     mockPrisma.claudeJob.findUnique.mockResolvedValue({
       sprint_run_id: null,
       sprint_run: null,
-      required_capability: null,
+      ...ORDINARY_JOB,
     })
     mockCreateWorktree.mockResolvedValue({
       worktreePath: '/wt-root/job-task-conv-normal',
