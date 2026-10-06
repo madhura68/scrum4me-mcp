@@ -13,8 +13,10 @@ const inputSchema = z.object({
   task_id: z.string().min(1),
   status: z.enum(TASK_STATUS_API_VALUES as [string, ...string[]]),
   sprint_run_id: z.string().min(1).optional(),
-  expected_status: z.enum(TASK_STATUS_API_VALUES as [string, ...string[]]).optional(),
-  ppe: ppeInputSchema.optional(),
+  expected_status: z.enum(TASK_STATUS_API_VALUES as [string, ...string[]]).optional()
+    .describe('Expected current task status for PPE compare-and-swap only. Required together with ppe; omit both for ordinary updates.'),
+  ppe: ppeInputSchema.optional()
+    .describe('Optional context for genuine PPE execution only. Requires expected_status and valid run, payload hash and authority values; omit both ppe and expected_status for ordinary updates.'),
 })
 
 const PPE_STATUS_TRANSITIONS: Record<string, readonly string[]> = {
@@ -33,7 +35,12 @@ export async function handleUpdateTaskStatus({
     const auth = await requireWriteAccess()
     const dbStatus = taskStatusFromApi(status)
     if (!dbStatus) return toolError(`Unknown status: ${status}`)
-    if ((ppe === undefined) !== (expected_status === undefined)) throw new Error('PPE_INPUT_INCOMPLETE')
+    if (ppe === undefined && expected_status !== undefined) {
+      throw new Error('PPE_INPUT_INCOMPLETE: expected_status requires ppe for PPE execution. For an ordinary update, omit both expected_status and ppe. For a PPE update, provide genuine PPE context; do not invent run or authority values.')
+    }
+    if (ppe !== undefined && expected_status === undefined) {
+      throw new Error('PPE_INPUT_INCOMPLETE: ppe requires expected_status. Provide the expected task status together with the genuine PPE context.')
+    }
     if (ppe && !PPE_STATUS_TRANSITIONS[expected_status!]?.includes(status)) {
       throw new Error('PPE_STATUS_REGRESSION')
     }
@@ -138,6 +145,8 @@ export function registerUpdateTaskStatusTool(server: McpServer) {
       title: 'Update task status',
       description:
         'Set the status of a task. Allowed values: todo, in_progress, review, done, failed. ' +
+        'For ordinary updates, omit both expected_status and ppe. ' +
+        'PPE updates require both expected_status and genuine ppe context; do not invent run or authority values. ' +
         'Optional sprint_run_id binds the update to a SPRINT_IMPLEMENTATION run for ' +
         'cascade-propagation; the server validates that the task belongs to the sprint ' +
         'and that the calling token has claimed a job in that run. ' +
