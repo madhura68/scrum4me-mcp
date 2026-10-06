@@ -30,8 +30,22 @@ vi.mock('../src/lib/dispatch/docs-audit-dispatch.js', () => ({
 
 import { requireWriteAccess } from '../src/auth.js'
 import { userCanAccessProduct } from '../src/access.js'
-import { handleDispatchJob } from '../src/tools/dispatch-job.js'
+import { handleDispatchJob, KIND_VALUES, registerDispatchJobTool } from '../src/tools/dispatch-job.js'
+import { dispatchIdeaJob } from '../src/lib/dispatch/idea-jobs.js'
+import { dispatchSprintRun } from '../src/lib/dispatch/sprint-run.js'
+import { dispatchPrReview, dispatchSpecReview, dispatchTaskReview } from '../src/lib/dispatch/review-jobs.js'
+import { dispatchTaskImplementation } from '../src/lib/dispatch/task-implementation.js'
+import { dispatchDeploy } from '../src/lib/dispatch/deploy-dispatch.js'
+import { dispatchDocsAudit } from '../src/lib/dispatch/docs-audit-dispatch.js'
 import { toolText } from './helpers/tool-result.js'
+
+const REFUSAL =
+  'VALIDATION_ERROR: required_capability local_llm wordt niet meer aangenomen; kies per product een HARNESS-configuratie.'
+
+const ALL_DISPATCHERS = [
+  dispatchIdeaJob, dispatchSprintRun, dispatchPrReview, dispatchSpecReview, dispatchTaskReview,
+  dispatchTaskImplementation, dispatchDeploy, dispatchDocsAudit,
+]
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -158,8 +172,60 @@ it('required_capability bij een andere kind dan TASK_IMPLEMENTATION → validati
     kind: 'PR_REVIEW', product_id: 'p1', pr_url: 'https://x/y/pulls/1', required_capability: 'local_llm',
   } as never)
   expect(res.isError).toBe(true)
-  expect(toolText(res)).toMatch(/required_capability is alleen toegestaan bij TASK_IMPLEMENTATION\./)
+  expect(toolText(res)).toBe(REFUSAL)
   expect(dispatchPrReview).not.toHaveBeenCalled()
+})
+
+// M45-2b: één weigering voor elke soort. Een aanroeper krijgt dus nooit te horen dat het "alleen bij TASK_IMPLEMENTATION"
+// mag (dat suggereert dat de route daar nog bestaat): de route bestaat niet meer, per product kies je een HARNESS-
+// configuratie. De weigering komt vóór authenticatie en database, ook voor soorten die de sleutel nooit gebruikten.
+const REFS_PER_KIND: Record<(typeof KIND_VALUES)[number], Record<string, string>> = {
+  IDEA_GRILL: { idea_id: 'i1' },
+  IDEA_MAKE_PLAN: { idea_id: 'i1' },
+  IDEA_REVIEW_PLAN: { idea_id: 'i1' },
+  IDEA_MAKE_SPEC: { idea_id: 'i1' },
+  TASK_IMPLEMENTATION: { task_id: 't1' },
+  SPRINT_IMPLEMENTATION: { sprint_id: 's1' },
+  PR_REVIEW: { pr_url: 'https://x/y/pulls/1' },
+  SPEC_REVIEW: { doc_slug: 's' },
+  TASK_REVIEW: { task_id: 't1' },
+  DEPLOY: {},
+  DOCS_AUDIT: {},
+}
+
+it.each(KIND_VALUES)('required_capability bij %s geeft dezelfde weigering, vóór authenticatie en database, en dispatcht niets', async (kind) => {
+  const res = await handleDispatchJob({
+    kind, product_id: 'p1', ...REFS_PER_KIND[kind], required_capability: 'local_llm',
+  } as never)
+
+  expect(res.isError).toBe(true)
+  expect(toolText(res)).toBe(REFUSAL)
+  for (const dispatcher of ALL_DISPATCHERS) expect(dispatcher).not.toHaveBeenCalled()
+  expect(requireWriteAccess).not.toHaveBeenCalled()
+  expect(userCanAccessProduct).not.toHaveBeenCalled()
+})
+
+// De MCP-client ziet alleen het schema en de tooltekst: beide zeggen dat de sleutel niet meer wordt aangenomen en dat
+// de keuze per product ligt, en de tooltekst noemt de HARNESS-routering van een losse TASK_IMPLEMENTATION en de bron.
+it('het schema en de tooltekst leggen de weigering, de HARNESS-routering en de bron uit', () => {
+  let registered: { description: string; inputSchema: { shape: { required_capability: { description?: string } } } } | null = null
+  registerDispatchJobTool({
+    registerTool: (_name: string, config: NonNullable<typeof registered>) => {
+      registered = config
+    },
+  } as never)
+
+  const keyDescription = registered!.inputSchema.shape.required_capability.description ?? ''
+  expect(keyDescription).toMatch(/no longer accepted/i)
+  expect(keyDescription).toMatch(/HARNESS configuration/)
+  expect(keyDescription).toMatch(/per product/)
+
+  const { description } = registered!
+  expect(description).toMatch(/required_capability is no longer accepted/)
+  expect(description).toMatch(/refused with a VALIDATION_ERROR/)
+  expect(description).toMatch(/standalone TASK_IMPLEMENTATION/)
+  expect(description).toMatch(/HARNESS configuration/)
+  expect(description).toMatch(/source COPILOT, except DEPLOY and DOCS_AUDIT \(source MANUAL\)/)
 })
 
 it('DispatchError uit een dispatcher wordt een nette toolError', async () => {
