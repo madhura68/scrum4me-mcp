@@ -69,7 +69,8 @@ describe('claim-predicaten: HARNESS-executor', () => {
     expect(evaluateClaimPredicates(harnessTask, harnessExecutor)).toEqual([])
   })
 
-  it.each([[], ['local_llm'], ['deploy'], ['docs_audit'], ['code_edit', 'review']].map((capabilities) => [capabilities]))(
+  // De lege lijst is de test hierboven; hier alleen lijsten met inhoud.
+  it.each([['local_llm'], ['deploy'], ['docs_audit'], ['code_edit', 'review']].map((capabilities) => [capabilities]))(
     'de capabilities %j van de executor tellen niet mee: de runtime wint',
     (capabilities) => {
       expect(evaluateClaimPredicates(harnessChat, { ...harnessExecutor, capabilities })).toEqual([])

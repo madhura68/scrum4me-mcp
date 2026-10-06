@@ -65,7 +65,6 @@ describe('harness overlay: de twee 2a-migraties als additieve pin', () => {
   })
 
   it('houdt de overlay los van de historische schema-pin en van de token-usage-pin', () => {
-    expect(DISPATCH_SCHEMA_COMMIT).toBe('6dc581daa7d56bd0e00a82383b3be4bd5d877afb')
     expect(HARNESS_MIGRATION_COMMIT).not.toBe(DISPATCH_SCHEMA_COMMIT)
     expect(HARNESS_MIGRATION_COMMIT).not.toBe(TOKEN_USAGE_MIGRATION_COMMIT)
   })

@@ -63,6 +63,13 @@ const GENERAL_KIND_FILTER_MARKERS = [
 // Alles wat een capability-tak van een andere worker kan opleveren; de runtime van de HARNESS-worker wint.
 const CAPABILITY_LISTS: string[][] = [[], ['local_llm'], ['deploy'], ['docs_audit'], ['code_edit', 'review']]
 const CAPABILITY_CASES = CAPABILITY_LISTS.map((capabilities) => [capabilities])
+// De standaardcapabilities van een worker: wait_for_job geeft ze mee als SCRUM4ME_WORKER_CAPABILITIES ontbreekt, dus ook
+// een harness-worker draait er normaal mee.
+const DEFAULT_WORKER_CAPABILITIES = ['code_edit', 'planning', 'review']
+// Voor "capabilities veranderen niets" zeggen alleen lijsten met inhoud iets: een lege lijst tegenover "niet opgegeven" is
+// dezelfde waarde, want het filter maakt er vóór de evaluatie beide [] van. Zo'n case kan nooit rood worden.
+const NON_EMPTY_CAPABILITY_CASES = [DEFAULT_WORKER_CAPABILITIES, ...CAPABILITY_LISTS.filter((capabilities) => capabilities.length > 0)]
+  .map((capabilities) => [capabilities])
 
 describe('claimfilter HARNESS: Prisma.Sql-fragment (het live pad)', () => {
   it.each(CAPABILITY_CASES)('binnen de tak: runtime gebonden, required_capability NULL en de twee soort/bron-combinaties (capabilities %j)', (capabilities) => {
@@ -95,7 +102,7 @@ describe('claimfilter HARNESS: Prisma.Sql-fragment (het live pad)', () => {
     for (const marker of GENERAL_KIND_FILTER_MARKERS) expect(text).not.toContain(marker)
   })
 
-  it.each(CAPABILITY_CASES)('de capabilities %j van een harness-worker veranderen niets: dezelfde tekst en dezelfde gebonden waarden', (capabilities) => {
+  it.each(NON_EMPTY_CAPABILITY_CASES)('de capabilities %j van een harness-worker veranderen niets: dezelfde tekst en dezelfde gebonden waarden als zonder capabilities', (capabilities) => {
     const withCapabilities = buildClaimableJobWhereFragment({ userId: 'user-1', runtime: 'HARNESS', hasProductScope: false, capabilities })
     const withoutCapabilities = buildClaimableJobWhereFragment({ userId: 'user-1', runtime: 'HARNESS', hasProductScope: false })
     expect(norm(withCapabilities)).toBe(norm(withoutCapabilities))
