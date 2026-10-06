@@ -7,6 +7,9 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 // de hand. Push bij done, de verify-gate, de jobvelden en de antwoord-JSON
 // blijven ongewijzigd (Taak 3 regelt de backup-push-skip al via
 // maybeBackupPush/branch-safety.ts).
+// M45-2b (Taak 3): dezelfde drie uitzonderingen gelden voor een job met runtime
+// 'HARNESS' (isHarnessJobRow, spec §5.6); de twee tests met uitzondering draaien
+// hieronder voor beide soorten, de twee regressietests voor een gewone job.
 //
 // Dit bestand test de HANDLER-condities met gemockte git (push.js gemockt,
 // branch-safety.js/worktree.js hier niet gebruikt). De keten-proef met échte
@@ -95,6 +98,7 @@ import { registerUpdateJobStatusTool } from '../src/tools/update-job-status.js'
 import { propagateStatusUpwards } from '../src/lib/tasks-status-update.js'
 import { cancelPbiOnFailure } from '../src/cancel/pbi-cascade.js'
 import { createPullRequest } from '../src/git/pr.js'
+import { GUARDED_JOBS } from './helpers/guarded-jobs.js'
 
 const mockPrisma = prisma as unknown as {
   claudeJob: {
@@ -129,7 +133,7 @@ function registerHandler() {
 }
 
 // Superset fixture voor prisma.claudeJob.findUnique: elke aanroep in de
-// keten (initiële job-select, assertUnmanagedJob*, isLocalLlmJob) vraagt om
+// keten (initiële job-select, assertUnmanagedJob*, isHarnessJob) vraagt om
 // hetzelfde job.id met een ander `select` — een mock die op id matcht en
 // altijd de volledige fixture teruggeeft dekt ze allemaal, ongeacht select.
 function installJobFixture(fixture: Record<string, unknown> & { id: string }) {
@@ -226,9 +230,9 @@ afterEach(() => {
   delete process.env.SCRUM4ME_AGENT_WORKTREE_DIR
 })
 
-describe('update_job_status: local_llm TASK_IMPLEMENTATION jobs', () => {
-  it("done + local_llm ⇒ geen maybeCreateAutoPr, geen propagateStatusUpwards; antwoord bevat status:'done' en pushed_at", async () => {
-    installJobFixture(baseFixture())
+describe('update_job_status: TASK_IMPLEMENTATION jobs van een HARNESS- of local_llm-job', () => {
+  it.each(GUARDED_JOBS)("done + $label ⇒ geen maybeCreateAutoPr, geen propagateStatusUpwards; antwoord bevat status:'done' en pushed_at", async ({ job }) => {
+    installJobFixture(baseFixture(job))
     mockPrisma.claudeJob.update.mockResolvedValue({
       id: 'job-local-1',
       status: 'DONE',
@@ -272,8 +276,8 @@ describe('update_job_status: local_llm TASK_IMPLEMENTATION jobs', () => {
     expect(mockPropagate).not.toHaveBeenCalled()
   })
 
-  it('failed + local_llm ⇒ geen propagateStatusUpwards, geen cancelPbiOnFailure; sibling onder dezelfde PBI blijft ongemoeid', async () => {
-    installJobFixture(baseFixture({ status: 'CLAIMED', branch: null }))
+  it.each(GUARDED_JOBS)('failed + $label ⇒ geen propagateStatusUpwards, geen cancelPbiOnFailure; sibling onder dezelfde PBI blijft ongemoeid', async ({ job }) => {
+    installJobFixture(baseFixture({ ...job, status: 'CLAIMED', branch: null }))
     mockPrisma.claudeJob.update.mockResolvedValue({
       id: 'job-local-1',
       status: 'FAILED',
