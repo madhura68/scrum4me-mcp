@@ -16,12 +16,17 @@ vi.mock('../src/prisma.js', () => ({
   },
 }))
 
+vi.mock('../src/lib/resolve-entity.js', () => ({
+  resolveProductRef: vi.fn().mockResolvedValue({ id: 'prod-9' }),
+}))
+
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { prisma } from '../src/prisma.js'
 import { userCanAccessProduct } from '../src/access.js'
+import { resolveProductRef } from '../src/lib/resolve-entity.js'
 import { handleRecordUsageSegment, registerRecordUsageSegmentTool } from '../src/tools/record-usage-segment.js'
 import { toolText } from './helpers/tool-result.js'
 
@@ -46,8 +51,18 @@ const closing = {
   cost_start_usd: 1.25, cost_end_usd: 3.5, lines: [line],
 }
 
+const productHeader = {
+  id: ID, task_id: null, anchor_task_id: null, product_id: 'SCRUM4ME', session_id: 'session-1',
+  started_at: '2026-10-05T10:00:00.000Z', mod_version: '0.3.0',
+}
+const productClosing = {
+  ...productHeader, ended_at: '2026-10-05T10:30:00.000Z', ended_reason: 'session_end' as const, active_ms: 90_000,
+  cost_start_usd: 1, cost_end_usd: 1.5, lines: [line],
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(resolveProductRef).mockResolvedValue({ id: 'prod-9' })
   vi.mocked(userCanAccessProduct).mockResolvedValue(true)
   mockPrisma.$transaction.mockImplementation(async (run: (tx: typeof prisma) => Promise<unknown>) => run(prisma))
   mockPrisma.usageSegment.findUnique.mockResolvedValue(null)
@@ -62,6 +77,8 @@ describe('record_usage_segment validation', () => {
     ['ended_reason without ended_at', { ...header, ended_reason: 'done' as const }],
     ['ended_at before started_at', { ...closing, ended_at: '2026-10-05T09:00:00.000Z' }],
     ['two lines for one agent and model', { ...closing, lines: [line, line] }],
+    ['a product segment that carries a task', { ...productHeader, task_id: 'task-1' }],
+    ['a segment without anchor and without product_id', { ...productHeader, product_id: undefined }],
   ])('rejects %s permanently', async (_name, input) => {
     const result = await handleRecordUsageSegment(input)
     expect(toolText(result)).toMatch(/^USAGE_SEGMENT_REJECTED: /)
@@ -96,6 +113,20 @@ describe('record_usage_segment over MCP tools/call', () => {
     expect(result.isError).toBe(true)
     expect(toolText(result)).toMatch(/^USAGE_SEGMENT_REJECTED: /)
     expect(mockPrisma.usageSegment.create).not.toHaveBeenCalled()
+  })
+
+  it('rejects a segment without anchor and without product_id as REJECTED text, not an SDK error', async () => {
+    const result = await call({ ...productHeader, product_id: undefined })
+    expect(result.isError).toBe(true)
+    expect(toolText(result)).toMatch(/^USAGE_SEGMENT_REJECTED: /)
+    expect(mockPrisma.usageSegment.create).not.toHaveBeenCalled()
+  })
+
+  it('stores a closed product segment through the registered schema', async () => {
+    const result = await call(productClosing)
+    expect(result.isError).not.toBe(true)
+    expect(JSON.parse(toolText(result))).toEqual({ id: ID, state: 'closed', effect: 'created' })
+    expect(mockPrisma.usageSegment.create.mock.calls[0][0].data.product_id).toBe('prod-9')
   })
 
   it('stores a valid header', async () => {
@@ -200,5 +231,37 @@ describe('record_usage_segment existing segment', () => {
     expect(JSON.parse(toolText(await handleRecordUsageSegment(closing)))).toEqual({ id: ID, state: 'closed', effect: 'none' })
     expect(mockPrisma.usageLine.deleteMany).not.toHaveBeenCalled()
     expect(mockPrisma.usageLine.createMany).not.toHaveBeenCalled()
+  })
+})
+
+describe('record_usage_segment product segments', () => {
+  it('creates a closed product segment with sprint and anchor null and the resolved product', async () => {
+    const result = await handleRecordUsageSegment(productClosing)
+    expect(JSON.parse(toolText(result))).toEqual({ id: ID, state: 'closed', effect: 'created' })
+    expect(mockPrisma.usageSegment.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ sprint_id: null, anchor_task_id: null, task_id: null, product_id: 'prod-9', lines: { create: [line] } }),
+    })
+    expect(resolveProductRef).toHaveBeenCalledWith('SCRUM4ME', 'user-1')
+    expect(mockPrisma.task.findUnique).not.toHaveBeenCalled()
+  })
+
+  it('rejects an unknown or inaccessible product', async () => {
+    vi.mocked(resolveProductRef).mockResolvedValueOnce({ error: 'not found' } as never)
+    expect(toolText(await handleRecordUsageSegment(productClosing))).toMatch(/^USAGE_SEGMENT_REJECTED: /)
+    vi.mocked(userCanAccessProduct).mockResolvedValueOnce(false)
+    expect(toolText(await handleRecordUsageSegment(productClosing))).toMatch(/^USAGE_SEGMENT_REJECTED: /)
+    expect(mockPrisma.usageSegment.create).not.toHaveBeenCalled()
+  })
+
+  it('ignores product_id when an anchor is given', async () => {
+    await handleRecordUsageSegment({ ...header, product_id: 'ANDER' })
+    expect(mockPrisma.usageSegment.create.mock.calls[0][0].data.product_id).toBe('prod-1')
+    expect(resolveProductRef).not.toHaveBeenCalled()
+  })
+
+  it('a repeated closing on an existing closed segment has no effect, also without anchor', async () => {
+    mockPrisma.usageSegment.findUnique.mockResolvedValue({ user_id: 'user-1', product_id: 'prod-9', started_at: new Date(productHeader.started_at), ended_at: new Date() })
+    expect(JSON.parse(toolText(await handleRecordUsageSegment(productClosing)))).toEqual({ id: ID, state: 'closed', effect: 'none' })
+    expect(mockPrisma.usageSegment.create).not.toHaveBeenCalled()
   })
 })

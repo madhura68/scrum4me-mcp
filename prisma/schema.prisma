@@ -1212,6 +1212,7 @@ model LoginPairing {
   desktop_ip         String?   @db.VarChar(45)
   created_at         DateTime  @default(now())
   expires_at         DateTime
+  session_duration_seconds Int @default(28800)
   approved_at        DateTime?
   consumed_at        DateTime?
 
@@ -2333,21 +2334,23 @@ enum UsageEndedReason {
   UNTRACKED
 }
 
-/// Eén aaneengesloten stuk sessietijd, toegerekend aan een taak of (task_id null) aan
-/// sprint-overhead. Het id komt van de mod en is de idempotentiesleutel; user, product
-/// en sprint worden bij openen vastgelegd en veranderen daarna niet.
+/// Eén aaneengesloten stuk sessietijd, toegerekend aan een taak, aan sprint-overhead (task_id null)
+/// of aan een product zonder sprint (sprint_id en anchor_task_id null; M47). Het id komt van de mod
+/// en is de idempotentiesleutel; user, product en sprint worden bij openen vastgelegd en veranderen daarna niet.
 model UsageSegment {
+  // SQL: CONSTRAINT usage_segments_scope_check CHECK ((task_id IS NULL OR sprint_id IS NOT NULL) AND ((sprint_id IS NULL) = (anchor_task_id IS NULL)))
   id                String            @id
   user              User              @relation(fields: [user_id], references: [id], onDelete: Cascade)
   user_id           String
   product           Product           @relation(fields: [product_id], references: [id], onDelete: Cascade)
   product_id        String
-  sprint            Sprint            @relation(fields: [sprint_id], references: [id], onDelete: Cascade)
-  sprint_id         String
+  sprint            Sprint?           @relation(fields: [sprint_id], references: [id], onDelete: Cascade)
+  sprint_id         String?
   task              Task?             @relation(fields: [task_id], references: [id], onDelete: Cascade)
   task_id           String?
   // De taak waarmee sprint en toegang bepaald zijn; geen FK, het segment overleeft haar.
-  anchor_task_id    String
+  // Bij een productsegment zijn sprint en anker beide null (M47).
+  anchor_task_id    String?
   session_id        String
   started_at        DateTime
   ended_at          DateTime?
@@ -2359,6 +2362,7 @@ model UsageSegment {
   lines             UsageLine[]
 
   @@index([sprint_id, started_at])
+  @@index([product_id, started_at])
   @@index([task_id])
   @@index([session_id])
   @@map("usage_segments")

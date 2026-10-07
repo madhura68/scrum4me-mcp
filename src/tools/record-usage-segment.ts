@@ -13,10 +13,12 @@
 
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import type { Prisma, UsageEndedReason } from '@prisma/client'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
+import { resolveProductRef } from '../lib/resolve-entity.js'
 import { formatZodError, toolError, toolJson, withToolErrors } from '../errors.js'
 import { UNIQUE_VIOLATION, driverAdapterCause } from '../lib/prisma-driver-error.js'
 import { taskStatusFromApi } from '../status.js'
@@ -46,7 +48,8 @@ const lineSchema = z.object({
 const inputSchema = z.object({
   id: z.string().uuid(),
   task_id: z.string().min(1).nullable(),
-  anchor_task_id: z.string().min(1),
+  anchor_task_id: z.string().min(1).nullable(),
+  product_id: z.string().min(1).optional(),
   session_id: z.string().min(1).max(200),
   started_at: z.string().datetime(),
   ended_at: z.string().datetime().optional(),
@@ -81,7 +84,10 @@ function closing(input: RecordUsageSegmentInput) {
 }
 
 function validate(input: RecordUsageSegmentInput): string | null {
-  if (input.task_id !== null && input.task_id !== input.anchor_task_id) {
+  if (input.anchor_task_id === null) {
+    if (input.task_id !== null) return 'a task segment needs anchor_task_id = task_id'
+    if (!input.product_id) return 'a product segment (anchor_task_id null) needs product_id'
+  } else if (input.task_id !== null && input.task_id !== input.anchor_task_id) {
     return 'anchor_task_id must equal task_id for a task segment'
   }
   if ((input.ended_at === undefined) !== (input.ended_reason === undefined)) {
@@ -120,7 +126,43 @@ async function closeOpen(id: string, close: NonNullable<ReturnType<typeof closin
   })
 }
 
-async function record(input: RecordUsageSegmentInput, userId: string, retried = false) {
+async function create(
+  input: RecordUsageSegmentInput,
+  userId: string,
+  close: ReturnType<typeof closing>,
+  scope: { product_id: string; sprint_id: string | null },
+  retried: boolean,
+): Promise<CallToolResult> {
+  try {
+    await prisma.usageSegment.create({
+      data: {
+        id: input.id,
+        user_id: userId,
+        product_id: scope.product_id,
+        sprint_id: scope.sprint_id,
+        task_id: input.task_id,
+        anchor_task_id: input.anchor_task_id,
+        session_id: input.session_id,
+        started_at: new Date(input.started_at),
+        mod_version: input.mod_version,
+        ...(close && {
+          ended_at: close.ended_at,
+          ended_reason: close.ended_reason,
+          active_ms: close.active_ms,
+          reported_cost_usd: close.reported_cost_usd,
+          lines: { create: close.lines },
+        }),
+      },
+    })
+  } catch (error) {
+    // The same id was created concurrently (a retried message): handle it as existing.
+    if (!retried && isUniqueViolation(error)) return record(input, userId, true)
+    throw error
+  }
+  return toolJson({ id: input.id, state: close ? 'closed' : 'open', effect: 'created' })
+}
+
+async function record(input: RecordUsageSegmentInput, userId: string, retried = false): Promise<CallToolResult> {
   const close = closing(input)
   const existing = await prisma.usageSegment.findUnique({
     where: { id: input.id },
@@ -144,6 +186,15 @@ async function record(input: RecordUsageSegmentInput, userId: string, retried = 
     return toolJson({ id: input.id, state: 'closed', effect: closed ? 'closed' : 'none' })
   }
 
+  if (input.anchor_task_id === null) {
+    // Product segment (M47): no sprint, no task; the product comes from the input, checked here.
+    const ref = await resolveProductRef(input.product_id!, userId)
+    if ('error' in ref || !(await userCanAccessProduct(ref.id, userId))) {
+      return toolError(`${REJECTED}: product ${input.product_id} not found or not accessible`)
+    }
+    return create(input, userId, close, { product_id: ref.id, sprint_id: null }, retried)
+  }
+
   const anchor = await prisma.task.findUnique({
     where: { id: input.anchor_task_id },
     select: { product_id: true, sprint_id: true },
@@ -155,33 +206,7 @@ async function record(input: RecordUsageSegmentInput, userId: string, retried = 
     return toolError(`${REJECTED}: task ${input.anchor_task_id} has no sprint`)
   }
 
-  try {
-    await prisma.usageSegment.create({
-      data: {
-        id: input.id,
-        user_id: userId,
-        product_id: anchor.product_id,
-        sprint_id: anchor.sprint_id,
-        task_id: input.task_id,
-        anchor_task_id: input.anchor_task_id,
-        session_id: input.session_id,
-        started_at: new Date(input.started_at),
-        mod_version: input.mod_version,
-        ...(close && {
-          ended_at: close.ended_at,
-          ended_reason: close.ended_reason,
-          active_ms: close.active_ms,
-          reported_cost_usd: close.reported_cost_usd,
-          lines: { create: close.lines },
-        }),
-      },
-    })
-  } catch (error) {
-    // The same id was created concurrently (a retried message): handle it as existing.
-    if (!retried && isUniqueViolation(error)) return record(input, userId, true)
-    throw error
-  }
-  return toolJson({ id: input.id, state: close ? 'closed' : 'open', effect: 'created' })
+  return create(input, userId, close, { product_id: anchor.product_id, sprint_id: anchor.sprint_id }, retried)
 }
 
 export async function handleRecordUsageSegment(raw: unknown) {
@@ -201,7 +226,7 @@ export function registerRecordUsageSegmentTool(server: McpServer) {
     {
       title: 'Record usage segment',
       description:
-        'Store one usage segment of an interactive Claude Code session (IDEA-235, written by the usage-ledger mod). Fields: id (uuid), task_id (string or null for overhead), anchor_task_id, session_id, started_at (ISO), mod_version; to close also ended_at (ISO), ended_reason, active_ms, cost_start_usd, cost_end_usd, lines[{agent_key, agent_label, model_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, requests}] (max 50). A header (no ended_at) opens the segment and fixes owner, product and sprint from anchor_task_id; a closing message (ended_at, ended_reason, active_ms, cost_start_usd/cost_end_usd, lines) closes it once. Repeats and messages on a closed segment succeed without effect. task_id null = sprint overhead. ended_reason uses API spelling (done, todo, review, failed, excluded, switched, session_end, untracked). Errors starting with USAGE_SEGMENT_REJECTED are permanent. Forbidden for demo accounts.',
+        'Store one usage segment of an interactive Claude Code session (IDEA-235, written by the usage-ledger mod). Fields: id (uuid), task_id (string or null for overhead), anchor_task_id (string or null), product_id (optional), session_id, started_at (ISO), mod_version; to close also ended_at (ISO), ended_reason, active_ms, cost_start_usd, cost_end_usd, lines[{agent_key, agent_label, model_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, requests}] (max 50). A header (no ended_at) opens the segment and fixes owner, product and sprint from anchor_task_id; a closing message (ended_at, ended_reason, active_ms, cost_start_usd/cost_end_usd, lines) closes it once. Repeats and messages on a closed segment succeed without effect. task_id null = sprint overhead. `anchor_task_id` null with `product_id` (id or code) records a product-level segment: no sprint, no task (M47). Three scopes: task, sprint overhead, product. ended_reason uses API spelling (done, todo, review, failed, excluded, switched, session_end, untracked). Errors starting with USAGE_SEGMENT_REJECTED are permanent. Forbidden for demo accounts.',
       inputSchema: registeredSchema,
     },
     handleRecordUsageSegment,
