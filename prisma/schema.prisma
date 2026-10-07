@@ -2338,7 +2338,7 @@ enum UsageEndedReason {
 /// of aan een product zonder sprint (sprint_id en anchor_task_id null; M47). Het id komt van de mod
 /// en is de idempotentiesleutel; user, product en sprint worden bij openen vastgelegd en veranderen daarna niet.
 model UsageSegment {
-  // SQL: CHECK (task_id IS NULL OR sprint_id IS NOT NULL); CHECK ((sprint_id IS NULL) = (anchor_task_id IS NULL))
+  // SQL: CONSTRAINT usage_segments_scope_check CHECK ((task_id IS NULL OR sprint_id IS NOT NULL) AND ((sprint_id IS NULL) = (anchor_task_id IS NULL)))
   id                String            @id
   user              User              @relation(fields: [user_id], references: [id], onDelete: Cascade)
   user_id           String
