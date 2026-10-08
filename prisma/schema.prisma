@@ -1135,6 +1135,8 @@ model Idea {
   @@unique([user_id, code])
   @@index([user_id, archived, status])
   @@index([user_id, product_id])
+  usage_segments UsageSegment[]
+
   @@map("ideas")
 }
 
@@ -2334,11 +2336,21 @@ enum UsageEndedReason {
   UNTRACKED
 }
 
+/// De fase van het uitwerken van een idee waaraan een usage-segment is toegerekend (IDEA-242).
+enum UsageIdeaPhase {
+  GRILL
+  SPEC
+  PLAN
+  CEREMONY
+}
+
 /// Eén aaneengesloten stuk sessietijd, toegerekend aan een taak, aan sprint-overhead (task_id null)
-/// of aan een product zonder sprint (sprint_id en anchor_task_id null; M47). Het id komt van de mod
+/// aan een product zonder sprint (sprint_id en anchor_task_id null; M47) of aan één fase van het
+/// uitwerken van een idee (idea_id en idea_phase gevuld, geen sprint; IDEA-242). Vier scopes: taak,
+/// sprint-overhead, idee (fase), product. Het id komt van de mod
 /// en is de idempotentiesleutel; user, product en sprint worden bij openen vastgelegd en veranderen daarna niet.
 model UsageSegment {
-  // SQL: CONSTRAINT usage_segments_scope_check CHECK ((task_id IS NULL OR sprint_id IS NOT NULL) AND ((sprint_id IS NULL) = (anchor_task_id IS NULL)))
+  // SQL: CONSTRAINT usage_segments_scope_check CHECK ((task_id IS NULL OR sprint_id IS NOT NULL) AND ((sprint_id IS NULL) = (anchor_task_id IS NULL)) AND ((idea_id IS NULL) = (idea_phase IS NULL)) AND (idea_id IS NULL OR sprint_id IS NULL))
   id                String            @id
   user              User              @relation(fields: [user_id], references: [id], onDelete: Cascade)
   user_id           String
@@ -2351,6 +2363,10 @@ model UsageSegment {
   // De taak waarmee sprint en toegang bepaald zijn; geen FK, het segment overleeft haar.
   // Bij een productsegment zijn sprint en anker beide null (M47).
   anchor_task_id    String?
+  idea              Idea?             @relation(fields: [idea_id], references: [id], onDelete: Cascade)
+  idea_id           String?
+  /// Fase van het idee-werk (IDEA-242); samen met idea_id gevuld of samen null.
+  idea_phase        UsageIdeaPhase?
   session_id        String
   started_at        DateTime
   ended_at          DateTime?
@@ -2365,6 +2381,7 @@ model UsageSegment {
   @@index([product_id, started_at])
   @@index([task_id])
   @@index([session_id])
+  @@index([idea_id, started_at])
   @@map("usage_segments")
 }
 

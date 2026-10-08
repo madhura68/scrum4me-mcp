@@ -12,6 +12,7 @@ vi.mock('../src/prisma.js', () => ({
     usageSegment: { findUnique: vi.fn(), create: vi.fn(), updateMany: vi.fn() },
     usageLine: { deleteMany: vi.fn(), createMany: vi.fn() },
     task: { findUnique: vi.fn() },
+    idea: { findFirst: vi.fn() },
     $transaction: vi.fn(),
   },
 }))
@@ -34,6 +35,7 @@ const mockPrisma = prisma as unknown as {
   usageSegment: Record<'findUnique' | 'create' | 'updateMany', ReturnType<typeof vi.fn>>
   usageLine: Record<'deleteMany' | 'createMany', ReturnType<typeof vi.fn>>
   task: { findUnique: ReturnType<typeof vi.fn> }
+  idea: { findFirst: ReturnType<typeof vi.fn> }
   $transaction: ReturnType<typeof vi.fn>
 }
 
@@ -68,6 +70,7 @@ beforeEach(() => {
   mockPrisma.usageSegment.findUnique.mockResolvedValue(null)
   mockPrisma.task.findUnique.mockResolvedValue({ product_id: 'prod-1', sprint_id: 'sprint-1' })
   mockPrisma.usageSegment.updateMany.mockResolvedValue({ count: 1 })
+  mockPrisma.idea.findFirst.mockResolvedValue({ product_id: 'prod-7' })
 })
 
 describe('record_usage_segment validation', () => {
@@ -263,5 +266,74 @@ describe('record_usage_segment product segments', () => {
     mockPrisma.usageSegment.findUnique.mockResolvedValue({ user_id: 'user-1', product_id: 'prod-9', started_at: new Date(productHeader.started_at), ended_at: new Date() })
     expect(JSON.parse(toolText(await handleRecordUsageSegment(productClosing)))).toEqual({ id: ID, state: 'closed', effect: 'none' })
     expect(mockPrisma.usageSegment.create).not.toHaveBeenCalled()
+  })
+})
+
+// IDEA-242 §6.3: the fourth scope, one phase of working out an idea.
+const IDEA = 'cmuzkk0ta01u9o07rc391fve8'
+const ideaHeader = {
+  id: ID, task_id: null, anchor_task_id: null, idea_id: IDEA, idea_phase: 'spec' as const, session_id: 'session-1',
+  started_at: '2026-10-08T10:00:00.000Z', mod_version: '0.5.0',
+}
+const ideaClosing = {
+  ...ideaHeader, ended_at: '2026-10-08T10:20:00.000Z', ended_reason: 'switched' as const, active_ms: 60_000,
+  cost_start_usd: 1, cost_end_usd: 1.5, lines: [line],
+}
+const rejected = async (input: Record<string, unknown>) => toolText(await handleRecordUsageSegment(input))
+
+describe('record_usage_segment idea scope (IDEA-242)', () => {
+  it('a header creates an idea segment: product from the idea, no sprint, task or anchor, phase in DB spelling', async () => {
+    const result = await handleRecordUsageSegment(ideaHeader)
+    expect(JSON.parse(toolText(result))).toEqual({ id: ID, state: 'open', effect: 'created' })
+    expect(mockPrisma.idea.findFirst).toHaveBeenCalledWith({ where: { id: IDEA, user_id: 'user-1' }, select: { product_id: true } })
+    expect(mockPrisma.usageSegment.create.mock.calls[0][0].data).toEqual({
+      id: ID, user_id: 'user-1', product_id: 'prod-7', sprint_id: null, task_id: null, anchor_task_id: null,
+      idea_id: IDEA, idea_phase: 'SPEC', session_id: 'session-1', started_at: new Date(ideaHeader.started_at), mod_version: '0.5.0',
+    })
+  })
+
+  it('a full message creates a closed idea segment', async () => {
+    const result = await handleRecordUsageSegment(ideaClosing)
+    expect(JSON.parse(toolText(result))).toEqual({ id: ID, state: 'closed', effect: 'created' })
+    const data = mockPrisma.usageSegment.create.mock.calls[0][0].data
+    expect([data.ended_reason, data.idea_phase, data.reported_cost_usd]).toEqual(['SWITCHED', 'SPEC', '0.5000'])
+  })
+
+  it('product_id next to idea_id is ignored: the idea wins', async () => {
+    await handleRecordUsageSegment({ ...ideaHeader, product_id: 'ander' })
+    expect(mockPrisma.usageSegment.create.mock.calls[0][0].data.product_id).toBe('prod-7')
+    expect(vi.mocked(resolveProductRef)).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['idea_id without idea_phase', { ...ideaHeader, idea_phase: undefined }, 'idea_id and idea_phase come together'],
+    ['idea_phase without idea_id', { ...ideaHeader, idea_id: undefined }, 'idea_id and idea_phase come together'],
+    ['an anchor next to idea_id', { ...ideaHeader, anchor_task_id: 'task-1' }, 'an idea segment has no task or anchor'],
+    ['a task next to idea_id', { ...ideaHeader, task_id: 'task-1', anchor_task_id: 'task-1' }, 'an idea segment has no task or anchor'],
+  ])('rejects %s', async (_, input, message) => {
+    expect(await rejected(input)).toBe(`USAGE_SEGMENT_REJECTED: ${message}`)
+    expect(mockPrisma.usageSegment.create).not.toHaveBeenCalled()
+  })
+
+  it('rejects an unknown phase through the schema, with the REJECTED prefix', async () => {
+    expect(await rejected({ ...ideaHeader, idea_phase: 'review' })).toMatch(/^USAGE_SEGMENT_REJECTED: /)
+    expect(mockPrisma.usageSegment.create).not.toHaveBeenCalled()
+  })
+
+  it('rejects an idea of another user, an idea without a product, and a product the user cannot reach', async () => {
+    mockPrisma.idea.findFirst.mockResolvedValueOnce(null)
+    expect(await rejected(ideaHeader)).toBe(`USAGE_SEGMENT_REJECTED: idea ${IDEA} not found or not accessible`)
+    mockPrisma.idea.findFirst.mockResolvedValueOnce({ product_id: null })
+    expect(await rejected(ideaHeader)).toBe(`USAGE_SEGMENT_REJECTED: idea ${IDEA} has no product`)
+    vi.mocked(userCanAccessProduct).mockResolvedValueOnce(false)
+    expect(await rejected(ideaHeader)).toBe(`USAGE_SEGMENT_REJECTED: product of idea ${IDEA} not accessible`)
+    expect(mockPrisma.usageSegment.create).not.toHaveBeenCalled()
+  })
+
+  it('a closing on an existing idea segment closes it like any other', async () => {
+    mockPrisma.usageSegment.findUnique.mockResolvedValueOnce({ user_id: 'user-1', product_id: 'prod-7', started_at: new Date(ideaHeader.started_at), ended_at: null })
+    const result = await handleRecordUsageSegment(ideaClosing)
+    expect(JSON.parse(toolText(result))).toEqual({ id: ID, state: 'closed', effect: 'closed' })
+    expect(mockPrisma.idea.findFirst).not.toHaveBeenCalled()
   })
 })
