@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { prisma } from '../prisma.js'
 import { getAuth } from '../auth.js'
 import { getGitDiff } from '../git/diff.js'
+import { resolveOriginDefaultRef } from '../git/default-branch.js'
 import { resolveTaskRef } from '../lib/resolve-entity.js'
 import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { classifyDiffAgainstPlan, type VerifyResultValue } from '../verify/classify.js'
@@ -18,8 +19,12 @@ export async function getDiffInWorktree(
 ): Promise<string> {
   // PBI-47 (P0): when base_sha is provided, diff against the per-job base
   // captured at claim-time so verify only sees the current task's changes.
-  // Falls back to origin/main only for legacy callers without base_sha.
-  const range = baseSha ? `${baseSha}...HEAD` : 'origin/main...HEAD'
+  // Without base_sha (legacy and interactive callers) it diffs against the
+  // repo's own default branch: a hardcoded origin/main failed outright in a
+  // master repo such as scrum4me-docker (ISS-1).
+  const range = baseSha
+    ? `${baseSha}...HEAD`
+    : `${await resolveOriginDefaultRef(worktreePath)}...HEAD`
   return getGitDiff(worktreePath, range)
 }
 
@@ -36,7 +41,7 @@ export function registerVerifyTaskAgainstPlanTool(server: McpServer) {
     {
       title: 'Verify task against plan',
       description:
-        'Run `git diff origin/main...HEAD` in the worktree and compare it against the ' +
+        "Run `git diff <base>...HEAD` in the worktree (the claim's base_sha, else the repo's default branch) and compare it against the " +
         'frozen plan_snapshot captured at claim time. Returns ALIGNED|PARTIAL|EMPTY|DIVERGENT ' +
         'and saves verify_result on the active job. ' +
         'Call this BEFORE update_job_status("done"). ' +
@@ -71,7 +76,7 @@ export function registerVerifyTaskAgainstPlanTool(server: McpServer) {
         const activeJob = task.claude_jobs[0] ?? null
 
         // PBI-47 (P0): require base_sha so diff is scoped to this job's work,
-        // not the full origin/main...HEAD which would include sibling commits
+        // not the full <default branch>...HEAD which would include sibling commits
         // on a reused story/sprint branch.
         if (activeJob && !activeJob.base_sha) {
           return toolError(

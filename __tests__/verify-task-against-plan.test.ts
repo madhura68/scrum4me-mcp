@@ -11,6 +11,12 @@ vi.mock('../src/verify/classify.js', () => ({
   classifyDiffAgainstPlan: vi.fn(),
 }))
 
+// ISS-1: the default branch comes from origin/HEAD, not a hardcoded origin/main.
+vi.mock('../src/git/default-branch.js', () => ({
+  resolveOriginDefaultRef: vi.fn(async () => 'origin/main'),
+}))
+import { resolveOriginDefaultRef } from '../src/git/default-branch.js'
+
 import { prisma } from '../src/prisma.js'
 import { classifyDiffAgainstPlan } from '../src/verify/classify.js'
 import type { AnyMock } from './helpers/mocks.js'
@@ -65,6 +71,26 @@ describe('getDiffInWorktree', () => {
       expect.objectContaining({ cwd: '/worktrees/job-abc' }),
       expect.any(Function),
     )
+  })
+
+  it("diffs against the repo's own default branch without base_sha (ISS-1)", async () => {
+    stubExecFile(ALIGNED_DIFF)
+    ;(resolveOriginDefaultRef as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce('origin/master')
+    await getDiffInWorktree('/worktrees/job-master')
+    expect(resolveOriginDefaultRef).toHaveBeenCalledWith('/worktrees/job-master')
+    expect(mockExecFile).toHaveBeenCalledWith(
+      'git',
+      ['diff', 'origin/master...HEAD'],
+      expect.objectContaining({ cwd: '/worktrees/job-master' }),
+      expect.any(Function),
+    )
+  })
+
+  it('keeps the claim-time base_sha when there is one', async () => {
+    stubExecFile(ALIGNED_DIFF)
+    await getDiffInWorktree('/worktrees/job-abc', 'abc123')
+    expect(resolveOriginDefaultRef).not.toHaveBeenCalled()
+    expect(mockExecFile).toHaveBeenCalledWith('git', ['diff', 'abc123...HEAD'], expect.anything(), expect.any(Function))
   })
 
   it('throws when git diff fails', async () => {
