@@ -52,7 +52,7 @@ In beide gevallen wordt de reservering vrijgegeven.
 
      Stuurt de supervisor daarna hetzelfde resultaat in, dan geeft completion `accepted:true`, `replayed` (`completion.ts:41`). De supervisor rondt dan schoon af (journal weg, bronnen opgeruimd), precies zoals nu. Wijkt zijn resultaat af, dan wordt het `late_result`/`terminal_result`: centraal afgesloten, lokaal een `uncertain` journal. Dat is geen correctheidsprobleem voor de service.
      - Uitkomst: `FAILED`, job `FAILED` met notify, reservering vrij.
-     - Een `task_implementation` wordt als FAILED geprojecteerd, net als nu via het supervisor-resultaat.
+     - ~~Een `task_implementation` wordt als FAILED geprojecteerd.~~ **Vervallen:** `task_implementation` is uitgesloten en houdt het pre-ISS-2-pad (zie "Bouw: task_implementation uitgesloten"; Scrum4Me ISS-9).
    - **`CANCEL_REQUESTED`:** `finishStoppedCancellation(db, x)` (`lifecycle.ts:58-63`), zoals de gescopete `submitStop` al doet (`:97-99`). Uitkomst: `CANCELLED`, reservering vrij.
      - Het latere `failed`-resultaat van de supervisor wordt `terminal_result`, met een lokaal `uncertain` journal. Dat is hetzelfde als vandaag bij voorbereid + cancel (`closeUnstarted`).
    - **Waarom altijd atomair:** wordt een stop geaccepteerd maar komt het resultaat nooit binnen (de supervisor valt weg), dan zit het verzoek anders in elke state onherstelbaar vast:
@@ -101,9 +101,7 @@ In beide gevallen wordt de reservering vrijgegeven.
 5. **Replay:** identieke `submitClaimBoundStop`-bytes ná de afsluiting geven dezelfde receipt, en de replay muteert niets. Ongewijzigd blijven: resultaat-telling, request-versie, `released_at`, het aantal outbox-rijen en het aantal `result_accepted`-events. Afwijkende bytes (een andere reden of een andere `observedAt`) geven een conflict.
 5b. **Het supervisor-resultaat ná een `CLAIMED`/`UNCERTAIN`-stop**, in exact de supervisorvorm, geeft `accepted:true`/`replayed` met één resultaat. Een afwijkend `failed`-resultaat geeft `accepted:false`/`terminal_result`.
 5d. **Usage bij replay:** een identiek resultaat mét usage geeft `replayed`, en de usage wordt **niet** opgeslagen (`completion.ts:41` gaat vóór `:43`). Dat is bewust: bij een echte pre-scope-weigering heeft geen model gedraaid. Leg dit vast in de test en in een codecommentaar.
-5e. **task_implementation via de claim-gebonden stop (`CLAIMED`):**
-   - verwacht: taak `FAILED` met hiërarchie-projectie, `tasks.dispatch_request_id` gewist en job `FAILED`;
-   - een stop-replay daarna projecteert niets opnieuw.
+5e. **task_implementation via de claim-gebonden stop (`CLAIMED`):** **gewijzigd tijdens de bouw.** Het verzoek blijft `CLAIMED`, en er volgt geen resultaat. De taakbinding blijft staan, het pre-ISS-2-gedrag (zie "Bouw: task_implementation uitgesloten"). De oorspronkelijke verwachting (taak FAILED, binding gewist) volgt via Scrum4Me ISS-9.
 5c. **Generatie:** een request-generatie die afwijkt van de candidate geeft een conflict en er volgt geen afsluiting.
 6. **Gescopete poging blijft geweigerd** in elk van de drie states. Breid de bestaande test (`:75-92`) uit met `UNCERTAIN` en `CANCEL_REQUESTED`.
 7. **Start ná een claim-gebonden stop** in `CLAIMED`/`UNCERTAIN`: `startDispatchAttempt` geeft een conflict (`revoked_at`, `active()`), en er komt geen permit.
