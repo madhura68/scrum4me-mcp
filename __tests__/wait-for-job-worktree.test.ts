@@ -321,8 +321,8 @@ describe('attachWorktreeToJob: local_llm-bewaking (Taak 4)', () => {
       '/repos/my-project',
       path.join('/wt-root', 'job-refused'),
     )
-    // Geen rollbackClaim: geen $executeRaw-aanroep die de job terug op QUEUED zet.
-    expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
+    // Geen rollbackClaim: geen QUEUED-reset; alleen de best-effort jobnotify (IDEA-243) gaat via $executeRaw.
+    expect(mockPrisma.$executeRaw.mock.calls.every(([strings]) => (strings as readonly string[]).join('?').includes('pg_notify'))).toBe(true)
   })
 })
 
@@ -394,8 +394,8 @@ describe('rollbackClaim', () => {
 
     await rollbackClaim('j1', { tokenId: 'tA', instanceId: 'iA' })
 
-    // start-bump, push, refresh, executions-delete, refresh, worktree, slotstap
-    expect(calls).toEqual(['raw', 'push', 'raw', 'del', 'raw', 'cleanup', 'raw'])
+    // start-bump, push, refresh, executions-delete, refresh, worktree, slotstap, jobnotify (IDEA-243, ná de opruiming)
+    expect(calls).toEqual(['raw', 'push', 'raw', 'del', 'raw', 'cleanup', 'raw', 'raw'])
   })
 
   it('interleaving: eigendom verloren ná de push → geen destructieve stap meer', async () => {

@@ -5,7 +5,8 @@ const tx = {
   sprintRun: { findFirst: vi.fn(), create: vi.fn().mockResolvedValue({ id: 'run-1' }) },
   story: { findMany: vi.fn() },
   claudeQuestion: { findMany: vi.fn() },
-  claudeJob: { create: vi.fn().mockResolvedValue({ id: 'job-1' }) },
+  claudeJob: { create: vi.fn().mockResolvedValue({ id: 'job-1' }), findUnique: vi.fn() },
+  $executeRaw: vi.fn(),
 }
 vi.mock('../src/prisma.js', () => ({
   prisma: {
@@ -57,6 +58,11 @@ beforeEach(() => {
   vi.clearAllMocks()
   tx.sprintRun.create.mockResolvedValue({ id: 'run-1' })
   tx.claudeJob.create.mockResolvedValue({ id: 'job-1' })
+  // IDEA-243: de create-notify leest de rij via tx en stuurt pg_notify via tx (niet de globale prisma).
+  tx.claudeJob.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => ({
+    id: where.id, user_id: 'user-1', product_id: 'prod-1', kind: 'TASK_IMPLEMENTATION', status: 'QUEUED',
+  }))
+  tx.$executeRaw.mockResolvedValue(1)
   tx.sprint.findUnique.mockResolvedValue(baseSprint)
   tx.sprintRun.findFirst.mockResolvedValue(null)
   tx.story.findMany.mockResolvedValue(baseStories)
@@ -78,6 +84,11 @@ describe('dispatchSprintRun', () => {
         }),
       }),
     )
+    // IDEA-243: één jobnotify, via tx (vuurt bij COMMIT).
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(1)
+    expect(JSON.parse(tx.$executeRaw.mock.calls[0][2])).toMatchObject({
+      type: 'claude_job_status_changed', job_id: 'job-1', status: 'QUEUED',
+    })
   })
 
   // (b) sprint van ander product
@@ -149,5 +160,7 @@ describe('dispatchSprintRun', () => {
       { task_id: 't2', sprint_sequence: 1 },
       { task_id: 't3', sprint_sequence: 2 },
     ])
+    // IDEA-243: per aangemaakte job één notify, via tx.
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(3)
   })
 })

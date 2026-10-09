@@ -23,7 +23,7 @@ import { toolText } from '../helpers/tool-result.js'
 import type { WorkerRuntime } from '../../src/worker-runtime.js'
 
 const authMocks = vi.hoisted(() => ({ requireWriteAccess: vi.fn() }))
-const tx = vi.hoisted(() => ({ $queryRaw: vi.fn(), $executeRaw: vi.fn() }))
+const tx = vi.hoisted(() => ({ $queryRaw: vi.fn(), $executeRaw: vi.fn(), claudeJob: { findUnique: vi.fn() } }))
 const pgClient = vi.hoisted(() => ({
   connect: vi.fn(),
   query: vi.fn(),
@@ -238,6 +238,8 @@ beforeEach(() => {
     throw new Error(`onverwachte tx.$queryRaw: ${sql}`)
   })
   tx.$executeRaw.mockResolvedValue(1)
+  // IDEA-243: de claim-notify leest de rij via tx; geen rij = no-op (de notify zelf staat in job-notify-routes.test.ts).
+  tx.claudeJob.findUnique.mockResolvedValue(null)
 
   // De LISTEN-verbinding: de eerste luisteraar voor 'notification' krijgt meteen een passende melding, zodat
   // het wachten niet de pollinterval (5 s) uitzit.
@@ -514,7 +516,8 @@ describe.each(CLAIM_PATHS)('wait_for_job — %s', (_naam, path) => {
         data: { status: 'FAILED', finished_at: expect.any(Date), error: code },
       })
       // Terminaal, dus niet teruggegeven: geen rollback en geen requeue.
-      expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
+      // IDEA-243: wél een best-effort jobnotify (pg_notify) na de FAILED-write, maar nooit een QUEUED-reset.
+      expect(mockPrisma.$executeRaw.mock.calls.every(([strings]) => sqlText(strings).includes('pg_notify'))).toBe(true)
       expect(tx.$executeRaw.mock.calls.some(([strings]) => sqlText(strings).includes("status = 'QUEUED'"))).toBe(false)
     })
   })

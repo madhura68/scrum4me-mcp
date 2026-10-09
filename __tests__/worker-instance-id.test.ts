@@ -198,6 +198,7 @@ describe('tryClaimJob / rollbackClaim — worker_instance_id rotation', () => {
         const mockTx = {
           $queryRaw: vi.fn().mockResolvedValue([{ id: jobId, implementation_plan: 'plan' }]),
           $executeRaw: vi.fn().mockResolvedValue(1),
+          claudeJob: { findUnique: vi.fn().mockResolvedValue(null) },
         }
         const result = await fn(mockTx as unknown as typeof prisma)
         // Capture the SQL params for inspection after the txn returns.
@@ -233,6 +234,7 @@ describe('tryClaimJob / rollbackClaim — worker_instance_id rotation', () => {
         const mockTx = {
           $queryRaw: vi.fn().mockResolvedValue([{ id: jobId, implementation_plan: 'plan' }]),
           $executeRaw: vi.fn().mockResolvedValue(1),
+          claudeJob: { findUnique: vi.fn().mockResolvedValue(null) },
         }
         const result = await fn(mockTx as unknown as typeof prisma)
         ;(mockPrisma.$transaction as unknown as { _last?: unknown })._last = mockTx

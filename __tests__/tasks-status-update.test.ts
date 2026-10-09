@@ -22,12 +22,14 @@ vi.mock('../src/prisma.js', () => ({
     },
     claudeJob: {
       findFirst: vi.fn(),
-      updateMany: vi.fn(),
+      findUnique: vi.fn(),
+      updateManyAndReturn: vi.fn(),
     },
     sprintRun: {
       findUnique: vi.fn(),
       update: vi.fn(),
     },
+    $executeRaw: vi.fn(),
     $transaction: vi.fn(),
   },
 }))
@@ -56,8 +58,10 @@ type MockedPrisma = {
   }
   claudeJob: {
     findFirst: ReturnType<typeof vi.fn>
-    updateMany: ReturnType<typeof vi.fn>
+    findUnique: ReturnType<typeof vi.fn>
+    updateManyAndReturn: ReturnType<typeof vi.fn>
   }
+  $executeRaw: ReturnType<typeof vi.fn>
   sprintRun: {
     findUnique: ReturnType<typeof vi.fn>
     update: ReturnType<typeof vi.fn>
@@ -172,6 +176,11 @@ describe('propagateStatusUpwards — sprint cascade tot SprintRun', () => {
       .mockResolvedValue([{ status: 'FAILED' }])
     mockPrisma.claudeJob.findFirst.mockResolvedValue({ id: 'job-1', sprint_run_id: 'run-1' })
     mockPrisma.sprintRun.findUnique.mockResolvedValue({ id: 'run-1', status: 'RUNNING' })
+    // IDEA-243: de bulk-cancel geeft de gewijzigde ids terug; elk id krijgt een notify op dezelfde tx.
+    mockPrisma.claudeJob.updateManyAndReturn.mockResolvedValue([{ id: 'sib-1' }, { id: 'sib-2' }])
+    mockPrisma.claudeJob.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => ({
+      id: where.id, user_id: 'user-1', product_id: 'prod-1', kind: 'TASK_IMPLEMENTATION', status: 'CANCELLED',
+    }))
 
     const result = await propagateStatusUpwards('task-1', 'FAILED')
 
@@ -183,7 +192,7 @@ describe('propagateStatusUpwards — sprint cascade tot SprintRun', () => {
         data: expect.objectContaining({ status: 'FAILED', failed_task_id: 'task-1' }),
       }),
     )
-    expect(mockPrisma.claudeJob.updateMany).toHaveBeenCalledWith(
+    expect(mockPrisma.claudeJob.updateManyAndReturn).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
           sprint_run_id: 'run-1',
@@ -193,6 +202,9 @@ describe('propagateStatusUpwards — sprint cascade tot SprintRun', () => {
         data: expect.objectContaining({ status: 'CANCELLED' }),
       }),
     )
+    // Precies één notify per gecancelde job, met zijn actuele status.
+    const notified = mockPrisma.$executeRaw.mock.calls.map(([, , payload]) => JSON.parse(payload as string))
+    expect(notified.map((p) => [p.job_id, p.status])).toEqual([['sib-1', 'CANCELLED'], ['sib-2', 'CANCELLED']])
   })
 })
 

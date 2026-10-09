@@ -173,6 +173,7 @@ describe('tryClaimJob', () => {
       const mockTx = {
         $queryRaw: vi.fn().mockResolvedValue([{ id: jobId, implementation_plan: implementationPlan }]),
         $executeRaw: vi.fn().mockResolvedValue(1),
+        claudeJob: { findUnique: vi.fn().mockResolvedValue(null) },
       }
       return fn(mockTx as unknown as typeof prisma)
     })
@@ -188,7 +189,11 @@ describe('tryClaimJob', () => {
     const capturedTx = {
       $queryRaw: vi.fn().mockResolvedValue([{ id: jobId, implementation_plan: implementationPlan }]),
       $executeRaw: vi.fn().mockResolvedValue(1),
+      claudeJob: { findUnique: vi.fn().mockResolvedValue(null) },
     }
+    capturedTx.claudeJob.findUnique.mockResolvedValue({
+      id: jobId, user_id: 'user-1', product_id: 'prod-1', kind: 'TASK_IMPLEMENTATION', status: 'CLAIMED',
+    })
     await txFn(capturedTx as unknown as typeof prisma)
 
     const updateCall = capturedTx.$executeRaw.mock.calls[0]
@@ -196,6 +201,14 @@ describe('tryClaimJob', () => {
     const fullSql = sqlParts.join('')
     expect(fullSql).toContain('plan_snapshot')
     expect(fullSql).toContain("status = 'CLAIMED'")
+
+    // IDEA-243: de claim stuurt zijn notify via de tx-client (type status_changed, status CLAIMED),
+    // nooit via de globale prisma (anders vuurt hij vóór COMMIT).
+    const notifyCall = capturedTx.$executeRaw.mock.calls[1]
+    expect((notifyCall[0] as string[]).join('?')).toContain('pg_notify')
+    expect(JSON.parse(notifyCall[2])).toMatchObject({
+      type: 'claude_job_status_changed', job_id: jobId, status: 'CLAIMED',
+    })
   })
 
   it('uses empty string as snapshot when task has no implementation_plan', async () => {
@@ -205,6 +218,7 @@ describe('tryClaimJob', () => {
       const mockTx = {
         $queryRaw: vi.fn().mockResolvedValue([{ id: jobId, implementation_plan: null }]),
         $executeRaw: vi.fn().mockResolvedValue(1),
+        claudeJob: { findUnique: vi.fn().mockResolvedValue(null) },
       }
       return fn(mockTx as unknown as typeof prisma)
     })
@@ -216,6 +230,7 @@ describe('tryClaimJob', () => {
     const capturedTx = {
       $queryRaw: vi.fn().mockResolvedValue([{ id: jobId, implementation_plan: null }]),
       $executeRaw: vi.fn().mockResolvedValue(1),
+      claudeJob: { findUnique: vi.fn().mockResolvedValue(null) },
     }
     const txFn = mockPrisma.$transaction.mock.calls[0][0]
     await txFn(capturedTx as unknown as typeof prisma)
