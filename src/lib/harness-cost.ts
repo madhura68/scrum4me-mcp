@@ -70,8 +70,8 @@ const NOT_ALLOWED = 'VALIDATION_ERROR: COST_REPORT_NOT_ALLOWED'
 const INVALID = 'VALIDATION_ERROR: COST_REPORT_INVALID'
 
 /**
- * Mag deze job kosten melden, en klopt de melding? Alleen een job met runtime HARNESS (niet een local_llm-job: die
- * heeft runtime CLAUDE en meldt geen kosten), alleen van een soort die HARNESS draait (isHarnessJobKind: IDEA_CHAT en
+ * Mag deze job kosten melden, en klopt de melding? Alleen een job met runtime HARNESS (een job met runtime CLAUDE meldt
+ * geen kosten), alleen van een soort die HARNESS draait (isHarnessJobKind: IDEA_CHAT en
  * TASK_IMPLEMENTATION) en alleen bij een eindstatus. De eigen eindpaden van DOCS_AUDIT en DEPLOY (en van elke andere
  * soort) schrijven nooit een kostenrij: een melding die daar geldig leek, zou stil verdwijnen, dus geen melding. De
  * configuratie is die van de job (`requested_model`, gezet bij de enqueue), nooit die uit de melding. Regels per bron:

@@ -409,8 +409,8 @@ describe('update_job_status: kostenmelding van een HARNESS-job op het gewone pad
 describe('update_job_status: een kostenmelding die niet mag, wordt geweigerd zonder schrijven', () => {
   it.each([
     { label: 'een Claude-job', overrides: { runtime: 'CLAUDE' } },
-    // Een local_llm-job heeft runtime CLAUDE en een capability: hij meldt geen kosten (niet isHarnessJobRow).
-    { label: 'een local_llm-job', overrides: { runtime: 'CLAUDE', required_capability: 'local_llm' } },
+    // Een Claude-job met een capability meldt geen kosten: alleen runtime HARNESS meldt.
+    { label: 'een Claude-job met capability', overrides: { runtime: 'CLAUDE', required_capability: 'deploy' } },
   ])('$label met done + cost → COST_REPORT_NOT_ALLOWED', async ({ overrides }) => {
     installJobFixture(jobFixture(overrides))
     const result = await registerHandler()({ job_id: 'job-h1', status: 'done', summary: 'Klaar.', cost: COST })

@@ -41,7 +41,7 @@ activity and create todos via native tool calls instead of curl.
 | `job_heartbeat` | Extend `claude_jobs.lease_until` by 5 min. For SPRINT-jobs: response includes `sprint_run_status` + `sprint_run_pause_reason` so the worker can break its task-loop on UI-side cancel/pause | no |
 | `get_idea_chat_channel` | Fetch channel items (messages/logs/questions) for an idea, with composite cursor, `active_job`, and `question_states` (copilot idea-chat) | n/a |
 | `send_idea_chat_message` | Post a user message to an idea's chat channel and enqueue (or coalesce) an IDEA_CHAT job. The job — and the follow-up job that `update_job_status` queues when a turn ends with newer user messages waiting — reads the product's `IDEA_CHAT` HARNESS choice: with a choice it gets runtime `HARNESS` and the configuration as `requested_model`, without one the job is created as before | no |
-| `dispatch_job` | Queue a job for the existing runners (source `COPILOT`, except `DEPLOY` and `DOCS_AUDIT`: `MANUAL`); refs per kind: `IDEA_GRILL`/`IDEA_MAKE_PLAN`/`IDEA_REVIEW_PLAN`/`IDEA_MAKE_SPEC` → `idea_id`, `TASK_IMPLEMENTATION`/`TASK_REVIEW` → `task_id`, `SPRINT_IMPLEMENTATION` → `sprint_id`, `PR_REVIEW` → `pr_url`, `SPEC_REVIEW` → `doc_slug` or `doc_id`, `DEPLOY` and `DOCS_AUDIT` → none (`IDEA_CHAT` and `PLAN_CHAT` are not dispatchable). A standalone `TASK_IMPLEMENTATION` for a product with a `TASK_IMPLEMENTATION` HARNESS choice becomes a `HARNESS` job. Since M45-2b it refuses every `required_capability` (the former `local_llm` route) with a `VALIDATION_ERROR`, before authentication and any database access: choose a HARNESS configuration per product instead | no |
+| `dispatch_job` | Queue a job for the existing runners (source `COPILOT`, except `DEPLOY` and `DOCS_AUDIT`: `MANUAL`); refs per kind: `IDEA_GRILL`/`IDEA_MAKE_PLAN`/`IDEA_REVIEW_PLAN`/`IDEA_MAKE_SPEC` → `idea_id`, `TASK_IMPLEMENTATION`/`TASK_REVIEW` → `task_id`, `SPRINT_IMPLEMENTATION` → `sprint_id`, `PR_REVIEW` → `pr_url`, `SPEC_REVIEW` → `doc_slug` or `doc_id`, `DEPLOY` and `DOCS_AUDIT` → none (`IDEA_CHAT` and `PLAN_CHAT` are not dispatchable). A standalone `TASK_IMPLEMENTATION` for a product with a `TASK_IMPLEMENTATION` HARNESS choice becomes a `HARNESS` job. Its input schema is strict (M45-3): an unknown key, including the former `required_capability`, is refused before authentication and any database access; the runtime is a HARNESS configuration chosen per product | no |
 | `update_idea_spec_md` | Write the spec document (ProductDoc SPECS + immutable revision) for an idea, set `Idea.spec_doc_id`, and dispatch the SPEC_REVIEW pipeline. Called as the last step of `IDEA_MAKE_SPEC`/`IDEA_REVISE_SPEC` jobs | no |
 | `create_issue` | Register a problem for a product or system as ISS-n (server-side). A stable `fingerprint` (`<host>:<component>:<core>`) increments the existing open issue on a recurrence instead of duplicating it, and reopens a `FIXED`/`CANNOT_REPRODUCE` issue as a regression | no |
 | `update_issue` | Append research or resolution prose (timestamped, attributed to `authored_by` or the token user), change status/severity, or link a PBI or idea. Closing requires a resolution **code** in `resolution` (`fixed`, `wont_fix`, `duplicate`, `cannot_reproduce`, `invalid`) alongside `status=closed` — the prose explanation goes in `append_resolution`, and both may be sent in one call. A closed issue can only reopen to `investigating` | no |
@@ -574,8 +574,7 @@ job stays an ordinary Claude job, and the claim of Claude and Codex jobs is as b
   idea-chat follow-up job of `update_job_status` read the product's choice. With one, the job is
   created with runtime `HARNESS` and the configuration as `requested_model`, never with a
   `required_capability`. A failing read is an error, never "no choice". `dispatch_job` itself refuses
-  every `required_capability` (a `VALIDATION_ERROR`): the `local_llm` route is replaced by a
-  configuration per product.
+  unknown keys (its input schema is strict), so a job never carries a capability chosen by the caller.
 - **Claim.** A `HARNESS` worker claims only `HARNESS` jobs — `IDEA_CHAT` (source `SYSTEM`) and a
   standalone `TASK_IMPLEMENTATION` (source `COPILOT`, not in a sprint run) — whatever its
   capabilities, and no Claude or Codex worker claims them. Right after a claim `wait_for_job`
@@ -589,7 +588,7 @@ job stays an ordinary Claude job, and the claim of Claude and Codex jobs is as b
   `prompt_text: ""` (a `HARNESS` job gets no Claude prompt); a standalone `TASK_IMPLEMENTATION`
   payload has no `prompt_text` key, for a `HARNESS` job as for a Claude job.
 - **Cost report.** `update_job_status` accepts `cost: { reported_cost_usd, cost_source, provider? }`
-  from a `HARNESS` job (not a `local_llm` job) of kind `IDEA_CHAT` or `TASK_IMPLEMENTATION` on `done`,
+  from a `HARNESS` job (never a `CLAUDE` job) of kind `IDEA_CHAT` or `TASK_IMPLEMENTATION` on `done`,
   `failed` or `skipped`; any other job, kind or status gets `COST_REPORT_NOT_ALLOWED` (the own end
   paths of `DOCS_AUDIT` and `DEPLOY` never write a cost row, so a report there would vanish). `reported_cost_usd` is a decimal string or `null`, and
   `cost_source` is one of `provider_reported`, `litellm_computed` (an amount `>= 0`), `local` (exactly
