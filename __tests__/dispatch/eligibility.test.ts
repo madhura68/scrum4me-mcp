@@ -27,36 +27,15 @@ describe('shared claim eligibility', () => {
     expect(evaluateClaimPredicates(job, { ...executor, capabilities: ['deploy'] })).toContain('capability')
   })
   it('excludes managed jobs from every ordinary SQL path', () => {
-    for (const capabilities of [[], ['deploy'], ['docs_audit'], ['local_llm'], ['review']]) {
+    for (const capabilities of [[], ['deploy'], ['docs_audit'], ['review']]) {
       const sql = buildClaimableJobWhereFragment({ userId: 'u', hasProductScope: false, runtime: 'CODEX', capabilities })
       expect(sql.sql).toContain('cj.dispatch_request_id IS NULL')
     }
   })
-  const localLlmJob = { userId: 'u', productId: 'p', runtime: 'CODEX' as const, status: 'QUEUED', kind: 'IDEA_CHAT', source: 'SYSTEM', requiredCapability: 'local_llm', dispatchRequestId: null, profileRevisionId: null, sprintRunId: null, sprintStatus: null, earlierSibling: false, taskId: null, ideaId: 'idea-1' }
-  const localLlmExecutor = { userId: 'u', productIds: ['p'], runtime: 'CODEX' as const, capabilities: ['local_llm'], profileRevisionIds: [], managed: false, quotaPct: null, minQuotaPct: 10 }
-  it('local_llm-only executor claimt exact IDEA_CHAT/SYSTEM/local_llm en nooit NULL-capability of ander kind', () => {
-    expect(evaluateClaimPredicates(localLlmJob, localLlmExecutor)).toEqual([])
-    expect(evaluateClaimPredicates({ ...localLlmJob, requiredCapability: null }, localLlmExecutor)).toContain('capability')
-    expect(evaluateClaimPredicates({ ...localLlmJob, kind: 'IDEA_GRILL' }, localLlmExecutor)).toContain('capability')
-    expect(evaluateClaimPredicates({ ...localLlmJob, requiredCapability: 'local_llm' }, { ...localLlmExecutor, capabilities: ['code_edit', 'planning', 'review'] })).toContain('capability')
-  })
-  // M3 (agent-harness task-implementation-local-llm): dezelfde dedicated
-  // local_llm-worker claimt daarnaast losse TASK_IMPLEMENTATION-jobs die
-  // dispatch_job zonder sprint aanmaakt (source COPILOT, sprint_run_id NULL).
-  // sprint_run_id IS NULL sluit sprint-runs uit: die horen bij de
-  // SPRINT_IMPLEMENTATION-route, niet bij deze losse-taakjob-route.
-  const localLlmTaskJob = { userId: 'u', productId: 'p', runtime: 'CODEX' as const, status: 'QUEUED', kind: 'TASK_IMPLEMENTATION', source: 'COPILOT', requiredCapability: 'local_llm', dispatchRequestId: null, profileRevisionId: null, sprintRunId: null, sprintStatus: null, earlierSibling: false, taskId: 'task-1', ideaId: null }
-  it('local_llm-only executor claimt ook een losse TASK_IMPLEMENTATION/COPILOT-job zonder sprint-run', () => {
-    expect(evaluateClaimPredicates(localLlmTaskJob, localLlmExecutor)).toEqual([])
-    expect(evaluateClaimPredicates({ ...localLlmTaskJob, sprintRunId: 'run1' }, localLlmExecutor)).toContain('capability')
-    expect(evaluateClaimPredicates({ ...localLlmTaskJob, source: 'MANUAL' }, localLlmExecutor)).toContain('capability')
-    expect(evaluateClaimPredicates({ ...localLlmTaskJob, requiredCapability: null }, localLlmExecutor)).toContain('capability')
-    expect(evaluateClaimPredicates({ ...localLlmTaskJob, requiredCapability: 'local_llm' }, { ...localLlmExecutor, capabilities: ['code_edit', 'planning', 'review'] })).toContain('capability')
-  })
 })
 
-// M45-2b (Taak 2, deel 1): een executor met runtime HARNESS claimt alleen HARNESS-jobs van de soorten van de
-// local_llm-tak, maar zonder required_capability. De tak wordt gekozen op de runtime van de executor, vóór de
+// M45-2b (Taak 2, deel 1): een executor met runtime HARNESS claimt alleen HARNESS-jobs van twee soorten
+// (IDEA_CHAT/SYSTEM en een losse TASK_IMPLEMENTATION/COPILOT), zonder required_capability. De tak wordt gekozen op de runtime van de executor, vóór de
 // capability-takken: zijn capabilities tellen niet mee. Beheerde executors zijn per validatie CLAUDE of CODEX;
 // de tak staat in het predicaat omdat predicaat en SQL-condities één contract vormen.
 describe('claim-predicaten: HARNESS-executor', () => {
@@ -70,7 +49,7 @@ describe('claim-predicaten: HARNESS-executor', () => {
   })
 
   // De lege lijst is de test hierboven; hier alleen lijsten met inhoud.
-  it.each([['local_llm'], ['deploy'], ['docs_audit'], ['code_edit', 'review']].map((capabilities) => [capabilities]))(
+  it.each([['deploy'], ['docs_audit'], ['code_edit', 'review']].map((capabilities) => [capabilities]))(
     'de capabilities %j van de executor tellen niet mee: de runtime wint',
     (capabilities) => {
       expect(evaluateClaimPredicates(harnessChat, { ...harnessExecutor, capabilities })).toEqual([])
@@ -85,12 +64,12 @@ describe('claim-predicaten: HARNESS-executor', () => {
     }
   })
 
-  it('weigert een local_llm-job, ook met de capabilities local_llm op de executor', () => {
-    for (const capabilities of [[], ['local_llm']]) {
-      expect(evaluateClaimPredicates({ ...harnessChat, requiredCapability: 'local_llm' }, { ...harnessExecutor, capabilities })).toContain('capability')
-      expect(evaluateClaimPredicates({ ...harnessTask, requiredCapability: 'local_llm' }, { ...harnessExecutor, capabilities })).toContain('capability')
-      // De oude harness-job: runtime CLAUDE én local_llm. Die is niet van de HARNESS-executor.
-      expect(evaluateClaimPredicates({ ...harnessChat, runtime: 'CLAUDE', requiredCapability: 'local_llm' }, { ...harnessExecutor, capabilities })).toContain('runtime')
+  it('weigert een job met een capability, ook met die capability op de executor', () => {
+    for (const capabilities of [[], ['deploy']]) {
+      expect(evaluateClaimPredicates({ ...harnessChat, requiredCapability: 'deploy' }, { ...harnessExecutor, capabilities })).toContain('capability')
+      expect(evaluateClaimPredicates({ ...harnessTask, requiredCapability: 'deploy' }, { ...harnessExecutor, capabilities })).toContain('capability')
+      // Een Claude-job met een capability is niet van de HARNESS-executor.
+      expect(evaluateClaimPredicates({ ...harnessChat, runtime: 'CLAUDE', requiredCapability: 'deploy' }, { ...harnessExecutor, capabilities })).toContain('runtime')
     }
   })
 
@@ -124,12 +103,12 @@ describe('claim-predicaten: HARNESS-executor', () => {
     }
   })
 
-  it('geen enkele andere executor claimt een HARNESS-job: Claude, Codex en de local_llm-executor', () => {
+  it('geen enkele andere executor claimt een HARNESS-job: Claude, Codex en een dedicated executor', () => {
     for (const executor of [
       { ...harnessExecutor, runtime: 'CLAUDE' as const },
       { ...harnessExecutor, runtime: 'CODEX' as const },
-      { ...harnessExecutor, runtime: 'CLAUDE' as const, capabilities: ['local_llm'] },
-      { ...harnessExecutor, runtime: 'CODEX' as const, capabilities: ['local_llm'] },
+      { ...harnessExecutor, runtime: 'CLAUDE' as const, capabilities: ['deploy'] },
+      { ...harnessExecutor, runtime: 'CODEX' as const, capabilities: ['deploy'] },
     ]) {
       expect(evaluateClaimPredicates(harnessChat, executor)).toContain('runtime')
       expect(evaluateClaimPredicates(harnessTask, executor)).toContain('runtime')
