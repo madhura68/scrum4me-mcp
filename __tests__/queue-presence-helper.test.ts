@@ -13,7 +13,6 @@ import {
   derivePresenceStatus,
   readPresenceBlockBestEffort,
   readPresenceViews,
-  stampDrainPresenceBestEffort,
 } from '../src/queue/presence.js'
 
 const mockPrisma = prisma as unknown as {
@@ -152,15 +151,5 @@ describe('best-effort-contracten', () => {
   it('readPresenceBlockBestEffort retourneert null als de query gooit', async () => {
     mockPrisma.$queryRaw.mockRejectedValueOnce(new Error('relation does not exist'))
     await expect(readPresenceBlockBestEffort('mac', 'claude')).resolves.toBeNull()
-  })
-
-  it('stampDrainPresenceBestEffort gooit nooit door bij een schrijffout', async () => {
-    mockPrisma.$executeRaw.mockRejectedValueOnce(new Error('relation does not exist'))
-    await expect(stampDrainPresenceBestEffort('mac', 'claude')).resolves.toBeUndefined()
-  })
-
-  it('stampDrainPresenceBestEffort slaat het job-namespace over zonder te schrijven', async () => {
-    await stampDrainPresenceBestEffort('scrum4us-job', 'cmxyzjobid1')
-    expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
   })
 })
