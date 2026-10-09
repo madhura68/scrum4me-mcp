@@ -5,6 +5,7 @@
 // het error-veld van de oorspronkelijke failed-job en stopt de cascade niet.
 
 import { prisma } from '../prisma.js'
+import { notifyJobChangedPrisma } from '../lib/job-notify.js'
 import { resolveRepoRoot } from '../tools/wait-for-job.js'
 import { removeWorktreeForJob } from '../git/worktree.js'
 import {
@@ -104,6 +105,10 @@ async function runCascade(failedJobId: string): Promise<CascadeOutcome> {
     // PBI-9: release product-worktree locks for cancelled jobs.
     // No-op for jobs without registered locks (TASK_IMPLEMENTATION).
     for (const j of eligible) await releaseLocksOnTerminal(j.id)
+    // IDEA-243: notify per id, direct na updateMany + lock-release en vóór de netwerkstappen
+    // (PR-close/revert/branch-delete), zodat een throw daar de notify niet laat verdwijnen.
+    // Best-effort: een gooiende notify mag die stappen niet overslaan.
+    for (const j of eligible) await notifyJobChangedPrisma(prisma, j.id, { bestEffort: true })
   }
 
   const outcome: CascadeOutcome = {
