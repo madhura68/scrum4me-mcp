@@ -9,6 +9,7 @@ import {createReadyFixtureSelection as createDispatchSelection} from './source-f
 import {createDispatchAttempts} from '../../src/dispatch/attempts.js'
 import {createDispatchRegistration} from '../../src/dispatch/registration.js'
 import type {DispatchInput} from '@shared/queue-dispatch.js'
+import {createDispatchCompletion} from '../../src/dispatch/completion.js'
 const holder=vi.hoisted(()=>({db:null as unknown as PrismaClient,actor:null as unknown as {userId:string;tokenId:string}}))
 vi.mock('../../src/prisma.js',()=>({get prisma(){return holder.db}}))
 vi.mock('../../src/auth.js',async original=>({...await original<typeof import('../../src/auth.js')>(),requireWriteAccess:async()=>holder.actor}))
@@ -99,4 +100,22 @@ it('blocks older unbound Task jobs and sprint executions before ordinary effects
  }
  await expect(h.web.query("UPDATE sprint_task_executions SET status='RUNNING' WHERE id=$1",[execution])).rejects.toMatchObject({code:'42501',message:'DISPATCH_MANAGED_ROW'})
  await expect(h.web.query(`INSERT INTO sprint_task_executions(id,sprint_job_id,task_id,"order",plan_snapshot,verify_required_snapshot,updated_at) VALUES($1,$2,$3,0,'new plan','ALIGNED_OR_PARTIAL',now())`,[randomUUID(),oldJob,task])).rejects.toMatchObject({code:'42501',message:'DISPATCH_MANAGED_ROW'})
+})
+
+// ISS-2: the claim-bound stop closes a never-scoped host Task in the same transaction. The managed
+// Task is projected FAILED with its hierarchy, its request binding is cleared, and a replay of the
+// stop projects nothing again.
+it('a claim-bound stop on a never-scoped host Task projects FAILED once and clears the binding',async()=>{
+ const r=await reserved()
+ const receipt=await attempts.claimDispatchAttempt(f.actor,session.incarnation_id,'task-claim',session.session_credential)
+ if(!receipt?.context)throw Error('missing host task')
+ const completion=createDispatchCompletion({store:h.dispatch,auth:createDispatchAuth({store:h.dispatch})})
+ const observedAt=new Date().toISOString()
+ const stop=await completion.submitClaimBoundStop(f.actor,receipt.context.proof,'DISPATCH_PREPARED_SOURCES_REFUSED',observedAt)
+ expect((await h.dispatch.query('SELECT state FROM queue_dispatch_requests WHERE id=$1',[r.id])).rows[0].state).toBe('FAILED')
+ const row=async()=>(await h.admin.query('SELECT status,dispatch_request_id,updated_at FROM tasks WHERE id=$1',[task])).rows[0]
+ const after=await row()
+ expect(after).toMatchObject({status:'FAILED',dispatch_request_id:null})
+ expect(await completion.submitClaimBoundStop(f.actor,receipt.context.proof,'DISPATCH_PREPARED_SOURCES_REFUSED',observedAt)).toEqual(stop)
+ expect(await row()).toEqual(after)
 })

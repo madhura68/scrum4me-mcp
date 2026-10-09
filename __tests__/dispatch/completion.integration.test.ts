@@ -232,3 +232,15 @@ it('records the usage when cancellation finishes between the two result transact
  expect((await h.dispatch.query('SELECT model_id,input_tokens,usage_capture_status FROM claude_jobs WHERE dispatch_request_id=$1',[x.proof.request_id])).rows[0])
   .toEqual({model_id:'claude-opus-5-5',input_tokens:14,usage_capture_status:'captured'})
 })
+// ISS-2: a supervisor whose created, never-started scope is cancelled closes it with its scoped
+// stop; cancellation then finishes as CANCELLED and only then releases capacity.
+it('prepared, then cancelled: the scoped stop of the created scope finishes as CANCELLED',async()=>{
+ const x=await makeRunning(h,{prepared:true}),v=await x.requests.getDispatch(x.f.actor,x.proof.request_id)
+ await x.cancel.cancelDispatch(x.f.actor,v.id,randomUUID(),v.version)
+ expect((await x.requests.getDispatch(x.f.actor,v.id)).state).toBe('CANCEL_REQUESTED')
+ expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations WHERE candidate_id=$1',[x.proof.candidate_id])).rows[0].released_at).toBeNull()
+ await x.completion.submitStop(x.f.actor,x.proof,x.stop)
+ expect((await x.requests.getDispatch(x.f.actor,v.id)).state).toBe('CANCELLED')
+ expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations WHERE candidate_id=$1',[x.proof.candidate_id])).rows[0].released_at).not.toBeNull()
+ expect((await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_results WHERE request_id=$1',[v.id])).rows[0].n).toBe(1)
+})

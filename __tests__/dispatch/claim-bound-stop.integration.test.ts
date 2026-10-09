@@ -8,14 +8,16 @@ import {createDispatchSelection} from '../../src/dispatch/selection.js'
 import {createDispatchRegistration} from '../../src/dispatch/registration.js'
 import {createDispatchAttempts} from '../../src/dispatch/attempts.js'
 import {createDispatchCompletion} from '../../src/dispatch/completion.js'
+import {claimBoundFailedResult} from '../../src/dispatch/stop-evidence.js'
 import type {DispatchResult} from '@shared/queue-dispatch.js'
 
 /** A CLAIMED attempt whose supervisor refused before any runtime scope existed. There is no scope
  * id, no start permit and no broker observation, so the scoped stop-evidence shapes cannot describe
  * it. The claim-bound stop closes it precisely: `stop_accepted` + `stopped_at` bound to the claim,
- * then a failed result reaches FAILED with the reservation released and exactly one canonical
- * result. */
-it('closes a claimed-never-scoped attempt through claim-bound stop evidence and a failed result',async()=>{
+ * and (ISS-2) in the same transaction a failed result in the supervisor's own form, with the
+ * reservation released and exactly one canonical result. The supervisor's result afterwards is an
+ * accepted replay. */
+it('closes a claimed-never-scoped attempt through claim-bound stop evidence in one transaction',async()=>{
  const h=await makeDispatchHarness()
  try{
   const f=await h.seed(),auth=createDispatchAuth({store:h.dispatch}),opts={store:h.dispatch,auth,enabled:true,productAllowlist:[f.input.product_id]}
@@ -48,17 +50,19 @@ it('closes a claimed-never-scoped attempt through claim-bound stop evidence and 
   const accepted=(await h.dispatch.query("SELECT payload->>'kind' kind,payload->>'reason' reason FROM queue_dispatch_events WHERE attempt_id=$1 AND type='stop_accepted'",[p.attempt_id])).rows
   expect(accepted).toEqual([{kind:'claim_bound_unscoped',reason:'DISPATCH_PREPARED_SOURCES_REFUSED'}])
   expect((await h.dispatch.query('SELECT stopped_at FROM queue_dispatch_attempts WHERE id=$1',[p.attempt_id])).rows[0].stopped_at).not.toBeNull()
-  // Stop evidence alone does not free capacity: the reservation is released only by the result.
-  expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations WHERE candidate_id=$1',[p.candidate_id])).rows[0].released_at).toBeNull()
+  // ISS-2: the accepted stop evidence closes the request at once; capacity is free after the stop.
+  expect((await h.dispatch.query('SELECT state FROM queue_dispatch_requests WHERE id=$1',[r.id])).rows[0].state).toBe('FAILED')
+  expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations WHERE candidate_id=$1',[p.candidate_id])).rows[0].released_at).not.toBeNull()
 
   // Idempotent replay returns the same receipt, never a second event.
   expect(await completion.submitClaimBoundStop(f.actor,p,'DISPATCH_PREPARED_SOURCES_REFUSED',observedAt)).toEqual(receipt)
   expect((await h.dispatch.query("SELECT count(*)::int n FROM queue_dispatch_events WHERE attempt_id=$1 AND type='stop_accepted'",[p.attempt_id])).rows[0].n).toBe(1)
 
-  const failure:DispatchResult={version:1,outcome:'failed',summary:'DISPATCH_PREPARED_SOURCES_REFUSED',
-   report_markdown:'The attempt was refused before any runtime scope was created. No container ran, so there is no output to report.',checks:[]}
+  // The supervisor's own failed result (scrum4me-docker closeClaimBound) is byte-identical to the
+  // one the service wrote, so it is an accepted replay.
+  const failure:DispatchResult=claimBoundFailedResult('DISPATCH_PREPARED_SOURCES_REFUSED')
   const result=await completion.acceptDispatchResult(f.actor,p,failure)
-  expect(result.accepted).toBe(true)
+  expect(result).toMatchObject({accepted:true,reason:'replayed'})
   expect((await h.dispatch.query('SELECT state,result_id FROM queue_dispatch_requests WHERE id=$1',[r.id])).rows[0].state).toBe('FAILED')
   expect((await h.dispatch.query('SELECT count(*)::int n,max(outcome) outcome FROM queue_dispatch_results WHERE request_id=$1',[r.id])).rows[0]).toEqual({n:1,outcome:'FAILED'})
   expect((await h.dispatch.query('SELECT state FROM queue_dispatch_attempts WHERE id=$1',[p.attempt_id])).rows[0].state).toBe('FAILED')
