@@ -43,6 +43,7 @@ import { loadManualIdeaContext } from '../lib/manual-idea-context.js'
 import { resolvePrLinkedPlan, type LinkedPlan } from '../lib/pr-linked-plan.js'
 import { resolveTaskImplContext } from '../lib/task-review-context.js'
 import { claimLog } from '../lib/claim-log.js'
+import { notifyJobChangedPrisma } from '../lib/job-notify.js'
 import { getInstanceId } from '../presence/instance.js'
 import { getWorkerRuntimeFromEnv, type WorkerRuntime } from '../worker-runtime.js'
 import { MAX_LOOP_ROUNDS, parseLoopRound } from '../lib/idea-plan-loop.js'
@@ -223,6 +224,8 @@ export async function markJobTerminallyFailed(jobId: string, reason: string): Pr
       })
       .catch(() => {})
   }
+  // IDEA-243: best-effort, ná locks en SprintRun-update zodat een falende notify die nooit overslaat.
+  await notifyJobChangedPrisma(prisma, jobId, { bestEffort: true })
 }
 
 // Spec §3.4 (M38): reuse ook bij een vastgelegde branch van dezelfde run
@@ -370,6 +373,8 @@ export async function rollbackClaim(
         AND dispatch_request_id IS NULL
       `
   if (requeued === 0) claimLog('rollback.final_update_lost_ownership', { jobId })
+  // IDEA-243: alleen als de job echt terug is naar QUEUED; best-effort, ná alle opruiming.
+  if (requeued > 0) await notifyJobChangedPrisma(prisma, jobId, { bestEffort: true })
 }
 
 /**
@@ -425,6 +430,8 @@ export async function releaseMismatchedClaim(
           plan_snapshot = NULL, worker_instance_id = NULL, lease_until = NULL
       WHERE id = ${jobId}
     `
+    // IDEA-243: via tx (vuurt bij COMMIT); alleen bereikt bij een geslaagde guard hierboven.
+    await notifyJobChangedPrisma(tx, jobId)
   })
 }
 
@@ -521,6 +528,7 @@ export async function attachWorktreeToJob(
         data: { status: 'FAILED', error: message.slice(0, 2000), finished_at: new Date() },
       })
       claimLog('attach.localLlmNoRepoRoot', { jobId, productId, taskRepoUrl: taskRepoUrl ?? null })
+      await notifyJobChangedPrisma(prisma, jobId, { bestEffort: true })
       return { error: message }
     }
     await rollbackClaim(jobId, ownerIdentity(ownerCtx))
@@ -586,6 +594,7 @@ export async function attachWorktreeToJob(
       })
       await removeWorktreeWithoutGit(repoRoot, worktreePath)
       claimLog('attach.localLlmRefused', { jobId, error: err.message })
+      await notifyJobChangedPrisma(prisma, jobId, { bestEffort: true })
       return { error: err.message }
     }
     claimLog('attach.failed', { jobId, error: String((err as Error).message).slice(0, 200) })
@@ -944,6 +953,8 @@ export async function tryClaimJob(
         WHERE id = ${sprintRunId} AND status = 'QUEUED'
       `
     }
+    // IDEA-243: via tx, nooit via de globale prisma — anders vuurt de notify vóór COMMIT.
+    await notifyJobChangedPrisma(tx, jobId)
     return [{ id: jobId }]
   })
 

@@ -1,4 +1,5 @@
 import {assertRetryAuthorization} from './retry-authorization.js'
+import { notifyJobChanged } from '../lib/job-notify.js'
 import { writeDispatchOutbox } from './outbox.js';
 import { randomUUID, type KeyObject } from 'node:crypto';
 import type { PoolClient } from 'pg';
@@ -250,8 +251,10 @@ export function createDispatchAttempts(deps: {
                 await db.query("UPDATE queue_dispatch_candidates SET state='CLAIMED',incarnation_id=$2,first_claimed_at=now(),claim_key=$3 WHERE id=$1", [c.id, i.id, claimKey]);
                 c.incarnation_id = i.id;
                 c.state = 'CLAIMED';
-                if (c.job_id)
+                if (c.job_id) {
                     await db.query("UPDATE claude_jobs SET status='CLAIMED',claimed_at=now(),worker_instance_id=$2,updated_at=now() WHERE id=$1", [c.job_id, i.runtime_scope.worker_instance_id]);
+                    await notifyJobChanged(db, c.job_id);
+                }
                 const a = (await db.query<Attempt>("INSERT INTO queue_dispatch_attempts(id,candidate_id,incarnation_id,credential_hash,credential_key_version,claim_key,state,heartbeat_at) VALUES($1,$2,$3,$4,$5,$6,'CLAIMED',now()) RETURNING *", [id, c.id, i.id, credentialHash(secret), deps.keyVersion, claimKey])).rows[0];
                 await event(db, r, 'claimed', { candidate_id: c.id, attempt_id: id, incarnation_id: i.id, slot_id: i.slot_id });
                 if(r.retry_authorization_event_id){await event(db,r,'retry_consumed',{authorization_event_id:r.retry_authorization_event_id,attempt_id:a.id});await db.query('UPDATE queue_dispatch_requests SET retry_authorization_event_id=NULL WHERE id=$1',[r.id]);}
@@ -297,8 +300,10 @@ export function createDispatchAttempts(deps: {
             if (x.a.state === 'CLAIMED') {
                 await db.query("UPDATE queue_dispatch_attempts SET state='RUNNING',scope_id=$2,started_at=now(),heartbeat_at=now() WHERE id=$1", [x.a.id, scope.scopeId]);
                 await db.query("UPDATE queue_dispatch_candidates SET state='RUNNING' WHERE id=$1", [x.c.id]);
-                if (x.c.job_id)
+                if (x.c.job_id) {
                     await db.query("UPDATE claude_jobs SET status='RUNNING',started_at=now(),updated_at=now() WHERE id=$1", [x.c.job_id]);
+                    await notifyJobChanged(db, x.c.job_id);
+                }
                 await event(db, x.r, 'started_scope', { attempt_id: x.a.id, scope });
                 await state(db, x.r, 'RUNNING');
             }

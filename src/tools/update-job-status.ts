@@ -30,6 +30,7 @@ import { pushBranchForJob } from '../git/push.js'
 import { gitPrefixFor, isHarnessJobRow, UntrustedWorktreeGitlinkError } from '../git/local-llm.js'
 import { maybeBackupPush } from '../git/branch-safety.js'
 import { notifyJobEnqueued } from '../lib/dispatch/notify.js'
+import { jobChangedPayload, notifyJobChangedPrisma } from '../lib/job-notify.js'
 import { formatDocsAuditCursor } from '@shared/docs-audit-cursor.js'
 import { createPullRequest, getPullRequestState, listPullRequestFiles, markPullRequestReady } from '../git/pr.js'
 import { cancelPbiOnFailure } from '../cancel/pbi-cascade.js'
@@ -853,6 +854,8 @@ export async function applyDocsAuditTerminalUpdate(input: {
       error: 'DOCS_AUDIT-job niet in CLAIMED/RUNNING of niet door dit token geclaimd (stale/terminaal)',
     }
   }
+  // IDEA-243: best-effort, ná de zero-count-guard (de tool keert voor de hoofd-notify terug).
+  await notifyJobChangedPrisma(prisma, input.jobId, { bestEffort: true })
   return { ok: true, status: dbStatus }
 }
 
@@ -1599,26 +1602,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         try {
           const pg = new Client(dbClientConfig())
           await pg.connect()
-          const notifyPayload: Record<string, unknown> = {
-            type: 'claude_job_status_changed',
-            job_id: updated.id,
-            user_id: job.user_id,
-            product_id: job.product_id,
-            kind: job.kind,
-            status: updated.status,
-            runtime: job.runtime ?? 'CLAUDE',
-            source: job.source ?? 'SYSTEM',
-            branch: updated.branch ?? undefined,
-            pushed_at: updated.pushed_at?.toISOString() ?? undefined,
-            pr_url: updated.pr_url ?? undefined,
-            verify_result: updated.verify_result?.toLowerCase() ?? undefined,
-            summary: updated.summary ?? undefined,
-            error: updated.error ?? undefined,
-          }
-          if (job.task_id) notifyPayload.task_id = job.task_id
-          if (job.idea_id) {
-            notifyPayload.idea_id = job.idea_id
-          }
+          // IDEA-243: gedeelde payload-builder (met bytebudget) i.p.v. inline object.
+          const notifyPayload = jobChangedPayload({ ...job, ...updated })
           await pg.query(`SELECT pg_notify('scrum4me_changes', $1)`, [JSON.stringify(notifyPayload)])
 
           // M17 (spec §6): per gecancelde QUEUED DEPLOY-sibling (failed-branch

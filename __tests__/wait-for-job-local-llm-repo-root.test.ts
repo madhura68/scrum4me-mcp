@@ -108,7 +108,8 @@ describe('attachWorktreeToJob: local_llm-job zonder repo-root (P13)', () => {
       where: { id: 'job-local-no-root' },
       data: expect.objectContaining({ status: 'FAILED' }),
     })
-    expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
+    // IDEA-243: geen QUEUED-reset; alleen de best-effort jobnotify (pg_notify) mag via $executeRaw.
+    expect(mockPrisma.$executeRaw.mock.calls.every(([strings]) => (strings as readonly string[]).join('?').includes('pg_notify'))).toBe(true)
   })
 
   it.each(GUARDED_JOBS)('$label MET een expliciet geconfigureerde root claimt gewoon (geen clone nodig)', async ({ job }) => {
@@ -215,7 +216,8 @@ describe('attachWorktreeToJob: task-route explicitRootsOnly regression (P13 foll
       where: { id: 'job-task-route-no-repo-root' },
       data: expect.objectContaining({ status: 'FAILED' }),
     })
-    expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
+    // IDEA-243: geen QUEUED-reset; alleen de best-effort jobnotify (pg_notify) mag via $executeRaw.
+    expect(mockPrisma.$executeRaw.mock.calls.every(([strings]) => (strings as readonly string[]).join('?').includes('pg_notify'))).toBe(true)
   })
 
   it.each(GUARDED_JOBS)('$label met task.repo_url EN een REPO_-root claimt met die task-root', async ({ job }) => {

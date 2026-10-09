@@ -1,4 +1,5 @@
 import {assertRetryAuthorization} from './retry-authorization.js'
+import { notifyJobChanged } from '../lib/job-notify.js'
 import {writeDispatchOutbox} from './outbox.js'
 import {randomUUID,sign,type KeyObject} from 'node:crypto'
 import type {DispatchInput,DispatchResult} from '@shared/queue-dispatch.js'
@@ -125,7 +126,7 @@ export async function rejectUnstartedInTransaction(db:import('pg').PoolClient,re
    if(r.first_claimed_at)await assertRetryAuthorization(db,r as typeof r & {retry_authorization_event_id:string|null;generation:number})
    if(r.input.task_id)await db.query('SELECT id FROM tasks WHERE id=$1 FOR UPDATE',[r.input.task_id])
    const c=(await db.query("SELECT * FROM queue_dispatch_candidates WHERE request_id=$1 AND generation=$2 AND state NOT IN ('FINISHED','RETIRED') FOR UPDATE",[r.id,r.generation])).rows[0]
-   if(c){if(c.first_claimed_at)return;await db.query('SELECT id FROM queue_dispatch_slots WHERE id=$1 FOR UPDATE',[c.reserved_slot_id]);if(c.job_id){const j=(await db.query('SELECT * FROM claude_jobs WHERE id=$1 FOR UPDATE',[c.job_id])).rows[0];if(j?.status!=='QUEUED'||j.claimed_at)return;await db.query("UPDATE claude_jobs SET status='CANCELLED',finished_at=now(),updated_at=now() WHERE id=$1",[c.job_id])}
+   if(c){if(c.first_claimed_at)return;await db.query('SELECT id FROM queue_dispatch_slots WHERE id=$1 FOR UPDATE',[c.reserved_slot_id]);if(c.job_id){const j=(await db.query('SELECT * FROM claude_jobs WHERE id=$1 FOR UPDATE',[c.job_id])).rows[0];if(j?.status!=='QUEUED'||j.claimed_at)return;await db.query("UPDATE claude_jobs SET status='CANCELLED',finished_at=now(),updated_at=now() WHERE id=$1",[c.job_id]);await notifyJobChanged(db,c.job_id)}
     await db.query("UPDATE queue_dispatch_candidates SET state='RETIRED' WHERE id=$1",[c.id]);await db.query('UPDATE queue_dispatch_reservations SET released_at=now() WHERE candidate_id=$1 AND released_at IS NULL',[c.id])}
    const next=decideDispatchTransition(r.state as 'WAITING'|'RESERVED','reject_unstarted'),id=randomUUID(),payload:DispatchResult={version:1,outcome:'failed',summary:reason,report_markdown:`Execution could not start: ${reason}.`,checks:[]}
    await db.query("INSERT INTO queue_dispatch_results(id,request_id,outcome,payload,source_refs,sha256) VALUES($1,$2,'FAILED',$3,$4,$5)",[id,r.id,payload,r.input.review_documents??{},artifactHash(JSON.stringify(payload))])

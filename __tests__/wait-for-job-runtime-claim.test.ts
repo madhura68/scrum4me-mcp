@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // De claimfilters hieronder zijn zuivere functies. De tests onderaan (M45-2b: de runtimecontrole direct na de
 // claim) draaien getFullJobContext en releaseMismatchedClaim tegen deze mocks: één transactieclient waarvan de
 // SQL-aanroepen zichtbaar zijn, en spies op alles wat een worktree of een idee-voorbereiding zou starten.
-const tx = vi.hoisted(() => ({ $queryRaw: vi.fn(), $executeRaw: vi.fn() }))
+const tx = vi.hoisted(() => ({ $queryRaw: vi.fn(), $executeRaw: vi.fn(), claudeJob: { findUnique: vi.fn() } }))
 const worktreeMocks = vi.hoisted(() => ({ createWorktreeForJob: vi.fn(), removeWorktreeForJob: vi.fn() }))
 const cloneMocks = vi.hoisted(() => ({ cloneRepoOnDemand: vi.fn() }))
 const jobLockMocks = vi.hoisted(() => ({ setupProductWorktrees: vi.fn(), releaseLocksOnTerminal: vi.fn() }))
@@ -410,6 +410,9 @@ const STEP_TASK_RESET =
 const STEP_JOB_REQUEUE =
   "UPDATE claude_jobs SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL, " +
   'plan_snapshot = NULL, worker_instance_id = NULL, lease_until = NULL WHERE id = ?'
+// IDEA-243: de jobnotify na de requeue, op de tx-client (vuurt dus bij COMMIT).
+const STEP_NOTIFY = 'SELECT pg_notify(?, ?)'
+const QUEUED_NOTIFY_ROW = { id: JOB_ID, user_id: 'user-1', product_id: 'prod-1', kind: 'IDEA_GRILL', status: 'QUEUED' }
 
 describe('getFullJobContext — de runtime van de job moet die van de worker zijn (M45-2b)', () => {
   let errorSpy: ReturnType<typeof vi.spyOn>
@@ -419,6 +422,7 @@ describe('getFullJobContext — de runtime van de job moet die van de worker zij
     mockPrisma.$transaction.mockImplementation(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx))
     tx.$queryRaw.mockResolvedValue([OWNED_ROW])
     tx.$executeRaw.mockResolvedValue(1)
+    tx.claudeJob.findUnique.mockResolvedValue(QUEUED_NOTIFY_ROW)
     jobLockMocks.setupProductWorktrees.mockResolvedValue([])
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
   })
@@ -460,11 +464,15 @@ describe('getFullJobContext — de runtime van de job moet die van de worker zij
 
     expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1)
     const steps = txSteps()
-    expect(steps).toHaveLength(3)
+    expect(steps).toHaveLength(4)
     expect(steps[0].sql).toMatch(STEP_LOCK)
     expect(steps[0].values).toEqual([JOB_ID])
     expect(steps[1]).toEqual({ sql: STEP_TASK_RESET, values: [JOB_ID] })
     expect(steps[2]).toEqual({ sql: STEP_JOB_REQUEUE, values: [JOB_ID] })
+    expect(steps[3].sql).toBe(STEP_NOTIFY)
+    expect(JSON.parse(steps[3].values[1] as string)).toMatchObject({ type: 'claude_job_status_changed', job_id: JOB_ID, status: 'QUEUED' })
+    // Via tx, nooit via de globale prisma (anders vóór COMMIT).
+    expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
   })
 
   it.each(MISMATCHES)('een %s-worker met een %s-job: er staat niets op schijf en er is niets voorbereid', async (workerRuntime, jobRuntime) => {
@@ -559,6 +567,7 @@ describe('releaseMismatchedClaim — het eigenaarschap wordt onder de lock gecon
     mockPrisma.$transaction.mockImplementation(async (callback: (client: typeof tx) => Promise<unknown>) => callback(tx))
     tx.$queryRaw.mockResolvedValue([OWNED_ROW])
     tx.$executeRaw.mockResolvedValue(1)
+    tx.claudeJob.findUnique.mockResolvedValue(QUEUED_NOTIFY_ROW)
   })
 
   const OWNER_IDENTITY = { tokenId: 'token-A', instanceId: 'worker-A' }
@@ -567,11 +576,12 @@ describe('releaseMismatchedClaim — het eigenaarschap wordt onder de lock gecon
     await releaseMismatchedClaim(JOB_ID, OWNER_IDENTITY)
 
     const steps = txSteps()
-    expect(steps.map((step) => step.sql)).toEqual([expect.stringMatching(STEP_LOCK), STEP_TASK_RESET, STEP_JOB_REQUEUE])
-    expect(steps.map((step) => step.values)).toEqual([[JOB_ID], [JOB_ID], [JOB_ID]])
+    expect(steps.map((step) => step.sql)).toEqual([expect.stringMatching(STEP_LOCK), STEP_TASK_RESET, STEP_JOB_REQUEUE, STEP_NOTIFY])
+    expect(steps.map((step) => step.values.length ? step.values[0] : null).slice(0, 3)).toEqual([JOB_ID, JOB_ID, JOB_ID])
     // De lock komt van een SELECT ... FOR UPDATE in de transactie, niet van een los statement erbuiten.
     expect(tx.$queryRaw).toHaveBeenCalledTimes(1)
-    expect(tx.$executeRaw).toHaveBeenCalledTimes(2)
+    expect(tx.$executeRaw).toHaveBeenCalledTimes(3)
+    expect(mockPrisma.$executeRaw).not.toHaveBeenCalled()
   })
 
   // Wat de teruggave onder de lock leest, bepaalt of er iets verandert: alleen een claim die nog van déze

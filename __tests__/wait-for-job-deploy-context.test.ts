@@ -140,11 +140,13 @@ describe('getFullJobContext DEPLOY jobs', () => {
         product: { ...BASE_PRODUCT, auto_deploy: false, deploy_flow: null },
       })
       .mockResolvedValueOnce({ kind: 'DEPLOY', product_id: null, branch: null, task: null })
+      // Derde lookup = de IDEA-243-jobnotify na de QUEUED-reset (leest de actuele rij).
+      .mockResolvedValueOnce({ id: 'job-deploy-1234', user_id: 'user-1', product_id: 'prod-1', kind: 'DEPLOY', status: 'QUEUED' })
 
     const context = await getFullJobContext('job-deploy-1234', 'CLAUDE')
 
     expect(context).toBeNull()
-    expect(mockPrisma.claudeJob.findUnique).toHaveBeenCalledTimes(2)
+    expect(mockPrisma.claudeJob.findUnique).toHaveBeenCalledTimes(3)
     // rollbackClaim's cleanup-lookup gebruikt de compacte select.
     expect(mockPrisma.claudeJob.findUnique).toHaveBeenNthCalledWith(2, {
       where: { id: 'job-deploy-1234' },
@@ -157,7 +159,8 @@ describe('getFullJobContext DEPLOY jobs', () => {
       },
     })
     // De QUEUED-reset: tagged-template call → [strings, ...values].
-    expect(mockPrisma.$executeRaw).toHaveBeenCalledTimes(1)
+    // QUEUED-reset + best-effort jobnotify (rollbackClaim, requeued > 0).
+    expect(mockPrisma.$executeRaw).toHaveBeenCalledTimes(2)
     const [strings, ...values] = mockPrisma.$executeRaw.mock.calls[0] as [
       readonly string[],
       ...unknown[],
@@ -167,5 +170,8 @@ describe('getFullJobContext DEPLOY jobs', () => {
     expect(sql).toContain('claimed_by_token_id = NULL')
     expect(sql).toContain('lease_until = NULL')
     expect(values).toEqual(['job-deploy-1234'])
+    const [notifySql, , payload] = mockPrisma.$executeRaw.mock.calls[1] as [readonly string[], string, string]
+    expect(notifySql.join('?')).toContain('pg_notify')
+    expect(JSON.parse(payload)).toMatchObject({ type: 'claude_job_status_changed', job_id: 'job-deploy-1234', status: 'QUEUED' })
   })
 })

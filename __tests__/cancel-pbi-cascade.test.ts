@@ -8,6 +8,7 @@ vi.mock('../src/prisma.js', () => ({
       updateMany: vi.fn(),
       update: vi.fn(),
     },
+    $executeRaw: vi.fn(),
   },
 }))
 
@@ -47,6 +48,7 @@ import { deleteRemoteBranch } from '../src/git/push.js'
 import { cancelPbiOnFailure } from '../src/cancel/pbi-cascade.js'
 
 const mockPrisma = prisma as unknown as {
+  $executeRaw: ReturnType<typeof vi.fn>
   claudeJob: {
     findUnique: ReturnType<typeof vi.fn>
     findMany: ReturnType<typeof vi.fn>
@@ -464,5 +466,47 @@ describe('cancelPbiOnFailure', () => {
       jobId: 'sib-1',
       keepBranch: false,
     })
+  })
+})
+
+describe('cancelPbiOnFailure — IDEA-243 jobnotify per gecancelde job', () => {
+  const sibling = (id: string, pr_url: string | null = null) => ({
+    id, branch: `feat/story-${id}`, pr_url, status: 'QUEUED', task_id: `t-${id}`, task: { repo_url: null },
+  })
+  const rowFor = (id: string) => ({
+    id, user_id: 'user-1', product_id: 'prod-1', kind: 'TASK_IMPLEMENTATION', status: 'CANCELLED',
+  })
+  const notifiedPayloads = () =>
+    mockPrisma.$executeRaw.mock.calls.map(([, , payload]) => JSON.parse(payload as string))
+
+  it('stuurt precies één notify per gecancelde job met zijn actuele status', async () => {
+    mockPrisma.claudeJob.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) =>
+      where.id === 'job-failed' ? FAILED_JOB : rowFor(where.id))
+    mockPrisma.claudeJob.findMany.mockResolvedValue([sibling('sib1'), sibling('sib2')])
+
+    const out = await cancelPbiOnFailure('job-failed')
+
+    expect(out.cancelled_job_ids).toEqual(['sib1', 'sib2'])
+    expect(notifiedPayloads().map((p) => [p.type, p.job_id, p.status])).toEqual([
+      ['claude_job_status_changed', 'sib1', 'CANCELLED'],
+      ['claude_job_status_changed', 'sib2', 'CANCELLED'],
+    ])
+  })
+
+  it('een gooiende notify slaat PR-close en worktree-opruiming niet over', async () => {
+    mockPrisma.claudeJob.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) =>
+      where.id === 'job-failed' ? FAILED_JOB : rowFor(where.id))
+    mockPrisma.claudeJob.findMany.mockResolvedValue([sibling('sib1', 'https://github.com/o/r/pull/9')])
+    mockPrisma.$executeRaw.mockRejectedValue(new Error('notify kapot'))
+    mockGetPrState.mockResolvedValue({ state: 'OPEN', mergeCommit: null, baseRefName: 'main', title: 'feat: x' })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    const out = await cancelPbiOnFailure('job-failed')
+
+    expect(warn).toHaveBeenCalled()
+    expect(mockClosePr).toHaveBeenCalledWith(expect.objectContaining({ prUrl: 'https://github.com/o/r/pull/9' }))
+    expect(out.closed_prs).toEqual(['https://github.com/o/r/pull/9'])
+    expect(mockRemoveWorktree).toHaveBeenCalled()
+    warn.mockRestore()
   })
 })

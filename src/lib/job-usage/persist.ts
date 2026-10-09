@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { prisma } from '../../prisma.js'
+import { notifyJobChangedPrisma } from '../job-notify.js'
 import {
   CLAUDE_UPDATE_TOOL_NAME,
   computeUsageFromTranscript,
@@ -76,13 +77,17 @@ export async function persistJobUsageSnapshot(
       },
       data,
     })
-    return result.count > 0 ? 'written' : 'guard_mismatch'
+    if (result.count === 0) return 'guard_mismatch'
+    // IDEA-243: best-effort; de hook blokkeert nooit en meldt niets bij een mislukte guard.
+    await notifyJobChangedPrisma(prisma, jobId, { bestEffort: true })
+    return 'written'
   }
 
   await prisma.claudeJob.update({
     where: { id: jobId },
     data,
   })
+  await notifyJobChangedPrisma(prisma, jobId, { bestEffort: true })
   return 'written'
 }
 

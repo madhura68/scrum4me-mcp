@@ -4,6 +4,7 @@ import type { Prisma } from '@prisma/client'
 import { prisma } from '../../prisma.js'
 import { getJobConfigSnapshot } from './snapshot.js'
 import { DispatchError } from './errors.js'
+import { notifyJobChangedPrisma } from '../job-notify.js'
 
 type PreFlightBlocker = { type: string; id: string; label: string }
 
@@ -126,7 +127,8 @@ async function startSprintRunCore(
       kind: 'SPRINT_IMPLEMENTATION',
       productId: sprint.product_id,
     })
-    await tx.claudeJob.create({
+    const sprintJob = await tx.claudeJob.create({
+      select: { id: true },
       data: {
         user_id: opts.userId,
         product_id: sprint.product_id,
@@ -140,6 +142,8 @@ async function startSprintRunCore(
         ...sprintSnapshot,
       },
     })
+    // IDEA-243: via tx (vuurt bij COMMIT), niet notifyJobEnqueued (globale prisma → 404 vóór COMMIT).
+    await notifyJobChangedPrisma(tx, sprintJob.id)
     return { sprint_run_id: sprintRun.id, jobs_count: 1 }
   }
 
@@ -152,7 +156,8 @@ async function startSprintRunCore(
       productId: sprint.product_id,
       taskId: t.id,
     })
-    await tx.claudeJob.create({
+    const taskJob = await tx.claudeJob.create({
+      select: { id: true },
       data: {
         user_id: opts.userId,
         product_id: sprint.product_id,
@@ -166,6 +171,7 @@ async function startSprintRunCore(
         ...taskSnapshot,
       },
     })
+    await notifyJobChangedPrisma(tx, taskJob.id)
     jobsCount += 1
   }
 

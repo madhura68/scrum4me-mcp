@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { notifyJobChanged } from '../lib/job-notify.js'
 import type { Pool, PoolClient } from 'pg'
 import type { DispatchInput } from '@shared/queue-dispatch.js'
 import { resolveRuntimeJobConfig, type RuntimeJobConfig } from '@shared/job-config.js'
@@ -49,5 +50,6 @@ export async function enqueueManagedJob(db: PoolClient, request: ManagedRequest,
   VALUES($1,$2,$3,$4,$5,'QUEUED','COPILOT',$6,$7,$8,$9,$10,$11,$12,$13,$14,now())`,
     [id, request.user_id, request.product_id, request.input.task_id ?? null, job.kind, candidate.runtime, job.requiredCapability, snapshot.model, snapshot.thinking_budget,
       snapshot.runtime === 'CLAUDE' ? snapshot.permission_mode : 'default', request.snapshot.implementation_plan ?? null, request.input.requirements.repository?.base_sha ?? null, request.id, candidate.id])
+  await notifyJobChanged(db, id)
   return id
 }

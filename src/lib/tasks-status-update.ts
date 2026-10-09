@@ -5,6 +5,7 @@ import {decideStoryStatus,decidePbiStatus,decideSprintStatus} from './task-statu
 // ook in de Scrum4Me-repo updaten en omgekeerd.
 import type { Prisma, TaskStatus, SprintStatus } from '@prisma/client'
 import { prisma } from '../prisma.js'
+import { notifyJobChangedPrisma } from './job-notify.js'
 
 export interface PropagationResult {
   task: {
@@ -194,7 +195,9 @@ export async function propagateStatusUpwards(
             // is cancelExceptJobId null en hebben we geen siblings om te
             // cancellen — de SPRINT-job zelf blijft actief en de worker
             // detecteert dit via job_heartbeat.
-            await tx.claudeJob.updateMany({
+            // IDEA-243: updateManyAndReturn = zelfde semantiek als updateMany, in één statement;
+            // de id-lijst is de set die dit statement zelf wijzigde (geen aparte findMany-race).
+            const cancelledJobs = await tx.claudeJob.updateManyAndReturn({
               where: {
                 sprint_run_id: sprintRun.id,
                 status: { in: ['QUEUED', 'CLAIMED', 'RUNNING'] },
@@ -205,7 +208,10 @@ export async function propagateStatusUpwards(
                 finished_at: new Date(),
                 error: `Cancelled: task ${taskId} failed in same sprint run`,
               },
+              select: { id: true },
             })
+            // Binnen de tx: notify via tx (vuurt bij COMMIT).
+            for (const j of cancelledJobs) await notifyJobChangedPrisma(tx, j.id)
             sprintRunChanged = true
           } else {
             // COMPLETED

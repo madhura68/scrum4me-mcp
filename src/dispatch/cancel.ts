@@ -1,4 +1,5 @@
 import type {DispatchActor} from './ports.js'
+import { notifyJobChanged } from '../lib/job-notify.js'
 import type {DispatchAuth} from './auth.js'
 import type {DispatchView,DispatchResult} from '@shared/queue-dispatch.js'
 import {withDispatchRetryTransaction,type DispatchStore} from './db.js'
@@ -45,7 +46,7 @@ export function createDispatchCancellation(deps:{store:DispatchStore;auth:Dispat
      if(x.a.stopped_at&&!pending.rowCount)await finishResult(db,x,payload,artifactHash(canonicalResult(payload)))
     }else{
      if(r.first_claimed_at)await assertRetryAuthorization(db,r)
-     if(c){if(c.first_claimed_at)throw new DispatchError('DISPATCH_STATE_CONFLICT');await db.query('SELECT id FROM queue_dispatch_slots WHERE id=$1 FOR UPDATE',[c.reserved_slot_id]);if(c.job_id){await db.query('SELECT id FROM claude_jobs WHERE id=$1 FOR UPDATE',[c.job_id]);await db.query("UPDATE claude_jobs SET status='CANCELLED',finished_at=now(),updated_at=now() WHERE id=$1",[c.job_id])}await db.query("UPDATE queue_dispatch_candidates SET state='RETIRED' WHERE id=$1",[c.id])}
+     if(c){if(c.first_claimed_at)throw new DispatchError('DISPATCH_STATE_CONFLICT');await db.query('SELECT id FROM queue_dispatch_slots WHERE id=$1 FOR UPDATE',[c.reserved_slot_id]);if(c.job_id){await db.query('SELECT id FROM claude_jobs WHERE id=$1 FOR UPDATE',[c.job_id]);await db.query("UPDATE claude_jobs SET status='CANCELLED',finished_at=now(),updated_at=now() WHERE id=$1",[c.job_id]);await notifyJobChanged(db,c.job_id)}await db.query("UPDATE queue_dispatch_candidates SET state='RETIRED' WHERE id=$1",[c.id])}
      const resultId=await insertResult(db,id,null,payload,r.input.review_documents);await transition(db,id,'CANCELLED',resultId)
      if(c)await db.query('UPDATE queue_dispatch_reservations SET released_at=now() WHERE candidate_id=$1 AND released_at IS NULL',[c.id])
      if(r.input.action==='task_implementation')await db.query('UPDATE tasks SET dispatch_request_id=NULL WHERE id=$1 AND dispatch_request_id=$2',[r.input.task_id,id])
