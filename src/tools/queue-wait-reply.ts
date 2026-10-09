@@ -11,7 +11,6 @@ import { messageView, type QueueMessageLike } from '../queue/view.js'
 import { QUEUE_MODELS } from '@shared/queue-identity.js'
 import type { QueueAddress } from '../queue/types.js'
 import { legacyMarkerWhere } from '../queue/marked.js'
-import { stampDrainPresenceBestEffort } from '../queue/presence.js'
 
 const CALLER_PROTOCOL =
   'Remove answered request-ids from the next queue_wait_reply call; every reply carries its in_reply_to.'
@@ -89,22 +88,11 @@ export function registerQueueWaitReplyTool(server: McpServer) {
         // one transaction — there is nothing to finish later).
         const claimedBy = `mcp:${getInstanceId()}`
 
-        // IDEA-194 §5.2: deze tool draint de antwoord-helft (claim + auto-ack
-        // in één transactie, buiten queue_next/queue_done om). Elke return ná
-        // een afgeronde claimpoging stempelt één keer op het identiteitsadres —
-        // tenzij de aanroep geaborteerd is, want dan is er niemand meer die
-        // responsiviteit bewijst.
-        const stampDrain = () => stampDrainPresenceBestEffort(self.server, self.model)
-
         let replies = await collectAvailableReplies(self, message_ids, claimedBy)
         if (replies.length > 0) {
-          await stampDrain()
           return toolJson({ status: 'ok', replies, hint: CALLER_PROTOCOL })
         }
         if (waitSeconds === 0 || signal.aborted) {
-          // Ook een lege niet-blokkerende check is een drain: collectAvailableReplies
-          // draaide hierboven onvoorwaardelijk.
-          if (!signal.aborted) await stampDrain()
           return toolJson({ status: 'timeout', replies: [] })
         }
 
@@ -115,7 +103,6 @@ export function registerQueueWaitReplyTool(server: McpServer) {
           // One direct attempt right after LISTEN — closes the setup gap (§5).
           replies = await collectAvailableReplies(self, message_ids, claimedBy)
           if (replies.length > 0) {
-            await stampDrain()
             return toolJson({ status: 'ok', replies, hint: CALLER_PROTOCOL })
           }
           while (Date.now() < deadline && !signal.aborted) {
@@ -125,8 +112,6 @@ export function registerQueueWaitReplyTool(server: McpServer) {
             if (signal.aborted) break
             replies = await collectAvailableReplies(self, message_ids, claimedBy)
             if (replies.length > 0) {
-              // Deze return sluit de hele aanroep af; het is geen lus-iteratie.
-              await stampDrain()
               return toolJson({ status: 'ok', replies, hint: CALLER_PROTOCOL })
             }
           }
@@ -136,7 +121,6 @@ export function registerQueueWaitReplyTool(server: McpServer) {
         // §7: timeout is not an error. No cancel rollback needed either —
         // claim+ack is one transaction; the idempotent read catches
         // post-commit loss on the next call.
-        if (!signal.aborted) await stampDrain()
         return toolJson({ status: 'timeout', replies: [] })
       }),
   )

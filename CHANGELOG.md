@@ -20,6 +20,10 @@ M45-2b: `HARNESS`, a LiteLLM model on a per-product configuration, becomes a thi
 - **Git protection** — one predicate, `isHarnessJob` (`runtime = 'HARNESS'` or `required_capability = 'local_llm'`), now decides the git protection of a guarded job and the `update_job_status` exemptions (no auto-PR, no status propagation, no PBI fail-cascade) for both kinds of job.
 - **Dispatch integration gate** — its test database gets the two M45-2a migrations (Scrum4Me `ae6483b2`) as an additive overlay, so `DISPATCH_TEST_SCHEMA_ROOT` must be a full clone that contains that commit.
 
+### Removed
+
+- **Presence drain-stamp** (ISS-58) — `queue_next`, `queue_done`, `queue_fail` and `queue_wait_reply` no longer write `session_last_drain_at` to `agent_presence`. The MCP connects as `scrum4me_web_runtime`/`scrum4me_worker`, which the closed db-access contract gives only SELECT on that table, so every stamp failed with `permission denied` (silently, best-effort) and filled the postgres log. Only the s4m-queue CLI (role `s4m_queue`) still stamps; presence status never depended on this field.
+
 ### Schema
 
 - `vendor/scrum4me-shared` bumped to `132656b`; `prisma/schema.prisma` regenerated with `AgentRuntime.HARNESS` and the models `ProductHarnessChoice` and `JobCostReport`.

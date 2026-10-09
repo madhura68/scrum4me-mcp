@@ -1,4 +1,4 @@
-import { PRESENCE_FRESH_SECONDS, QUEUE_JOB_SERVER } from '@shared/queue-identity.js'
+import { PRESENCE_FRESH_SECONDS } from '@shared/queue-identity.js'
 import { prisma } from '../prisma.js'
 
 export type PresenceStatus = 'weg' | 'bezig' | 'beschikbaar' | 'onbemand'
@@ -186,24 +186,7 @@ export async function readPresenceBlockBestEffort(
   }
 }
 
-/**
- * Drain-stempel op de MCP-claimpaden. Zet NOOIT session_expected_by: een
- * MCP-sessie heeft een watch-proces en hoeft geen termijn te beloven.
- */
-export async function stampDrainPresenceBestEffort(
-  server: string,
-  model: string,
-): Promise<void> {
-  // Job-namespace heeft geen (server, model)-adres — nooit een presence-rij
-  // (zelfde guard als de CLI-twin in s4m-queue/src/presence-db.ts).
-  if (server === QUEUE_JOB_SERVER) return
-  try {
-    await prisma.$executeRaw`
-      INSERT INTO agent_presence (server, model, session_last_drain_at, updated_at)
-      VALUES (${server}, ${model}, now(), now())
-      ON CONFLICT (server, model) DO UPDATE SET
-        session_last_drain_at = now(), updated_at = now()`
-  } catch (err) {
-    console.error('[scrum4me-mcp] presence drain-stamp failed (best-effort):', err)
-  }
-}
+// Geen drain-stempel vanuit de MCP (ISS-58): de MCP verbindt als
+// scrum4me_web_runtime/scrum4me_worker, en het gesloten db-access-contract op
+// agent_presence geeft die rollen alleen SELECT. session_last_drain_at wordt
+// alleen door de CLI (rol s4m_queue) geschreven; de status hangt er niet van af.
