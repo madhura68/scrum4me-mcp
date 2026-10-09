@@ -1,4 +1,5 @@
 import {assertRetryAuthorization} from './retry-authorization.js'
+import { notifyJobChanged } from '../lib/job-notify.js'
 import { writeDispatchOutbox } from './outbox.js'
 import {rejectUnstartedInTransaction} from './sources.js'
 import { randomUUID } from 'node:crypto'
@@ -133,6 +134,7 @@ export function createDispatchSelection(deps: { store: DispatchStore; auth: Disp
         const job = (await db.query<{ status: string; claimed_at: Date | null }>('SELECT status,claimed_at FROM claude_jobs WHERE id=$1 FOR UPDATE', [c.job_id])).rows[0]
         if (!job || job.status !== 'QUEUED' || job.claimed_at) return false
         await db.query("UPDATE claude_jobs SET status='CANCELLED',finished_at=now(),updated_at=now() WHERE id=$1 AND status='QUEUED'", [c.job_id])
+        await notifyJobChanged(db, c.job_id)
       }
       await db.query("UPDATE queue_dispatch_candidates SET state='RETIRED' WHERE id=$1", [c.id])
       await db.query('UPDATE queue_dispatch_reservations SET released_at=now() WHERE candidate_id=$1 AND released_at IS NULL', [c.id])

@@ -1,4 +1,5 @@
 import {z} from 'zod'
+import { notifyJobChanged } from '../lib/job-notify.js'
 import type {PoolClient} from 'pg'
 
 /** T-1972: the token usage the supervisor read from the sealed child's own transcript. The child
@@ -35,4 +36,5 @@ export async function writeDispatchUsage(db:PoolClient,jobId:string,raw:unknown,
  if(!job||(options.once&&job.usage_capture_status!==null))return
  const c=dispatchUsageColumns(raw,job.requested_model??null),keys=Object.keys(c) as (keyof typeof c)[]
  await db.query(`UPDATE claude_jobs SET ${keys.map((k,i)=>`${k}=$${i+2}`).join(',')},updated_at=now() WHERE id=$1`,[jobId,...keys.map(k=>c[k])])
+ await notifyJobChanged(db,jobId)
 }

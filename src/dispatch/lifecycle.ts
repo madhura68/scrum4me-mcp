@@ -1,4 +1,5 @@
 import {projectManagedTaskStatus} from './task-status.js'
+import { notifyJobChanged } from '../lib/job-notify.js'
 import {writeDispatchOutbox} from './outbox.js'
 import {randomUUID} from 'node:crypto'
 import type {PoolClient} from 'pg'
@@ -24,7 +25,7 @@ export async function unresolvedPublication(db:PoolClient,id:string){return !!(a
 export async function terminalizeAttempt(db:PoolClient,x:ArtifactAttempt,outcome:'SUCCEEDED'|'FAILED'|'CANCELLED'){
  if(!x.a.stopped_at||await unresolvedPublication(db,x.r.id))throw new DispatchError('DISPATCH_STATE_CONFLICT')
  await db.query('UPDATE queue_dispatch_attempts SET state=$2,revoked_at=COALESCE(revoked_at,now()) WHERE id=$1',[x.a.id,outcome])
- if(x.c.job_id)await db.query('UPDATE claude_jobs SET status=$2,finished_at=now(),updated_at=now() WHERE id=$1',[x.c.job_id,outcome==='SUCCEEDED'?'DONE':outcome])
+ if(x.c.job_id){await db.query('UPDATE claude_jobs SET status=$2,finished_at=now(),updated_at=now() WHERE id=$1',[x.c.job_id,outcome==='SUCCEEDED'?'DONE':outcome]);await notifyJobChanged(db,x.c.job_id)}
  await db.query("UPDATE queue_dispatch_candidates SET state='FINISHED' WHERE id=$1",[x.c.id])
  await db.query('UPDATE queue_dispatch_reservations SET released_at=now() WHERE candidate_id=$1 AND released_at IS NULL',[x.c.id])
 }
