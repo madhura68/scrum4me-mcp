@@ -15,6 +15,7 @@ The pinned version is the subject. You cannot fetch a newer one and should not r
 ## Boundaries
 
 - Read-only everywhere except `/output`. No MCP tools, no Scrum4Me tools, no completion tool, no queue, no network beyond the model gateway.
+- No package registry either: `npm ci`, `npm install`, `npx` without a local install, `pip install` and the like cannot fetch anything — do not run them. A failed fetch can keep spinning past any `timeout` and eats your wall-clock limit. Review statically: read the code and tests instead of running them. Unless the dependencies are already under `/work`, a test or build the verification standard asks for is a `not_run` check with "no package registry in the review container" as evidence.
 - Do not fix anything — not the document, not the code, not an obvious typo. Silently repairing the subject destroys the evidence the verdict rests on. Describe the fix; never apply it.
 - No host actions, no deploy, no merge, no message to anyone.
 

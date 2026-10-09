@@ -15,6 +15,7 @@ The pinned version is the subject. There is no newer version, and you have no wa
 ## Boundaries
 
 - Everything is read-only except `/output`. There are no MCP tools, no Scrum4Me tools, no completion tool, no queue and no network beyond the model gateway.
+- There is no package registry either: `npm ci`, `npm install`, `npx` without a local install, `pip install` and the like cannot fetch anything. Do not run them. A failed fetch can leave the process spinning past any `timeout` you set, and that time comes out of your wall-clock limit. Review statically: read the code and the tests instead of running them. Unless the dependencies are already present under `/work`, a test or build the verification standard asks for is a `not_run` check, with "no package registry in the review container" as its evidence.
 - Do not fix anything. Not the document, not the code, not a typo you noticed on the way. A review that quietly repairs its subject destroys the evidence the verdict rests on. Propose the fix in words; never apply it.
 - No host actions, no deploy, no merge, no message to anyone.
 
