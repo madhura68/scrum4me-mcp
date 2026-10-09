@@ -10,6 +10,7 @@ import {createDispatchAttempts} from '../../src/dispatch/attempts.js'
 import {createDispatchRegistration} from '../../src/dispatch/registration.js'
 import type {DispatchInput} from '@shared/queue-dispatch.js'
 import {createDispatchCompletion} from '../../src/dispatch/completion.js'
+import {closeSignedOffUnstartedAttempts} from '../../src/dispatch/orphans.js'
 const holder=vi.hoisted(()=>({db:null as unknown as PrismaClient,actor:null as unknown as {userId:string;tokenId:string}}))
 vi.mock('../../src/prisma.js',()=>({get prisma(){return holder.db}}))
 vi.mock('../../src/auth.js',async original=>({...await original<typeof import('../../src/auth.js')>(),requireWriteAccess:async()=>holder.actor}))
@@ -102,17 +103,35 @@ it('blocks older unbound Task jobs and sprint executions before ordinary effects
  await expect(h.web.query(`INSERT INTO sprint_task_executions(id,sprint_job_id,task_id,"order",plan_snapshot,verify_required_snapshot,updated_at) VALUES($1,$2,$3,0,'new plan','ALIGNED_OR_PARTIAL',now())`,[randomUUID(),oldJob,task])).rejects.toMatchObject({code:'42501',message:'DISPATCH_MANAGED_ROW'})
 })
 
-// ISS-2 excludes task_implementation: releasing a managed Task binding after a claim_bound_unscoped
-// stop is refused by the database guard queue_dispatch_guard_task(), which changes through its own
-// DB-access transition. A host Task keeps the pre-ISS-2 behaviour: the claim-bound stop is accepted
-// only in CLAIMED and does not close the request, so the Task binding and the reservation stay.
-it('a claim-bound stop on a never-scoped host Task keeps the pre-ISS-2 behaviour',async()=>{
+// ISS-9: closed-schema link 0001 (Scrum4Me IDEA-245) lets queue_dispatch_guard_task() release a managed Task
+// binding after a claim_bound_unscoped or signed_off_unstarted stop, so a host Task closes like every other action.
+const closed=async(id:string)=>({
+ state:(await h.dispatch.query('SELECT state FROM queue_dispatch_requests WHERE id=$1',[id])).rows[0].state,
+ results:(await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_results WHERE request_id=$1',[id])).rows[0].n,
+ accepted:(await h.dispatch.query("SELECT count(*)::int n FROM queue_dispatch_events WHERE request_id=$1 AND type='result_accepted'",[id])).rows[0].n,
+ open:(await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_reservations v JOIN queue_dispatch_candidates c ON c.id=v.candidate_id WHERE c.request_id=$1 AND v.released_at IS NULL',[id])).rows[0].n,
+ binding:(await h.admin.query('SELECT dispatch_request_id FROM tasks WHERE id=$1',[task])).rows[0].dispatch_request_id,
+})
+it('a claim-bound stop on a never-scoped host Task closes it FAILED and releases the Task binding; a replay changes nothing',async()=>{
  const r=await reserved()
  const receipt=await attempts.claimDispatchAttempt(f.actor,session.incarnation_id,'task-claim',session.session_credential)
  if(!receipt?.context)throw Error('missing host task')
  const completion=createDispatchCompletion({store:h.dispatch,auth:createDispatchAuth({store:h.dispatch})})
- await completion.submitClaimBoundStop(f.actor,receipt.context.proof,'DISPATCH_PREPARED_SOURCES_REFUSED',new Date().toISOString())
- expect((await h.dispatch.query('SELECT state FROM queue_dispatch_requests WHERE id=$1',[r.id])).rows[0].state).toBe('CLAIMED')
- expect((await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_results WHERE request_id=$1',[r.id])).rows[0].n).toBe(0)
- expect((await h.admin.query('SELECT dispatch_request_id FROM tasks WHERE id=$1',[task])).rows[0].dispatch_request_id).toBe(r.id)
+ const observedAt=new Date().toISOString()
+ const first=await completion.submitClaimBoundStop(f.actor,receipt.context.proof,'DISPATCH_PREPARED_SOURCES_REFUSED',observedAt)
+ expect(await closed(r.id)).toEqual({state:'FAILED',results:1,accepted:1,open:0,binding:null})
+ expect((await h.admin.query('SELECT status FROM tasks WHERE id=$1',[task])).rows[0].status).toBe('FAILED')
+ // The supervisor resends its journalled stop: the same receipt, no second close or projection.
+ expect(await completion.submitClaimBoundStop(f.actor,receipt.context.proof,'DISPATCH_PREPARED_SOURCES_REFUSED',observedAt)).toEqual(first)
+ expect(await closed(r.id)).toEqual({state:'FAILED',results:1,accepted:1,open:0,binding:null})
+})
+it('the ISS-12 orphan sweep closes a host Task whose supervisor was replaced before start',async()=>{
+ const r=await reserved()
+ const receipt=await attempts.claimDispatchAttempt(f.actor,session.incarnation_id,'task-claim',session.session_credential)
+ if(!receipt?.context)throw Error('missing host task')
+ await createDispatchRegistration({store:h.dispatch,auth:createDispatchAuth({store:h.dispatch}),credentialKeys:{1:Buffer.alloc(32,7)},keyVersion:1}).registerDispatchExecutor(f.actor,{slot_id:f.hostSlot.id,registration_key:'task-host-replacement',boot_id:'boot-host-2',runtime:'CODEX',image_digest:scope.imageDigest,profile_sha256:scope.profileSha256})
+ expect(await closeSignedOffUnstartedAttempts(h.dispatch)).toBe(1)
+ expect(await closed(r.id)).toEqual({state:'FAILED',results:1,accepted:1,open:0,binding:null})
+ expect((await h.dispatch.query("SELECT payload->>'kind' kind FROM queue_dispatch_events WHERE request_id=$1 AND type='stop_accepted'",[r.id])).rows).toEqual([{kind:'signed_off_unstarted'}])
+ expect(await closeSignedOffUnstartedAttempts(h.dispatch)).toBe(0)
 })
