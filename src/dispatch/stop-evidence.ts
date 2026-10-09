@@ -69,7 +69,7 @@ export async function acceptClaimBoundStopInTransaction(db:PoolClient,x:Artifact
  const old=(await db.query("SELECT * FROM queue_dispatch_events WHERE request_id=$1 AND attempt_id=$2 AND type='stop_accepted'",[x.r.id,x.a.id])).rows
  if(old.length){if(old.length!==1||old[0].payload.kind!==CLAIM_BOUND_STOP_KIND||old[0].payload.sha256!==sha256)return refuse();return {id:old[0].id,fresh:false}}
  // Exact pre-scope signature. Anything that reached create/start belongs to the scoped path.
- const states=['CLAIMED','UNCERTAIN','CANCEL_REQUESTED']
+ const states=closesAtStop(x)?['CLAIMED','UNCERTAIN','CANCEL_REQUESTED']:['CLAIMED']
  if(x.a.scope_id!==null||x.a.started_at||x.a.stopped_at||!states.includes(x.r.state)||!states.includes(x.a.state)||x.r.generation!==x.c.generation||!x.c.first_claimed_at)return refuse()
  if((await db.query("SELECT 1 FROM queue_dispatch_events WHERE request_id=$1 AND type='started_scope' AND payload->>'attempt_id'=$2",[x.r.id,x.a.id])).rowCount)return refuse()
  if((await db.query('SELECT 1 FROM queue_dispatch_artifacts WHERE request_id=$1 AND attempt_id=$2 AND key=$3',[x.r.id,x.a.id,SUPERVISOR_STOP_KEY])).rowCount)return refuse()
@@ -82,6 +82,13 @@ export async function acceptClaimBoundStopInTransaction(db:PoolClient,x:Artifact
  await db.query('UPDATE queue_dispatch_attempts SET stopped_at=$2,revoked_at=COALESCE(revoked_at,now()) WHERE id=$1',[x.a.id,observedAt]);x.a.stopped_at=new Date(observedAt)
  return {id,fresh:true}
 }
+/** ISS-2 covers every action except task_implementation. Closing a managed Task releases its task
+ * binding, and the database guard `queue_dispatch_guard_task()` accepts that release only after a
+ * stop of kind registered_started_scope, prepared_created_nonlaunch, operator_attested or
+ * runtime_rebooted; `claim_bound_unscoped` is not among them, so the close would roll back. That
+ * guard is pinned by the DB-access adoption manifest and changes through its own transition, so a
+ * managed Task keeps the pre-ISS-2 behaviour (CLAIMED only, closed by the supervisor's result). */
+function closesAtStop(x:ArtifactAttempt):boolean{return x.r.input.action!=='task_implementation'}
 /** The failed result the supervisor itself submits after a claim-bound stop (scrum4me-docker
  * `closeClaimBound`). The service writes these exact bytes when it closes at the stop, so the
  * supervisor's own submission afterwards is an accepted replay (`completion.ts`), not a late one.
@@ -123,7 +130,7 @@ export function createStopEvidence(deps:{store:DispatchStore;auth:DispatchAuth})
    const {id,fresh}=await acceptClaimBoundStopInTransaction(db,x,reason,observedAt,actor)
    // ISS-2: close in the same transaction. A replay never closes again: transition would bump the
    // version and write another outbox row.
-   if(fresh){
+   if(fresh&&closesAtStop(x)){
     if(x.r.state==='CANCEL_REQUESTED')await finishStoppedCancellation(db,x)
     else{const result=claimBoundFailedResult(reason);await finishResult(db,x,result,artifactHash(canonicalResult(result)))}
    }

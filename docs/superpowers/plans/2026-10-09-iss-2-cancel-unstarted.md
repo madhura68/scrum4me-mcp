@@ -1,6 +1,6 @@
 # ISS-2: claim-gebonden stop ook na leaseverloop en na cancel
 
-Status: plan rev 5 — GO (ronde 4), MINORs verwerkt, 2026-10-09. Issue: scrum4me-workers ISS-2 (Forgejo janpeter/scrum4me-workers#145).
+Status: plan rev 5 — GO (ronde 4), MINORs verwerkt; scope-aanpassing tijdens bouw (zie "Bouw: task_implementation uitgesloten"), 2026-10-09. Issue: scrum4me-workers ISS-2 (Forgejo janpeter/scrum4me-workers#145).
 Rev 1 (cancel sluit een nooit-gestarte poging direct af) is na ronde 1 vervangen. Zie het Review record.
 
 ## Doel (JP)
@@ -207,3 +207,18 @@ De reviewer bevestigde dat rev 3 beide MAJORs van ronde 2 oplost voor `UNCERTAIN
 **Niet opgelost:** al bestaande rijen "stop zonder resultaat" van vóór de deploy. Die vallen buiten scope.
 
 **Scope-delta:** alleen extra tests en een implementatie-eis. De productiewijziging blijft één bestand.
+
+### Bouw: task_implementation uitgesloten (beslissing JP, PR #209)
+**Wat er gebeurde.** CI en de codex-PR-review vonden het volgende:
+- Het sluiten van een `task_implementation` geeft de taakbinding vrij.
+- De DB-guard `queue_dispatch_guard_task()` (Scrum4Me-migratie `20260915180000`, regels 109-110) staat dat alleen toe na een stop van kind `registered_started_scope`, `prepared_created_nonlaunch`, `operator_attested` of `runtime_rebooted`.
+- Omdat `claim_bound_unscoped` daar niet tussen staat, rolt de afsluiting terug.
+- Dit geldt op main al voor het bestaande `CLAIMED`-pad en voor de ISS-12-orphan-close van taken.
+
+**Waarom niet nu opgelost.** De guard is byte voor byte vastgepind in het DB-access-adoptiemanifest (`scripts/db-access/adoptions/idea-213.json`). Een wijziging vraagt een eigen DB-access-transitie in Scrum4Me.
+
+**Beslissing JP.**
+- Taken houden exact het gedrag van vóór ISS-2: alleen `CLAIMED`, geen atomaire afsluiting (`closesAtStop`).
+- Alle andere acties, waaronder het incidenttype QUEUE_REVIEW, zijn wel opgelost.
+- De guard-wijziging komt in een apart Scrum4Me-issue.
+- Test 5e is daarop aangepast.
