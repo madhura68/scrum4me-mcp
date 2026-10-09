@@ -6,11 +6,17 @@ import {randomUUID} from 'node:crypto'
 import type {PoolClient} from 'pg'
 import {makeDispatchHarness,type DispatchHarness} from './harness.js'
 import {running} from './lifecycle-fixtures.js'
+import {createDispatchAuth} from '../../src/dispatch/auth.js'
+import {createDispatchRequests} from '../../src/dispatch/requests.js'
+import {createDispatchSources} from '../../src/dispatch/sources.js'
+import {createReadyFixtureSelection} from './source-fixtures.js'
 import type {DispatchResult} from '@shared/queue-dispatch.js'
 const result:DispatchResult={version:1,outcome:'succeeded',summary:'Bounded investigation completed',report_markdown:'Observed the requested source.',checks:[]}
 let h:DispatchHarness
 beforeEach(async()=>{h=await makeDispatchHarness()})
 afterEach(async()=>{await h.close()})
+const T='claude_job_status_changed'
+const usage={version:1,runtime:'CODEX',status:'captured',model:'gpt-6.1-sol',input_tokens:200,output_tokens:300,cache_read_tokens:1000,cache_write_tokens:0,reasoning_output_tokens:40}
 const settle=()=>new Promise(r=>setTimeout(r,300))
 async function listen(){
  const client:PoolClient=await h.admin.connect(),seen:Array<Record<string,unknown>>=[]
@@ -23,10 +29,11 @@ it('notifies enqueue, claim, running and done once each, in order',async()=>{
  const l=await listen()
  try{
   const x=await running(h);await x.completion.verifyStopEvidence(x.f.actor,x.proof,x.stop)
-  await x.completion.acceptDispatchResult(x.f.actor,x.proof,result);await settle()
-  const id=await jobId(x.proof.request_id),t='claude_job_status_changed'
-  // De terminal- en de usage-notify op het hoofdpad zijn byte-identiek en komen binnen één tx één keer aan.
-  expect(pairs(l.seen,id)).toEqual([[t,'QUEUED'],[t,'CLAIMED'],[t,'RUNNING'],[t,'DONE']])
+  // Mét usage: terminal- en usage-write gebeuren in dezelfde tx; hun notifies zijn byte-identiek en komen één keer aan.
+  await x.completion.acceptDispatchResult(x.f.actor,x.proof,result,usage);await settle()
+  const id=await jobId(x.proof.request_id)
+  expect((await h.dispatch.query('SELECT usage_capture_status FROM claude_jobs WHERE id=$1',[id])).rows[0].usage_capture_status).toBe('captured')
+  expect(pairs(l.seen,id)).toEqual([[T,'QUEUED'],[T,'CLAIMED'],[T,'RUNNING'],[T,'DONE']])
  }finally{await l.stop()}
 })
 it('notifies a cancellation, the usage of a late result once, and nothing on replay',async()=>{
@@ -36,15 +43,44 @@ it('notifies a cancellation, the usage of a late result once, and nothing on rep
   const v=await x.requests.getDispatch(x.f.actor,x.proof.request_id);await x.cancel.cancelDispatch(x.f.actor,v.id,randomUUID(),v.version)
   await settle();const id=await jobId(x.proof.request_id)
   const afterCancel=pairs(l.seen,id)
-  expect(afterCancel.at(-1)).toEqual(['claude_job_status_changed','CANCELLED'])
-  expect(afterCancel.some(([,s])=>s==='DONE')).toBe(false)
-  const usage={version:1,runtime:'CODEX',status:'captured',model:'gpt-6.1-sol',input_tokens:200,output_tokens:300,cache_read_tokens:1000,cache_write_tokens:0,reasoning_output_tokens:40}
+  expect(afterCancel).toEqual([[T,'QUEUED'],[T,'CLAIMED'],[T,'RUNNING'],[T,'CANCELLED']])
   // Late usage op een al terminale job: precies één extra notify (guard van writeDispatchUsage).
   await x.completion.acceptDispatchResult(x.f.actor,x.proof,result,usage);await settle()
-  expect(pairs(l.seen,id)).toEqual([...afterCancel,['claude_job_status_changed','CANCELLED']])
+  expect(pairs(l.seen,id)).toEqual([...afterCancel,[T,'CANCELLED']])
   // Replay (`once`): de job draagt al usage, dus geen write en geen notify.
-  const before=pairs(l.seen,id).length
+  const before=pairs(l.seen,id)
   await x.completion.acceptDispatchResult(x.f.actor,x.proof,{...result,summary:'again'},{...usage,input_tokens:1});await settle()
-  expect(pairs(l.seen,id)).toHaveLength(before)
+  expect(pairs(l.seen,id)).toEqual(before)
+ }finally{await l.stop()}
+})
+
+// Selection-cancel en sources-reject: een gereserveerde, nog ongeclaimde managed job (QUEUED) wordt CANCELLED.
+// Setup gespiegeld aan candidate-timeout.integration.test.ts (reserveNextRequest maakt de QUEUED job).
+async function reservedQueuedJob(){
+ const f=await h.seed(),auth=createDispatchAuth({store:h.dispatch}),opts={store:h.dispatch,auth,enabled:true,productAllowlist:[f.input.product_id]}
+ const selection=createReadyFixtureSelection(opts),requestId=(await createDispatchRequests(opts).submitDispatch(f.actor,f.input,'job-notify')).id
+ await selection.reserveNextRequest()
+ return {f,opts,selection,requestId,id:await jobId(requestId)}
+}
+it('notifies a selection-cancel (retireExpiredCandidate) exactly once after the enqueue',async()=>{
+ const l=await listen()
+ try{
+  const x=await reservedQueuedJob()
+  const admin=await h.admin.connect()
+  try{await admin.query('BEGIN');await admin.query("SET LOCAL session_replication_role='replica'");await admin.query("UPDATE queue_dispatch_candidates SET deadline=now()-interval '1 second' WHERE request_id=$1",[x.requestId]);await admin.query('COMMIT')}finally{admin.release()}
+  expect(await x.selection.retireExpiredCandidate(x.requestId)).toBe(true);await settle()
+  expect(pairs(l.seen,x.id)).toEqual([[T,'QUEUED'],[T,'CANCELLED']])
+  // Tweede retire raakt niets meer: geen extra notify.
+  expect(await x.selection.retireExpiredCandidate(x.requestId)).toBe(false);await settle()
+  expect(pairs(l.seen,x.id)).toEqual([[T,'QUEUED'],[T,'CANCELLED']])
+ }finally{await l.stop()}
+})
+it('notifies a sources-reject (rejectUnstartedInTransaction) exactly once after the enqueue',async()=>{
+ const l=await listen()
+ try{
+  const x=await reservedQueuedJob()
+  await createDispatchSources({...x.opts,fetchGit:async()=>({ok:false,reason:'network'})}).rejectUnstarted(x.requestId,'job_notify_test');await settle()
+  expect((await h.dispatch.query('SELECT status FROM claude_jobs WHERE id=$1',[x.id])).rows[0].status).toBe('CANCELLED')
+  expect(pairs(l.seen,x.id)).toEqual([[T,'QUEUED'],[T,'CANCELLED']])
  }finally{await l.stop()}
 })
