@@ -854,6 +854,8 @@ export async function applyDocsAuditTerminalUpdate(input: {
       error: 'DOCS_AUDIT-job niet in CLAIMED/RUNNING of niet door dit token geclaimd (stale/terminaal)',
     }
   }
+  // IDEA-243: best-effort, ná de zero-count-guard (de tool keert voor de hoofd-notify terug).
+  await notifyJobChangedPrisma(prisma, input.jobId, { bestEffort: true })
   return { ok: true, status: dbStatus }
 }
 
