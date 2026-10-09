@@ -79,12 +79,12 @@ describe('dispatchTaskImplementation', () => {
   })
 
   it('de optie requiredCapability bestaat niet meer: een oude aanroeper krijgt geen required_capability en geen runtime op de job', async () => {
-    // M45-2b: dispatch_job weigert required_capability (dispatch-job.test.ts); de dispatcher zelf draagt de optie en de
-    // tak ervan niet meer. Een job met local_llm ontstaat hier dus nooit meer.
+    // M45-2b: de dispatcher draagt de optie en de tak ervan niet meer; sinds M45-3 kent dispatch_job de sleutel ook niet
+    // meer (strikt schema). Een job met een required_capability ontstaat hier dus nooit.
     const res = await dispatchTaskImplementation({
       taskId: 't1', productId: 'prod-1', userId: 'u1',
       // @ts-expect-error de optie is met M45-2b vervallen
-      requiredCapability: 'local_llm',
+      requiredCapability: 'deploy',
     })
     expect(res).toEqual({ job_id: 'job-1' })
     const data = mockCreate.mock.calls[0][0].data
