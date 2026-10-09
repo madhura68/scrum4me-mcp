@@ -90,6 +90,45 @@ export async function applyHarnessOverlay(client, migrations) {
   for (const grant of HARNESS_GRANTS) await client.query(grant)
 }
 
+// IDEA-245 / ISS-9: closed-schema link 0001 extends queue_dispatch_guard_task() so a managed Task binding is
+// released after a claim_bound_unscoped or signed_off_unstarted stop. Same rule as above: an immutable pin of
+// commit, path and sha256 of the raw bytes, read with `git show`; it replaces only that function, as the schema
+// owner, after the harness overlay.
+export const CLOSED_SCHEMA_OVERLAY = {
+  commit: 'b50ab6fcc8931409145005775c92670d461b4f42',
+  path: 'prisma/migrations/20261009140000_closed_schema_0001_task_guard_unscoped_stops/migration.sql',
+  sha256: 'e6c32f39ef841eb7c84c39c2090bb35a5c68c681af5262341b937ae28c225767',
+}
+
+/** @param {string} root */
+export function readClosedSchemaOverlay(root) {
+  let sql
+  try {
+    sql = execFileSync('git', ['show', `${CLOSED_SCHEMA_OVERLAY.commit}:${CLOSED_SCHEMA_OVERLAY.path}`], {
+      cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    })
+  } catch { throw new Error('DISPATCH_CLOSED_SCHEMA_SOURCE_REFUSED') }
+  if (createHash('sha256').update(sql).digest('hex') !== CLOSED_SCHEMA_OVERLAY.sha256) {
+    throw new Error('DISPATCH_CLOSED_SCHEMA_HASH_REFUSED')
+  }
+  return sql
+}
+
+/**
+ * The link replaces a function owned by `scrum4me`, so it runs as that owner under a temporary CREATE right,
+ * revoked in `finally`. One connection: SET ROLE lives in the session.
+ * @param {{ query: (sql: string) => Promise<unknown> }} client
+ * @param {string} sql
+ */
+export async function applyClosedSchemaOverlay(client, sql) {
+  try {
+    await client.query('GRANT CREATE ON SCHEMA public TO scrum4me; SET ROLE scrum4me')
+    await client.query(sql)
+  } finally {
+    await client.query('RESET ROLE; REVOKE CREATE ON SCHEMA public FROM scrum4me')
+  }
+}
+
 export const requiredUrls = [
   'DISPATCH_TEST_ADMIN_URL',
   'DISPATCH_TEST_URL',
@@ -158,6 +197,7 @@ export async function checkDispatchTestTarget(env = process.env) {
   const root = assertDispatchSchemaRoot(env.DISPATCH_TEST_SCHEMA_ROOT)
   readTokenUsageMigration(root)
   readHarnessMigrations(root)
+  readClosedSchemaOverlay(root)
   const urls = requiredUrls.map((key) => assertDispatchTestUrl(env[key], env))
   if (new Set(urls.map((url) => `${url.hostname}:${url.port}`)).size !== 1) {
     throw new Error('DISPATCH_TEST_TARGET_REFUSED')
@@ -206,6 +246,7 @@ export async function provisionDispatchTestTarget(env = process.env) {
   assertDispatchSchemaRoot(root)
   // Verified before the provisioner touches the database, so a wrong source fails fast.
   const harnessMigrations = readHarnessMigrations(root)
+  const closedSchemaOverlay = readClosedSchemaOverlay(root)
   const result = spawnSync(
     process.execPath,
     [
@@ -227,7 +268,10 @@ export async function provisionDispatchTestTarget(env = process.env) {
     await overlay.query('GRANT UPDATE(last_used_at) ON public.api_tokens TO scrum4me_dispatch')
     // M45-2a: the HARNESS enum member and tables, on one connection (SET ROLE lives in the session).
     const client = await overlay.connect()
-    try { await applyHarnessOverlay(client, harnessMigrations) } finally { client.release() }
+    try {
+      await applyHarnessOverlay(client, harnessMigrations)
+      await applyClosedSchemaOverlay(client, closedSchemaOverlay)
+    } finally { client.release() }
   } finally { await overlay.end() }
 
   const fresh = readGeneratedRuntimeEnv(env.DISPATCH_TEST_ENV_FILE)
