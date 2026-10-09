@@ -39,9 +39,6 @@ import { dispatchDeploy } from '../src/lib/dispatch/deploy-dispatch.js'
 import { dispatchDocsAudit } from '../src/lib/dispatch/docs-audit-dispatch.js'
 import { toolText } from './helpers/tool-result.js'
 
-const REFUSAL =
-  'VALIDATION_ERROR: required_capability local_llm wordt niet meer aangenomen; kies per product een HARNESS-configuratie.'
-
 const ALL_DISPATCHERS = [
   dispatchIdeaJob, dispatchSprintRun, dispatchPrReview, dispatchSpecReview, dispatchTaskReview,
   dispatchTaskImplementation, dispatchDeploy, dispatchDocsAudit,
@@ -127,35 +124,6 @@ it('happy paths leveren job-ids', async () => {
   expect(JSON.parse(toolText(sprint))).toMatchObject({ sprint_run_id: 'run-1' })
 })
 
-it('required_capability local_llm bij TASK_IMPLEMENTATION wordt geweigerd, vóór authenticatie en database, en dispatcht niets', async () => {
-  // M45-2b: de local_llm-route is vervangen door een HARNESS-configuratie per product; de sleutel blijft in het schema
-  // (een niet-strikt z.object zou hem anders stil weggooien) en elke waarde wordt geweigerd.
-  const { dispatchTaskImplementation } = await import('../src/lib/dispatch/task-implementation.js')
-  const res = await handleDispatchJob({
-    kind: 'TASK_IMPLEMENTATION', product_id: 'p1', task_id: 't1', required_capability: 'local_llm',
-  })
-  expect(res.isError).toBe(true)
-  expect(toolText(res)).toBe(
-    'VALIDATION_ERROR: required_capability local_llm wordt niet meer aangenomen; kies per product een HARNESS-configuratie.',
-  )
-  expect(dispatchTaskImplementation).not.toHaveBeenCalled()
-  // Vóór authenticatie en database: geen auth-, toegangs- of dispatchaanroep.
-  expect(requireWriteAccess).not.toHaveBeenCalled()
-  expect(userCanAccessProduct).not.toHaveBeenCalled()
-})
-
-it('een andere waarde van required_capability wordt ook geweigerd: elke waarde, niet alleen local_llm', async () => {
-  const { dispatchTaskImplementation } = await import('../src/lib/dispatch/task-implementation.js')
-  const res = await handleDispatchJob({
-    kind: 'TASK_IMPLEMENTATION', product_id: 'p1', task_id: 't1', required_capability: 'gpu' as never,
-  })
-  expect(res.isError).toBe(true)
-  expect(toolText(res)).toMatch(/^VALIDATION_ERROR: /)
-  expect(toolText(res)).toMatch(/required_capability/)
-  expect(dispatchTaskImplementation).not.toHaveBeenCalled()
-  expect(requireWriteAccess).not.toHaveBeenCalled()
-})
-
 it('TASK_IMPLEMENTATION zonder required_capability wordt gewoon gedispatcht', async () => {
   const { dispatchTaskImplementation } = await import('../src/lib/dispatch/task-implementation.js')
   const res = await handleDispatchJob({ kind: 'TASK_IMPLEMENTATION', product_id: 'p1', task_id: 't1' })
@@ -166,19 +134,9 @@ it('TASK_IMPLEMENTATION zonder required_capability wordt gewoon gedispatcht', as
   }))
 })
 
-it('required_capability bij een andere kind dan TASK_IMPLEMENTATION → validatiefout, geen dispatch', async () => {
-  const { dispatchPrReview } = await import('../src/lib/dispatch/review-jobs.js')
-  const res = await handleDispatchJob({
-    kind: 'PR_REVIEW', product_id: 'p1', pr_url: 'https://x/y/pulls/1', required_capability: 'local_llm',
-  } as never)
-  expect(res.isError).toBe(true)
-  expect(toolText(res)).toBe(REFUSAL)
-  expect(dispatchPrReview).not.toHaveBeenCalled()
-})
-
-// M45-2b: één weigering voor elke soort. Een aanroeper krijgt dus nooit te horen dat het "alleen bij TASK_IMPLEMENTATION"
-// mag (dat suggereert dat de route daar nog bestaat): de route bestaat niet meer, per product kies je een HARNESS-
-// configuratie. De weigering komt vóór authenticatie en database, ook voor soorten die de sleutel nooit gebruikten.
+// M45-2b/M45-3: de oude sleutel required_capability wordt bij elke soort geweigerd, vóór authenticatie en database.
+// Sinds M45-3 doet het strikte schema dat (een onbekende sleutel); via MCP weigert de SDK al vóór de handler
+// (dispatch-job-transport.test.ts), dit is de handlerkant.
 const REFS_PER_KIND: Record<(typeof KIND_VALUES)[number], Record<string, string>> = {
   IDEA_GRILL: { idea_id: 'i1' },
   IDEA_MAKE_PLAN: { idea_id: 'i1' },
@@ -193,46 +151,35 @@ const REFS_PER_KIND: Record<(typeof KIND_VALUES)[number], Record<string, string>
   DOCS_AUDIT: {},
 }
 
-it.each(KIND_VALUES)('required_capability bij %s geeft dezelfde weigering, vóór authenticatie en database, en dispatcht niets', async (kind) => {
+it.each(KIND_VALUES)('required_capability bij %s is een onbekende sleutel: validatiefout vóór authenticatie en database, en geen dispatch', async (kind) => {
   const res = await handleDispatchJob({
-    kind, product_id: 'p1', ...REFS_PER_KIND[kind], required_capability: 'local_llm',
+    kind, product_id: 'p1', ...REFS_PER_KIND[kind], required_capability: 'deploy',
   } as never)
 
   expect(res.isError).toBe(true)
-  expect(toolText(res)).toBe(REFUSAL)
+  expect(toolText(res)).toMatch(/^VALIDATION_ERROR: /)
+  expect(toolText(res)).toMatch(/required_capability/)
   for (const dispatcher of ALL_DISPATCHERS) expect(dispatcher).not.toHaveBeenCalled()
   expect(requireWriteAccess).not.toHaveBeenCalled()
   expect(userCanAccessProduct).not.toHaveBeenCalled()
 })
 
-// De MCP-client ziet alleen het schema en de tooltekst: beide zeggen dat de sleutel niet meer wordt aangenomen en dat
-// de keuze per product ligt, en de tooltekst noemt de HARNESS-routering van een losse TASK_IMPLEMENTATION en de bron.
-it('het schema en de tooltekst leggen de weigering, de HARNESS-routering en de bron uit', () => {
-  let registered: { description: string; inputSchema: { shape: { required_capability: { description?: string } } } } | null = null
+// De MCP-client ziet alleen het schema en de tooltekst: geen required_capability meer, onbekende sleutels worden
+// geweigerd, en de tooltekst noemt de HARNESS-routering van een losse TASK_IMPLEMENTATION en de bron.
+it('het schema kent required_capability niet en de tooltekst legt de weigering, de HARNESS-routering en de bron uit', () => {
+  let registered: { description: string; inputSchema: { shape: Record<string, unknown> } } | null = null
   registerDispatchJobTool({
     registerTool: (_name: string, config: NonNullable<typeof registered>) => {
       registered = config
     },
   } as never)
 
-  const keyDescription = registered!.inputSchema.shape.required_capability.description ?? ''
-  expect(keyDescription).toMatch(/no longer accepted/i)
-  expect(keyDescription).toMatch(/HARNESS configuration/)
-  expect(keyDescription).toMatch(/per product/)
+  expect(Object.keys(registered!.inputSchema.shape)).not.toContain('required_capability')
 
   const { description } = registered!
-  expect(description).toMatch(/required_capability is no longer accepted/)
-  expect(description).toMatch(/refused with a VALIDATION_ERROR/)
+  expect(description).toMatch(/Unknown keys are refused/)
+  expect(description).not.toMatch(/required_capability/)
   expect(description).toMatch(/standalone TASK_IMPLEMENTATION/)
   expect(description).toMatch(/HARNESS configuration/)
   expect(description).toMatch(/source COPILOT, except DEPLOY and DOCS_AUDIT \(source MANUAL\)/)
-})
-
-it('DispatchError uit een dispatcher wordt een nette toolError', async () => {
-  const { dispatchIdeaJob } = await import('../src/lib/dispatch/idea-jobs.js')
-  const { DispatchError } = await import('../src/lib/dispatch/errors.js')
-  ;(dispatchIdeaJob as ReturnType<typeof vi.fn>).mockRejectedValue(new DispatchError('Idea x not found in this product'))
-  const res = await handleDispatchJob({ kind: 'IDEA_GRILL', product_id: 'p1', idea_id: 'x' })
-  expect(res.isError).toBe(true)
-  expect(toolText(res)).toMatch(/not found in this product/)
 })

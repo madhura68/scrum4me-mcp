@@ -232,16 +232,17 @@ describe('update_job_status system IDEA_CHAT jobs', () => {
     expect(mockPrisma.$executeRaw).toHaveBeenCalledTimes(1)
   })
 
-  it('done + required_capability op de job → vervolg-job erft required_capability', async () => {
-    mockPrisma.claudeJob.findUnique.mockResolvedValueOnce(jobRow({ required_capability: 'local_llm' }))
+  // M45-3: de legacy-erving is weg. Zonder productkeuze is de vervolgjob een gewone Claude-job, ook als de
+  // voorganger een required_capability had (test e van het M45-3-plan).
+  it.each(['done', 'failed'] as const)('%s + required_capability op de job, zonder keuze → gewone vervolgjob zonder capability', async (status) => {
+    mockPrisma.claudeJob.findUnique.mockResolvedValueOnce(jobRow({ required_capability: 'deploy' }))
+    if (status === 'failed') txMocks.claudeJob.update.mockResolvedValue(updatedRow('FAILED'))
     txMocks.ideaChatMessage.findFirst.mockResolvedValue({ id: 'msg-nieuw' })
     const handler = registerHandler()
 
-    await handler({
-      job_id: 'job-ideachat',
-      status: 'done',
-      summary: 'Antwoord voor het kanaal.',
-    })
+    await handler(status === 'done'
+      ? { job_id: 'job-ideachat', status, summary: 'Antwoord voor het kanaal.' }
+      : { job_id: 'job-ideachat', status, error: 'iets mis' })
 
     expect(txMocks.claudeJob.create).toHaveBeenCalledWith({
       data: {
@@ -250,32 +251,6 @@ describe('update_job_status system IDEA_CHAT jobs', () => {
         idea_id: 'idea-1',
         kind: 'IDEA_CHAT',
         status: 'QUEUED',
-        required_capability: 'local_llm',
-      },
-      select: { id: true },
-    })
-  })
-
-  it('failed + required_capability op de job → vervolg-job erft required_capability (coalescing draait ook bij failed)', async () => {
-    mockPrisma.claudeJob.findUnique.mockResolvedValueOnce(jobRow({ required_capability: 'local_llm' }))
-    txMocks.claudeJob.update.mockResolvedValue(updatedRow('FAILED'))
-    txMocks.ideaChatMessage.findFirst.mockResolvedValue({ id: 'msg-nieuw' })
-    const handler = registerHandler()
-
-    await handler({
-      job_id: 'job-ideachat',
-      status: 'failed',
-      error: 'iets mis',
-    })
-
-    expect(txMocks.claudeJob.create).toHaveBeenCalledWith({
-      data: {
-        user_id: 'user-1',
-        product_id: 'prod-1',
-        idea_id: 'idea-1',
-        kind: 'IDEA_CHAT',
-        status: 'QUEUED',
-        required_capability: 'local_llm',
       },
       select: { id: true },
     })
@@ -328,14 +303,14 @@ describe('update_job_status system IDEA_CHAT jobs', () => {
 
   // ── M45-2b Taak 4: de vervolgjob volgt de productkeuze ────────────────────────────────────────────────
   // Met een keuze voor (product, IDEA_CHAT) wordt de vervolgjob een HARNESS-job met de gekozen configuratie en nooit
-  // met een required_capability (spec §5.2). Zonder keuze blijft de regel van vóór M45: de legacy-local_llm-erving.
-  // Een HARNESS-voorganger zonder keuze geeft dus een gewone Claude-vervolgjob: de keuze is ook de toestemming.
+  // met een required_capability (spec §5.2). Zonder keuze is de vervolgjob een gewone Claude-job (sinds M45-3 ook
+  // voor een voorganger met een capability): de keuze is ook de toestemming.
   describe('vervolgjob: routering via de productkeuze', () => {
     const CHOICE = { configuration: 'nieuw-model', max_cost_usd: '0.0500' }
 
     it.each([
       { label: 'een gewone Claude-job', overrides: {} },
-      { label: 'een local_llm-job (die zijn capability niet doorgeeft)', overrides: { required_capability: 'local_llm' } },
+      { label: 'een job met een capability (die zijn capability niet doorgeeft)', overrides: { required_capability: 'deploy' } },
       { label: 'een HARNESS-job met een andere configuratie', overrides: { runtime: 'HARNESS', requested_model: 'oud-model' } },
     ])('met een keuze voor het product → HARNESS-vervolgjob met de gekozen configuratie, vanuit $label', async ({ overrides }) => {
       mockPrisma.claudeJob.findUnique.mockResolvedValueOnce(jobRow(overrides))
@@ -417,14 +392,16 @@ describe('update_job_status system IDEA_CHAT jobs', () => {
       expect(txMocks.productHarnessChoice.findUnique).not.toHaveBeenCalled()
     })
 
-    it('een lege product_id leest geen keuze: de vervolgjob volgt dan de regel van vóór M45', async () => {
-      mockPrisma.claudeJob.findUnique.mockResolvedValueOnce(jobRow({ product_id: '', required_capability: 'local_llm' }))
+    it('een lege product_id leest geen keuze: de vervolgjob is een gewone job zonder runtime en capability', async () => {
+      mockPrisma.claudeJob.findUnique.mockResolvedValueOnce(jobRow({ product_id: '', required_capability: 'deploy' }))
       txMocks.ideaChatMessage.findFirst.mockResolvedValue({ id: 'msg-nieuw' })
 
       await registerHandler()({ job_id: 'job-ideachat', status: 'done', summary: 'Antwoord voor het kanaal.' })
 
       expect(txMocks.productHarnessChoice.findUnique).not.toHaveBeenCalled()
-      expect(txMocks.claudeJob.create.mock.calls[0][0].data).toMatchObject({ required_capability: 'local_llm' })
+      expect(txMocks.claudeJob.create.mock.calls[0][0].data).toEqual({
+        user_id: 'user-1', product_id: '', idea_id: 'idea-1', kind: 'IDEA_CHAT', status: 'QUEUED',
+      })
     })
 
     it('een leesfout van de keuze is geen "geen keuze": de afronding mislukt en er komt geen vervolgjob', async () => {

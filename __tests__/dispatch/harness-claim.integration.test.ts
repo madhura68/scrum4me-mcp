@@ -2,7 +2,7 @@
 //
 // Eén tabel met QUEUED-jobs van drie runtimes. Een worker met runtime HARNESS claimt alleen HARNESS-jobs van twee
 // soorten (idee-chat SYSTEM en een losse taak COPILOT), een Claude-worker nooit een HARNESS-job, een Codex-worker
-// alleen de Codex-job en de local_llm-worker (Claude, exact [local_llm]) alleen zijn eigen job. Daarnaast: het
+// alleen de Codex-job. Daarnaast: het
 // tier-fragment met een HARNESS-worker als zichzelf en de idee-job-precheck, die geen harness-workers meetelt.
 //
 // Het deel na de claim (M45-2b, Taak 2 deel 2) staat onderaan:
@@ -239,22 +239,20 @@ interface MixedTable {
   harnessManualTask: string
   harnessGrill: string
   claudeChat: string
-  claudeLocalLlmChat: string
   codexGrill: string
 }
 
-/** QUEUED-jobs met runtime HARNESS (idee-chat SYSTEM, losse taak COPILOT, taak met sprint-run, en drie die nergens bij horen), CLAUDE (idee-chat en local_llm-idee-chat) en CODEX. */
+/** QUEUED-jobs met runtime HARNESS (idee-chat SYSTEM, losse taak COPILOT, taak met sprint-run, en drie die nergens bij horen), CLAUDE (idee-chat) en CODEX. */
 async function seedMixedTable(world: World): Promise<MixedTable> {
   const sprintRunId = await insertSprintRun(world)
   return {
     harnessChat: await insertJob(world, { runtime: 'HARNESS', kind: 'IDEA_CHAT', source: 'SYSTEM', idea: true, ageSeconds: 90 }),
     harnessTask: await insertJob(world, { runtime: 'HARNESS', kind: 'TASK_IMPLEMENTATION', source: 'COPILOT', task: true, ageSeconds: 80 }),
     harnessSprintTask: await insertJob(world, { runtime: 'HARNESS', kind: 'TASK_IMPLEMENTATION', source: 'COPILOT', task: true, sprintRunId, ageSeconds: 70 }),
-    harnessWithCapability: await insertJob(world, { runtime: 'HARNESS', kind: 'TASK_IMPLEMENTATION', source: 'COPILOT', task: true, requiredCapability: 'local_llm', ageSeconds: 60 }),
+    harnessWithCapability: await insertJob(world, { runtime: 'HARNESS', kind: 'TASK_IMPLEMENTATION', source: 'COPILOT', task: true, requiredCapability: 'review', ageSeconds: 60 }),
     harnessManualTask: await insertJob(world, { runtime: 'HARNESS', kind: 'TASK_IMPLEMENTATION', source: 'MANUAL', ageSeconds: 50 }),
     harnessGrill: await insertJob(world, { runtime: 'HARNESS', kind: 'IDEA_GRILL', source: 'COPILOT', idea: true, ageSeconds: 40 }),
     claudeChat: await insertJob(world, { runtime: 'CLAUDE', kind: 'IDEA_CHAT', source: 'SYSTEM', idea: true, ageSeconds: 30 }),
-    claudeLocalLlmChat: await insertJob(world, { runtime: 'CLAUDE', kind: 'IDEA_CHAT', source: 'SYSTEM', idea: true, requiredCapability: 'local_llm', ageSeconds: 20 }),
     codexGrill: await insertJob(world, { runtime: 'CODEX', kind: 'IDEA_GRILL', source: 'COPILOT', idea: true, ageSeconds: 10 }),
   }
 }
@@ -305,7 +303,7 @@ describe('claimfilter: HARNESS-, Claude- en Codex-jobs in één tabel', () => {
     expect(await visibleTo(world, { runtime: 'HARNESS' })).toEqual(sorted(table.harnessChat, table.harnessTask))
   })
 
-  it.each([[['local_llm']], [['deploy']], [['docs_audit']], [['code_edit', 'review']]])(
+  it.each([[['deploy']], [['docs_audit']], [['code_edit', 'review']]])(
     'de capabilities %j van de harness-worker tellen niet mee: de runtime wint',
     async (capabilities) => {
       expect(await visibleTo(world, { runtime: 'HARNESS', capabilities })).toEqual(sorted(table.harnessChat, table.harnessTask))
@@ -322,7 +320,7 @@ describe('claimfilter: HARNESS-, Claude- en Codex-jobs in één tabel', () => {
       table.harnessChat, table.harnessTask, table.harnessSprintTask,
       table.harnessWithCapability, table.harnessManualTask, table.harnessGrill,
     ]
-    for (const capabilities of [[], ['code_edit', 'planning', 'review'], ['local_llm'], ['deploy'], ['docs_audit']]) {
+    for (const capabilities of [[], ['code_edit', 'planning', 'review'], ['review'], ['deploy'], ['docs_audit']]) {
       const seen = await visibleTo(world, { runtime: 'CLAUDE', capabilities })
       for (const id of harnessJobs) expect(seen).not.toContain(id)
     }
@@ -330,23 +328,19 @@ describe('claimfilter: HARNESS-, Claude- en Codex-jobs in één tabel', () => {
     expect(await visibleTo(world, { runtime: 'CLAUDE', capabilities: ['code_edit', 'planning', 'review'] })).toEqual([table.claudeChat])
   })
 
-  it('de local_llm-worker (Claude, exact [local_llm]) ziet alleen zijn eigen job', async () => {
-    expect(await visibleTo(world, { runtime: 'CLAUDE', capabilities: ['local_llm'] })).toEqual([table.claudeLocalLlmChat])
-  })
-
   it('een Codex-worker ziet alleen de Codex-job', async () => {
     expect(await visibleTo(world, { runtime: 'CODEX' })).toEqual([table.codexGrill])
     expect(await visibleTo(world, { runtime: 'CODEX', capabilities: ['review'] })).toEqual([table.codexGrill])
-    expect(await visibleTo(world, { runtime: 'CODEX', capabilities: ['local_llm'] })).toEqual([])
+    expect(await visibleTo(world, { runtime: 'CODEX', capabilities: ['deploy'] })).toEqual([])
   })
 
   it('geen enkele worker ziet de HARNESS-jobs die er niet bij horen: sprint-run, required_capability, bron MANUAL en een andere soort', async () => {
     const strays = [table.harnessSprintTask, table.harnessWithCapability, table.harnessManualTask, table.harnessGrill]
     for (const poller of [
       { runtime: 'HARNESS' as const },
-      { runtime: 'HARNESS' as const, capabilities: ['local_llm'] },
+      { runtime: 'HARNESS' as const, capabilities: ['review'] },
       { runtime: 'CLAUDE' as const },
-      { runtime: 'CLAUDE' as const, capabilities: ['local_llm'] },
+      { runtime: 'CLAUDE' as const, capabilities: ['review'] },
       { runtime: 'CODEX' as const },
     ]) {
       const seen = await visibleTo(world, poller)
@@ -369,14 +363,14 @@ describe('tryClaimJob tegen de echte database', () => {
     // Al het andere blijft staan: de andere HARNESS-jobs en de jobs van de andere runtimes.
     for (const id of [
       table.harnessSprintTask, table.harnessWithCapability, table.harnessManualTask, table.harnessGrill,
-      table.claudeChat, table.claudeLocalLlmChat, table.codexGrill,
+      table.claudeChat, table.codexGrill,
     ]) {
       expect((await statusOf(world, id)).status).toBe('QUEUED')
     }
   })
 
-  it('een HARNESS-worker met capabilities [local_llm] claimt hetzelfde: de runtime wint', async () => {
-    const claim = () => tryClaimJob(world.userId, world.tokenId, 'harness-2', undefined, 'HARNESS', ['local_llm'], null)
+  it('een HARNESS-worker met capabilities [review] claimt hetzelfde: de runtime wint', async () => {
+    const claim = () => tryClaimJob(world.userId, world.tokenId, 'harness-2', undefined, 'HARNESS', ['review'], null)
     expect([await claim(), await claim(), await claim()]).toEqual([table.harnessChat, table.harnessTask, null])
   })
 
@@ -387,9 +381,7 @@ describe('tryClaimJob tegen de echte database', () => {
     expect((await statusOf(world, table.harnessTask)).status).toBe('QUEUED')
   })
 
-  it('de local_llm-worker claimt alleen zijn eigen job, en een Codex-worker alleen de Codex-job', async () => {
-    expect(await tryClaimJob(world.userId, world.tokenId, 'local-1', undefined, 'CLAUDE', ['local_llm'], null)).toBe(table.claudeLocalLlmChat)
-    expect(await tryClaimJob(world.userId, world.tokenId, 'local-1', undefined, 'CLAUDE', ['local_llm'], null)).toBeNull()
+  it('een Codex-worker claimt alleen de Codex-job', async () => {
     expect(await tryClaimJob(world.userId, world.tokenId, 'codex-1', undefined, 'CODEX', [], null)).toBe(table.codexGrill)
     expect(await tryClaimJob(world.userId, world.tokenId, 'codex-1', undefined, 'CODEX', [], null)).toBeNull()
   })

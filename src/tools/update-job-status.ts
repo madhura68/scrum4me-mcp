@@ -1310,19 +1310,11 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             if (!newer) return { updated: u, followUpId: null as string | null }
             // M45 (spec §5.2, §4.3): de vervolgjob volgt de keuze van het product op dit moment, niet de runtime van de
             // afgeronde job. Met een keuze wordt hij een HARNESS-job zonder capability (een HARNESS-job draagt nooit
-            // required_capability); zonder keuze (er is echt geen rij) volgt hij de regel van vóór M45. Een
-            // HARNESS-voorganger zonder keuze geeft dus een gewone Claude-vervolgjob: de keuze is ook de toestemming.
+            // required_capability); zonder keuze (er is echt geen rij) is hij een gewone Claude-job, ook als de
+            // voorganger een capability had (M45-3: de legacy-erving is weg). De keuze is ook de toestemming.
             // Een leesfout gaat omhoog en is nooit "geen keuze".
             const choice = job.product_id ? await readHarnessChoice(tx, job.product_id, 'IDEA_CHAT') : null
-            // M2 (legacy local_llm): zonder keuze erft de vervolg-job de dedicated-worker-capability van de
-            // afgeronde job, zodat een local_llm-beurt niet stilzwijgend terugvalt op een generieke worker. Alleen
-            // toevoegen als niet-NULL, zodat de bestaande exacte create-verwachting voor gewone chats (zonder
-            // capability) ongewijzigd blijft.
-            const routing = choice
-              ? { runtime: 'HARNESS' as const, requested_model: choice.configuration }
-              : job.required_capability
-                ? { required_capability: job.required_capability }
-                : {}
+            const routing = choice ? { runtime: 'HARNESS' as const, requested_model: choice.configuration } : {}
             const followUp = await tx.claudeJob.create({
               data: {
                 user_id: job.user_id,

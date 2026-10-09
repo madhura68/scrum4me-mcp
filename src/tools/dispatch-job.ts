@@ -50,6 +50,8 @@ const REF_MATRIX: Record<DispatchKind, { required: RefKey[]; oneOf?: RefKey[] }>
   DOCS_AUDIT: { required: [] },
 }
 
+// M45-3: strikt. De oude sleutel required_capability (de vervangen route) en elke andere onbekende sleutel worden
+// geweigerd in plaats van stil weggegooid; via MCP doet de SDK dat al vóór de handler (validateToolInput).
 const inputSchema = z.object({
   kind: z.enum(KIND_VALUES),
   product_id: z.string().min(1),
@@ -59,27 +61,9 @@ const inputSchema = z.object({
   doc_slug: z.string().min(1).optional(),
   doc_id: z.string().min(1).optional(),
   pr_url: z.string().url().optional(),
-  // M45-2b: de local_llm-route is vervangen door een HARNESS-configuratie per product. De sleutel blijft in het schema
-  // (een niet-strikt z.object zou hem anders stil weggooien) en elke waarde wordt geweigerd, bij elke soort
-  // (validateRequiredCapability). De beschrijving is wat een MCP-client in het schema leest.
-  required_capability: z
-    .enum(['local_llm'])
-    .optional()
-    .describe(
-      'No longer accepted: any value is refused with a VALIDATION_ERROR, for every kind. The local_llm route is ' +
-        'replaced by a HARNESS configuration, which is chosen per product, not per job.',
-    ),
-})
+}).strict()
 
 type Input = z.infer<typeof inputSchema>
-
-// Elke waarde van required_capability bij elke soort geeft deze ene weigering. Alleen TASK_IMPLEMENTATION kende de route
-// ooit, maar een aanroeper die de sleutel bij een andere soort meegeeft, hoort niet te lezen dat hij "alleen bij
-// TASK_IMPLEMENTATION" mag: dat suggereert dat de route daar nog bestaat.
-function validateRequiredCapability(input: Input): string | null {
-  if (input.required_capability === undefined) return null
-  return 'required_capability local_llm wordt niet meer aangenomen; kies per product een HARNESS-configuratie.'
-}
 
 function validateRefs(input: Input): string | null {
   const rule = REF_MATRIX[input.kind]
@@ -106,8 +90,6 @@ export async function handleDispatchJob(rawInput: Input) {
     return toolError(`VALIDATION_ERROR: ${formatZodError(parseResult.error)}`)
   }
   const input = parseResult.data
-  const capabilityError = validateRequiredCapability(input)
-  if (capabilityError) return toolError(`VALIDATION_ERROR: ${capabilityError}`)
   const refError = validateRefs(input)
   if (refError) return toolError(`VALIDATION_ERROR: ${refError}`)
 
@@ -178,8 +160,7 @@ export function registerDispatchJobTool(server: McpServer) {
         "A standalone TASK_IMPLEMENTATION becomes a HARNESS job on the product's HARNESS configuration when the " +
         'product has a choice for TASK_IMPLEMENTATION (set per product, not per job); without one it is an ordinary ' +
         'Claude job. ' +
-        'required_capability is no longer accepted for any kind: it is refused with a VALIDATION_ERROR before ' +
-        'anything else happens (the local_llm route is replaced by a HARNESS configuration per product). ' +
+        'Unknown keys are refused. ' +
         'PLAN_CHAT and IDEA_CHAT are not dispatchable. Forbidden for demo accounts.',
       inputSchema,
     },

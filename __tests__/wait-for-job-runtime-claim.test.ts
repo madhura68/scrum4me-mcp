@@ -40,6 +40,7 @@ import {
   releaseMismatchedClaim,
 } from '../src/tools/wait-for-job.js'
 import { parseWorkerRuntime, type WorkerRuntime } from '../src/worker-runtime.js'
+import { claimConditions, type ClaimJob } from '../src/dispatch/eligibility.js'
 
 const mockPrisma = prisma as unknown as {
   $transaction: ReturnType<typeof vi.fn>
@@ -121,8 +122,8 @@ describe('runtime-aware claim filter', () => {
   })
 
   it.each(['CLAUDE', 'CODEX'] as const)('builds %s claim SQL that cannot match HARNESS jobs, whatever the capabilities', (runtime) => {
-    // Alle capability-takken: leeg, de dedicated workers (deploy, docs_audit, local_llm) en het generieke pad.
-    for (const capabilities of [[], ['deploy'], ['docs_audit'], ['local_llm'], ['review'], ['code_edit', 'planning']]) {
+    // Alle capability-takken: leeg, de dedicated workers (deploy, docs_audit) en het generieke pad.
+    for (const capabilities of [[], ['deploy'], ['docs_audit'], ['review'], ['code_edit', 'planning']]) {
       for (const hasProductScope of [false, true]) {
         const productionFragment = buildClaimableJobWhereFragment(
           hasProductScope
@@ -140,17 +141,39 @@ describe('runtime-aware claim filter', () => {
     }
   })
 
-  it.each(['CLAUDE', 'CODEX'] as const)('a %s worker with exactly [local_llm] keeps the local_llm branch and never gets the HARNESS branch', (runtime) => {
-    const specSql = buildClaimableJobWhereClause({ runtime, hasProductScope: false, capabilities: ['local_llm'] })
-    const productionSql = sqlText(
-      buildClaimableJobWhereFragment({ userId: 'user-1', runtime, hasProductScope: false, capabilities: ['local_llm'] }),
-    )
+  // M45-3: de dedicated claimtak voor exact ['local_llm'] is weg. Zo'n worker valt op het generieke pad (NULL-
+  // capability-jobs plus ANY(capabilities)), in alle spiegels: de SQL-string, het Prisma-fragment en het contract
+  // predicaat ↔ SQL-conditie. Dit is test a van het M45-3-plan; hij bewijst dat de tak weg is.
+  it.each(['CLAUDE', 'CODEX'] as const)('a %s worker with exactly [local_llm] gets the generic path (M45-3)', (runtime) => {
+    const capabilities = ['local_llm']
+    const specSql = buildClaimableJobWhereClause({ runtime, hasProductScope: false, capabilities })
+    const fragment = buildClaimableJobWhereFragment({ userId: 'user-1', runtime, hasProductScope: false, capabilities })
 
-    for (const sql of [specSql, productionSql]) {
-      expect(sql).toContain("cj.required_capability = 'local_llm'")
-      // De HARNESS-tak begint met `cj.required_capability IS NULL AND ((cj.kind = 'IDEA_CHAT'`.
-      expect(sql).not.toMatch(/cj\.required_capability IS NULL\s+AND \(\(cj\.kind = 'IDEA_CHAT'/)
+    expect(specSql).toContain('AND (cj.required_capability IS NULL OR cj.required_capability = ANY(${capabilities}::text[]))')
+    expect(specSql).not.toContain("cj.required_capability = 'local_llm'")
+    expect(sqlText(fragment)).toContain('cj.required_capability IS NULL OR cj.required_capability = ANY(')
+    expect(sqlText(fragment)).not.toContain("'local_llm'")
+
+    const executor = {
+      userId: 'user-1', productIds: [], runtime, capabilities, managed: false, profileRevisionIds: [], quotaPct: null,
+      minQuotaPct: 0,
     }
+    const job = (over: Partial<ClaimJob>): ClaimJob => ({
+      userId: 'user-1', productId: 'product-1', runtime, status: 'QUEUED', kind: 'IDEA_GRILL', source: 'MANUAL',
+      requiredCapability: null, dispatchRequestId: null, profileRevisionId: null, sprintRunId: null, sprintStatus: null,
+      earlierSibling: false, taskId: null, ideaId: 'idea-1', ...over,
+    })
+    // Generiek: een job zonder capability (ook gewoon Claude-werk) en een job met precies die capability.
+    expect(claimConditions.capability.evaluate(job({}), executor)).toBe(true)
+    expect(claimConditions.capability.evaluate(job({ kind: 'IDEA_CHAT', source: 'SYSTEM' }), executor)).toBe(true)
+    expect(claimConditions.capability.evaluate(job({ requiredCapability: 'review' }), executor)).toBe(false)
+    expect(sqlText(claimConditions.capability.sql(executor))).toContain('cj.required_capability IS NULL OR cj.required_capability = ANY(')
+  })
+
+  it('a worker with the default capabilities claims IDEA_CHAT through the generic NULL/ANY branch', () => {
+    const clause = buildClaimableJobWhereClause({ runtime: 'CLAUDE', hasProductScope: false, capabilities: ['code_edit', 'planning', 'review'] })
+    expect(clause).toContain('cj.required_capability IS NULL OR cj.required_capability = ANY')
+    expect(clause).toContain("'IDEA_CHAT'")
   })
 
   it('allows standalone task jobs through source MANUAL or COPILOT', () => {

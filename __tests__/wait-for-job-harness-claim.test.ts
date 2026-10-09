@@ -42,7 +42,7 @@ function norm(fragment: { strings: readonly string[] }): string {
 }
 const normString = (sql: string) => sql.replace(/\s+/g, ' ').trim()
 
-/** De HARNESS-tak, letterlijk uit het contract: precies de soorten van de local_llm-tak, zonder required_capability. */
+/** De HARNESS-tak, letterlijk uit het contract: twee soorten, zonder required_capability. */
 const HARNESS_BRANCH =
   "cj.required_capability IS NULL AND ((cj.kind = 'IDEA_CHAT' AND cj.source = 'SYSTEM') " +
   "OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'COPILOT' AND cj.sprint_run_id IS NULL))"
@@ -61,7 +61,7 @@ const GENERAL_KIND_FILTER_MARKERS = [
 ]
 
 // Alles wat een capability-tak van een andere worker kan opleveren; de runtime van de HARNESS-worker wint.
-const CAPABILITY_LISTS: string[][] = [[], ['local_llm'], ['deploy'], ['docs_audit'], ['code_edit', 'review']]
+const CAPABILITY_LISTS: string[][] = [[], ['deploy'], ['docs_audit'], ['code_edit', 'review']]
 const CAPABILITY_CASES = CAPABILITY_LISTS.map((capabilities) => [capabilities])
 // De standaardcapabilities van een worker: wait_for_job geeft ze mee als SCRUM4ME_WORKER_CAPABILITIES ontbreekt, dus ook
 // een harness-worker draait er normaal mee.
@@ -94,7 +94,6 @@ describe('claimfilter HARNESS: Prisma.Sql-fragment (het live pad)', () => {
     expect(text).toContain("(cj.kind = 'IDEA_CHAT' AND cj.source = 'SYSTEM')")
     expect(text).toContain("(cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'COPILOT' AND cj.sprint_run_id IS NULL)")
     // Geen capability-tak van een andere worker, geen gebonden capabilities.
-    expect(text).not.toContain("cj.required_capability = 'local_llm'")
     expect(text).not.toContain("cj.required_capability = 'deploy'")
     expect(text).not.toContain("cj.required_capability = 'docs_audit'")
     expect(text).not.toContain('ANY(')
@@ -111,7 +110,7 @@ describe('claimfilter HARNESS: Prisma.Sql-fragment (het live pad)', () => {
 
   it('bindt alleen gebruiker, product en runtime: geen nieuwe gebonden waarden', () => {
     expect(
-      buildClaimableJobWhereFragment({ userId: 'user-1', runtime: 'HARNESS', hasProductScope: false, capabilities: ['local_llm'] }).values,
+      buildClaimableJobWhereFragment({ userId: 'user-1', runtime: 'HARNESS', hasProductScope: false, capabilities: ['deploy'] }).values,
     ).toEqual(['user-1', 'HARNESS'])
     expect(
       buildClaimableJobWhereFragment({ userId: 'user-1', productId: 'product-1', runtime: 'HARNESS', hasProductScope: true, capabilities: ['review'] }).values,
@@ -128,7 +127,6 @@ describe('claimfilter HARNESS: string-SQL (alleen door tests gebruikt, gepind op
     expect(text).toContain("cj.status = 'QUEUED'")
     expect(text).toContain('cj.dispatch_request_id IS NULL')
     expect(text).toContain(HARNESS_BRANCH)
-    expect(text).not.toContain("cj.required_capability = 'local_llm'")
     expect(text).not.toContain("cj.required_capability = 'deploy'")
     expect(text).not.toContain("cj.required_capability = 'docs_audit'")
     expect(text).not.toContain('ANY(')
@@ -136,7 +134,7 @@ describe('claimfilter HARNESS: string-SQL (alleen door tests gebruikt, gepind op
   })
 
   it('met productscope staat er een productvoorwaarde bij en blijft de tak gelijk', () => {
-    const text = normString(buildClaimableJobWhereClause({ runtime: 'HARNESS', hasProductScope: true, capabilities: ['local_llm'] }))
+    const text = normString(buildClaimableJobWhereClause({ runtime: 'HARNESS', hasProductScope: true, capabilities: ['deploy'] }))
     expect(text).toContain('cj.product_id = ${productId}')
     expect(text).toContain(HARNESS_BRANCH)
   })
@@ -203,11 +201,11 @@ describe('tryClaimJob met runtime HARNESS (de bedrading naar het filter)', () =>
     for (const marker of GENERAL_KIND_FILTER_MARKERS) expect(whereText).not.toContain(marker)
   })
 
-  it('een harness-worker met capabilities [local_llm] krijgt dezelfde tak (runtime wint)', async () => {
-    await tryClaimJob('u1', 't1', 'i1', undefined, 'HARNESS', ['local_llm'], null)
+  it('een harness-worker met capabilities [deploy] krijgt dezelfde tak (runtime wint)', async () => {
+    await tryClaimJob('u1', 't1', 'i1', undefined, 'HARNESS', ['deploy'], null)
     const { whereText } = claimQueryTexts()
     expect(whereText).toContain(HARNESS_BRANCH)
-    expect(whereText).not.toContain("cj.required_capability = 'local_llm'")
+    expect(whereText).not.toContain("cj.required_capability = 'deploy'")
   })
 
   it('met productscope blijft de tak gelijk en komt het product erbij', async () => {
