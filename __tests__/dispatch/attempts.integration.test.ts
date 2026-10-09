@@ -8,6 +8,8 @@ import { createDispatchRegistration } from '../../src/dispatch/registration.js'
 import { createDispatchAttempts } from '../../src/dispatch/attempts.js'
 import { createDispatchCancellation } from '../../src/dispatch/cancel.js'
 import { createDispatchTick } from '../../src/dispatch/tick.js'
+import { createDispatchCompletion } from '../../src/dispatch/completion.js'
+import { claimBoundFailedResult } from '../../src/dispatch/stop-evidence.js'
 import { verifyStartPermit } from '../../src/dispatch/credentials.js'
 import type { ExecutorSession } from '../../src/dispatch/client.js'
 let h:DispatchHarness,f:DispatchHarnessSeed,session:ExecutorSession
@@ -254,5 +256,128 @@ describe('signed-off incarnation with an unstarted attempt (ISS-12)',()=>{
   expect((await requests.getDispatch(f.actor,r.id)).state).toBe('RUNNING')
   expect((await h.dispatch.query("SELECT count(*)::int n FROM queue_dispatch_events WHERE attempt_id=$1 AND type='stop_accepted'",[context.proof.attempt_id])).rows[0].n).toBe(0)
   expect((await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations')).rows).toEqual([{released_at:null}])
+ })
+})
+
+// ISS-2: a supervisor that refused before any runtime scope existed closes the attempt with a
+// claim-bound stop. It used to be accepted only in CLAIMED, so an attempt whose lease ran out during
+// prepare (UNCERTAIN) or that was cancelled meanwhile (CANCEL_REQUESTED) hung forever. The stop is
+// now accepted in all three states and closes the request in the same transaction: once stopped_at
+// is set, the lease sweep, the orphan sweep and recovery all leave the attempt alone.
+describe('claim-bound stop closes a never-scoped attempt atomically (ISS-2)',()=>{
+ const REASON='DISPATCH_PREPARED_SOURCES_NO_SPACE'
+ const tick=()=>createDispatchTick({store:h.dispatch,selection,attempts})()
+ const completion=()=>createDispatchCompletion({store:h.dispatch,auth:createDispatchAuth({store:h.dispatch})})
+ const stop=(proof:Parameters<ReturnType<typeof completion>['submitClaimBoundStop']>[1],observedAt=new Date().toISOString())=>completion().submitClaimBoundStop(f.actor,proof,REASON,observedAt)
+ const cancel=async(id:string)=>{const v=await requests.getDispatch(f.actor,id);await createDispatchCancellation({store:h.dispatch,auth:createDispatchAuth({store:h.dispatch})}).cancelDispatch(f.actor,id,randomUUID(),v.version)}
+ const expire=async(attemptId:string)=>{await h.dispatch.query("UPDATE queue_dispatch_attempts SET heartbeat_at=now()-interval '121 seconds' WHERE id=$1",[attemptId]);return attempts.markExpiredAttempts()}
+ const released=async()=>(await h.dispatch.query('SELECT released_at FROM queue_dispatch_reservations')).rows[0].released_at as Date|null
+ const jobStatus=async(attemptId:string)=>(await h.dispatch.query('SELECT j.status FROM claude_jobs j JOIN queue_dispatch_candidates c ON c.job_id=j.id JOIN queue_dispatch_attempts a ON a.candidate_id=c.id WHERE a.id=$1',[attemptId])).rows[0].status as string
+ const snapshot=async(id:string)=>({
+  version:(await requests.getDispatch(f.actor,id)).version,
+  results:(await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_results WHERE request_id=$1',[id])).rows[0].n,
+  outbox:(await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_outbox WHERE request_id=$1',[id])).rows[0].n,
+  accepted:(await h.dispatch.query("SELECT count(*)::int n FROM queue_dispatch_events WHERE request_id=$1 AND type='result_accepted'",[id])).rows[0].n,
+  stops:(await h.dispatch.query("SELECT count(*)::int n FROM queue_dispatch_events WHERE request_id=$1 AND type='stop_accepted'",[id])).rows[0].n,
+  released:await released(),
+ })
+ const closedAs=async(r:{id:string},attemptId:string,outcome:'FAILED'|'CANCELLED')=>{
+  expect((await requests.getDispatch(f.actor,r.id)).state).toBe(outcome)
+  expect((await h.dispatch.query('SELECT state FROM queue_dispatch_attempts WHERE id=$1',[attemptId])).rows[0].state).toBe(outcome)
+  expect(await jobStatus(attemptId)).toBe(outcome)
+  expect(await released()).not.toBeNull()
+  expect((await h.dispatch.query('SELECT outcome,payload FROM queue_dispatch_results WHERE request_id=$1',[r.id])).rows).toEqual([expect.objectContaining({outcome})])
+ }
+
+ it('UNCERTAIN after lease expiry: the stop alone closes it as FAILED',async()=>{
+  const {r,context}=await claimed()
+  expect(await expire(context.proof.attempt_id)).toBe(1)
+  expect((await requests.getDispatch(f.actor,r.id)).state).toBe('UNCERTAIN')
+  expect(await released()).toBeNull()
+  await stop(context.proof)
+  await closedAs(r,context.proof.attempt_id,'FAILED')
+  expect((await h.dispatch.query("SELECT payload->>'summary' summary FROM queue_dispatch_results WHERE request_id=$1",[r.id])).rows[0].summary).toBe(REASON)
+  // A late result that differs from the supervisor form is logged and changes nothing.
+  const late=await completion().acceptDispatchResult(f.actor,context.proof,{...claimBoundFailedResult(REASON),summary:'something else'})
+  expect(late).toMatchObject({accepted:false,reason:'terminal_result'})
+  expect((await snapshot(r.id)).results).toBe(1)
+ })
+
+ it('CANCEL_REQUESTED: cancel holds capacity, the stop then closes it as CANCELLED',async()=>{
+  const {r,context}=await claimed()
+  await cancel(r.id)
+  expect((await requests.getDispatch(f.actor,r.id)).state).toBe('CANCEL_REQUESTED')
+  expect(await released()).toBeNull()
+  await stop(context.proof)
+  await closedAs(r,context.proof.attempt_id,'CANCELLED')
+ })
+
+ it('CLAIMED: the stop closes it as FAILED and the supervisor result afterwards is a replay',async()=>{
+  const {r,context}=await claimed()
+  await stop(context.proof)
+  await closedAs(r,context.proof.attempt_id,'FAILED')
+  const before=await snapshot(r.id)
+  // The supervisor's own result, with usage: an accepted replay; the usage is deliberately not stored.
+  const usage={version:1,runtime:'CODEX',status:'captured',model:'gpt-6.1-sol',input_tokens:200,output_tokens:300,cache_read_tokens:0,cache_write_tokens:0,reasoning_output_tokens:null}
+  expect(await completion().acceptDispatchResult(f.actor,context.proof,claimBoundFailedResult(REASON),usage)).toMatchObject({accepted:true,reason:'replayed'})
+  expect(await snapshot(r.id)).toEqual(before)
+  expect((await h.dispatch.query('SELECT j.input_tokens FROM claude_jobs j JOIN queue_dispatch_candidates c ON c.job_id=j.id WHERE c.id=$1',[context.proof.candidate_id])).rows[0].input_tokens).toBeNull()
+ })
+
+ it.each(['CLAIMED','UNCERTAIN','CANCEL_REQUESTED'] as const)('%s: a supervisor that never sends its result leaves nothing hanging',async(setup)=>{
+  const {r,context}=await claimed()
+  if(setup==='UNCERTAIN')await expire(context.proof.attempt_id)
+  if(setup==='CANCEL_REQUESTED')await cancel(r.id)
+  await stop(context.proof)
+  const outcome=setup==='CANCEL_REQUESTED'?'CANCELLED':'FAILED'
+  await closedAs(r,context.proof.attempt_id,outcome)
+  // Stop before the lease sweep: the sweep and the orphan tick leave the closed attempt alone.
+  expect(await expire(context.proof.attempt_id)).toBe(0)
+  await h.registerNextIncarnation(f.jobSlot.id)
+  expect((await tick()).orphansClosed).toBe(0)
+  await closedAs(r,context.proof.attempt_id,outcome)
+ })
+
+ it('orphan sweep first: a later claim-bound stop is refused and changes nothing',async()=>{
+  const {r,context}=await claimed()
+  await h.registerNextIncarnation(f.jobSlot.id)
+  expect((await tick()).orphansClosed).toBe(1)
+  const before=await snapshot(r.id)
+  await expect(stop(context.proof)).rejects.toThrow('DISPATCH_STATE_CONFLICT')
+  expect(await snapshot(r.id)).toEqual(before)
+ })
+
+ it('a replay after closing returns the same receipt and mutates nothing; other bytes are refused',async()=>{
+  const {r,context}=await claimed()
+  const observedAt=new Date().toISOString()
+  const receipt=await stop(context.proof,observedAt)
+  const before=await snapshot(r.id)
+  expect(await stop(context.proof,observedAt)).toEqual(receipt)
+  expect(await snapshot(r.id)).toEqual(before)
+  await expect(stop(context.proof,new Date(Date.parse(observedAt)+1).toISOString())).rejects.toThrow('DISPATCH_STATE_CONFLICT')
+  expect(await snapshot(r.id)).toEqual(before)
+ })
+
+ it('refuses a stop when the request generation moved past the candidate',async()=>{
+  const {r,context}=await claimed()
+  await h.dispatch.query('UPDATE queue_dispatch_requests SET generation=generation+1 WHERE id=$1',[r.id])
+  await expect(stop(context.proof)).rejects.toThrow('DISPATCH_STATE_CONFLICT')
+  expect(await released()).toBeNull()
+  expect((await snapshot(r.id)).stops).toBe(0)
+ })
+
+ it('refuses a stop for a started attempt, also after cancel',async()=>{
+  const {r,context}=await claimed()
+  await attempts.startDispatchAttempt(f.actor,context.proof,scope)
+  await expect(stop(context.proof)).rejects.toThrow('DISPATCH_STATE_CONFLICT')
+  await cancel(r.id)
+  await expect(stop(context.proof)).rejects.toThrow('DISPATCH_STATE_CONFLICT')
+  expect(await released()).toBeNull()
+ })
+
+ it('refuses a start after the claim-bound stop',async()=>{
+  const {context}=await claimed()
+  await stop(context.proof)
+  await expect(attempts.startDispatchAttempt(f.actor,context.proof,scope)).rejects.toThrow('DISPATCH_STATE_CONFLICT')
  })
 })

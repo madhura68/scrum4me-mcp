@@ -9,6 +9,7 @@ import {createReadyFixtureSelection as createDispatchSelection} from './source-f
 import {createDispatchAttempts} from '../../src/dispatch/attempts.js'
 import {createDispatchRegistration} from '../../src/dispatch/registration.js'
 import type {DispatchInput} from '@shared/queue-dispatch.js'
+import {createDispatchCompletion} from '../../src/dispatch/completion.js'
 const holder=vi.hoisted(()=>({db:null as unknown as PrismaClient,actor:null as unknown as {userId:string;tokenId:string}}))
 vi.mock('../../src/prisma.js',()=>({get prisma(){return holder.db}}))
 vi.mock('../../src/auth.js',async original=>({...await original<typeof import('../../src/auth.js')>(),requireWriteAccess:async()=>holder.actor}))
@@ -99,4 +100,19 @@ it('blocks older unbound Task jobs and sprint executions before ordinary effects
  }
  await expect(h.web.query("UPDATE sprint_task_executions SET status='RUNNING' WHERE id=$1",[execution])).rejects.toMatchObject({code:'42501',message:'DISPATCH_MANAGED_ROW'})
  await expect(h.web.query(`INSERT INTO sprint_task_executions(id,sprint_job_id,task_id,"order",plan_snapshot,verify_required_snapshot,updated_at) VALUES($1,$2,$3,0,'new plan','ALIGNED_OR_PARTIAL',now())`,[randomUUID(),oldJob,task])).rejects.toMatchObject({code:'42501',message:'DISPATCH_MANAGED_ROW'})
+})
+
+// ISS-2 excludes task_implementation: releasing a managed Task binding after a claim_bound_unscoped
+// stop is refused by the database guard queue_dispatch_guard_task(), which changes through its own
+// DB-access transition. A host Task keeps the pre-ISS-2 behaviour: the claim-bound stop is accepted
+// only in CLAIMED and does not close the request, so the Task binding and the reservation stay.
+it('a claim-bound stop on a never-scoped host Task keeps the pre-ISS-2 behaviour',async()=>{
+ const r=await reserved()
+ const receipt=await attempts.claimDispatchAttempt(f.actor,session.incarnation_id,'task-claim',session.session_credential)
+ if(!receipt?.context)throw Error('missing host task')
+ const completion=createDispatchCompletion({store:h.dispatch,auth:createDispatchAuth({store:h.dispatch})})
+ await completion.submitClaimBoundStop(f.actor,receipt.context.proof,'DISPATCH_PREPARED_SOURCES_REFUSED',new Date().toISOString())
+ expect((await h.dispatch.query('SELECT state FROM queue_dispatch_requests WHERE id=$1',[r.id])).rows[0].state).toBe('CLAIMED')
+ expect((await h.dispatch.query('SELECT count(*)::int n FROM queue_dispatch_results WHERE request_id=$1',[r.id])).rows[0].n).toBe(0)
+ expect((await h.admin.query('SELECT dispatch_request_id FROM tasks WHERE id=$1',[task])).rows[0].dispatch_request_id).toBe(r.id)
 })
