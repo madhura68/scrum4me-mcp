@@ -58,6 +58,10 @@ export type CostReportInput = {
   provider?: string
 }
 
+// AGENT_CHAT (M50-1a, chat-agent-spec §5.4) draait op HARNESS en meldt zijn kosten zoals de twee HARNESS-soorten. Staat
+// niet in HARNESS_JOB_KINDS: die lijst bepaalt de plafondkeuze van een product, en een chat heeft er geen.
+const isCostReportingKind = (kind: string): boolean => isHarnessJobKind(kind) || kind === 'AGENT_CHAT'
+
 /** De rij in job_cost_reports, zonder job_id en reported_at (die zet de handler). */
 export type CostReportRow = {
   reported_cost_usd: string | null
@@ -71,8 +75,8 @@ const INVALID = 'VALIDATION_ERROR: COST_REPORT_INVALID'
 
 /**
  * Mag deze job kosten melden, en klopt de melding? Alleen een job met runtime HARNESS (een job met runtime CLAUDE meldt
- * geen kosten), alleen van een soort die HARNESS draait (isHarnessJobKind: IDEA_CHAT en
- * TASK_IMPLEMENTATION) en alleen bij een eindstatus. De eigen eindpaden van DOCS_AUDIT en DEPLOY (en van elke andere
+ * geen kosten), alleen van een soort die HARNESS draait (isHarnessJobKind: IDEA_CHAT en TASK_IMPLEMENTATION, plus
+ * AGENT_CHAT, M50-1a) en alleen bij een eindstatus. De eigen eindpaden van DOCS_AUDIT en DEPLOY (en van elke andere
  * soort) schrijven nooit een kostenrij: een melding die daar geldig leek, zou stil verdwijnen, dus geen melding. De
  * configuratie is die van de job (`requested_model`, gezet bij de enqueue), nooit die uit de melding. Regels per bron:
  * `none` ⇔ geen bedrag, `local` vraagt bedrag 0, `provider_reported` en `litellm_computed` vragen een bedrag ≥ 0.
@@ -85,7 +89,7 @@ export function checkCostReport(
   status: 'running' | 'done' | 'failed' | 'skipped',
   cost: CostReportInput,
 ): { allowed: true; row: CostReportRow } | { allowed: false; error: string } {
-  if (job.runtime !== 'HARNESS' || !isHarnessJobKind(job.kind) || status === 'running') {
+  if (job.runtime !== 'HARNESS' || !isCostReportingKind(job.kind) || status === 'running') {
     return { allowed: false, error: NOT_ALLOWED }
   }
   if (!job.requested_model) return { allowed: false, error: INVALID }

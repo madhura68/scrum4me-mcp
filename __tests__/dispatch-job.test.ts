@@ -183,3 +183,8 @@ it('het schema kent required_capability niet en de tooltekst legt de weigering, 
   expect(description).toMatch(/HARNESS configuration/)
   expect(description).toMatch(/source COPILOT, except DEPLOY and DOCS_AUDIT \(source MANUAL\)/)
 })
+
+// M50-1a (bewaking): een AGENT_CHAT-job ontstaat alleen via de chat-producent van 1b, nooit via dispatch_job.
+it('AGENT_CHAT is geen dispatch_job-kind (bewaking, M50-1a)', () => {
+  expect(KIND_VALUES).not.toContain('AGENT_CHAT')
+})
