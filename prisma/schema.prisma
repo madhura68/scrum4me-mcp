@@ -186,6 +186,7 @@ enum ClaudeJobKind {
   DOCS_AUDIT
   QUEUE_TASK
   QUEUE_REVIEW
+  AGENT_CHAT
 }
 
 enum ReviewVerdict {
@@ -341,6 +342,8 @@ model User {
   notes                     Note[]
   note_keywords             NoteKeyword[]
   usage_segments            UsageSegment[]
+  agent_chats               AgentChat[]
+  agent_prompt_versions     AgentPromptVersion[]
 
   @@index([active_product_id])
   @@map("users")
@@ -447,6 +450,7 @@ model Product {
   notes                     Note[]
   usage_segments            UsageSegment[]
   harness_choices           ProductHarnessChoice[]
+  agent_chats               AgentChat[]
 
   @@unique([user_id, name])
   @@unique([user_id, code])
@@ -696,6 +700,8 @@ model ClaudeJob {
   manual_drafts             ManualJobDraft[]
   idea_notification         IdeaNotification?
   cost_report               JobCostReport?
+  agent_chat_messages       AgentChatMessage[]
+  agent_chat_job            AgentChatJob?
   review_log                ReviewLog?            @relation("JobReviewLog")
   chat_messages             IdeaChatMessage[]
   created_at                DateTime              @default(now())
@@ -2434,4 +2440,77 @@ model JobCostReport {
   reported_at       DateTime  @default(now())
 
   @@map("job_cost_reports")
+}
+
+// M50-1a: de chat-agent (spec docs/superpowers/specs/2026-10-10-agent-chat-design.md §4 in Scrum4Me):
+// de enum AgentChatRole en vier tabellen voor chats, berichten, de koppeling job ↔ chat ↔ promptversie
+// en de CLAUDE.md per gebruiker. Alleen additief: de CHECKs staan als `// SQL:`-commentaar, de SQL
+// schrijft de migratie. Een AGENT_CHAT-job draait alleen op runtime HARNESS (lib/job-config.ts).
+
+enum AgentChatRole {
+  USER
+  ASSISTANT
+}
+
+/// M50: chat van een gebruiker met de chat-agent, vast aan één product en één HARNESS-configuratie (spec §4.1).
+// SQL: CHECK configuration ~ '^[a-z0-9][a-z0-9.-]{0,63}$'
+model AgentChat {
+  id            String             @id @default(cuid())
+  user          User               @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id       String
+  product       Product            @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id    String
+  title         String             @db.VarChar(200)
+  configuration String             @db.VarChar(64)
+  created_at    DateTime           @default(now())
+  updated_at    DateTime           @updatedAt
+  messages      AgentChatMessage[]
+  jobs          AgentChatJob[]
+
+  @@index([user_id, product_id, updated_at])
+  @@map("agent_chats")
+}
+
+/// M50: bericht in een chat (spec §4.2); job_id: bij USER de job die het beantwoordt, bij ASSISTANT de job die het schreef.
+model AgentChatMessage {
+  id         String        @id @default(cuid())
+  chat       AgentChat     @relation(fields: [chat_id], references: [id], onDelete: Cascade)
+  chat_id    String
+  role       AgentChatRole
+  content    String        @db.Text
+  job        ClaudeJob?    @relation(fields: [job_id], references: [id], onDelete: SetNull)
+  job_id     String?
+  created_at DateTime      @default(now())
+
+  @@index([chat_id, created_at])
+  @@index([job_id])
+  @@map("agent_chat_messages")
+}
+
+/// M50: koppeling job ↔ chat ↔ promptversie (spec §4.3); blijft staan als de chat verdwijnt (chat_id wordt NULL).
+model AgentChatJob {
+  job               ClaudeJob          @relation(fields: [job_id], references: [id], onDelete: Cascade)
+  job_id            String             @id
+  chat              AgentChat?         @relation(fields: [chat_id], references: [id], onDelete: SetNull)
+  chat_id           String?
+  prompt_version    AgentPromptVersion @relation(fields: [prompt_version_id], references: [id], onDelete: Cascade)
+  prompt_version_id String
+  created_at        DateTime           @default(now())
+
+  @@index([chat_id])
+  @@map("agent_chat_jobs")
+}
+
+/// M50: CLAUDE.md van de chat-agent per gebruiker, alleen invoegen (spec §4.4); de nieuwste versie is de actuele.
+// SQL: CHECK char_length(content) <= 20000
+model AgentPromptVersion {
+  id         String         @id @default(cuid())
+  user       User           @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  user_id    String
+  content    String         @db.Text
+  created_at DateTime       @default(now())
+  jobs       AgentChatJob[]
+
+  @@index([user_id, created_at])
+  @@map("agent_prompt_versions")
 }
