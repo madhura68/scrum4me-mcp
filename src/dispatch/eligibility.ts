@@ -33,10 +33,10 @@ const CLAIMABLE_JOB_KIND_FILTER = `AND (
 export function buildClaimableJobWhereClause(input: ClaimFilterInput): string {
   const productScope = input.hasProductScope ? 'AND cj.product_id = ${productId}' : ''
 
-  // M45-2b: een worker met runtime HARNESS claimt alleen HARNESS-jobs van twee soorten en nooit een job met een
-  // required_capability. De tak wordt gekozen op de runtime van de worker, vóór de capability-takken: zijn
-  // capabilities tellen niet mee (de runtime wint). Twee soort/bron-combinaties: IDEA_CHAT/SYSTEM en een losse
-  // TASK_IMPLEMENTATION/COPILOT zonder sprint-run (sprint-runs horen bij de SPRINT_IMPLEMENTATION-route).
+  // M45-2b: een worker met runtime HARNESS claimt alleen HARNESS-jobs van drie soort/bron-combinaties en nooit een job
+  // met een required_capability. De tak wordt gekozen op de runtime van de worker, vóór de capability-takken: zijn
+  // capabilities tellen niet mee (de runtime wint). IDEA_CHAT/SYSTEM, een losse TASK_IMPLEMENTATION/COPILOT zonder
+  // sprint-run (sprint-runs horen bij de SPRINT_IMPLEMENTATION-route) en AGENT_CHAT/MANUAL (M50-1a, besluit 9).
   if (input.runtime === 'HARNESS') {
     return `
           WHERE cj.user_id = \${userId}
@@ -46,7 +46,8 @@ export function buildClaimableJobWhereClause(input: ClaimFilterInput): string {
             AND cj.dispatch_request_id IS NULL
             AND cj.required_capability IS NULL
             AND ((cj.kind = 'IDEA_CHAT' AND cj.source = 'SYSTEM')
-              OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'COPILOT' AND cj.sprint_run_id IS NULL))
+              OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'COPILOT' AND cj.sprint_run_id IS NULL)
+              OR (cj.kind = 'AGENT_CHAT' AND cj.source = 'MANUAL'))
   `
   }
 
@@ -236,7 +237,8 @@ export const claimPredicates = {
     if (e.runtime === 'HARNESS') {
       return j.requiredCapability === null && (
         (j.kind === 'IDEA_CHAT' && j.source === 'SYSTEM') ||
-        (j.kind === 'TASK_IMPLEMENTATION' && j.source === 'COPILOT' && j.sprintRunId === null))
+        (j.kind === 'TASK_IMPLEMENTATION' && j.source === 'COPILOT' && j.sprintRunId === null) ||
+        (j.kind === 'AGENT_CHAT' && j.source === 'MANUAL'))
     }
     if (e.capabilities.length === 1 && ['deploy', 'docs_audit'].includes(e.capabilities[0])) {
       return j.requiredCapability === e.capabilities[0] && j.kind === e.capabilities[0].toUpperCase() && ['SYSTEM', 'MANUAL'].includes(j.source)
@@ -269,7 +271,7 @@ const claimConditionSql: Record<keyof typeof claimPredicates, (e: ClaimExecutor)
    WHERE di.id=${e.incarnationId ?? null}::uuid AND di.signed_off_at IS NULL AND dp.revoked_at IS NULL
     AND di.runtime_scope->'profile_revision_ids' ? dc.profile_revision_id::text)`: Prisma.sql`cj.dispatch_request_id IS NULL`,
   capability: e => {
-    if (e.runtime === 'HARNESS') return Prisma.sql`cj.required_capability IS NULL AND ((cj.kind = 'IDEA_CHAT' AND cj.source = 'SYSTEM') OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'COPILOT' AND cj.sprint_run_id IS NULL))`
+    if (e.runtime === 'HARNESS') return Prisma.sql`cj.required_capability IS NULL AND ((cj.kind = 'IDEA_CHAT' AND cj.source = 'SYSTEM') OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'COPILOT' AND cj.sprint_run_id IS NULL) OR (cj.kind = 'AGENT_CHAT' AND cj.source = 'MANUAL'))`
     if (e.capabilities.length === 1 && e.capabilities[0] === 'deploy') return Prisma.sql`cj.required_capability = 'deploy' AND cj.kind = 'DEPLOY' AND cj.source IN ('SYSTEM', 'MANUAL')`
     if (e.capabilities.length === 1 && e.capabilities[0] === 'docs_audit') return Prisma.sql`cj.required_capability = 'docs_audit' AND cj.kind = 'DOCS_AUDIT' AND cj.source IN ('SYSTEM', 'MANUAL')`
     return e.capabilities.length ? Prisma.sql`(cj.required_capability IS NULL OR cj.required_capability = ANY(${e.capabilities}::text[]))` : Prisma.sql`cj.required_capability IS NULL`

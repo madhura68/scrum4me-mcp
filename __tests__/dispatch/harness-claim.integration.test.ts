@@ -334,6 +334,16 @@ describe('claimfilter: HARNESS-, Claude- en Codex-jobs in één tabel', () => {
     expect(await visibleTo(world, { runtime: 'CODEX', capabilities: ['deploy'] })).toEqual([])
   })
 
+  // M50-1a (test c): een chatjob is AGENT_CHAT/MANUAL zonder taak of idee. De echte CHECK-constraint laat die rij toe;
+  // alleen de HARNESS-worker claimt hem, Claude en Codex zien hem nooit.
+  it('een HARNESS-worker ziet een AGENT_CHAT/MANUAL-job zonder taak of idee; Claude en Codex zien hem niet (M50-1a, test c)', async () => {
+    const chat = await insertJob(world, { runtime: 'HARNESS', kind: 'AGENT_CHAT', source: 'MANUAL' })
+    expect(await visibleTo(world, { runtime: 'HARNESS' })).toEqual(sorted(table.harnessChat, table.harnessTask, chat))
+    expect(await visibleTo(world, { runtime: 'HARNESS', productId: world.productId })).toEqual(sorted(table.harnessChat, table.harnessTask, chat))
+    expect(await visibleTo(world, { runtime: 'CLAUDE', capabilities: ['code_edit', 'planning', 'review'] })).not.toContain(chat)
+    expect(await visibleTo(world, { runtime: 'CODEX' })).not.toContain(chat)
+  })
+
   it('geen enkele worker ziet de HARNESS-jobs die er niet bij horen: sprint-run, required_capability, bron MANUAL en een andere soort', async () => {
     const strays = [table.harnessSprintTask, table.harnessWithCapability, table.harnessManualTask, table.harnessGrill]
     for (const poller of [

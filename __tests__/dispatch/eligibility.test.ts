@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { buildClaimableJobWhereFragment, evaluateClaimPredicates } from '../../src/dispatch/eligibility.js'
+import {
+  buildClaimableJobWhereClause,
+  buildClaimableJobWhereFragment,
+  claimConditions,
+  evaluateClaimPredicates,
+} from '../../src/dispatch/eligibility.js'
 import { isManagedWorkerInstanceId, managedWorkerPollScope } from '../../src/presence/worker-mode.js'
 import { parseManagedSlotConfig } from '../../src/dispatch/registration.js'
 
@@ -101,6 +106,30 @@ describe('claim-predicaten: HARNESS-executor', () => {
     for (const source of ['SYSTEM', 'MANUAL', 'ORCHESTRATOR']) {
       expect(evaluateClaimPredicates({ ...harnessTask, source }, harnessExecutor)).toContain('capability')
     }
+  })
+
+  // M50-1a (besluit 9): een chatjob is AGENT_CHAT met bron MANUAL en heeft geen taak of idee. Alleen de HARNESS-
+  // executor claimt hem; CLAIMABLE_STANDALONE_KINDS blijft zonder AGENT_CHAT, dus Claude en Codex zien hem nooit.
+  const agentChat = { ...harnessChat, kind: 'AGENT_CHAT', source: 'MANUAL', ideaId: null, taskId: null }
+
+  it('claimt AGENT_CHAT/MANUAL met runtime HARNESS, zonder capabilities en zonder required_capability (M50-1a, test a)', () => {
+    expect(claimConditions.capability.evaluate(agentChat, harnessExecutor)).toBe(true)
+    expect(claimConditions.capability.evaluate({ ...agentChat, requiredCapability: 'review' }, harnessExecutor)).toBe(false)
+    expect(claimConditions.capability.evaluate({ ...agentChat, source: 'COPILOT' }, harnessExecutor)).toBe(false)
+    expect(claimConditions.capability.evaluate({ ...agentChat, source: 'SYSTEM' }, harnessExecutor)).toBe(false)
+    expect(claimConditions.capability.sql(harnessExecutor).sql).toContain("cj.kind = 'AGENT_CHAT' AND cj.source = 'MANUAL'")
+    expect(buildClaimableJobWhereClause({ runtime: 'HARNESS', hasProductScope: false })).toContain("cj.kind = 'AGENT_CHAT' AND cj.source = 'MANUAL'")
+    expect(buildClaimableJobWhereFragment({ userId: 'u', runtime: 'HARNESS', hasProductScope: false }).sql).toContain("cj.kind = 'AGENT_CHAT'")
+  })
+
+  it.each([
+    ['CLAUDE', ['code_edit', 'planning', 'review']],
+    ['CODEX', [] as string[]],
+  ])('bewaking: een %s-executor claimt geen AGENT_CHAT/MANUAL-rij, ook niet met runtime %s (M50-1a, test b)', (runtime, capabilities) => {
+    const executor = { ...harnessExecutor, runtime: runtime as 'CLAUDE' | 'CODEX', capabilities }
+    expect(evaluateClaimPredicates({ ...agentChat, runtime }, executor)).toContain('kind')
+    expect(buildClaimableJobWhereClause({ runtime: runtime as 'CLAUDE' | 'CODEX', hasProductScope: false, capabilities })).not.toContain('AGENT_CHAT')
+    expect(buildClaimableJobWhereFragment({ userId: 'u', runtime: runtime as 'CLAUDE' | 'CODEX', hasProductScope: false, capabilities }).sql).not.toContain('AGENT_CHAT')
   })
 
   it('geen enkele andere executor claimt een HARNESS-job: Claude, Codex en een dedicated executor', () => {
