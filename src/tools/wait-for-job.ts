@@ -37,6 +37,7 @@ import { parseForgejoPrUrl } from '../git/forgejo-rest.js'
 import { resolveRuntimeJobConfig } from '@shared/job-config.js'
 import { isHarnessJobKind } from '@shared/harness-config.js'
 import { readHarnessChoice } from '../lib/harness-choice.js'
+import { buildAgentChatPayload, type AgentChatSkipReason } from '../lib/agent-chat-payload.js'
 import { buildDocIndex } from '../lib/doc-index.js'
 import { buildDocsAuditPayload } from '../lib/docs-audit-payload.js'
 import { loadManualIdeaContext } from '../lib/manual-idea-context.js'
@@ -196,6 +197,39 @@ export async function resolveRepoRoot(
     if (err instanceof TerminalJobError || err instanceof OwnershipLostError) throw err
     return unresolved()
   }
+}
+
+/** M50-1a: een geclaimde chatjob zonder bruikbare chat. De job is dan al SKIPPED; de claimlus zoekt verder. */
+export class AgentChatSkippedError extends Error {
+  constructor(readonly reason: AgentChatSkipReason) {
+    super(reason)
+    this.name = 'AgentChatSkippedError'
+  }
+}
+
+/**
+ * M50-1a (chat-agent-spec §5.3): CLAIMED → SKIPPED in één guarded update. Alleen de claimhouder (token en instantie)
+ * zet de job om; bij nul rijen is de claim al overgenomen en laat de rij staan.
+ */
+async function skipAgentChatJob(
+  jobId: string,
+  owner: { tokenId: string; instanceId: string } | null,
+  reason: AgentChatSkipReason,
+): Promise<void> {
+  const result = await prisma.claudeJob.updateMany({
+    where: {
+      id: jobId,
+      status: 'CLAIMED',
+      ...(owner ? { claimed_by_token_id: owner.tokenId, worker_instance_id: owner.instanceId } : {}),
+    },
+    data: { status: 'SKIPPED', finished_at: new Date(), error: reason },
+  })
+  if (result.count === 0) {
+    claimLog('agent_chat.skip_ownership_lost', { jobId, reason })
+    return
+  }
+  // IDEA-243: best-effort, ná de guarded update, zoals markJobTerminallyFailed.
+  await notifyJobChangedPrisma(prisma, jobId, { bestEffort: true })
 }
 
 /**
@@ -1284,6 +1318,18 @@ export async function getFullJobContext(
     return null
   })
 
+  // M50-1a (chat-agent-spec §5.3): een chatjob krijgt zijn payload hier, vóór de PR_REVIEW- en de MANUAL-tak. Een
+  // chatjob heeft geen manual_draft; de MANUAL-tak zou hem anders terugrollen. De config is die van resolveRuntimeJobConfig
+  // (de standaard van AGENT_CHAT); de productkeuze wordt niet gelezen.
+  if (job.kind === 'AGENT_CHAT') {
+    const payload = await prisma.$transaction((tx) => buildAgentChatPayload(tx, job.id, config))
+    if ('skip' in payload) {
+      await skipAgentChatJob(job.id, ownerIdentity(ownerCtx), payload.skip)
+      throw new AgentChatSkippedError(payload.skip)
+    }
+    return payload
+  }
+
   if (job.kind === 'PR_REVIEW') {
     if (!job.pr_url) {
       await rollbackClaim(job.id, ownerIdentity(ownerCtx))
@@ -2261,20 +2307,25 @@ export function registerWaitForJobTool(server: McpServer) {
             }
             return toolJson(ctx)
           } catch (err) {
-            // M45-2b: RuntimeMismatchError vóór de rest; de claim is al teruggegeven, de job blijft QUEUED.
-            if (err instanceof RuntimeMismatchError) return toolError('RUNTIME_MISMATCH')
-            // M45-2b: HarnessJobConfigError is een TerminalJobError en moet er dus vóór staan, anders geeft de tak
-            // hieronder de repotekst. De job wordt FAILED met de code, in plaats van te wachten op het lease-verloop.
-            if (err instanceof HarnessJobConfigError) {
-              await markJobTerminallyFailed(jobId, err.reason)
-              return toolError(err.reason)
+            // M50-1a: een chat zonder bruikbare chat is al SKIPPED; geen toolfout, de wachtlus pakt de volgende job.
+            if (err instanceof AgentChatSkippedError) {
+              jobId = null
+            } else {
+              // M45-2b: RuntimeMismatchError vóór de rest; de claim is al teruggegeven, de job blijft QUEUED.
+              if (err instanceof RuntimeMismatchError) return toolError('RUNTIME_MISMATCH')
+              // M45-2b: HarnessJobConfigError is een TerminalJobError en moet er dus vóór staan, anders geeft de tak
+              // hieronder de repotekst. De job wordt FAILED met de code, in plaats van te wachten op het lease-verloop.
+              if (err instanceof HarnessJobConfigError) {
+                await markJobTerminallyFailed(jobId, err.reason)
+                return toolError(err.reason)
+              }
+              if (err instanceof TerminalJobError) {
+                await markJobTerminallyFailed(jobId, err.reason)
+                return toolError(`Job failed (unresolvable repo): ${err.reason}`)
+              }
+              if (err instanceof OwnershipLostError) return toolError(err.message)
+              throw err
             }
-            if (err instanceof TerminalJobError) {
-              await markJobTerminallyFailed(jobId, err.reason)
-              return toolError(`Job failed (unresolvable repo): ${err.reason}`)
-            }
-            if (err instanceof OwnershipLostError) return toolError(err.message)
-            throw err
           }
         }
 
@@ -2316,6 +2367,8 @@ export function registerWaitForJobTool(server: McpServer) {
                 }
                 return toolJson(ctx)
               } catch (err) {
+                // M50-1a: een chat zonder bruikbare chat is al SKIPPED; de wachtlus gaat door met de volgende job.
+                if (err instanceof AgentChatSkippedError) continue
                 // M45-2b: zelfde afhandeling als bij de directe claim hierboven.
                 if (err instanceof RuntimeMismatchError) return toolError('RUNTIME_MISMATCH')
                 if (err instanceof HarnessJobConfigError) {
