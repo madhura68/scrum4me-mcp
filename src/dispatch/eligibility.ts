@@ -245,13 +245,15 @@ export const claimPredicates = {
     }
     return j.requiredCapability === null || e.capabilities.includes(j.requiredCapability)
   },
-  kind: (j: ClaimJob, e: ClaimExecutor) => e.managed
+  // Een HARNESS-executor krijgt geen algemene soortvoorwaarde: zijn capability-tak bepaalt de soorten (spiegel van
+  // buildClaimableJobWhereFragment, dat de soortvoorwaarde voor HARNESS weglaat).
+  kind: (j: ClaimJob, e: ClaimExecutor) => e.runtime === 'HARNESS' || (e.managed
     ? j.source === 'COPILOT' && ['QUEUE_TASK', 'QUEUE_REVIEW', 'TASK_IMPLEMENTATION'].includes(j.kind) && j.sprintRunId === null
     : (standaloneKinds.includes(j.kind) && j.source !== 'ORCHESTRATOR')
     || (['DEPLOY', 'DOCS_AUDIT'].includes(j.kind) && ['SYSTEM', 'MANUAL'].includes(j.source))
     || (j.kind === 'PLAN_CHAT' && j.source === 'ORCHESTRATOR' && !j.taskId && !j.ideaId && !j.sprintRunId)
     || (j.kind === 'TASK_IMPLEMENTATION' && ['MANUAL', 'COPILOT'].includes(j.source))
-    || (['TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION'].includes(j.kind) && j.sprintRunId !== null && ['QUEUED', 'RUNNING'].includes(j.sprintStatus ?? '')),
+    || (['TASK_IMPLEMENTATION', 'SPRINT_IMPLEMENTATION'].includes(j.kind) && j.sprintRunId !== null && ['QUEUED', 'RUNNING'].includes(j.sprintStatus ?? ''))),
   sprint: (j: ClaimJob) => j.kind !== 'TASK_IMPLEMENTATION' || !j.sprintRunId || !j.earlierSibling,
   quota: (_j: ClaimJob, e: ClaimExecutor) => e.quotaPct === null || e.quotaPct >= e.minQuotaPct,
 }
@@ -276,7 +278,7 @@ const claimConditionSql: Record<keyof typeof claimPredicates, (e: ClaimExecutor)
     if (e.capabilities.length === 1 && e.capabilities[0] === 'docs_audit') return Prisma.sql`cj.required_capability = 'docs_audit' AND cj.kind = 'DOCS_AUDIT' AND cj.source IN ('SYSTEM', 'MANUAL')`
     return e.capabilities.length ? Prisma.sql`(cj.required_capability IS NULL OR cj.required_capability = ANY(${e.capabilities}::text[]))` : Prisma.sql`cj.required_capability IS NULL`
   },
-  kind: e => e.managed ? Prisma.sql`cj.source = 'COPILOT' AND cj.kind IN ('QUEUE_TASK','QUEUE_REVIEW','TASK_IMPLEMENTATION') AND cj.sprint_run_id IS NULL` : Prisma.raw(CLAIMABLE_JOB_KIND_FILTER.replace(/^AND /, '')),
+  kind: e => e.runtime === 'HARNESS' ? Prisma.sql`TRUE` : e.managed ? Prisma.sql`cj.source = 'COPILOT' AND cj.kind IN ('QUEUE_TASK','QUEUE_REVIEW','TASK_IMPLEMENTATION') AND cj.sprint_run_id IS NULL` : Prisma.raw(CLAIMABLE_JOB_KIND_FILTER.replace(/^AND /, '')),
   sprint: () => Prisma.sql`(cj.kind <> 'TASK_IMPLEMENTATION' OR cj.sprint_run_id IS NULL OR NOT EXISTS
   (SELECT 1 FROM claude_jobs earlier WHERE earlier.sprint_run_id=cj.sprint_run_id AND earlier.kind='TASK_IMPLEMENTATION'
    AND earlier.sprint_sequence<cj.sprint_sequence AND earlier.status IN ('QUEUED','CLAIMED','RUNNING')))`,

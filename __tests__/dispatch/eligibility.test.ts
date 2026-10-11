@@ -113,6 +113,7 @@ describe('claim-predicaten: HARNESS-executor', () => {
   const agentChat = { ...harnessChat, kind: 'AGENT_CHAT', source: 'MANUAL', ideaId: null, taskId: null }
 
   it('claimt AGENT_CHAT/MANUAL met runtime HARNESS, zonder capabilities en zonder required_capability (M50-1a, test a)', () => {
+    expect(evaluateClaimPredicates(agentChat, harnessExecutor)).toEqual([])
     expect(claimConditions.capability.evaluate(agentChat, harnessExecutor)).toBe(true)
     expect(claimConditions.capability.evaluate({ ...agentChat, requiredCapability: 'review' }, harnessExecutor)).toBe(false)
     expect(claimConditions.capability.evaluate({ ...agentChat, source: 'COPILOT' }, harnessExecutor)).toBe(false)
