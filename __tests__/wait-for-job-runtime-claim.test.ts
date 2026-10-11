@@ -408,7 +408,7 @@ const STEP_TASK_RESET =
   "UPDATE tasks t SET status = 'TO_DO' FROM claude_jobs cj " +
   "WHERE cj.id = ? AND t.id = cj.task_id AND t.status = 'IN_PROGRESS' AND t.updated_at = cj.claimed_at"
 const STEP_JOB_REQUEUE =
-  "UPDATE claude_jobs SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL, " +
+  "UPDATE claude_jobs SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL, started_at = NULL, " +
   'plan_snapshot = NULL, worker_instance_id = NULL, lease_until = NULL WHERE id = ?'
 // IDEA-243: de jobnotify na de requeue, op de tx-client (vuurt dus bij COMMIT).
 const STEP_NOTIFY = 'SELECT pg_notify(?, ?)'

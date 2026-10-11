@@ -391,7 +391,7 @@ export async function rollbackClaim(
   const requeued = owner
     ? await prisma.$executeRaw`
         UPDATE claude_jobs
-        SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL,
+        SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL, started_at = NULL,
             plan_snapshot = NULL, worker_instance_id = NULL, lease_until = NULL
         WHERE id = ${jobId}
         AND dispatch_request_id IS NULL
@@ -401,7 +401,7 @@ export async function rollbackClaim(
       `
     : await prisma.$executeRaw`
         UPDATE claude_jobs
-        SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL,
+        SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL, started_at = NULL,
             plan_snapshot = NULL, worker_instance_id = NULL, lease_until = NULL
         WHERE id = ${jobId}
         AND dispatch_request_id IS NULL
@@ -460,7 +460,7 @@ export async function releaseMismatchedClaim(
     `
     await tx.$executeRaw`
       UPDATE claude_jobs
-      SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL,
+      SET status = 'QUEUED', claimed_by_token_id = NULL, claimed_at = NULL, started_at = NULL,
           plan_snapshot = NULL, worker_instance_id = NULL, lease_until = NULL
       WHERE id = ${jobId}
     `
@@ -730,6 +730,7 @@ export async function resetStaleClaimedJobs(userId: string): Promise<void> {
       SET status = 'QUEUED',
           claimed_by_token_id = NULL,
           claimed_at = NULL,
+          started_at = NULL,
           plan_snapshot = NULL,
           lease_until = NULL,
           worker_instance_id = NULL,
@@ -953,6 +954,7 @@ export async function tryClaimJob(
       SET status = 'CLAIMED',
           claimed_by_token_id = ${tokenId},
           claimed_at = NOW(),
+          started_at = NOW(),
           plan_snapshot = ${snapshot},
           worker_instance_id = ${instanceId},
           lease_until = NOW() + INTERVAL '5 minutes'
