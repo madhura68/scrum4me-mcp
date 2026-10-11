@@ -72,9 +72,10 @@ export function readHarnessMigrations(root, pins = {}) {
   })
 }
 
-// M50-1a (T2): the AGENT_CHAT enum member and the four chat tables, two migrations on the same immutable pinned source
-// (DISPATCH_SCHEMA_COMMIT is the historical baseline and does not contain them). The enum member is its own query, as
-// for the HARNESS member. Rights come from the T2 contracts in scripts/db-access/profiles/scrum4me.json at the same
+// M50-1a (T2): the AGENT_CHAT enum member and the four chat tables, two migrations on the same immutable pinned source.
+// DISPATCH_SCHEMA_COMMIT (df57be6d) contains both, but the pinned provisioner (default stage) skips every migration that
+// an additive contract names, so the tables never reach the baseline; the enum migration does run there and is a no-op
+// here (ADD VALUE IF NOT EXISTS). The enum member is its own query, as for the HARNESS member. Rights come from the T2 contracts in scripts/db-access/profiles/scrum4me.json at the same
 // commit (web = scrum4me_web_runtime, preparedWeb = scrum4me_app, observer = ops_readonly); the pinned provisioner
 // applies only the historical contract set, so they are replicated as GRANTs here.
 export const AGENT_CHAT_MIGRATION_COMMIT = 'df57be6d2a8dab9f102cf67b8979127b0418a223'

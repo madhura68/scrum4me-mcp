@@ -1155,10 +1155,12 @@ describe('update_job_status voor AGENT_CHAT: de overgang en de racetak tegen de 
       const jobId = await claimedChatJob()
       holder.afterFirstJobRead = otherConnection('DELETE FROM agent_chats WHERE id = $1', [chatId])
 
-      const result = await update({ job_id: jobId, status: 'done', summary: 'Het antwoord.', cost: COST })
+      const result = await update({ job_id: jobId, status: 'done', summary: 'Het antwoord.', cost: COST, input_tokens: 1200, output_tokens: 340 })
 
       expect(result.isError).toBeFalsy()
       expect((await statusOf(world, jobId)).status).toBe('DONE')
+      const { rows: tokens } = await world.h.admin.query('SELECT input_tokens, output_tokens FROM claude_jobs WHERE id = $1', [jobId])
+      expect(tokens).toEqual([{ input_tokens: 1200, output_tokens: 340 }])
       expect(await costRowOf(jobId)).toMatchObject({ reported_cost_usd: '0.000313', cost_source: 'provider_reported', configuration: 'gsq-lokaal' })
       expect(await assistantMessagesOf(jobId)).toEqual([])
     })
