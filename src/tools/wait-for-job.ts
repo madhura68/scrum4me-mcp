@@ -25,7 +25,7 @@ import {
 } from '../git/on-demand-clone.js'
 
 const execFileP = promisify(execFile)
-import { requireWriteAccess } from '../auth.js'
+import { requireWriteAccess, getTokenScopedProducts } from '../auth.js'
 import { toolJson, toolError, withToolErrors } from '../errors.js'
 import { createWorktreeForJob, removeWorktreeForJob, LocalLlmWorktreeRefused } from '../git/worktree.js'
 import { getWorktreeRoot } from '../git/worktree-paths.js'
@@ -1329,6 +1329,16 @@ export async function getFullJobContext(
   // chatjob heeft geen manual_draft; de MANUAL-tak zou hem anders terugrollen. De config is die van resolveRuntimeJobConfig
   // (de standaard van AGENT_CHAT); de productkeuze wordt niet gelezen.
   if (job.kind === 'AGENT_CHAT') {
+    // ISS-16: het product van de chat moet binnen de scoped_products van het token vallen. Anders faalt pas de eerste
+    // doc-tool ("not found or not accessible") en stopt de harness na drie toolfouten met een vage fout. Terminaal
+    // FAILED met een leesbare reden, vóór de payload. Lege scope = ongescoped (ook zonder request-token, zoals de
+    // docker-runner): gedrag ongewijzigd. De claimfilter blijft zoals hij is, anders bleef de job eeuwig QUEUED.
+    const scoped = await getTokenScopedProducts()
+    if (scoped.length > 0 && !scoped.includes(job.product.id)) {
+      throw new HarnessJobConfigError(
+        'AGENT_CHAT_PRODUCT_OUT_OF_SCOPE: het token van de harness mag dit product niet lezen (scoped_products)',
+      )
+    }
     const payload = await prisma.$transaction((tx) => buildAgentChatPayload(tx, job.id, config))
     if ('skip' in payload) {
       await skipAgentChatJob(job.id, ownerIdentity(ownerCtx), payload.skip)
