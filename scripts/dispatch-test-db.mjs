@@ -72,6 +72,50 @@ export function readHarnessMigrations(root, pins = {}) {
   })
 }
 
+// M50-1a (T2): the AGENT_CHAT enum member and the four chat tables, two migrations on the same immutable pinned source
+// (DISPATCH_SCHEMA_COMMIT is the historical baseline and does not contain them). The enum member is its own query, as
+// for the HARNESS member. Rights come from the T2 contracts in scripts/db-access/profiles/scrum4me.json at the same
+// commit (web = scrum4me_web_runtime, preparedWeb = scrum4me_app, observer = ops_readonly); the pinned provisioner
+// applies only the historical contract set, so they are replicated as GRANTs here.
+export const AGENT_CHAT_MIGRATION_COMMIT = 'df57be6d2a8dab9f102cf67b8979127b0418a223'
+export const AGENT_CHAT_MIGRATIONS = [
+  {
+    path: 'prisma/migrations/20261011090000_agent_chat_kind/migration.sql',
+    sha256: 'd45ae9cd9539c87e2a95fb5ed71a1fedbe0413e8dae769bf1a88e2702b06ea78',
+  },
+  {
+    path: 'prisma/migrations/20261011090100_agent_chat_tables/migration.sql',
+    sha256: '5bd0a5e8ef0b388152ccfc1ccc4b9d140b595106313b23eb7cf10c597ef3b022',
+  },
+]
+
+export const AGENT_CHAT_GRANTS = [
+  'GRANT SELECT, INSERT, UPDATE, DELETE ON public.agent_chats, public.agent_chat_messages TO scrum4me_web_runtime, scrum4me_app',
+  'GRANT SELECT, INSERT ON public.agent_chat_jobs, public.agent_prompt_versions TO scrum4me_web_runtime, scrum4me_app',
+  'GRANT SELECT ON public.agent_chats, public.agent_chat_messages, public.agent_chat_jobs, public.agent_prompt_versions TO ops_readonly',
+]
+
+/** @param {string} root */
+export function readAgentChatMigrations(root) {
+  return readHarnessMigrations(root, { commit: AGENT_CHAT_MIGRATION_COMMIT, migrations: AGENT_CHAT_MIGRATIONS })
+}
+
+/**
+ * Same mechanics as applyHarnessOverlay: the migrations run as the schema owner under a temporary CREATE right, then
+ * the T2 GRANTs run as the cluster owner.
+ * @param {{ query: (sql: string) => Promise<unknown> }} client
+ * @param {readonly string[]} migrations in order
+ */
+export async function applyAgentChatOverlay(client, migrations) {
+  try {
+    await client.query('GRANT CREATE ON SCHEMA public TO scrum4me; SET ROLE scrum4me')
+    for (const sql of migrations) await client.query(sql)
+  } finally {
+    await client.query('RESET ROLE; REVOKE CREATE ON SCHEMA public FROM scrum4me')
+  }
+  for (const grant of AGENT_CHAT_GRANTS) await client.query(grant)
+}
+
 /**
  * Applies the migrations as the schema owner under a temporary CREATE right on `public` (that schema belongs to
  * pg_database_owner, so CREATE TABLE as `scrum4me` fails without it), the same pattern as the additive migrations of
@@ -198,6 +242,7 @@ export async function checkDispatchTestTarget(env = process.env) {
   readTokenUsageMigration(root)
   readHarnessMigrations(root)
   readClosedSchemaOverlay(root)
+  readAgentChatMigrations(root)
   const urls = requiredUrls.map((key) => assertDispatchTestUrl(env[key], env))
   if (new Set(urls.map((url) => `${url.hostname}:${url.port}`)).size !== 1) {
     throw new Error('DISPATCH_TEST_TARGET_REFUSED')
@@ -247,6 +292,7 @@ export async function provisionDispatchTestTarget(env = process.env) {
   // Verified before the provisioner touches the database, so a wrong source fails fast.
   const harnessMigrations = readHarnessMigrations(root)
   const closedSchemaOverlay = readClosedSchemaOverlay(root)
+  const agentChatMigrations = readAgentChatMigrations(root)
   const result = spawnSync(
     process.execPath,
     [
@@ -271,6 +317,8 @@ export async function provisionDispatchTestTarget(env = process.env) {
     try {
       await applyHarnessOverlay(client, harnessMigrations)
       await applyClosedSchemaOverlay(client, closedSchemaOverlay)
+      // M50-1a (T2): de AGENT_CHAT-enumwaarde en de chattabellen, op dezelfde verbinding.
+      await applyAgentChatOverlay(client, agentChatMigrations)
     } finally { client.release() }
   } finally { await overlay.end() }
 
