@@ -446,6 +446,8 @@ export type JobTimestampUpdate = {
 // claimed_at ≤ started_at ≤ finished_at: een job die CLAIMED → done gaat
 // zonder `running`-rapport krijgt alsnog een started_at, en claimed_at
 // (normaal door wait_for_job bij claim gezet) wordt nooit overschreven.
+// wait_for_job zet bij de claim ook started_at; deze backfill dekt jobs die
+// buiten die claim om terminaal worden (bijv. voor de claim-wijziging geclaimd).
 export function resolveJobTimestamps(
   status: 'running' | 'done' | 'failed' | 'skipped',
   current: { claimed_at: Date | null; started_at: Date | null },

@@ -19,6 +19,7 @@ M45-2b: `HARNESS`, a LiteLLM model on a per-product configuration, becomes a thi
 - **`dispatch_job`** — refuses every `required_capability`: the `local_llm` route is replaced by a HARNESS configuration per product.
 - **Git protection** — one predicate, `isHarnessJob` (`runtime = 'HARNESS'` or `required_capability = 'local_llm'`), now decides the git protection of a guarded job and the `update_job_status` exemptions (no auto-PR, no status propagation, no PBI fail-cascade) for both kinds of job.
 - **Dispatch integration gate** — its test database gets the two M45-2a migrations (Scrum4Me `ae6483b2`) as an additive overlay, so `DISPATCH_TEST_SCHEMA_ROOT` must be a full clone that contains that commit.
+- **`started_at` at claim** — `wait_for_job` now stamps `started_at` together with `claimed_at` when it claims a job, and every path that puts a job back to `QUEUED` (claim rollback, runtime-mismatch release, stale sweep) clears it again. Claude and Codex jobs never report `running`, so `started_at` used to be set only at the terminal `update_job_status` report, on the same instant as `finished_at`: the duration on the Workers jobs page was always 0 (469 of 479 `PR_REVIEW` jobs in 14 days; `DOCS_AUDIT` never got one). Mirrors `queue/claim.ts`. Rows written before this change keep their old `started_at`.
 
 ### Removed
 
