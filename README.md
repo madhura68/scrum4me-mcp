@@ -30,7 +30,7 @@ activity and create todos via native tool calls instead of curl.
 | `list_open_questions` | List own open/answered questions, most recent first (max 50) | n/a |
 | `cancel_question` | Cancel an own open question (asker-only) | no |
 | `wait_for_job` | Block until a QUEUED ClaudeJob is available, claim it atomically, return full task context with frozen `plan_snapshot`, `worktree_path`, and `branch_name` | no |
-| `update_job_status` | Report job transition to `running`, `done`, `failed` or `skipped`; triggers SSE event to UI; cleans up worktree on terminal transitions. A `HARNESS` job also reports its cost with the optional `cost` object `{ reported_cost_usd, cost_source, provider? }` — only on `done`, `failed` or `skipped`, and only for a `HARNESS` job of kind `IDEA_CHAT` or `TASK_IMPLEMENTATION` (else `COST_REPORT_NOT_ALLOWED`), validated before any side effect (`COST_REPORT_INVALID`) and stored in `job_cost_reports` in the same transaction as the status update (see [Worker runtime and HARNESS jobs](#worker-runtime-and-harness-jobs)) | no |
+| `update_job_status` | Report job transition to `running`, `done`, `failed` or `skipped`; triggers SSE event to UI; cleans up worktree on terminal transitions. A `HARNESS` job also reports its cost with the optional `cost` object `{ reported_cost_usd, cost_source, provider? }` — only on `done`, `failed` or `skipped`, and only for a `HARNESS` job of kind `IDEA_CHAT` or `TASK_IMPLEMENTATION`, or an `AGENT_CHAT` job (else `COST_REPORT_NOT_ALLOWED`), validated before any side effect (`COST_REPORT_INVALID`) and stored in `job_cost_reports` in the same transaction as the status update (see [Worker runtime and HARNESS jobs](#worker-runtime-and-harness-jobs)) | no |
 | `verify_task_against_plan` | Compare frozen `plan_snapshot` against current plan + story logs + commits; returns per-AC ✓/✗/? heuristic and drift-score | yes (read-only) |
 | `cleanup_my_worktrees` | Remove stale git worktrees left by crashed or cancelled agent runs | no |
 | `check_queue_empty` | Synchronous, non-blocking count of active jobs (QUEUED/CLAIMED/RUNNING); optional `product_id` scope | no |
@@ -565,8 +565,8 @@ only: `agent.runtime` of `get_context` and `get_agent_guide`, and the runtimes o
 stay `CLAUDE` or `CODEX`.
 
 `HARNESS` (Scrum4Me M45) is a LiteLLM model on a per-product configuration, run by the harness
-instead of Claude Code. It exists for two job kinds only: `IDEA_CHAT` and a standalone
-`TASK_IMPLEMENTATION` (source `COPILOT`, no sprint run). A product picks a configuration and a cost
+instead of Claude Code. It exists for three job kinds: `IDEA_CHAT`, a standalone
+`TASK_IMPLEMENTATION` (source `COPILOT`, no sprint run) and, since M50-1a, `AGENT_CHAT` (source `MANUAL`, see below). A product picks a configuration and a cost
 ceiling per kind in `product_harness_choices`. **Without a row for a kind, routing is unchanged**: the
 job stays an ordinary Claude job, and the claim of Claude and Codex jobs is as before.
 
@@ -577,7 +577,7 @@ job stays an ordinary Claude job, and the claim of Claude and Codex jobs is as b
   unknown keys (its input schema is strict), so a job never carries a capability chosen by the caller.
 - **Claim.** A `HARNESS` worker claims only `HARNESS` jobs — `IDEA_CHAT` (source `SYSTEM`) and a
   standalone `TASK_IMPLEMENTATION` (source `COPILOT`, not in a sprint run) — whatever its
-  capabilities, and no Claude or Codex worker claims them. Right after a claim `wait_for_job`
+  capabilities, and no Claude or Codex worker claims them. A `HARNESS` worker also claims `AGENT_CHAT` jobs (source `MANUAL`); an `AGENT_CHAT` row claimed by a non-`HARNESS` worker is `FAILED` with `AGENT_CHAT_REQUIRES_HARNESS`. Right after a claim `wait_for_job`
   compares the job's runtime with the worker's; a mismatch (only possible through a claim-filter
   bug) gives the claim back in one transaction and returns `RUNTIME_MISMATCH`.
 - **Payload.** `wait_for_job` returns `config: { "runtime": "HARNESS", "model": "<configuration>",
@@ -588,7 +588,7 @@ job stays an ordinary Claude job, and the claim of Claude and Codex jobs is as b
   `prompt_text: ""` (a `HARNESS` job gets no Claude prompt); a standalone `TASK_IMPLEMENTATION`
   payload has no `prompt_text` key, for a `HARNESS` job as for a Claude job.
 - **Cost report.** `update_job_status` accepts `cost: { reported_cost_usd, cost_source, provider? }`
-  from a `HARNESS` job (never a `CLAUDE` job) of kind `IDEA_CHAT` or `TASK_IMPLEMENTATION` on `done`,
+  from a `HARNESS` job (never a `CLAUDE` job) of kind `IDEA_CHAT`, `TASK_IMPLEMENTATION` or `AGENT_CHAT` on `done`,
   `failed` or `skipped`; any other job, kind or status gets `COST_REPORT_NOT_ALLOWED` (the own end
   paths of `DOCS_AUDIT` and `DEPLOY` never write a cost row, so a report there would vanish). `reported_cost_usd` is a decimal string or `null`, and
   `cost_source` is one of `provider_reported`, `litellm_computed` (an amount `>= 0`), `local` (exactly
@@ -600,6 +600,15 @@ job stays an ordinary Claude job, and the claim of Claude and Codex jobs is as b
   refusal leaves no pushed branch behind a job that stays `RUNNING`), and the row in
   `job_cost_reports` (one per job, the configuration taken from the job itself) is written in the
   same transaction as the status update.
+- **AGENT_CHAT (M50-1a).** A chat turn, not a code job: `wait_for_job` returns no worktree, only
+  `{ kind, job_id, config, chat: { id, product }, history, pending: { message_id, content }, system_prompt }`.
+  `history` holds the complete earlier user/assistant turns (at most 100, oldest dropped first); the
+  `config` is the default of `resolveRuntimeJobConfig`, the product's HARNESS choice is not read. If
+  the chat was deleted or the job has no pending message of its own, the claimed job is set to
+  `SKIPPED` atomically (`AGENT_CHAT_CHAT_DELETED` / `AGENT_CHAT_PENDING_MISSING`) and the claim loop
+  retries at once (at most 5 times per call). In `update_job_status` an `AGENT_CHAT` job has no
+  verify, push or auto-PR: `done` requires a non-empty `summary`, which becomes the ASSISTANT reply
+  in the chat (written in the same transaction, only if the chat still exists), and `skipped` is refused.
 - **Git protection.** One predicate, `isHarnessJob` — `runtime = 'HARNESS'` or
   `required_capability = 'local_llm'`, read from the database and never from the worktree — gives such
   a job the protections of a `local_llm` job: an explicitly configured repo root only (no on-demand
@@ -616,7 +625,8 @@ Tool errors of `wait_for_job` for a `HARNESS` job:
 | `RUNTIME_MISMATCH` | the claimed job's runtime differs from the worker's | `QUEUED` again, claim fields empty |
 | `HARNESS_CONFIGURATION_INVALID` | `requested_model` is not a valid configuration name | `FAILED` with that code |
 | `HARNESS_COST_LIMIT_INVALID` | the stored ceiling is not a usable amount | `FAILED` with that code |
-| `HARNESS_KIND_UNSUPPORTED` | a job kind other than `IDEA_CHAT` or `TASK_IMPLEMENTATION` | `FAILED` with that code |
+| `HARNESS_KIND_UNSUPPORTED` | a job kind other than `IDEA_CHAT`, `TASK_IMPLEMENTATION` or `AGENT_CHAT` | `FAILED` with that code |
+| `AGENT_CHAT_REQUIRES_HARNESS` | an `AGENT_CHAT` job claimed by a non-`HARNESS` worker | `FAILED` with that code |
 
 **Updating an installation.** The release needs the Scrum4Me M45-2a migrations in the database
 (`20261006120000_agent_runtime_harness` and `20261006120100_harness_choices_cost_reports`: the enum
