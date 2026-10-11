@@ -16,7 +16,7 @@ import {
 } from '../../scripts/dispatch-test-db.mjs'
 
 it('keeps historical fixture pin separate from the additive migration', () => {
-  expect(DISPATCH_SCHEMA_COMMIT).toBe('6dc581daa7d56bd0e00a82383b3be4bd5d877afb')
+  expect(DISPATCH_SCHEMA_COMMIT).toBe('40ddba70433611e36b148559e30d40bd22f5b97f')
   expect(TOKEN_USAGE_MIGRATION_COMMIT).not.toBe(DISPATCH_SCHEMA_COMMIT)
 })
 it('refuses an unavailable exact migration source', () => {

@@ -4,7 +4,7 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { Pool } from 'pg'
 
-export const DISPATCH_SCHEMA_COMMIT = '6dc581daa7d56bd0e00a82383b3be4bd5d877afb'
+export const DISPATCH_SCHEMA_COMMIT = '40ddba70433611e36b148559e30d40bd22f5b97f'
 // Additive migration only; retain the historical schema and its policy proof.
 export const TOKEN_USAGE_MIGRATION_COMMIT = 'bd3f5eaeabc8d4cefd959698824b677bb78cbcc2'
 export const TOKEN_USAGE_MIGRATION_PATH = 'prisma/migrations/20260927170000_api_token_last_used_at/migration.sql'

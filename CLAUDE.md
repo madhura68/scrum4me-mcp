@@ -406,7 +406,7 @@ not a throwaway. CI provisions both and drives the whole gate through
 database and then calls `npm run test:dispatch`.
 
 The test database is the historical schema of `DISPATCH_SCHEMA_COMMIT`
-(`6dc581da`) plus two additive overlays. Each is an immutable pin of commit, path
+(`40ddba70`, M50-1a: plus the AGENT_CHAT migrations) plus two additive overlays. Each is an immutable pin of commit, path
 and sha256 that `scripts/dispatch-test-db.mjs` reads with `git show` from the
 schema source, never a replacement baseline: the token-usage migration
 (`TOKEN_USAGE_MIGRATION_COMMIT`) and, since M45-2b, the two M45-2a migrations of
