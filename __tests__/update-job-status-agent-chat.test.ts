@@ -236,10 +236,11 @@ describe('update_job_status: de overgang van een AGENT_CHAT-job (de eigen tak, n
     expect(mockPrisma.$executeRaw).toHaveBeenCalledTimes(1) // alleen de notify
   })
 
-  it('skipped wordt geweigerd: dat bestaat niet voor een chatjob', async () => {
+  it('skipped wordt geweigerd door de generieke gate, met de exacte tekst; geen transactie', async () => {
     const result = await registerHandler()({ job_id: JOB_ID, status: 'skipped', summary: undefined, cost: undefined })
 
     expect(result.isError).toBe(true)
+    expect(toolText(result as never)).toBe("'skipped' is alleen toegestaan voor TASK_IMPLEMENTATION of DEPLOY (kind=AGENT_CHAT)")
     expect(mockPrisma.$transaction).not.toHaveBeenCalled()
   })
 })

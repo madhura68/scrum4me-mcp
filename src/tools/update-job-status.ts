@@ -1106,21 +1106,22 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         // M50-1a (chat-agent-spec §5.4): een AGENT_CHAT heeft geen worktree, verify of push. Dit pad staat vóór de snelle
         // route voor source MANUAL hieronder, want een chatjob is MANUAL en heeft geen draft.
         if (job.kind === 'AGENT_CHAT') {
-          if (status === 'skipped') return toolError("'skipped' is niet toegestaan voor AGENT_CHAT")
-          if (status === 'done' && !summary?.trim()) {
+          // De skipped-gate hierboven weigert 'skipped' voor AGENT_CHAT; de cast houdt de overgangen bij de drie echte statussen.
+          const chatStatus = status as 'running' | 'done' | 'failed'
+          if (chatStatus === 'done' && !summary?.trim()) {
             return toolError('AGENT_CHAT done vereist een non-empty summary; die wordt het antwoord in de chat.')
           }
           const now = new Date()
           const transition = await applyAgentChatTransition({
             jobId: job_id,
             tokenId,
-            status,
+            status: chatStatus,
             summary,
             costReport,
             now,
             data: {
-              status: DB_STATUS_MAP[status],
-              ...resolveJobTimestamps(status, { claimed_at: job.claimed_at, started_at: job.started_at }, now),
+              status: DB_STATUS_MAP[chatStatus],
+              ...resolveJobTimestamps(chatStatus, { claimed_at: job.claimed_at, started_at: job.started_at }, now),
               ...(summary !== undefined ? { summary } : {}),
               ...(error !== undefined ? { error } : {}),
               ...(model_id !== undefined ? { model_id } : {}),
@@ -1136,7 +1137,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           const queueCount = await prisma.claudeJob.count({ where: { user_id: userId, status: 'QUEUED' } })
           return toolJson({
             job_id: transition.updated.id,
-            status,
+            status: chatStatus,
             branch: null,
             pushed_at: null,
             pr_url: null,
@@ -1145,7 +1146,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             error: transition.updated.error,
             started_at: transition.updated.started_at?.toISOString() ?? null,
             finished_at: transition.updated.finished_at?.toISOString() ?? null,
-            next_action: resolveNextAction(queueCount, status),
+            next_action: resolveNextAction(queueCount, chatStatus),
           })
         }
 
@@ -1222,7 +1223,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             // via their own sink (idea: update_idea_*; reviews: submit_review/post_pr_review/
             // update_idea_plan_reviewed). So skip the verify-gate + git-push (prepareDoneUpdate)
             // for them, regardless of source. MANUAL-source jobs are already handled by the
-            // earlier branch. ORCHESTRATOR-source review jobs fall through to the generic
+            // earlier branch, and AGENT_CHAT returns before this chain (see its block above).
+            // ORCHESTRATOR-source review jobs fall through to the generic
             // verify-gate (the else branch below) — they may carry a real verify pipeline.
             actualStatus = 'done'
             // pushedAt blijft undefined, branch/error overrides ook
