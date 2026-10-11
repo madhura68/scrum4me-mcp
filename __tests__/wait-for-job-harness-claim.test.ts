@@ -3,7 +3,8 @@
 //
 //   cj.runtime = 'HARNESS' AND cj.required_capability IS NULL
 //   AND ((cj.kind = 'IDEA_CHAT' AND cj.source = 'SYSTEM')
-//     OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'COPILOT' AND cj.sprint_run_id IS NULL))
+//     OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'COPILOT' AND cj.sprint_run_id IS NULL)
+//     OR (cj.kind = 'AGENT_CHAT' AND cj.source = 'MANUAL'))   -- M50-1a, besluit 9
 //
 // De tak wordt gekozen op de runtime van de worker, vóór de capability-takken: de capabilities van een
 // harness-worker tellen niet mee. De tak staat op vier plekken (string-SQL, Prisma-fragment, TS-predicaat
@@ -42,10 +43,11 @@ function norm(fragment: { strings: readonly string[] }): string {
 }
 const normString = (sql: string) => sql.replace(/\s+/g, ' ').trim()
 
-/** De HARNESS-tak, letterlijk uit het contract: twee soorten, zonder required_capability. */
+/** De HARNESS-tak, letterlijk uit het contract: drie soort/bron-combinaties, zonder required_capability (M50-1a: + AGENT_CHAT). */
 const HARNESS_BRANCH =
   "cj.required_capability IS NULL AND ((cj.kind = 'IDEA_CHAT' AND cj.source = 'SYSTEM') " +
-  "OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'COPILOT' AND cj.sprint_run_id IS NULL))"
+  "OR (cj.kind = 'TASK_IMPLEMENTATION' AND cj.source = 'COPILOT' AND cj.sprint_run_id IS NULL) " +
+  "OR (cj.kind = 'AGENT_CHAT' AND cj.source = 'MANUAL'))"
 
 // Soorten en bronnen van de algemene soortvoorwaarde (CLAIMABLE_JOB_KIND_FILTER): die hoort bij de HARNESS-tak
 // niet voor te komen, want de tak is zelf de soortvoorwaarde.

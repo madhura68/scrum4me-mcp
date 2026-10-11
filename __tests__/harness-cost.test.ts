@@ -198,7 +198,8 @@ describe('checkCostReport: wie mag kosten melden', () => {
 
 describe('checkCostReport: de soort van de job begrenst de melding', () => {
   const cost = { reported_cost_usd: '0.000313', cost_source: 'provider_reported', provider: 'openrouter' } as const
-  const HARNESS_KINDS = ['IDEA_CHAT', 'TASK_IMPLEMENTATION']
+  // AGENT_CHAT (M50-1a): de chatjob meldt zijn kosten op dezelfde manier als de twee HARNESS-soorten.
+  const HARNESS_KINDS = ['IDEA_CHAT', 'TASK_IMPLEMENTATION', 'AGENT_CHAT']
 
   it.each(HARNESS_KINDS)('staat een melding van een HARNESS-job van soort %s toe', (kind) => {
     const result = checkCostReport({ kind, runtime: 'HARNESS', requested_model: 'gsq-lokaal' }, 'done', cost)

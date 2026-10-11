@@ -35,6 +35,8 @@ import type { WorkerRuntime } from '../../src/worker-runtime.js'
 const holder = vi.hoisted(() => ({
   db: null as unknown as PrismaClient,
   actor: null as unknown as { userId: string; tokenId: string },
+  /** M50-1a: éénmalige haak na de eerste claimdie de handler van update_job_status leest (zie de racetak-tests). */
+  afterFirstJobRead: null as null | (() => Promise<void>),
 }))
 vi.mock('../../src/prisma.js', () => ({ get prisma() { return holder.db } }))
 vi.mock('../../src/auth.js', async (original) => ({
@@ -99,6 +101,11 @@ async function dropWorld(world: World | undefined): Promise<void> {
         'DELETE FROM job_cost_reports WHERE job_id IN (SELECT id FROM claude_jobs WHERE product_id = $1)', [world.productId],
       )
       await client.query('DELETE FROM product_harness_choices WHERE product_id = $1', [world.productId])
+      // M50-1a: de chattabellen van de wereld, kinderen eerst (agent_chat_messages en agent_chat_jobs hangen aan chat en job).
+      await client.query('DELETE FROM agent_chat_messages WHERE chat_id IN (SELECT id FROM agent_chats WHERE product_id = $1)', [world.productId])
+      await client.query('DELETE FROM agent_chat_jobs WHERE chat_id IN (SELECT id FROM agent_chats WHERE product_id = $1)', [world.productId])
+      await client.query('DELETE FROM agent_chats WHERE product_id = $1', [world.productId])
+      await client.query('DELETE FROM agent_prompt_versions WHERE user_id = $1', [world.userId])
       await client.query('DELETE FROM idea_logs WHERE idea_id = ANY($1::text[])', [world.ideaIds])
       await client.query('DELETE FROM idea_chat_messages WHERE idea_id = ANY($1::text[])', [world.ideaIds])
       await client.query('DELETE FROM claude_jobs WHERE product_id = $1', [world.productId])
@@ -332,6 +339,31 @@ describe('claimfilter: HARNESS-, Claude- en Codex-jobs in één tabel', () => {
     expect(await visibleTo(world, { runtime: 'CODEX' })).toEqual([table.codexGrill])
     expect(await visibleTo(world, { runtime: 'CODEX', capabilities: ['review'] })).toEqual([table.codexGrill])
     expect(await visibleTo(world, { runtime: 'CODEX', capabilities: ['deploy'] })).toEqual([])
+  })
+
+  // M50-1a (test c): een chatjob is AGENT_CHAT/MANUAL zonder taak of idee. De echte CHECK-constraint laat die rij toe;
+  // alleen de HARNESS-worker claimt hem, Claude en Codex zien hem nooit.
+  it('een HARNESS-worker ziet een AGENT_CHAT/MANUAL-job zonder taak of idee; Claude en Codex zien hem niet (M50-1a, test c)', async () => {
+    const chat = await insertJob(world, { runtime: 'HARNESS', kind: 'AGENT_CHAT', source: 'MANUAL' })
+    expect(await visibleTo(world, { runtime: 'HARNESS' })).toEqual(sorted(table.harnessChat, table.harnessTask, chat))
+    expect(await visibleTo(world, { runtime: 'HARNESS', productId: world.productId })).toEqual(sorted(table.harnessChat, table.harnessTask, chat))
+    expect(await visibleTo(world, { runtime: 'CLAUDE', capabilities: ['code_edit', 'planning', 'review'] })).not.toContain(chat)
+    expect(await visibleTo(world, { runtime: 'CODEX' })).not.toContain(chat)
+  })
+
+  // M50-1a (MINOR 3): AGENT_CHAT/MANUAL-rijen met runtime CLAUDE en CODEX. Ook een Claude- of Codex-worker met dezelfde
+  // runtime en vrije capabilities claimt ze niet: de algemene soortvoorwaarde kent AGENT_CHAT niet.
+  it('een AGENT_CHAT/MANUAL-job met runtime CLAUDE of CODEX wordt door geen Claude- of Codex-executor geclaimd', async () => {
+    const claudeChat = await insertJob(world, { runtime: 'CLAUDE', kind: 'AGENT_CHAT', source: 'MANUAL' })
+    const codexChat = await insertJob(world, { runtime: 'CODEX', kind: 'AGENT_CHAT', source: 'MANUAL' })
+    expect(await visibleTo(world, { runtime: 'CLAUDE', capabilities: ['code_edit', 'planning', 'review'] })).not.toContain(claudeChat)
+    expect(await visibleTo(world, { runtime: 'CLAUDE' })).not.toContain(claudeChat)
+    expect(await visibleTo(world, { runtime: 'CODEX' })).not.toContain(codexChat)
+    expect(await visibleTo(world, { runtime: 'CODEX', capabilities: ['review'] })).not.toContain(codexChat)
+    expect(await tryClaimJob(world.userId, world.tokenId, 'worker-claude', undefined, 'CLAUDE', ['code_edit', 'planning', 'review'], null)).not.toBe(claudeChat)
+    expect(await tryClaimJob(world.userId, world.tokenId, 'worker-codex', undefined, 'CODEX', [], null)).not.toBe(codexChat)
+    expect((await statusOf(world, claudeChat)).status).toBe('QUEUED')
+    expect((await statusOf(world, codexChat)).status).toBe('QUEUED')
   })
 
   it('geen enkele worker ziet de HARNESS-jobs die er niet bij horen: sprint-run, required_capability, bron MANUAL en een andere soort', async () => {
@@ -998,6 +1030,153 @@ describe('kostenmelding van een HARNESS-job: de kostenrij en de statusupdate zij
         kind: 'IDEA_CHAT', source: 'SYSTEM', runtime, requested_model: requestedModel, required_capability: null,
       })
       expect(await visibleTo(world, { runtime: 'HARNESS' })).toEqual(runtime === 'HARNESS' ? [followUps[0].id] : [])
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------
+// M50-1a (plan Taak 3, stap 4, test e): update_job_status voor een AGENT_CHAT-job tegen de echte database
+// ---------------------------------------------------------------------------------------------------------
+
+// De racetak is deterministisch: de handler leest de job eerst (findUnique op claude_jobs). Direct daarna, vóór de
+// transactie met de guarded updateMany, zet een tweede verbinding (de admin-pool, eigen autocommit) de job of de chat
+// om. De haak zit in een Prisma-queryextensie op claudeJob.findUnique en draait éénmaal, na het resultaat van die eerste
+// lezing; het resultaat dat de handler ziet, is dus nog het oude. Daarna leest de overgang de nieuwe toestand.
+describe('update_job_status voor AGENT_CHAT: de overgang en de racetak tegen de echte database (M50-1a, test e)', () => {
+  const update = toolHandlerOf(registerUpdateJobStatusTool)
+  const COST = { reported_cost_usd: '0.000313', cost_source: 'provider_reported', provider: 'openrouter' } as const
+  let chatId: string
+
+  beforeEach(() => {
+    holder.db = holder.db.$extends({
+      query: {
+        claudeJob: {
+          async findUnique({ args, query }) {
+            const row = await query(args)
+            const hook = holder.afterFirstJobRead
+            if (hook) {
+              holder.afterFirstJobRead = null
+              await hook()
+            }
+            return row
+          },
+        },
+      },
+    }) as unknown as PrismaClient
+  })
+
+  /** Een AGENT_CHAT/MANUAL-job, geclaimd door de token van de seed-gebruiker, met chat, promptversie, koppelrij en een USER-bericht. */
+  async function claimedChatJob(): Promise<string> {
+    const jobId = await insertJob(world, { runtime: 'HARNESS', kind: 'AGENT_CHAT', source: 'MANUAL', requestedModel: 'gsq-lokaal' })
+    const promptId = randomUUID()
+    chatId = randomUUID()
+    await world.h.admin.query(
+      'INSERT INTO agent_prompt_versions(id, user_id, content, created_at) VALUES($1, $2, $3, now())',
+      [promptId, world.userId, 'Je bent de chat-agent.'],
+    )
+    await world.h.admin.query(
+      `INSERT INTO agent_chats(id, user_id, product_id, title, configuration, created_at, updated_at)
+       VALUES($1, $2, $3, 'Chat', 'gsq-lokaal', now() - interval '1 day', now() - interval '1 day')`,
+      [chatId, world.userId, world.productId],
+    )
+    await world.h.admin.query(
+      'INSERT INTO agent_chat_jobs(job_id, chat_id, prompt_version_id, created_at) VALUES($1, $2, $3, now())',
+      [jobId, chatId, promptId],
+    )
+    await world.h.admin.query(
+      `INSERT INTO agent_chat_messages(id, chat_id, role, content, job_id, created_at)
+       VALUES($1, $2, 'USER', 'Wat is dit?', $3, now())`,
+      [randomUUID(), chatId, jobId],
+    )
+    expect(await tryClaimJob(world.userId, world.tokenId, 'chat-worker', undefined, 'HARNESS', [], null)).toBe(jobId)
+    return jobId
+  }
+
+  const assistantMessagesOf = async (jobId: string) =>
+    (await world.h.admin.query<{ content: string; chat_id: string }>(
+      "SELECT content, chat_id FROM agent_chat_messages WHERE job_id = $1 AND role = 'ASSISTANT'", [jobId],
+    )).rows
+
+  const costRowOf = async (jobId: string) => (await world.h.admin.query(
+    'SELECT job_id, reported_cost_usd::text AS reported_cost_usd, cost_source, provider, configuration FROM job_cost_reports WHERE job_id = $1',
+    [jobId],
+  )).rows[0]
+
+  const chatUpdatedAt = async () =>
+    (await world.h.admin.query<{ updated_at: Date }>('SELECT updated_at FROM agent_chats WHERE id = $1', [chatId])).rows[0].updated_at
+
+  /** De andere verbinding: zet de job om tussen de eerste lezing en de overgang. */
+  const otherConnection = (sql: string, params: unknown[]) => () => world.h.admin.query(sql, params).then(() => undefined)
+
+  describe('de racetak: de job wordt door een andere verbinding gewijzigd tussen de eerste lezing en de overgang', () => {
+    it.each([
+      ['done', { summary: 'Het antwoord.', cost: COST }],
+      ['failed', { error: 'model timeout', cost: COST }],
+    ] as const)('CANCELLED door een andere verbinding: %s geeft JOB_CANCELLED, geen ASSISTANT-bericht, geen kostenrij', async (status, extra) => {
+      const jobId = await claimedChatJob()
+      holder.afterFirstJobRead = otherConnection("UPDATE claude_jobs SET status = 'CANCELLED', finished_at = now() WHERE id = $1", [jobId])
+
+      const result = await update({ job_id: jobId, status, ...extra })
+
+      expect(holder.afterFirstJobRead).toBeNull()
+      expect(result.isError).toBe(true)
+      expect(result.content[0].text).toMatch(/^JOB_CANCELLED:/)
+      expect((await statusOf(world, jobId)).status).toBe('CANCELLED')
+      expect(await assistantMessagesOf(jobId)).toEqual([])
+      expect(await costRowOf(jobId)).toBeUndefined()
+    })
+
+    it('CANCELLED door een andere verbinding bij running: JOB_CANCELLED, de job blijft CANCELLED', async () => {
+      const jobId = await claimedChatJob()
+      holder.afterFirstJobRead = otherConnection("UPDATE claude_jobs SET status = 'CANCELLED', finished_at = now() WHERE id = $1", [jobId])
+
+      const result = await update({ job_id: jobId, status: 'running' })
+
+      expect(result.isError).toBe(true)
+      expect(result.content[0].text).toMatch(/^JOB_CANCELLED:/)
+      expect((await statusOf(world, jobId)).status).toBe('CANCELLED')
+    })
+
+    it('al DONE door een andere verbinding: "Job is already in terminal state: done", en deze aanroep schrijft geen bericht', async () => {
+      const jobId = await claimedChatJob()
+      holder.afterFirstJobRead = otherConnection("UPDATE claude_jobs SET status = 'DONE', finished_at = now() WHERE id = $1", [jobId])
+
+      const result = await update({ job_id: jobId, status: 'done', summary: 'Tweede antwoord.' })
+
+      expect(result.isError).toBe(true)
+      expect(result.content[0].text).toBe('Job is already in terminal state: done')
+      expect((await statusOf(world, jobId)).status).toBe('DONE')
+      expect(await assistantMessagesOf(jobId)).toEqual([])
+    })
+  })
+
+  describe('de verwijderde chat', () => {
+    it('chat verwijderd tussen de eerste lezing en done: de job wordt DONE met tokens en kosten, zonder bericht', async () => {
+      const jobId = await claimedChatJob()
+      holder.afterFirstJobRead = otherConnection('DELETE FROM agent_chats WHERE id = $1', [chatId])
+
+      const result = await update({ job_id: jobId, status: 'done', summary: 'Het antwoord.', cost: COST, input_tokens: 1200, output_tokens: 340 })
+
+      expect(result.isError).toBeFalsy()
+      expect((await statusOf(world, jobId)).status).toBe('DONE')
+      const { rows: tokens } = await world.h.admin.query('SELECT input_tokens, output_tokens FROM claude_jobs WHERE id = $1', [jobId])
+      expect(tokens).toEqual([{ input_tokens: 1200, output_tokens: 340 }])
+      expect(await costRowOf(jobId)).toMatchObject({ reported_cost_usd: '0.000313', cost_source: 'provider_reported', configuration: 'gsq-lokaal' })
+      expect(await assistantMessagesOf(jobId)).toEqual([])
+    })
+  })
+
+  describe('het gewone pad', () => {
+    it('done met antwoord schrijft precies één ASSISTANT-bericht met job_id in de chat, en zet agent_chats.updated_at', async () => {
+      const jobId = await claimedChatJob()
+      const before = await chatUpdatedAt()
+
+      const result = await update({ job_id: jobId, status: 'done', summary: 'Het antwoord.' })
+
+      expect(result.isError).toBeFalsy()
+      expect((await statusOf(world, jobId)).status).toBe('DONE')
+      expect(await assistantMessagesOf(jobId)).toEqual([{ content: 'Het antwoord.', chat_id: chatId }])
+      expect((await chatUpdatedAt()).getTime()).toBeGreaterThan(before.getTime())
     })
   })
 })

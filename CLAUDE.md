@@ -406,7 +406,7 @@ not a throwaway. CI provisions both and drives the whole gate through
 database and then calls `npm run test:dispatch`.
 
 The test database is the historical schema of `DISPATCH_SCHEMA_COMMIT`
-(`6dc581da`) plus two additive overlays. Each is an immutable pin of commit, path
+(`df57be6d`, M50-1a; its baseline holds the AGENT_CHAT enum member, not the chat tables) plus additive overlays. Each is an immutable pin of commit, path
 and sha256 that `scripts/dispatch-test-db.mjs` reads with `git show` from the
 schema source, never a replacement baseline: the token-usage migration
 (`TOKEN_USAGE_MIGRATION_COMMIT`) and, since M45-2b, the two M45-2a migrations of
@@ -415,7 +415,8 @@ enum member and the tables `product_harness_choices` and `job_cost_reports`. The
 enum member and the tables go in as two separate queries, on one admin connection,
 under a temporary `CREATE` right on `public` that a `finally` revokes again (the
 schema belongs to `pg_database_owner`), followed by grants equal to the 2a
-contracts. So `DISPATCH_TEST_SCHEMA_ROOT` must be a **full** clone of Scrum4Me — not
+contracts. Since M50-1a the same mechanics apply the two AGENT_CHAT migrations of `df57be6d`
+(`AGENT_CHAT_MIGRATION_COMMIT`) with grants equal to their contracts. So `DISPATCH_TEST_SCHEMA_ROOT` must be a **full** clone of Scrum4Me — not
 shallow, and recent enough to contain `ae6483b2` — checked out clean at
 `DISPATCH_SCHEMA_COMMIT`. `check` and `provision` refuse a source without that
 commit (`DISPATCH_HARNESS_MIGRATION_SOURCE_REFUSED`) and a file with another hash

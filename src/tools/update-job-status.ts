@@ -11,6 +11,7 @@ import { assertUnmanagedJob, assertUnmanagedJobCleanup, assertUnmanagedJobId, as
 
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import type { Prisma } from '@prisma/client'
 import { Client } from 'pg'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -859,6 +860,102 @@ export async function applyDocsAuditTerminalUpdate(input: {
   return { ok: true, status: dbStatus }
 }
 
+// Dezelfde velden voor de generieke route en de chatroute, die de rij na de overgang met deze velden terugleest.
+const JOB_UPDATE_SELECT = {
+  id: true,
+  status: true,
+  branch: true,
+  pushed_at: true,
+  pr_url: true,
+  verify_result: true,
+  summary: true,
+  error: true,
+  started_at: true,
+  finished_at: true,
+  head_sha: true,
+} as const
+
+const JOB_CANCELLED_ERROR =
+  'JOB_CANCELLED: This job was cancelled by the PBI fail-cascade. ' +
+  'Discard your local changes and call wait_for_job for the next item.'
+
+type AgentChatTransitionResult =
+  | {
+      ok: true
+      updated: { id: string; summary: string | null; error: string | null; started_at: Date | null; finished_at: Date | null }
+      /** false bij een herhaalde running op een job die al RUNNING is: er is niets geschreven, dus geen notify. */
+      wrote: boolean
+    }
+  | { ok: false; error: string }
+
+/**
+ * M50-1a (chat-agent-spec §5.4): de overgang van een AGENT_CHAT-job in één transactie. De guarded updateMany wint; bij
+ * nul rijen leest de transactie de rij opnieuw en bepaalt de uitkomst (JOB_CANCELLED, terminaal, of PERMISSION_DENIED).
+ * Bij done met antwoord hoort daar het ASSISTANT-bericht bij, en alleen als de chat nog bestaat: FOR KEY SHARE houdt een
+ * gelijktijdige verwijdering tot na de commit tegen. De kostenrij gaat in dezelfde transactie.
+ */
+async function applyAgentChatTransition(input: {
+  jobId: string
+  tokenId: string
+  status: 'running' | 'done' | 'failed'
+  summary: string | undefined
+  data: Prisma.ClaudeJobUpdateManyMutationInput
+  costReport: CostReportRow | null
+  now: Date
+}): Promise<AgentChatTransitionResult> {
+  const { jobId, tokenId, status, summary, data, costReport, now } = input
+  const fromStatuses: ('CLAIMED' | 'RUNNING')[] = status === 'running' ? ['CLAIMED'] : ['CLAIMED', 'RUNNING']
+
+  return prisma.$transaction(async (tx): Promise<AgentChatTransitionResult> => {
+    const won = await tx.claudeJob.updateMany({
+      where: { id: jobId, claimed_by_token_id: tokenId, status: { in: fromStatuses } },
+      data,
+    })
+
+    if (won.count === 0) {
+      const current = await tx.claudeJob.findUnique({
+        where: { id: jobId },
+        select: { status: true, claimed_by_token_id: true },
+      })
+      if (!current) return { ok: false, error: `Job ${jobId} not found` }
+      if (current.claimed_by_token_id !== tokenId) {
+        return { ok: false, error: 'PERMISSION_DENIED: This job was not claimed by your token' }
+      }
+      if (current.status === 'CANCELLED') return { ok: false, error: JOB_CANCELLED_ERROR }
+      if (status === 'running' && current.status === 'RUNNING') {
+        const same = await tx.claudeJob.findUnique({ where: { id: jobId }, select: JOB_UPDATE_SELECT })
+        return same ? { ok: true, updated: same, wrote: false } : { ok: false, error: `Job ${jobId} not found` }
+      }
+      return { ok: false, error: `Job is already in terminal state: ${current.status.toLowerCase()}` }
+    }
+
+    const updated = await tx.claudeJob.findUnique({ where: { id: jobId }, select: JOB_UPDATE_SELECT })
+    if (!updated) return { ok: false, error: `Job ${jobId} not found` }
+
+    if (costReport) {
+      await tx.jobCostReport.upsert({
+        where: { job_id: jobId },
+        create: { job_id: jobId, ...costReport, reported_at: now },
+        update: { ...costReport, reported_at: now },
+      })
+    }
+
+    if (status === 'done' && summary) {
+      const link = await tx.agentChatJob.findUnique({ where: { job_id: jobId }, select: { chat_id: true } })
+      if (link?.chat_id) {
+        const alive = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM agent_chats WHERE id = ${link.chat_id} FOR KEY SHARE`
+        if (alive.length > 0) {
+          await tx.agentChatMessage.create({
+            data: { chat_id: link.chat_id, role: 'ASSISTANT', content: summary, job_id: jobId },
+          })
+          await tx.agentChat.update({ where: { id: link.chat_id }, data: { updated_at: now } })
+        }
+      }
+    }
+    return { ok: true, updated, wrote: true }
+  })
+}
+
 export function registerUpdateJobStatusTool(server: McpServer) {
   server.registerTool(
     'update_job_status',
@@ -886,7 +983,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
         'not by the agent itself. ' +
         'A HARNESS job reports its cost with cost = { reported_cost_usd (decimal string or null), cost_source ' +
         '(provider_reported | litellm_computed | local | none), provider? } on done, failed or skipped only, and ' +
-        'only for a job of kind IDEA_CHAT or TASK_IMPLEMENTATION; ' +
+        'only for a job of kind IDEA_CHAT, TASK_IMPLEMENTATION or AGENT_CHAT; ' +
         'it is validated before any side effect and stored in the same transaction as the status update. ' +
         'Response includes next_action: when wait_for_job_again, immediately call wait_for_job again. When queue_empty, the agent batch is done.',
       inputSchema,
@@ -947,10 +1044,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           // PBI fail-cascade got here first. The agent must abandon any
           // local work and call wait_for_job again instead of forcing this
           // job into DONE/FAILED.
-          return toolError(
-            'JOB_CANCELLED: This job was cancelled by the PBI fail-cascade. ' +
-              'Discard your local changes and call wait_for_job for the next item.',
-          )
+          return toolError(JOB_CANCELLED_ERROR)
         }
         if (!['CLAIMED', 'RUNNING'].includes(job.status)) {
           return toolError(`Job is already in terminal state: ${job.status.toLowerCase()}`)
@@ -1007,6 +1101,53 @@ export function registerUpdateJobStatusTool(server: McpServer) {
               "'skipped' vereist non-empty error met reden (≥10 chars), bv. 'no_op_changes_already_in_main'",
             )
           }
+        }
+
+        // M50-1a (chat-agent-spec §5.4): een AGENT_CHAT heeft geen worktree, verify of push. Dit pad staat vóór de snelle
+        // route voor source MANUAL hieronder, want een chatjob is MANUAL en heeft geen draft.
+        if (job.kind === 'AGENT_CHAT') {
+          // De skipped-gate hierboven weigert 'skipped' voor AGENT_CHAT; de cast houdt de overgangen bij de drie echte statussen.
+          const chatStatus = status as 'running' | 'done' | 'failed'
+          if (chatStatus === 'done' && !summary?.trim()) {
+            return toolError('AGENT_CHAT done vereist een non-empty summary; die wordt het antwoord in de chat.')
+          }
+          const now = new Date()
+          const transition = await applyAgentChatTransition({
+            jobId: job_id,
+            tokenId,
+            status: chatStatus,
+            summary,
+            costReport,
+            now,
+            data: {
+              status: DB_STATUS_MAP[chatStatus],
+              ...resolveJobTimestamps(chatStatus, { claimed_at: job.claimed_at, started_at: job.started_at }, now),
+              ...(summary !== undefined ? { summary } : {}),
+              ...(error !== undefined ? { error } : {}),
+              ...(model_id !== undefined ? { model_id } : {}),
+              ...(input_tokens !== undefined ? { input_tokens } : {}),
+              ...(output_tokens !== undefined ? { output_tokens } : {}),
+              ...(cache_read_tokens !== undefined ? { cache_read_tokens } : {}),
+              ...(cache_write_tokens !== undefined ? { cache_write_tokens } : {}),
+              ...(actual_thinking_tokens !== undefined ? { actual_thinking_tokens } : {}),
+            },
+          })
+          if (!transition.ok) return toolError(transition.error)
+          if (transition.wrote) await notifyJobChangedPrisma(prisma, job_id, { bestEffort: true })
+          const queueCount = await prisma.claudeJob.count({ where: { user_id: userId, status: 'QUEUED' } })
+          return toolJson({
+            job_id: transition.updated.id,
+            status: chatStatus,
+            branch: null,
+            pushed_at: null,
+            pr_url: null,
+            verify_result: null,
+            summary: transition.updated.summary,
+            error: transition.updated.error,
+            started_at: transition.updated.started_at?.toISOString() ?? null,
+            finished_at: transition.updated.finished_at?.toISOString() ?? null,
+            next_action: resolveNextAction(queueCount, chatStatus),
+          })
         }
 
         const isSystemPlanChat =
@@ -1082,7 +1223,8 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             // via their own sink (idea: update_idea_*; reviews: submit_review/post_pr_review/
             // update_idea_plan_reviewed). So skip the verify-gate + git-push (prepareDoneUpdate)
             // for them, regardless of source. MANUAL-source jobs are already handled by the
-            // earlier branch. ORCHESTRATOR-source review jobs fall through to the generic
+            // earlier branch, and AGENT_CHAT returns before this chain (see its block above).
+            // ORCHESTRATOR-source review jobs fall through to the generic
             // verify-gate (the else branch below) — they may carry a real verify pipeline.
             actualStatus = 'done'
             // pushedAt blijft undefined, branch/error overrides ook
@@ -1199,20 +1341,6 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           create: { job_id, ...costReport, reported_at: now },
           update: { ...costReport, reported_at: now },
         }
-        const jobUpdateSelect = {
-          id: true,
-          status: true,
-          branch: true,
-          pushed_at: true,
-          pr_url: true,
-          verify_result: true,
-          summary: true,
-          error: true,
-          started_at: true,
-          finished_at: true,
-          head_sha: true,
-        } as const
-
         let updated: {
           id: string
           status: string
@@ -1266,7 +1394,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             const u = await tx.claudeJob.update({
               where: { id: job_id },
               data: jobUpdateData,
-              select: jobUpdateSelect,
+              select: JOB_UPDATE_SELECT,
             })
             if (costUpsert) await tx.jobCostReport.upsert(costUpsert)
 
@@ -1340,7 +1468,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
             prisma.claudeJob.update({
               where: { id: job_id },
               data: jobUpdateData,
-              select: jobUpdateSelect,
+              select: JOB_UPDATE_SELECT,
             }),
             prisma.jobCostReport.upsert(costUpsert),
           ])
@@ -1349,7 +1477,7 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           updated = await prisma.claudeJob.update({
             where: { id: job_id },
             data: jobUpdateData,
-            select: jobUpdateSelect,
+            select: JOB_UPDATE_SELECT,
           })
         }
 

@@ -37,6 +37,7 @@ import { parseForgejoPrUrl } from '../git/forgejo-rest.js'
 import { resolveRuntimeJobConfig } from '@shared/job-config.js'
 import { isHarnessJobKind } from '@shared/harness-config.js'
 import { readHarnessChoice } from '../lib/harness-choice.js'
+import { buildAgentChatPayload, type AgentChatSkipReason } from '../lib/agent-chat-payload.js'
 import { buildDocIndex } from '../lib/doc-index.js'
 import { buildDocsAuditPayload } from '../lib/docs-audit-payload.js'
 import { loadManualIdeaContext } from '../lib/manual-idea-context.js'
@@ -196,6 +197,39 @@ export async function resolveRepoRoot(
     if (err instanceof TerminalJobError || err instanceof OwnershipLostError) throw err
     return unresolved()
   }
+}
+
+/** M50-1a: een geclaimde chatjob zonder bruikbare chat. De job is dan al SKIPPED; de claimlus zoekt verder. */
+export class AgentChatSkippedError extends Error {
+  constructor(readonly reason: AgentChatSkipReason) {
+    super(reason)
+    this.name = 'AgentChatSkippedError'
+  }
+}
+
+/**
+ * M50-1a (chat-agent-spec §5.3): CLAIMED → SKIPPED in één guarded update. Alleen de claimhouder (token en instantie)
+ * zet de job om; bij nul rijen is de claim al overgenomen en laat de rij staan.
+ */
+async function skipAgentChatJob(
+  jobId: string,
+  owner: { tokenId: string; instanceId: string } | null,
+  reason: AgentChatSkipReason,
+): Promise<void> {
+  const result = await prisma.claudeJob.updateMany({
+    where: {
+      id: jobId,
+      status: 'CLAIMED',
+      ...(owner ? { claimed_by_token_id: owner.tokenId, worker_instance_id: owner.instanceId } : {}),
+    },
+    data: { status: 'SKIPPED', finished_at: new Date(), error: reason },
+  })
+  if (result.count === 0) {
+    claimLog('agent_chat.skip_ownership_lost', { jobId, reason })
+    return
+  }
+  // IDEA-243: best-effort, ná de guarded update, zoals markJobTerminallyFailed.
+  await notifyJobChangedPrisma(prisma, jobId, { bestEffort: true })
 }
 
 /**
@@ -605,6 +639,9 @@ export async function attachWorktreeToJob(
 
 const MAX_WAIT_SECONDS = 600
 const POLL_INTERVAL_MS = 5_000
+// M50-1a: na een overgeslagen chatjob probeert de claimlus direct opnieuw; hooguit zo vaak per aanroep, daarna wacht
+// de lus weer op een notify of de poll. Zo blijft een reeks verwijderde chats begrensd en geen busy-loop.
+const MAX_IMMEDIATE_SKIP_RETRIES = 5
 const STALE_CLAIMED_INTERVAL = "30 minutes"
 
 // Single source shared with managed selection; preserve public legacy imports.
@@ -1091,6 +1128,8 @@ const HARNESS_JOB_CONFIG_ERROR_CODES: ReadonlySet<string> = new Set([
   'HARNESS_CONFIGURATION_INVALID',
   'HARNESS_COST_LIMIT_INVALID',
   'UNKNOWN_AGENT_RUNTIME',
+  // Een AGENT_CHAT-rij die geen HARNESS-worker claimde: FAILED met de code, niet op CLAIMED laten hangen.
+  'AGENT_CHAT_REQUIRES_HARNESS',
 ])
 
 function resolveJobConfig(...args: Parameters<typeof resolveRuntimeJobConfig>) {
@@ -1283,6 +1322,18 @@ export async function getFullJobContext(
     console.warn(`[wait-for-job] buildDocIndex failed for ${job.product.id}:`, err)
     return null
   })
+
+  // M50-1a (chat-agent-spec §5.3): een chatjob krijgt zijn payload hier, vóór de PR_REVIEW- en de MANUAL-tak. Een
+  // chatjob heeft geen manual_draft; de MANUAL-tak zou hem anders terugrollen. De config is die van resolveRuntimeJobConfig
+  // (de standaard van AGENT_CHAT); de productkeuze wordt niet gelezen.
+  if (job.kind === 'AGENT_CHAT') {
+    const payload = await prisma.$transaction((tx) => buildAgentChatPayload(tx, job.id, config))
+    if ('skip' in payload) {
+      await skipAgentChatJob(job.id, ownerIdentity(ownerCtx), payload.skip)
+      throw new AgentChatSkippedError(payload.skip)
+    }
+    return payload
+  }
 
   if (job.kind === 'PR_REVIEW') {
     if (!job.pr_url) {
@@ -2237,6 +2288,14 @@ export function registerWaitForJobTool(server: McpServer) {
 
         // 2. Try immediate claim
         let jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities, capability ?? null)
+        let skipRetriesLeft = MAX_IMMEDIATE_SKIP_RETRIES
+        const takeSkipRetry = (): boolean => {
+          if (skipRetriesLeft === 0) return false
+          skipRetriesLeft -= 1
+          return true
+        }
+        // Gezet na een skip: de volgende poging gaat direct, zonder eerst te wachten (zie de lus hieronder).
+        let retryNow = false
         if (jobId) {
           const ownerCtx: CloneOwnerCtx = { jobId, instanceId, tokenId }
           try {
@@ -2261,20 +2320,26 @@ export function registerWaitForJobTool(server: McpServer) {
             }
             return toolJson(ctx)
           } catch (err) {
-            // M45-2b: RuntimeMismatchError vóór de rest; de claim is al teruggegeven, de job blijft QUEUED.
-            if (err instanceof RuntimeMismatchError) return toolError('RUNTIME_MISMATCH')
-            // M45-2b: HarnessJobConfigError is een TerminalJobError en moet er dus vóór staan, anders geeft de tak
-            // hieronder de repotekst. De job wordt FAILED met de code, in plaats van te wachten op het lease-verloop.
-            if (err instanceof HarnessJobConfigError) {
-              await markJobTerminallyFailed(jobId, err.reason)
-              return toolError(err.reason)
+            // M50-1a: een chat zonder bruikbare chat is al SKIPPED; geen toolfout, de claimlus zoekt verder.
+            if (err instanceof AgentChatSkippedError) {
+              jobId = null
+              retryNow = takeSkipRetry()
+            } else {
+              // M45-2b: RuntimeMismatchError vóór de rest; de claim is al teruggegeven, de job blijft QUEUED.
+              if (err instanceof RuntimeMismatchError) return toolError('RUNTIME_MISMATCH')
+              // M45-2b: HarnessJobConfigError is een TerminalJobError en moet er dus vóór staan, anders geeft de tak
+              // hieronder de repotekst. De job wordt FAILED met de code, in plaats van te wachten op het lease-verloop.
+              if (err instanceof HarnessJobConfigError) {
+                await markJobTerminallyFailed(jobId, err.reason)
+                return toolError(err.reason)
+              }
+              if (err instanceof TerminalJobError) {
+                await markJobTerminallyFailed(jobId, err.reason)
+                return toolError(`Job failed (unresolvable repo): ${err.reason}`)
+              }
+              if (err instanceof OwnershipLostError) return toolError(err.message)
+              throw err
             }
-            if (err instanceof TerminalJobError) {
-              await markJobTerminallyFailed(jobId, err.reason)
-              return toolError(`Job failed (unresolvable repo): ${err.reason}`)
-            }
-            if (err instanceof OwnershipLostError) return toolError(err.message)
-            throw err
           }
         }
 
@@ -2287,11 +2352,14 @@ export function registerWaitForJobTool(server: McpServer) {
 
         try {
           while (Date.now() < deadline) {
-            // Wait for a notification or poll interval
-            await waitForEnqueueNotification(listenClient, POLL_INTERVAL_MS, (payload) =>
-              payload.type === 'claude_job_enqueued' &&
-              payload.user_id === userId &&
-              (!product_id || payload.product_id === product_id))
+            // Wait for a notification or poll interval, unless a skipped chat job asked for an immediate retry
+            if (!retryNow) {
+              await waitForEnqueueNotification(listenClient, POLL_INTERVAL_MS, (payload) =>
+                payload.type === 'claude_job_enqueued' &&
+                payload.user_id === userId &&
+                (!product_id || payload.product_id === product_id))
+            }
+            retryNow = false
 
             await resetStaleClaimedJobs(userId)
             jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities, capability ?? null)
@@ -2316,6 +2384,11 @@ export function registerWaitForJobTool(server: McpServer) {
                 }
                 return toolJson(ctx)
               } catch (err) {
+                // M50-1a: een chat zonder bruikbare chat is al SKIPPED; de lus probeert direct de volgende job.
+                if (err instanceof AgentChatSkippedError) {
+                  retryNow = takeSkipRetry()
+                  continue
+                }
                 // M45-2b: zelfde afhandeling als bij de directe claim hierboven.
                 if (err instanceof RuntimeMismatchError) return toolError('RUNTIME_MISMATCH')
                 if (err instanceof HarnessJobConfigError) {
