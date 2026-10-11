@@ -254,3 +254,38 @@ describe('een AGENT_CHAT-job via de handler', () => {
     expect(body).not.toHaveProperty('worktree_path')
   })
 })
+
+describe('een AGENT_CHAT-job die niet op HARNESS draait (M50-1a, MINOR 7)', () => {
+  it('een verkeerd geclaimde rij (runtime CLAUDE) wordt FAILED met AGENT_CHAT_REQUIRES_HARNESS, en blijft niet op CLAIMED hangen', async () => {
+    vi.stubEnv('SCRUM4ME_WORKER_RUNTIME', 'CLAUDE')
+    mockPrisma.claudeJob.findUnique.mockResolvedValue(chatJob({ runtime: 'CLAUDE', requested_model: null }))
+    claimQueue = [[candidateRow()]]
+
+    const result = await handler({ wait_seconds: 1 })
+
+    expect(result.isError).toBe(true)
+    expect(toolText(result)).toBe('AGENT_CHAT_REQUIRES_HARNESS')
+    expect(mockPrisma.claudeJob.update).toHaveBeenCalledWith({
+      where: { id: JOB_ID },
+      data: expect.objectContaining({ status: 'FAILED', error: 'AGENT_CHAT_REQUIRES_HARNESS' }),
+    })
+  })
+})
+
+describe('na een skip probeert de claimlus direct opnieuw, begrensd (M50-1a, MINOR 4)', () => {
+  it('acht verwijderde chats achter elkaar: één directe poging en vijf herhalingen zonder wachten, daarna één wachtstap', async () => {
+    tx.agentChatJob.findUnique.mockResolvedValue(chatRows({ chatId: null }).link)
+    claimQueue = Array.from({ length: 8 }, () => [candidateRow()])
+    // Geen notificaties: een wachtlus blijft op de poll van 5 s hangen. De herhalingen mogen niet wachten.
+    pgClient.on.mockImplementation(() => undefined)
+
+    const result = await handler({ wait_seconds: 1 })
+
+    expect(JSON.parse(toolText(result))).toEqual({ status: 'timeout', message: 'No job available within wait window' })
+    // 1 directe poging + 5 herhalingen; daarna één wachtstap, en een zevende poging erna. Dan is de deadline voorbij.
+    expect(mockPrisma.claudeJob.updateMany).toHaveBeenCalledTimes(7)
+    const waits = pgClient.on.mock.calls.filter(([event]) => event === 'notification')
+    expect(waits).toHaveLength(1)
+    expect(claimQueue).toHaveLength(1)
+  }, 20_000)
+})

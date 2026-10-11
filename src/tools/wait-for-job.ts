@@ -639,6 +639,9 @@ export async function attachWorktreeToJob(
 
 const MAX_WAIT_SECONDS = 600
 const POLL_INTERVAL_MS = 5_000
+// M50-1a: na een overgeslagen chatjob probeert de claimlus direct opnieuw; hooguit zo vaak per aanroep, daarna wacht
+// de lus weer op een notify of de poll. Zo blijft een reeks verwijderde chats begrensd en geen busy-loop.
+const MAX_IMMEDIATE_SKIP_RETRIES = 5
 const STALE_CLAIMED_INTERVAL = "30 minutes"
 
 // Single source shared with managed selection; preserve public legacy imports.
@@ -1125,6 +1128,8 @@ const HARNESS_JOB_CONFIG_ERROR_CODES: ReadonlySet<string> = new Set([
   'HARNESS_CONFIGURATION_INVALID',
   'HARNESS_COST_LIMIT_INVALID',
   'UNKNOWN_AGENT_RUNTIME',
+  // Een AGENT_CHAT-rij die geen HARNESS-worker claimde: FAILED met de code, niet op CLAIMED laten hangen.
+  'AGENT_CHAT_REQUIRES_HARNESS',
 ])
 
 function resolveJobConfig(...args: Parameters<typeof resolveRuntimeJobConfig>) {
@@ -2283,6 +2288,14 @@ export function registerWaitForJobTool(server: McpServer) {
 
         // 2. Try immediate claim
         let jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities, capability ?? null)
+        let skipRetriesLeft = MAX_IMMEDIATE_SKIP_RETRIES
+        const takeSkipRetry = (): boolean => {
+          if (skipRetriesLeft === 0) return false
+          skipRetriesLeft -= 1
+          return true
+        }
+        // Gezet na een skip: de volgende poging gaat direct, zonder eerst te wachten (zie de lus hieronder).
+        let retryNow = false
         if (jobId) {
           const ownerCtx: CloneOwnerCtx = { jobId, instanceId, tokenId }
           try {
@@ -2307,9 +2320,10 @@ export function registerWaitForJobTool(server: McpServer) {
             }
             return toolJson(ctx)
           } catch (err) {
-            // M50-1a: een chat zonder bruikbare chat is al SKIPPED; geen toolfout, de wachtlus pakt de volgende job.
+            // M50-1a: een chat zonder bruikbare chat is al SKIPPED; geen toolfout, de claimlus zoekt verder.
             if (err instanceof AgentChatSkippedError) {
               jobId = null
+              retryNow = takeSkipRetry()
             } else {
               // M45-2b: RuntimeMismatchError vóór de rest; de claim is al teruggegeven, de job blijft QUEUED.
               if (err instanceof RuntimeMismatchError) return toolError('RUNTIME_MISMATCH')
@@ -2338,11 +2352,14 @@ export function registerWaitForJobTool(server: McpServer) {
 
         try {
           while (Date.now() < deadline) {
-            // Wait for a notification or poll interval
-            await waitForEnqueueNotification(listenClient, POLL_INTERVAL_MS, (payload) =>
-              payload.type === 'claude_job_enqueued' &&
-              payload.user_id === userId &&
-              (!product_id || payload.product_id === product_id))
+            // Wait for a notification or poll interval, unless a skipped chat job asked for an immediate retry
+            if (!retryNow) {
+              await waitForEnqueueNotification(listenClient, POLL_INTERVAL_MS, (payload) =>
+                payload.type === 'claude_job_enqueued' &&
+                payload.user_id === userId &&
+                (!product_id || payload.product_id === product_id))
+            }
+            retryNow = false
 
             await resetStaleClaimedJobs(userId)
             jobId = await tryClaimJob(userId, tokenId, instanceId, product_id, runtime, capabilities, capability ?? null)
@@ -2367,8 +2384,11 @@ export function registerWaitForJobTool(server: McpServer) {
                 }
                 return toolJson(ctx)
               } catch (err) {
-                // M50-1a: een chat zonder bruikbare chat is al SKIPPED; de wachtlus gaat door met de volgende job.
-                if (err instanceof AgentChatSkippedError) continue
+                // M50-1a: een chat zonder bruikbare chat is al SKIPPED; de lus probeert direct de volgende job.
+                if (err instanceof AgentChatSkippedError) {
+                  retryNow = takeSkipRetry()
+                  continue
+                }
                 // M45-2b: zelfde afhandeling als bij de directe claim hierboven.
                 if (err instanceof RuntimeMismatchError) return toolError('RUNTIME_MISMATCH')
                 if (err instanceof HarnessJobConfigError) {
