@@ -7,7 +7,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { toolText } from './helpers/tool-result.js'
 
-const authMocks = vi.hoisted(() => ({ requireWriteAccess: vi.fn() }))
+const authMocks = vi.hoisted(() => ({ requireWriteAccess: vi.fn(), getTokenScopedProducts: vi.fn() }))
 const tx = vi.hoisted(() => ({
   $queryRaw: vi.fn(),
   $executeRaw: vi.fn(),
@@ -27,6 +27,7 @@ const worktreeMocks = vi.hoisted(() => ({ createWorktreeForJob: vi.fn(), removeW
 vi.mock('../src/auth.js', async () => ({
   ...(await vi.importActual<typeof import('../src/auth.js')>('../src/auth.js')),
   requireWriteAccess: authMocks.requireWriteAccess,
+  getTokenScopedProducts: authMocks.getTokenScopedProducts,
 }))
 vi.mock('pg', () => ({ Client: vi.fn(function Client() { return pgClient }) }))
 vi.mock('../src/prisma.js', () => ({
@@ -140,6 +141,7 @@ beforeEach(() => {
   vi.stubEnv('SCRUM4ME_WORKER_INSTANCE_ID', INSTANCE_ID)
   vi.stubEnv('SCRUM4ME_WORKER_RUNTIME', 'HARNESS')
   authMocks.requireWriteAccess.mockResolvedValue({ userId: USER_ID, tokenId: TOKEN_ID, username: 'jan', isDemo: false })
+  authMocks.getTokenScopedProducts.mockResolvedValue([])
 
   claimQueue = []
   mockPrisma.$queryRaw.mockResolvedValue([])
@@ -288,4 +290,46 @@ describe('na een skip probeert de claimlus direct opnieuw, begrensd (M50-1a, MIN
     expect(waits).toHaveLength(1)
     expect(claimQueue).toHaveLength(1)
   }, 20_000)
+})
+
+describe('een AGENT_CHAT-job buiten de scoped_products van het token (ISS-16)', () => {
+  it('getFullJobContext gooit AGENT_CHAT_PRODUCT_OUT_OF_SCOPE en bouwt de payload niet', async () => {
+    authMocks.getTokenScopedProducts.mockResolvedValue(['prod-andere'])
+
+    await expect(getFullJobContext(JOB_ID, 'HARNESS', OWNER)).rejects.toMatchObject({
+      name: 'HarnessJobConfigError',
+      reason: expect.stringMatching(/^AGENT_CHAT_PRODUCT_OUT_OF_SCOPE/),
+    })
+
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled()
+    expect(tx.agentChatJob.findUnique).not.toHaveBeenCalled()
+    expect(tx.agentChatMessage.findMany).not.toHaveBeenCalled()
+  })
+
+  it('de handler zet de job FAILED met die reden en geeft een toolfout zonder payload', async () => {
+    authMocks.getTokenScopedProducts.mockResolvedValue(['prod-andere'])
+    claimQueue = [[candidateRow()]]
+
+    const result = await handler({ wait_seconds: 1 })
+
+    expect(result.isError).toBe(true)
+    expect(toolText(result)).toMatch(/^AGENT_CHAT_PRODUCT_OUT_OF_SCOPE/)
+    expect(mockPrisma.claudeJob.update).toHaveBeenCalledWith({
+      where: { id: JOB_ID },
+      data: expect.objectContaining({ status: 'FAILED', error: expect.stringMatching(/^AGENT_CHAT_PRODUCT_OUT_OF_SCOPE/) }),
+    })
+    expect(tx.agentChatJob.findUnique).not.toHaveBeenCalled() // geen payload gebouwd
+  })
+
+  it.each([
+    ['een token zonder scope ([])', []],
+    ['een token waarvan de scope het product bevat', ['prod-andere', 'prod-1']],
+  ])('%s: de payload komt zoals voorheen', async (_naam, scoped) => {
+    authMocks.getTokenScopedProducts.mockResolvedValue(scoped)
+
+    const context = await getFullJobContext(JOB_ID, 'HARNESS', OWNER)
+
+    expect(context).toMatchObject({ kind: 'AGENT_CHAT', job_id: JOB_ID, pending: { message_id: 'pending' } })
+    expect(tx.agentChatJob.findUnique).toHaveBeenCalledTimes(1)
+  })
 })
