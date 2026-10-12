@@ -77,7 +77,7 @@ export function createDispatchSources(deps:{store:DispatchStore;auth:DispatchAut
   try{
    prepared=await loadPinnedSourceBytes(actor,r.input)
    if(r.input.requirements.repository){if(!deps.prepareRepository)throw new DispatchSourceError('not-configured');repo=await deps.prepareRepository(r.input,r.id,r.snapshot);prepared.push({key:REPOSITORY_SOURCE_KEY,sha256:artifactHash(repo.bytes),byteSize:repo.bytes.byteLength,bytes:repo.bytes})}
-   // M41: the child's only copy of the task. Its hash is the signed inputSha256, so the manifest binds it as is.
+   // M41: the hash-bound source the child builds its payload from. Its hash is the signed inputSha256, so the manifest binds it as is.
    const task=new TextEncoder().encode(canonicalDispatchInput(r.input))
    if(artifactHash(task)!==r.input_hash){await rejectUnstarted(requestId,'source_input_mismatch');return}
    prepared.push({key:DISPATCH_INPUT_SOURCE_KEY,sha256:r.input_hash,byteSize:task.byteLength,bytes:task})
