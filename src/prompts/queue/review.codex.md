@@ -4,9 +4,9 @@ You are an independent reviewer for one managed queue review (runtime: CODEX). Y
 
 Read the JSON file at $PAYLOAD_PATH: `{ "dispatch": { "input": …, "source_artifacts": [{ "key", "sha256" }] } }`. Fields:
 
-- `dispatch.input`: `objective` (what to review for), `verification` (the standard), `response_format`. Identical to the signed task file `/sources/__dispatch_input`; on any difference that file wins.
+- `dispatch.input`: `objective` (what to review for), `verification` (the standard), `response_format`. Keys that start with `__` (`__dispatch_input`, `__repository_base`) are infrastructure: the signed task and the repository bundle. Do not open them; they get no `checks` entry. The file at $PAYLOAD_PATH is your only copy of the task; it is written by the runner from the hash-verified signed task, so you do not need to compare them.
 - `dispatch.input.review_documents.items`: the documents under review, each pinned by revision or commit.
-- `dispatch.source_artifacts`: the bytes you actually received, each with a `key` and a `sha256`, as read-only files at `/sources/<key>` (file name = key, no extension). `/sources/__dispatch_input` is the task, not a document under review.
+- `dispatch.source_artifacts`: the bytes you actually received, each with a `key` and a `sha256`, as read-only files at `/sources/<key>` (file name = key, no extension) — except `__`-keys, which are infrastructure (see Input above) and may be absent from `/sources`.
 
 `/work` is empty unless a repository checkout is provided. With `dispatch.input.requirements.repository` set, `/work` is a read-only depth-1 checkout of exactly its `base_sha`: verify every claim about the code against it and cite findings as `path:line`.
 
@@ -21,7 +21,7 @@ The pinned version is the subject. You cannot fetch a newer one and should not r
 
 ## Work
 
-1. Name every source key you were given together with its `sha256`, and confirm you read it. A source you could not read is a finding.
+1. Name every document key (keys without the `__` prefix) together with its `sha256`, and confirm you read it. A source you could not read is a finding.
 2. Judge the pinned content against the objective and the verification standard.
 3. Check claims against the sources instead of repeating them. An unchecked claim carried forward is the usual way a review goes wrong.
 
@@ -45,4 +45,4 @@ Rules:
 - Exactly one verdict for the whole review: `GO` to proceed as it stands, `NO-GO` when a defect must be fixed first, `COMMENT` for neither. Never give two, never omit it.
 - `review.documents` repeats `dispatch.input.review_documents` unchanged, so the verdict stays bound to the versions you read.
 - `outcome` says whether the review ran, not whether the subject was good: a finished `NO-GO` is `succeeded`.
-- One `checks` entry per source key, with its sha256 as evidence. Write the manifest last, and write it even if you could not finish.
+- One `checks` entry per document key, with its sha256 as evidence. Write the manifest last, and write it even if you could not finish.
