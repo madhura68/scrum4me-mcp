@@ -251,17 +251,24 @@ describe('create tools recognise driver-adapter error shapes', () => {
   })
 
   it('waits before retrying so contending losers do not re-collide in lockstep', async () => {
-    vi.spyOn(Math, 'random').mockReturnValue(1)
-    root.$transaction
-      .mockRejectedValueOnce(adapterWriteConflict())
-      .mockImplementationOnce(async (callback) => callback(tx))
+    // Fake timers: a wall-clock measurement flaked in CI (4.79 ms measured for a 5 ms timer).
+    vi.useFakeTimers()
+    try {
+      vi.spyOn(Math, 'random').mockReturnValue(1)
+      root.$transaction
+        .mockRejectedValueOnce(adapterWriteConflict())
+        .mockImplementationOnce(async (callback) => callback(tx))
 
-    const started = performance.now()
-    await handleCreateTask({ story_id: 'story-1', title: 'Task', priority: 2 })
-    const elapsed = performance.now() - started
-
-    expect(root.$transaction).toHaveBeenCalledTimes(2)
-    expect(elapsed).toBeGreaterThanOrEqual(BASE_BACKOFF_MS)
+      const pending = handleCreateTask({ story_id: 'story-1', title: 'Task', priority: 2 })
+      // First retry with random() = 1 waits the full ceiling: exactly BASE_BACKOFF_MS.
+      await vi.advanceTimersByTimeAsync(BASE_BACKOFF_MS - 1)
+      expect(root.$transaction).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(1)
+      await pending
+      expect(root.$transaction).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('retries a commit-time write conflict that never becomes P2034', async () => {
