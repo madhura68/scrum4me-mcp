@@ -1,7 +1,9 @@
 import {readFileSync} from 'node:fs'
 import {createHash} from 'node:crypto'
 import {afterEach,beforeEach,describe,it,expect,vi} from 'vitest'
-vi.mock('../../src/prisma.js',()=>({prisma:{}}))
+const db=vi.hoisted(()=>({idea:{findFirst:vi.fn()},$executeRaw:vi.fn(),dispatchIdeaLink:{findUnique:vi.fn()},requireWriteAccess:vi.fn()}))
+vi.mock('../../src/prisma.js',()=>({prisma:db}))
+vi.mock('../../src/auth.js',async(importOriginal)=>({...(await importOriginal<typeof import('../../src/auth.js')>()),requireWriteAccess:db.requireWriteAccess}))
 import {requestContext} from '../../src/request-context.js'
 import {registerQueueTools,registerSharedTools,registerWorktreeTools} from '../../src/register.js'
 import {registerDispatchTaskTool} from '../../src/tools/dispatch-task.js'
@@ -21,9 +23,11 @@ const base={product_id:'p',objective:'Do the work',verification:'Prove it',respo
 let calls:Array<{url:string;init:RequestInit}>
 const body=(i=0)=>JSON.parse(String(calls[i].init.body)),header=(name:string,i=0)=>(calls[i].init.headers as Record<string,string>)[name]
 const asUser=<T>(fn:()=>Promise<T>)=>requestContext.run({token:'user-token'},fn)
-beforeEach(()=>{calls=[];vi.stubEnv('S4M_DISPATCH_URL','https://dispatch.example.test/dispatch/v1');vi.stubEnv('SCRUM4ME_TOKEN','service-token')
+beforeEach(()=>{calls=[];vi.resetAllMocks()
+ db.requireWriteAccess.mockResolvedValue({userId:'user-1',tokenId:'tok-1',username:'jp',isDemo:false,kind:'USER',scopedProducts:[]})
+ vi.spyOn(console,'error').mockImplementation(()=>{});vi.stubEnv('S4M_DISPATCH_URL','https://dispatch.example.test/dispatch/v1');vi.stubEnv('SCRUM4ME_TOKEN','service-token')
  vi.stubGlobal('fetch',vi.fn(async(url:string,init:RequestInit)=>{calls.push({url,init});return new Response(JSON.stringify(view),{status:200,headers:{'Content-Type':'application/json'}})}))})
-afterEach(()=>{vi.unstubAllEnvs();vi.unstubAllGlobals()})
+afterEach(()=>{vi.unstubAllEnvs();vi.unstubAllGlobals();vi.restoreAllMocks()})
 
 describe('dispatch MCP tools',()=>{
  it('submits a free task with the caller\'s own bearer and a stable idempotency key',async()=>{
@@ -104,6 +108,68 @@ describe('dispatch MCP tools',()=>{
   expect(denied.isError).toBe(true);expect(calls).toHaveLength(1);expect(header('Authorization')).toBe('Bearer user-token')
   vi.stubEnv('S4M_DISPATCH_URL','');calls=[]
   const unconfigured=await asUser(()=>handlers.get_dispatch({request_id:id}));expect(unconfigured.isError).toBe(true);expect(unconfigured.content[0].text).toContain('DISPATCH_NOT_CONFIGURED');expect(calls).toHaveLength(0)
+ })
+})
+
+describe('dispatch_review idea_link (IDEA-251)',()=>{
+ const idea_link={idea_id:'idea-1',idea_phase:'SPEC'},linkedBody={version:1,...base,action:'review',requirements:{access:'read',environment_keys:[]},publish:'artifact',review_documents:documents}
+ const review=(extra:Record<string,unknown>={idea_link})=>asUser(()=>handlers.dispatch_review({...base,review_documents:documents,...extra}))
+ const parse=(r:{content:Array<{text?:string}>})=>JSON.parse(r.content[0].text!)
+ const insertFails=()=>db.$executeRaw.mockRejectedValue(new Error('db down'))
+ const stored=(phase='SPEC')=>db.dispatchIdeaLink.findUnique.mockResolvedValue({request_id:id,idea_id:'idea-1',idea_phase:phase,created_at:new Date()})
+ it('links an owned idea: the dispatch body never carries idea_link and the ownership check is scoped to user and product',async()=>{
+  db.idea.findFirst.mockResolvedValue({id:'idea-1'});db.$executeRaw.mockResolvedValue(1);stored()
+  const key='22222222-2222-4222-8222-222222222222',result=await review({idea_link,idempotency_key:key})
+  expect(result.isError).toBeFalsy();expect(calls).toHaveLength(1);expect(body()).toEqual(linkedBody);expect(JSON.stringify(body())).not.toContain('idea_link')
+  expect(db.idea.findFirst).toHaveBeenCalledWith({where:{id:'idea-1',user_id:'user-1',product_id:'p'},select:{id:true}})
+  expect(parse(result)).toMatchObject({idempotency_key:key,dispatch:{id},idea_link:{status:'linked',idea_id:'idea-1',idea_phase:'SPEC'}})
+  expect(db.requireWriteAccess).toHaveBeenCalledTimes(1);expect(db.dispatchIdeaLink.findUnique).toHaveBeenCalledWith({where:{request_id:id}})
+ })
+ it('refuses a foreign, other-product or unknown idea before anything is submitted',async()=>{
+  db.idea.findFirst.mockResolvedValue(null)
+  const result=await review();expect(result.isError).toBe(true);expect(result.content[0].text).toContain('DISPATCH_FORBIDDEN')
+  expect(calls).toHaveLength(0);expect(db.$executeRaw).not.toHaveBeenCalled()
+ })
+ it('is idempotent for the same values: ON CONFLICT DO NOTHING, then the stored row is read back',async()=>{
+  db.idea.findFirst.mockResolvedValue({id:'idea-1'});db.$executeRaw.mockResolvedValue(0);stored()
+  const result=await review();expect(parse(result).idea_link.status).toBe('linked')
+  const sql=(db.$executeRaw.mock.calls[0][0] as readonly string[]).join('?')
+  expect(sql).toContain('ON CONFLICT (request_id) DO NOTHING');expect(sql).toContain('INSERT INTO dispatch_idea_links')
+  expect(db.$executeRaw.mock.calls[0].slice(1)).toEqual([id,'idea-1','SPEC'])
+ })
+ it('reports the stored values as a conflict when the request is already linked differently',async()=>{
+  db.idea.findFirst.mockResolvedValue({id:'idea-1'});db.$executeRaw.mockResolvedValue(0);stored('PLAN')
+  const result=await review();expect(parse(result)).toMatchObject({dispatch:{id},idea_link:{status:'conflict',idea_id:'idea-1',idea_phase:'PLAN'}})
+ })
+ it('never hides the dispatch when linking fails afterwards, and classifies the failure',async()=>{
+  const cases:Array<[string,()=>void,string]>=[
+   ['insert fails, idea gone',()=>{insertFails();db.idea.findFirst.mockResolvedValueOnce({id:'idea-1'}).mockResolvedValueOnce(null)},'IDEA_GONE'],
+   ['insert fails, idea still there',()=>{insertFails();db.idea.findFirst.mockResolvedValue({id:'idea-1'})},'LINK_ERROR'],
+   ['insert fails, diagnostic lookup throws',()=>{insertFails();db.idea.findFirst.mockResolvedValueOnce({id:'idea-1'}).mockRejectedValueOnce(new Error('lookup down'))},'LINK_ERROR'],
+   ['read-back throws',()=>{db.$executeRaw.mockResolvedValue(1);db.dispatchIdeaLink.findUnique.mockRejectedValue(new Error('read down'));db.idea.findFirst.mockResolvedValue({id:'idea-1'})},'LINK_ERROR'],
+   ['read-back is empty',()=>{db.$executeRaw.mockResolvedValue(1);db.dispatchIdeaLink.findUnique.mockResolvedValue(null);db.idea.findFirst.mockResolvedValue({id:'idea-1'})},'LINK_ERROR'],
+  ]
+  for(const [label,arrange,reason] of cases){
+   vi.clearAllMocks();calls=[]
+   db.requireWriteAccess.mockResolvedValue({userId:'user-1',tokenId:'tok-1',username:'jp',isDemo:false,kind:'USER',scopedProducts:[]})
+   arrange()
+   const result=await review(),out=parse(result)
+   expect(result.isError,label).toBeFalsy();expect(calls,label).toHaveLength(1)
+   expect(out.idea_link,label).toEqual({status:'failed',reason});expect(out.dispatch,label).toMatchObject({id});expect(out.idempotency_key,label).toMatch(/^[0-9a-f-]{36}$/)
+   expect(db.requireWriteAccess,label).toHaveBeenCalledTimes(1)
+   // The diagnostic lookup reuses the known user: same ownership scope, no second auth.
+   expect(db.idea.findFirst,label).toHaveBeenLastCalledWith({where:{id:'idea-1',user_id:'user-1',product_id:'p'},select:{id:true}})
+  }
+ })
+ it('behaves exactly as before without idea_link',async()=>{
+  const result=await review({});expect(result.isError).toBeFalsy()
+  expect(body()).toEqual(linkedBody);expect(parse(result).idea_link).toBeUndefined()
+  expect(db.requireWriteAccess).not.toHaveBeenCalled();expect(db.idea.findFirst).not.toHaveBeenCalled();expect(db.$executeRaw).not.toHaveBeenCalled()
+ })
+ it('validates idea_link in the declared schema: known phase required, nothing extra',()=>{
+  const schema=metas.dispatch_review.inputSchema as {safeParse:(v:unknown)=>{success:boolean}},ok={...base,review_documents:documents}
+  expect(schema.safeParse({...ok,idea_link}).success).toBe(true)
+  for(const bad of [{idea_id:'idea-1',idea_phase:'REVIEW'},{idea_id:'idea-1'},{idea_phase:'SPEC'},{...idea_link,extra:1}])expect(schema.safeParse({...ok,idea_link:bad}).success).toBe(false)
  })
 })
 

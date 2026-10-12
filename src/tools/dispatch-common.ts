@@ -28,9 +28,12 @@ export const commonFields = {
 export function buildInput(value: unknown): DispatchInput {
   try { return parseDispatchInput(value) } catch { throw new DispatchError('DISPATCH_INVALID_INPUT') }
 }
-export async function submit(input: DispatchInput, key: string | undefined) {
+export async function submitRaw(input: DispatchInput, key: string | undefined) {
   const idempotency_key = key ?? randomUUID()
-  return toolJson({ idempotency_key, dispatch: await requestDispatchClient().submitDispatch(input, idempotency_key) })
+  return { idempotency_key, dispatch: await requestDispatchClient().submitDispatch(input, idempotency_key) }
+}
+export async function submit(input: DispatchInput, key: string | undefined) {
+  return toolJson(await submitRaw(input, key))
 }
 export async function withDispatchErrors(fn: () => Promise<ReturnType<typeof toolJson>>) {
   try { return await fn() } catch (error) {
