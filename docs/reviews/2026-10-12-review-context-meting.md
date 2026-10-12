@@ -25,7 +25,7 @@ Eerste modelbeurt uit de run-logs (scrum4me-server, read-only, 2026-10-12 ≈ 20
   turn.completed:  "usage":{"input_tokens":581617,"cached_input_tokens":504064,"cache_write_input_tokens":0,"output_tokens":4870,"reasoning_output_tokens":556}
 ```
 
-**Claude eerste-beurt-context nulmeting: 2 + 24.639 + 13.241 = 37.882 tokens.** Ter vergelijking telden twee andere Claude-reviewjobs van dezelfde avond in hun eerste beurt 38.272 (job 11df00ec, 20:02Z) en 38.266 (job 1f33f101, 20:32Z): de maat is stabiel op ±0,5k, terwijl de totalen 107k–113k uiteenlopen.
+**Claude eerste-beurt-context nulmeting: 2 + 24.639 + 13.241 = 37.882 tokens.** `system/init` van dezelfde run-log: `claude_code_version` 2.1.287, model claude-opus-5-5, 24 tools, 17 skills, 2 plugins, 5 agents, 45 slash_commands — de nameting moet dezelfde versie en aantallen tonen, anders is de delta vervuild. Ter vergelijking telden twee andere Claude-reviewjobs van dezelfde avond in hun eerste beurt 38.272 (job 11df00ec, 20:02Z) en 38.266 (job 1f33f101, 20:32Z): de maat is stabiel op ±0,5k, terwijl de totalen 107k–113k uiteenlopen.
 
 SQL (scrum4me-DB, read-only, 2026-10-12 ≈ 20:30 UTC):
 
@@ -49,7 +49,7 @@ from claude_jobs where id in ('cb9487bc-9c67-4773-9efd-a897aebfa786','84f67fa4-2
 | Duur | 3,9 min | 2,9 min |
 | Kosten (lijstprijs) | ≈ $1,63 (0,56 write + 0,60 reads + 0,47 out) | ≈ $0,26 (0,16 in + 0,05 reads + 0,05 out) |
 
-Duiding (verwachting, geen meting van de componenten): de eerste beurt van 37.882 bevat `/work/CLAUDE.md` op b3caa8c (46.768 B ≈ 11,5k tokens; de CLI laadt hem automatisch, bevestigd door de reviewers zelf), de kind-prompt (≈ 1k), de body (≈ 1k) en het CLI-aandeel (systeemprompt, tool-schema's, lijsten; ≈ 24k, waarvan ≈ 13k als gedeelde prefix in de cache). Story 1 taak 1 moet daarvan ≈ 11,5k wegnemen; de tweede lezing van de body (≈ 1k) valt in latere beurten weg. De totalen over de hele job (112.6k) bestaan verder uit de broncode die de reviewer voor déze review leest en uit cache-warmte; een absolute grens van 80k op die totalen wordt door story 1 en 2 niet als verwacht resultaat gedragen. De acceptatie in het plan (rev 5) is daarom een daling van ≥ 10k in de eerste-beurt-context.
+Duiding (verwachting, geen meting van de componenten): de eerste beurt van 37.882 bevat `/work/CLAUDE.md` op b3caa8c (46.768 B ≈ 11,5k tokens; de CLI laadt hem automatisch, bevestigd door de reviewers zelf), de kind-prompt (≈ 1k) en het CLI-aandeel (systeemprompt, tool-schema's, lijsten; ≈ 25k, waarvan ≈ 13k als gedeelde prefix in de cache). De body zit niet in de eerste beurt: het model leest `$PAYLOAD_PATH` met een tool. Story 1 taak 1 moet daarvan ≈ 11,5k wegnemen; de tweede lezing van de body (≈ 1k) valt in latere beurten weg. De totalen over de hele job (112.6k) bestaan verder uit de broncode die de reviewer voor déze review leest en uit cache-warmte; een absolute grens van 80k op die totalen wordt door story 1 en 2 niet als verwacht resultaat gedragen. De acceptatie in het plan (rev 5) is daarom een daling van ≥ 10k in de eerste-beurt-context.
 
 ## Nameting — <datum>, na uitrol van story 1 en 2
 
@@ -66,7 +66,7 @@ SQL-uitkomst: _(letterlijk plakken)_
 
 | criterium | nulmeting | nameting | pass/fail |
 |---|---|---|---|
-| Claude: eerste-beurt-context ≥ 10.000 lager dan nulmeting (beslissend) | 37.882 | | |
+| Claude: eerste-beurt-context ≥ 10.000 lager dan nulmeting (beslissend; zelfde CLI-versie en tool/skill/plugin-aantallen) | 37.882 (2.1.287, 24/17/2) | | |
 | Claude: totalen cache_write + input (diagnose) | 112.575 | | |
 | Codex: input_tokens / input+cached (diagnose) | 77.553 / 581.617 | | |
 | beide: outcome succeeded, verdict GO/NO-GO | GO / GO | | |
