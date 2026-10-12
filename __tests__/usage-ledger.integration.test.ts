@@ -215,7 +215,7 @@ describeWithDatabase('IDEA-235 usage ledger (TEST_DATABASE_URL)', () => {
     expect(await db.taskEstimate.findUnique({ where: { task_id: plain.id } })).toBeNull()
   })
 
-  it('get_estimate_history returns only the measurable fixture tasks, and the fixture cards price none of them at list price', async () => {
+  it('get_estimate_history returns only the measurable fixture tasks, with USD only when fully priced', async () => {
     // A product of its own, so the tasks above do not count.
     const product = await db.product.create({ data: { user_id: owner, name: `ul-history-${suffix}`, definition_of_done: 'test' } })
     const sprint = await db.sprint.create({ data: { product_id: product.id, code: `S-${suffix}-h`, sprint_goal: 'history' } })
@@ -261,21 +261,20 @@ describeWithDatabase('IDEA-235 usage ledger (TEST_DATABASE_URL)', () => {
       expect(Object.keys(byTitle).sort()).toEqual(
         fixture.tasks.filter((t) => t.expect.time).map((t) => t.id).sort(),
       )
-      // PBI-36: USD is the API list price (billing_mode API, billing_unit USD) of the segment's runtime.
-      // The fixture was built for subscription pricing: opus has a deliberate 999 API/USD card, haiku
-      // has no CLAUDE API card at all. So the `measurable` task (it has a haiku line) is not fully
-      // list-priced and reports no USD, and the 999 card is never summed for a partly priced task.
+      // PBI-36: USD is the API list price; the fixture's API/USD cards carry the real rates and its
+      // subscription cards (USD_PROXY 999, CREDITS 999) are decoys that must never be read.
       const measurable = fixture.tasks.find((t) => t.id === 'measurable')!
       expect(byTitle.measurable).toMatchObject({
         estimate: { active_minutes: 30, usd: '2.5000', basis: measurable.estimate!.basis },
-        actual: { active_minutes: 15, usd: null, usd_status: 'no_price' },
-        ratio: { time: 0.5, cost: null },
+        actual: { active_minutes: 15, usd: measurable.expect.usd, usd_status: 'priced' },
+        ratio: { time: 0.5, cost: 0.09 },
       })
       expect(byTitle['unpriced-line']).toMatchObject({
         actual: { usd: null, usd_status: 'no_price' },
         ratio: { time: 0.1, cost: null },
       })
-      expect(result.tasks.filter((t: { ratio: { cost: number | null } }) => t.ratio.cost !== null)).toEqual([])
+      expect(result.tasks.filter((t: { ratio: { cost: number | null } }) => t.ratio.cost !== null).map((t: { title: string }) => t.title))
+        .toEqual(['measurable'])
     } finally {
       await dropProduct(product.id)
     }
