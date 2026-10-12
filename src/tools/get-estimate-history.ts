@@ -1,16 +1,19 @@
 // IDEA-235 (spec §5.3, plan Taak 8): feedback for the ceremony — the latest measurable tasks
 // with their frozen estimate and what they actually took. "Measurable" and the pricing come from
 // scrum4me-shared (lib/usage-sql.ts), so Insights uses the same definitions.
-// A task without a price for every line gets no actual USD and only a time ratio.
+// PBI-36: the actual USD is the API list price (model_prices: billing_mode API, billing_unit USD)
+// of the runtime of each segment, never a subscription card.
+// A task without a list price for every line gets no actual USD and only a time ratio.
 
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { Prisma } from '@prisma/client'
 import {
-  fullyPricedTaskSqlText,
+  fullyListPricedTaskSqlText,
+  listPriceJoinSqlText,
+  listPriceUsdSqlText,
   measurableTaskSqlText,
-  usageLineUsdSqlText,
-  usageRateCardJoinSqlText,
+  usageSegmentRuntimeSqlText,
 } from '@shared/usage-sql.js'
 import { prisma } from '../prisma.js'
 import { getAuth } from '../auth.js'
@@ -37,9 +40,10 @@ type Row = {
 }
 
 const MEASURABLE = Prisma.raw(measurableTaskSqlText('t'))
-const FULLY_PRICED = Prisma.raw(fullyPricedTaskSqlText('t'))
-const LINE_USD = Prisma.raw(usageLineUsdSqlText('ul'))
-const PRICE_JOIN = Prisma.raw(usageRateCardJoinSqlText('ul.model_id', "'CLAUDE'"))
+const FULLY_PRICED = Prisma.raw(fullyListPricedTaskSqlText('t'))
+const LINE_USD = Prisma.raw(listPriceUsdSqlText('ul'))
+// Joins as `mp`, inside the cost subquery where `us` (the segment) and `ul` (its line) are in scope.
+const PRICE_JOIN = Prisma.raw(listPriceJoinSqlText('ul.model_id', usageSegmentRuntimeSqlText('us')))
 
 const ratio = (actual: number, estimate: number) => Math.round((actual / estimate) * 100) / 100
 
@@ -74,7 +78,7 @@ export async function handleGetEstimateHistory({ product_id, limit }: z.infer<ty
     `
     const tasks = rows.map((row) => {
       const minutes = Math.round(Number(row.active_ms) / 6000) / 10
-      // SUM skips unpriced lines, so a partial sum would understate the cost: never report it.
+      // SUM skips lines without a list price, so a partial sum would understate the cost: never report it.
       const actualUsd = row.fully_priced ? row.actual_usd : null
       return {
         task_id: row.task_id,
@@ -108,7 +112,7 @@ export function registerGetEstimateHistoryTool(server: McpServer) {
     {
       title: 'Get estimate history',
       description:
-        'Read-only feedback for estimating at the ceremony (IDEA-235): the latest measurable tasks of a product (done, estimated, fully measured by the usage-ledger mod) with estimate vs actual active minutes and USD-equivalent, ratios (actual ÷ estimate) and the estimate basis. A task without a price for every usage line has actual.usd null ("no_price") and only a time ratio. Tasks run by worker jobs are never measurable. Read this before giving tasks an estimate in create_task.',
+        'Read-only feedback for estimating at the ceremony (IDEA-235): the latest measurable tasks of a product (done, estimated, fully measured by the usage-ledger mod) with estimate vs actual active minutes and cost at API list price in USD (per runtime of each segment, no subscription card), ratios (actual ÷ estimate) and the estimate basis. A task without an API list price for every usage line has actual.usd null ("no_price") and only a time ratio. Tasks run by worker jobs are never measurable. Read this before giving tasks an estimate in create_task.',
       inputSchema,
     },
     handleGetEstimateHistory,

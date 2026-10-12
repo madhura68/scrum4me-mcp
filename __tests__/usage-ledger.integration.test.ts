@@ -1,5 +1,5 @@
 // IDEA-235 (spec §4.5, §5, §9; plan Taak 8): record_usage_segment, the create_task estimate and
-// get_estimate_history against a real Postgres with the usage_ledger migration. Opt in only
+// get_estimate_history (priced at the API list price, PBI-36) against a real Postgres with the usage_ledger migration. Opt in only
 // against a disposable test DB (TEST_DATABASE_URL); without it the suite skips.
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -261,6 +261,8 @@ describeWithDatabase('IDEA-235 usage ledger (TEST_DATABASE_URL)', () => {
       expect(Object.keys(byTitle).sort()).toEqual(
         fixture.tasks.filter((t) => t.expect.time).map((t) => t.id).sort(),
       )
+      // PBI-36: USD is the API list price; the fixture's API/USD cards carry the real rates and its
+      // subscription cards (USD_PROXY 999, CREDITS 999) are decoys that must never be read.
       const measurable = fixture.tasks.find((t) => t.id === 'measurable')!
       expect(byTitle.measurable).toMatchObject({
         estimate: { active_minutes: 30, usd: '2.5000', basis: measurable.estimate!.basis },
@@ -276,6 +278,173 @@ describeWithDatabase('IDEA-235 usage ledger (TEST_DATABASE_URL)', () => {
     } finally {
       await dropProduct(product.id)
     }
+  })
+
+  describe('get_estimate_history prices at the API list price (PBI-36)', () => {
+    type Price = {
+      model: string; runtime: 'CLAUDE' | 'CODEX'; provider: 'anthropic' | 'openai'
+      mode: 'API' | 'SUBSCRIPTION'; unit: 'USD' | 'USD_PROXY' | 'CREDITS'
+      rates: [input: string, output: string, cache_read: string, cache_write: string]
+    }
+    type SeedLine = { model: string; input: number; output: number; cache_read: number; cache_write: number }
+    // Every model id ends in `-${suffix}`, so afterAll removes the price rows.
+    const model = (id: string) => `${id}-${suffix}`
+    const listCard = (m: string, runtime: 'CLAUDE' | 'CODEX', rates: Price['rates']): Price =>
+      ({ model: m, runtime, provider: runtime === 'CODEX' ? 'openai' : 'anthropic', mode: 'API', unit: 'USD', rates })
+    const proxyCard = (m: string, rates: Price['rates']): Price =>
+      ({ model: m, runtime: 'CLAUDE', provider: 'anthropic', mode: 'SUBSCRIPTION', unit: 'USD_PROXY', rates })
+    const creditCard = (m: string, rates: Price['rates']): Price =>
+      ({ model: m, runtime: 'CODEX', provider: 'openai', mode: 'SUBSCRIPTION', unit: 'CREDITS', rates })
+
+    // One product of its own; `tasks` are DONE with an estimate and closed segments, so each one is measurable.
+    const seedHistory = async (
+      label: string,
+      prices: Price[],
+      tasks: { title: string; estimate: { minutes: number; usd: string }; segments: { modVersion: string; lines: SeedLine[] }[] }[],
+    ) => {
+      const product = await db.product.create({ data: { user_id: owner, name: `ul-${label}-${suffix}`, definition_of_done: 'test' } })
+      const sprint = await db.sprint.create({ data: { product_id: product.id, code: `S-${suffix}-${label}`, sprint_goal: label } })
+      const pbi = await db.pbi.create({ data: { product_id: product.id, code: `P-${suffix}-${label}`, title: 'pbi', priority: 2, sort_order: 1 } })
+      const story = await db.story.create({ data: { pbi_id: pbi.id, product_id: product.id, sprint_id: sprint.id, code: `ST-${suffix}-${label}`, title: 's', priority: 2, sort_order: 1 } })
+      for (const p of prices) {
+        await db.modelPrice.create({ data: {
+          model_id: p.model, runtime: p.runtime, provider: p.provider, billing_mode: p.mode, billing_unit: p.unit,
+          service_tier: 'standard', input_price_per_1m: p.rates[0], output_price_per_1m: p.rates[1],
+          cache_read_price_per_1m: p.rates[2], cache_write_price_per_1m: p.rates[3],
+        } })
+      }
+      let order = 0
+      for (const t of tasks) {
+        const task = await db.task.create({ data: {
+          story_id: story.id, product_id: product.id, sprint_id: sprint.id, code: `H-${suffix}-${label}-${order}`,
+          title: t.title, priority: 2, sort_order: ++order, status: 'DONE',
+        } })
+        await db.taskEstimate.create({ data: {
+          task_id: task.id, estimate_active_minutes: t.estimate.minutes, estimate_usd: t.estimate.usd, estimate_basis: 'list price',
+        } })
+        for (const s of t.segments) {
+          await db.usageSegment.create({ data: {
+            id: randomUUID(), user_id: owner, product_id: product.id, sprint_id: sprint.id, task_id: task.id, anchor_task_id: task.id,
+            session_id: 'history', started_at: new Date('2026-10-05T09:00:00Z'), mod_version: s.modVersion, active_ms: 600_000,
+            ended_at: new Date('2026-10-05T10:00:00Z'), ended_reason: 'DONE',
+            lines: { create: s.lines.map((l) => ({
+              agent_key: 'main', agent_label: 'main', model_id: l.model, input_tokens: l.input, output_tokens: l.output,
+              cache_read_tokens: l.cache_read, cache_write_tokens: l.cache_write, requests: 3,
+            })) },
+          } })
+        }
+      }
+      const result = body(await history({ product_id: product.id, limit: 20 }))
+      return {
+        productId: product.id,
+        byTitle: Object.fromEntries(result.tasks.map((t: { title: string }) => [t.title, t])),
+        count: result.count as number,
+      }
+    }
+
+    it('prices a Claude task from the API/USD card, never the subscription proxy', async () => {
+      const opus = model('list-opus')
+      const haiku = model('list-haiku')
+      const { productId, byTitle, count } = await seedHistory(
+        'claude',
+        [
+          listCard(opus, 'CLAUDE', ['10', '50', '1', '12.5']),
+          proxyCard(opus, ['1', '5', '0.1', '1.25']),
+          listCard(haiku, 'CLAUDE', ['3', '15', '0.3', '3.75']),
+        ],
+        [{
+          title: 'claude-priced', estimate: { minutes: 20, usd: '3.0000' },
+          segments: [{ modVersion: 'test', lines: [
+            // (100000*10 + 20000*50 + 400000*1 + 40000*12.5) / 1e6 = 2.9; the proxy card would give 0.29.
+            { model: opus, input: 100_000, output: 20_000, cache_read: 400_000, cache_write: 40_000 },
+            // (1000*3 + 2000*15) / 1e6 = 0.033
+            { model: haiku, input: 1_000, output: 2_000, cache_read: 0, cache_write: 0 },
+          ] }],
+        }],
+      )
+      try {
+        expect(count).toBe(1)
+        expect(byTitle['claude-priced']).toMatchObject({
+          estimate: { active_minutes: 20, usd: '3.0000' },
+          actual: { active_minutes: 10, usd: '2.9330', usd_status: 'priced' },
+          ratio: { time: 0.5, cost: 0.98 },
+        })
+      } finally {
+        await dropProduct(productId)
+      }
+    })
+
+    it('gives no USD when a line has no API/USD card, whatever subscription cards exist', async () => {
+      const proxyOnly = model('list-proxy-only')
+      const opus = model('list-opus-partial')
+      const { productId, byTitle } = await seedHistory(
+        'missing',
+        [
+          proxyCard(proxyOnly, ['1', '5', '0.1', '1.25']),
+          listCard(opus, 'CLAUDE', ['10', '50', '1', '12.5']),
+          proxyCard(opus, ['1', '5', '0.1', '1.25']),
+        ],
+        [
+          {
+            title: 'only-subscription-card', estimate: { minutes: 20, usd: '1.0000' },
+            segments: [{ modVersion: 'test', lines: [{ model: proxyOnly, input: 100_000, output: 20_000, cache_read: 0, cache_write: 0 }] }],
+          },
+          {
+            // One priced and one unpriced line: the partial sum of the priced one is never reported.
+            title: 'one-line-without-card', estimate: { minutes: 20, usd: '1.0000' },
+            segments: [{ modVersion: 'test', lines: [
+              { model: opus, input: 100_000, output: 20_000, cache_read: 0, cache_write: 0 },
+              { model: proxyOnly, input: 100_000, output: 20_000, cache_read: 0, cache_write: 0 },
+            ] }],
+          },
+        ],
+      )
+      try {
+        for (const title of ['only-subscription-card', 'one-line-without-card']) {
+          expect(byTitle[title], title).toMatchObject({
+            actual: { active_minutes: 10, usd: null, usd_status: 'no_price' },
+            ratio: { time: 0.5, cost: null },
+          })
+        }
+      } finally {
+        await dropProduct(productId)
+      }
+    })
+
+    it('prices a Codex segment from the openai API/USD card, and resolves the runtime from the mod_version', async () => {
+      const codex = model('list-codex')
+      const { productId, byTitle } = await seedHistory(
+        'codex',
+        [
+          listCard(codex, 'CODEX', ['2', '8', '0.5', '0']),
+          creditCard(codex, ['999', '999', '999', '999']),
+        ],
+        [
+          {
+            title: 'codex-priced', estimate: { minutes: 20, usd: '2.0000' },
+            // (200000*2 + 50000*8 + 1000000*0.5 + 0) / 1e6 = 1.3; the credit card would give 1299.
+            segments: [{ modVersion: 'codex-usage-ledger/1', lines: [{ model: codex, input: 200_000, output: 50_000, cache_read: 1_000_000, cache_write: 0 }] }],
+          },
+          {
+            // The same model id on a segment of the Claude mod: no CLAUDE card exists for it.
+            title: 'codex-model-on-claude-segment', estimate: { minutes: 20, usd: '2.0000' },
+            segments: [{ modVersion: 'test', lines: [{ model: codex, input: 200_000, output: 50_000, cache_read: 1_000_000, cache_write: 0 }] }],
+          },
+        ],
+      )
+      try {
+        expect(byTitle['codex-priced']).toMatchObject({
+          actual: { active_minutes: 10, usd: '1.3000', usd_status: 'priced' },
+          ratio: { time: 0.5, cost: 0.65 },
+        })
+        expect(byTitle['codex-model-on-claude-segment']).toMatchObject({
+          actual: { usd: null, usd_status: 'no_price' },
+          ratio: { time: 0.5, cost: null },
+        })
+      } finally {
+        await dropProduct(productId)
+      }
+    })
   })
 
   it('get_estimate_history refuses a product the user cannot access', async () => {
