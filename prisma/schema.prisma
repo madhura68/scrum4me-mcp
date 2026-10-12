@@ -1137,6 +1137,7 @@ model Idea {
   notifications      IdeaNotification[]
   review_logs        ReviewLog[]         @relation("IdeaReviewLogs")
   issues             Issue[]             @relation("IssueLinkedIdea")
+  dispatch_idea_links DispatchIdeaLink[]
 
   @@unique([user_id, code])
   @@index([user_id, archived, status])
@@ -1654,6 +1655,7 @@ model QueueDispatchRequest {
   publications                 QueueDispatchPublication[]
   events                       QueueDispatchEvent[] @relation("DispatchRequestEvents")
   outbox                       QueueDispatchOutbox[]
+  idea_link                    DispatchIdeaLink?
 
   // SQL: dispatch state vocabulary, version > 0, generation >= 0, permanent
   // first-claim history, pinned input/hash/snapshot and guarded result/retry links.
@@ -2499,6 +2501,19 @@ model AgentChatJob {
 
   @@index([chat_id])
   @@map("agent_chat_jobs")
+}
+
+/// IDEA-251: koppeling dispatch-verzoek ↔ idee + fase; één rij per verzoek, onveranderlijk.
+model DispatchIdeaLink {
+  request    QueueDispatchRequest @relation(fields: [request_id], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  request_id String               @id @db.Uuid
+  idea       Idea                 @relation(fields: [idea_id], references: [id], onDelete: Restrict)
+  idea_id    String
+  idea_phase UsageIdeaPhase
+  created_at DateTime             @default(now())
+
+  @@index([idea_id])
+  @@map("dispatch_idea_links")
 }
 
 /// M50: CLAUDE.md van de chat-agent per gebruiker, alleen invoegen (spec §4.4); de nieuwste versie is de actuele.
