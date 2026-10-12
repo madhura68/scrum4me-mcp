@@ -265,7 +265,7 @@ The hook is registered in `.claude/settings.json` of this repo. **For agent-work
 export SCRUM4ME_MCP_DIR=/absolute/path/to/scrum4me-mcp
 ```
 
-Pricing rows (`model_prices`) are seeded by Scrum4Me's `prisma/seed.ts`. Unknown `model_id`s leave `cost_usd = NULL` in Insights queries — add a row and re-run `npm run seed` to fill them in. Subscription-based rate-card helpers are in `src/lib/job-usage/pricing.ts`. To verify the capture pipeline end-to-end: `npm run usage:canary` (`scripts/check-worker-usage-capture.ts`).
+Pricing rows (`model_prices`) are seeded by Scrum4Me's `prisma/seed.ts`. Unknown `model_id`s leave `cost_usd = NULL` in Insights queries — add a row and re-run `npm run seed` to fill them in. `src/lib/job-usage/pricing.ts` only resolves the pricing model id of a Codex job (`resolveCodexPricingModel`: observed model, then CLI model, then `CODEX_PRICING_MODEL_ID`); it has no rate-card lookup, because only tokens are stored and amounts are computed at read time from the `model_prices` cards. To verify the capture pipeline end-to-end: `npm run usage:canary` (`scripts/check-worker-usage-capture.ts`).
 
 Robustness notes:
 - Subagent (`isSidechain: true`) lines in the main JSONL are skipped to avoid double-counting against `subagents/`-subdirectory transcripts.
