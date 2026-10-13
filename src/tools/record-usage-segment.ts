@@ -14,7 +14,7 @@
 import { z } from 'zod'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
-import type { Prisma, UsageEndedReason, UsageIdeaPhase } from '@prisma/client'
+import type { Prisma, UsageEndedReason, UsageIdeaPhase, UsageIssuePhase } from '@prisma/client'
 import { prisma } from '../prisma.js'
 import { requireWriteAccess } from '../auth.js'
 import { userCanAccessProduct } from '../access.js'
@@ -29,6 +29,8 @@ const ENDED_REASONS = ['todo', 'review', 'done', 'failed', 'excluded', 'switched
 const OWN_REASONS: Record<string, UsageEndedReason> = { switched: 'SWITCHED', session_end: 'SESSION_END', untracked: 'UNTRACKED' }
 // IDEA-242 §6.3: the phases of working out an idea (mod and payload lower case, enum upper case).
 const IDEA_PHASES = ['grill', 'spec', 'plan', 'ceremony'] as const
+// IDEA-249 §5.3: the phases of working out an issue.
+const ISSUE_PHASES = ['research', 'plan'] as const
 
 const count = z.number().int().min(0).max(2_147_483_647)
 const usd = z.number().min(0).max(999_999)
@@ -54,6 +56,8 @@ const inputSchema = z.object({
   product_id: z.string().min(1).optional(),
   idea_id: z.string().min(1).optional(),
   idea_phase: z.enum(IDEA_PHASES).optional(),
+  issue_id: z.string().min(1).optional(),
+  issue_phase: z.enum(ISSUE_PHASES).optional(),
   session_id: z.string().min(1).max(200),
   started_at: z.string().datetime(),
   ended_at: z.string().datetime().optional(),
@@ -94,7 +98,14 @@ function validate(input: RecordUsageSegmentInput): string | null {
   if (input.idea_id !== undefined && (input.task_id !== null || input.anchor_task_id !== null)) {
     return 'an idea segment has no task or anchor'
   }
-  if (input.anchor_task_id === null && input.idea_id === undefined) {
+  // IDEA-249 §5.3: an issue segment carries issue_id and issue_phase together, has no task, anchor
+  // or idea; its product comes from the issue, so a product_id next to it is ignored. This branch
+  // comes before the product rule, which would otherwise demand a product_id.
+  if ((input.issue_id === undefined) !== (input.issue_phase === undefined)) return 'issue_id and issue_phase come together'
+  if (input.issue_id !== undefined) {
+    if (input.task_id !== null || input.anchor_task_id !== null) return 'an issue segment has no task or anchor'
+    if (input.idea_id !== undefined) return 'an issue segment has no idea'
+  } else if (input.anchor_task_id === null && input.idea_id === undefined) {
     if (input.task_id !== null) return 'a task segment needs anchor_task_id = task_id'
     if (!input.product_id) return 'a product segment (anchor_task_id null) needs product_id'
   } else if (input.task_id !== null && input.task_id !== input.anchor_task_id) {
@@ -159,6 +170,10 @@ async function create(
           idea_id: input.idea_id,
           idea_phase: input.idea_phase!.toUpperCase() as UsageIdeaPhase,
         }),
+        ...(input.issue_id !== undefined && {
+          issue_id: input.issue_id,
+          issue_phase: input.issue_phase!.toUpperCase() as UsageIssuePhase,
+        }),
         ...(close && {
           ended_at: close.ended_at,
           ended_reason: close.ended_reason,
@@ -198,6 +213,16 @@ async function record(input: RecordUsageSegmentInput, userId: string, retried = 
     }
     const closed = await closeOpen(input.id, close)
     return toolJson({ id: input.id, state: 'closed', effect: closed ? 'closed' : 'none' })
+  }
+
+  if (input.issue_id !== undefined) {
+    // Issue segment (IDEA-249 §5.3): no sprint, no task; the product comes from the issue, never
+    // from the input. Before the product branch: an issue segment has no product_id.
+    const issue = await prisma.issue.findUnique({ where: { id: input.issue_id }, select: { product_id: true } })
+    if (!issue || !(await userCanAccessProduct(issue.product_id, userId))) {
+      return toolError(`${REJECTED}: issue ${input.issue_id} not found or not accessible`)
+    }
+    return create(input, userId, close, { product_id: issue.product_id, sprint_id: null }, retried)
   }
 
   if (input.idea_id !== undefined) {
@@ -251,7 +276,7 @@ export function registerRecordUsageSegmentTool(server: McpServer) {
     {
       title: 'Record usage segment',
       description:
-        'Store one usage segment of an interactive Claude Code session (IDEA-235, written by the usage-ledger mod). Fields: id (uuid), task_id (string or null for overhead), anchor_task_id (string or null), product_id (optional), idea_id and idea_phase (optional, together), session_id, started_at (ISO), mod_version; to close also ended_at (ISO), ended_reason, active_ms, cost_start_usd, cost_end_usd, lines[{agent_key, agent_label, model_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, requests}] (max 50). A header (no ended_at) opens the segment and fixes owner, product and sprint from anchor_task_id; a closing message (ended_at, ended_reason, active_ms, cost_start_usd/cost_end_usd, lines) closes it once. Repeats and messages on a closed segment succeed without effect. task_id null = sprint overhead. `anchor_task_id` null with `product_id` (id or code) records a product-level segment: no sprint, no task (M47). `idea_id` plus `idea_phase` (grill, spec, plan, ceremony), with task_id and anchor_task_id null, records one phase of working out an idea: no sprint, no task, product from the idea (IDEA-242). Four scopes: task, sprint overhead, idea, product. ended_reason uses API spelling (done, todo, review, failed, excluded, switched, session_end, untracked). Errors starting with USAGE_SEGMENT_REJECTED are permanent. Forbidden for demo accounts.',
+        'Store one usage segment of an interactive Claude Code session (IDEA-235, written by the usage-ledger mod). Fields: id (uuid), task_id (string or null for overhead), anchor_task_id (string or null), product_id (optional), idea_id and idea_phase (optional, together), issue_id and issue_phase (optional, together), session_id, started_at (ISO), mod_version; to close also ended_at (ISO), ended_reason, active_ms, cost_start_usd, cost_end_usd, lines[{agent_key, agent_label, model_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, requests}] (max 50). A header (no ended_at) opens the segment and fixes owner, product and sprint from anchor_task_id; a closing message (ended_at, ended_reason, active_ms, cost_start_usd/cost_end_usd, lines) closes it once. Repeats and messages on a closed segment succeed without effect. task_id null = sprint overhead. `anchor_task_id` null with `product_id` (id or code) records a product-level segment: no sprint, no task (M47). `idea_id` plus `idea_phase` (grill, spec, plan, ceremony), with task_id and anchor_task_id null, records one phase of working out an idea: no sprint, no task, product from the idea (IDEA-242). `issue_id` plus `issue_phase` (research, plan), with task_id and anchor_task_id null and no idea_id, records one phase of working out an issue: no sprint, no task, product from the issue (IDEA-249). Five scopes: task, sprint overhead, idea, issue, product. ended_reason uses API spelling (done, todo, review, failed, excluded, switched, session_end, untracked). Errors starting with USAGE_SEGMENT_REJECTED are permanent. Forbidden for demo accounts.',
       inputSchema: registeredSchema,
     },
     handleRecordUsageSegment,

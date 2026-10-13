@@ -2033,6 +2033,7 @@ model Issue {
   created_at           DateTime         @default(now())
   updated_at           DateTime         @updatedAt
   logs                 IssueLog[]
+  usage_segments       UsageSegment[]
 
   @@unique([product_id, code])
   @@index([product_id, status])
@@ -2352,13 +2353,20 @@ enum UsageIdeaPhase {
   CEREMONY
 }
 
+/// Fase van het uitwerken van een issue (IDEA-249); API-spelling research|plan.
+enum UsageIssuePhase {
+  RESEARCH
+  PLAN
+}
+
 /// Eén aaneengesloten stuk sessietijd, toegerekend aan een taak, aan sprint-overhead (task_id null)
-/// aan een product zonder sprint (sprint_id en anchor_task_id null; M47) of aan één fase van het
-/// uitwerken van een idee (idea_id en idea_phase gevuld, geen sprint; IDEA-242). Vier scopes: taak,
-/// sprint-overhead, idee (fase), product. Het id komt van de mod
+/// aan een product zonder sprint (sprint_id en anchor_task_id null; M47), aan één fase van het
+/// uitwerken van een idee (idea_id en idea_phase gevuld, geen sprint; IDEA-242) of aan één fase van
+/// het uitwerken van een issue (issue_id en issue_phase gevuld, geen sprint of idee; IDEA-249). Vijf
+/// scopes: taak, sprint-overhead, idee (fase), issue (fase), product. Het id komt van de mod
 /// en is de idempotentiesleutel; user, product en sprint worden bij openen vastgelegd en veranderen daarna niet.
 model UsageSegment {
-  // SQL: CONSTRAINT usage_segments_scope_check CHECK ((task_id IS NULL OR sprint_id IS NOT NULL) AND ((sprint_id IS NULL) = (anchor_task_id IS NULL)) AND ((idea_id IS NULL) = (idea_phase IS NULL)) AND (idea_id IS NULL OR sprint_id IS NULL))
+  // SQL: CONSTRAINT usage_segments_scope_check CHECK ((task_id IS NULL OR sprint_id IS NOT NULL) AND ((sprint_id IS NULL) = (anchor_task_id IS NULL)) AND ((idea_id IS NULL) = (idea_phase IS NULL)) AND (idea_id IS NULL OR sprint_id IS NULL) AND ((issue_id IS NULL) = (issue_phase IS NULL)) AND (issue_id IS NULL OR sprint_id IS NULL) AND (issue_id IS NULL OR idea_id IS NULL))
   id                String            @id
   user              User              @relation(fields: [user_id], references: [id], onDelete: Cascade)
   user_id           String
@@ -2375,6 +2383,10 @@ model UsageSegment {
   idea_id           String?
   /// Fase van het idee-werk (IDEA-242); samen met idea_id gevuld of samen null.
   idea_phase        UsageIdeaPhase?
+  issue             Issue?            @relation(fields: [issue_id], references: [id], onDelete: Cascade)
+  issue_id          String?
+  /// Fase van het issue-werk (IDEA-249); samen met issue_id gevuld of samen null, nooit naast sprint of idee.
+  issue_phase       UsageIssuePhase?
   session_id        String
   started_at        DateTime
   ended_at          DateTime?
@@ -2390,6 +2402,7 @@ model UsageSegment {
   @@index([task_id])
   @@index([session_id])
   @@index([idea_id, started_at])
+  @@index([issue_id, started_at])
   @@map("usage_segments")
 }
 
