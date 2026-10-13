@@ -50,6 +50,9 @@ implementation plan.
   to record progress. Host incidents outside one task — a failing service, lost claim or
   stopped timer — must be registered on the affected host's product (such as max2 or
   scrum4me-server), not automatically on the product whose code you are editing.
+- When you start researching or planning an issue, pass update_issue({ issue_id, phase:
+  "research" | "plan" }) once; the phase is bookkeeping for cost tracking. Never combine
+  phase with closing; on a closed issue only together with reopening (status: investigating).
 - Reuse a stable fingerprint for the same problem. For host incidents use host:component:core,
   for example max2:mcp:claim-lost. A matching open issue records a recurrence; a matching
   issue closed as fixed or cannot_reproduce reopens. Pass reported_by to create_issue and
