@@ -175,3 +175,65 @@ it('zet dirty + seq in dezelfde transactie als de mutatie', async () => {
     data: expect.objectContaining({ forgejo_dirty: true, forgejo_sync_seq: { increment: 1 } }),
   }))
 })
+
+// IDEA-249 §3.1/§5.4: phase is de handdruk voor een issue-fase; alleen boekhouding.
+const closedIssue = {
+  id: 'iss-1', product_id: 'prod-1', status: 'CLOSED', resolution: 'FIXED',
+  research_md: null, resolution_md: null,
+}
+
+it('phase: weigert een onbekende fase', async () => {
+  const res = await handleUpdateIssue({ issue_id: 'iss-1', phase: 'ceremony' } as never)
+  expect(res.isError).toBe(true)
+  expect(d.issueUpdate).not.toHaveBeenCalled()
+})
+
+it('phase: schrijft een NOTE met metadata.phase in dezelfde transactie; resultaat draagt code', async () => {
+  const res = await handleUpdateIssue({ issue_id: 'iss-1', phase: 'research', authored_by: 'mac:claude' })
+  expect(res.isError).toBeFalsy()
+  expect(mockTx).toHaveBeenCalledTimes(1)
+  expect(d.issueLogCreate).toHaveBeenCalledWith({
+    data: { issue_id: 'iss-1', type: 'NOTE', content: 'Fase research gestart door mac:claude', metadata: { phase: 'research' } },
+  })
+  expect(d.issueUpdate).toHaveBeenCalledWith(expect.objectContaining({
+    data: expect.objectContaining({ forgejo_dirty: true, forgejo_sync_seq: { increment: 1 } }),
+  }))
+  expect(JSON.parse(toolText(res))).toEqual({ issue: { id: 'iss-1', code: 'ISS-3', status: 'INVESTIGATING', resolution: null } })
+})
+
+it('phase: weigert phase op een gesloten issue zonder heropening', async () => {
+  mockIssueFindUnique.mockResolvedValue(closedIssue)
+  const res = await handleUpdateIssue({ issue_id: 'iss-1', phase: 'plan' })
+  expect(res.isError).toBe(true)
+  expect(toolText(res)).toMatch(/gesloten; heropen eerst/)
+  expect(mockTx).not.toHaveBeenCalled()
+})
+
+it('phase: weigert phase samen met sluiten', async () => {
+  const res = await handleUpdateIssue({ issue_id: 'iss-1', status: 'closed', resolution: 'fixed', phase: 'plan' })
+  expect(res.isError).toBe(true)
+  expect(toolText(res)).toMatch(/niet bij het sluiten/)
+  expect(mockTx).not.toHaveBeenCalled()
+})
+
+it('phase: heropenen (investigating) met phase slaagt en logt de fase', async () => {
+  mockIssueFindUnique.mockResolvedValue(closedIssue)
+  const res = await handleUpdateIssue({ issue_id: 'iss-1', status: 'investigating', phase: 'research' })
+  expect(res.isError).toBeFalsy()
+  expect(d.issueLogCreate).toHaveBeenCalledWith({
+    data: expect.objectContaining({ type: 'NOTE', metadata: { phase: 'research' } }),
+  })
+  expect(d.issueLogCreate).toHaveBeenCalledWith({ data: expect.objectContaining({ type: 'REOPENED' }) })
+})
+
+it('zonder phase: titelwijziging op een gesloten issue blijft werken en laat resolution/closed_at staan', async () => {
+  mockIssueFindUnique.mockResolvedValue(closedIssue)
+  const res = await handleUpdateIssue({ issue_id: 'iss-1', title: 'Nieuwe titel' })
+  expect(res.isError).toBeFalsy()
+  const data = d.issueUpdate.mock.calls[0][0].data
+  expect(data.title).toBe('Nieuwe titel')
+  expect(data).not.toHaveProperty('resolution')
+  expect(data).not.toHaveProperty('closed_at')
+  expect(data).not.toHaveProperty('status')
+  expect(d.issueLogCreate).not.toHaveBeenCalled()
+})

@@ -35,6 +35,10 @@ const inputSchema = z.object({
   authored_by: z.string().trim().min(1).max(60).optional(),
   link_pbi_id: z.string().nullable().optional(),
   link_idea_id: z.string().nullable().optional(),
+  // IDEA-249 §3.1: de handdruk waarmee een issue-fase start. Alleen boekhouding: een NOTE-log
+  // met metadata.phase; de status verandert er niet door.
+  phase: z.enum(['research', 'plan']).optional()
+    .describe('Start van een issue-fase (research | plan), voor de kostenregistratie. Niet samen met sluiten; op een gesloten issue alleen samen met heropenen (status=investigating).'),
 })
 
 function appendSection(existing: string | null, addition: string, author: string): string {
@@ -60,7 +64,7 @@ export async function handleUpdateIssue(input: z.infer<typeof inputSchema>) {
 
     const author = parsed.authored_by ?? auth.username
     const data: Record<string, unknown> = {}
-    const logs: { type: string; content: string }[] = []
+    const logs: { type: string; content: string; metadata?: { phase: string } }[] = []
 
     if (parsed.title !== undefined) data.title = parsed.title
     if (parsed.severity !== undefined) {
@@ -124,6 +128,16 @@ export async function handleUpdateIssue(input: z.infer<typeof inputSchema>) {
       return toolError('Resolution kan alleen samen met status=closed')
     }
 
+    // IDEA-249 §3.1: tijdlijnhygiëne, alleen voor calls mét phase (geen statuskoppeling). Een call
+    // zonder phase op een gesloten issue (titel, append_resolution, koppeling) blijft werken.
+    if (parsed.phase !== undefined) {
+      if (data.status === 'CLOSED') return toolError('Een fase start niet bij het sluiten')
+      if (issue.status === 'CLOSED' && data.status !== 'INVESTIGATING') {
+        return toolError('Issue is gesloten; heropen eerst (status investigating)')
+      }
+      logs.push({ type: 'NOTE', content: `Fase ${parsed.phase} gestart door ${author}`, metadata: { phase: parsed.phase } })
+    }
+
     const result = await prisma.$transaction(async (tx) => {
       if (parsed.link_pbi_id !== undefined && parsed.link_pbi_id !== null) {
         const pbi = await tx.pbi.findUnique({
@@ -163,7 +177,10 @@ export async function handleUpdateIssue(input: z.infer<typeof inputSchema>) {
       })
       for (const log of logs) {
         await tx.issueLog.create({
-          data: { issue_id: parsed.issue_id, type: log.type as never, content: log.content },
+          data: {
+            issue_id: parsed.issue_id, type: log.type as never, content: log.content,
+            ...(log.metadata ? { metadata: log.metadata } : {}),
+          },
         })
       }
       return { ok: true, issue: updated } as const
@@ -182,7 +199,7 @@ export function registerUpdateIssueTool(server: McpServer) {
     {
       title: 'Update issue',
       description:
-        'Update an issue: append research or resolution prose (timestamped, attributed to authored_by or the token user), change status/severity, or link a PBI or idea. Closing requires a resolution CODE (one of: fixed, wont_fix, duplicate, cannot_reproduce, invalid) passed as `resolution` together with status=closed — the prose explanation belongs in append_resolution, and both may be sent in one call. A closed issue can only reopen to investigating.',
+        'Update an issue: append research or resolution prose (timestamped, attributed to authored_by or the token user), change status/severity, or link a PBI or idea. Closing requires a resolution CODE (one of: fixed, wont_fix, duplicate, cannot_reproduce, invalid) passed as `resolution` together with status=closed — the prose explanation belongs in append_resolution, and both may be sent in one call. A closed issue can only reopen to investigating. Pass phase (research | plan) when you start researching or planning an issue; it records the phase for cost tracking, not together with closing.',
       inputSchema,
     },
     async (input) => handleUpdateIssue(input),
