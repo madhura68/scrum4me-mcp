@@ -219,9 +219,18 @@ describe('handleCreateSprint idea_id (ISS-17)', () => {
     start_date: new Date(), created_at: new Date(),
   }
 
+  // Driver-adapter-vorm (Prisma 7 + adapter-pg): geen meta.target, constraint onder de cause.
   function p2002() {
+    const adapterError = new Error('UniqueConstraintViolation')
+    adapterError.name = 'DriverAdapterError'
+    ;(adapterError as Error & { cause: unknown }).cause = {
+      originalCode: '23505',
+      originalMessage: 'duplicate key value violates unique constraint "sprints_product_id_code_key"',
+      kind: 'UniqueConstraintViolation',
+      constraint: { fields: ['product_id', 'code'] },
+    }
     return new Prisma.PrismaClientKnownRequestError('unique', {
-      code: 'P2002', clientVersion: 'x', meta: { target: ['product_id', 'code'] },
+      code: 'P2002', clientVersion: 'x', meta: { driverAdapterError: adapterError },
     })
   }
 
