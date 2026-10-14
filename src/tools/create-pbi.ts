@@ -19,6 +19,7 @@ import { toolError, toolJson, withToolErrors } from '../errors.js'
 import { withSerializableRetry } from '../lib/serializable-transaction.js'
 import { withCodeUniqueRetry } from '../lib/code-unique-retry.js'
 import { assertCeremonyOperationKey, executePpeMutation, ppeInputSchema } from '../lib/ppe-operation.js'
+import { linkIdeaIfEmpty, loadLinkableIdea } from '../lib/idea-link.js'
 
 const PBI_AUTO_RE = /^PBI-(\d+)$/
 async function generateNextPbiCode(
@@ -54,10 +55,11 @@ const inputSchema = z.object({
   source_docs: z.array(sourceDocSchema).max(10).optional(),
   ceremony_object_key: z.string().min(1).optional(),
   ppe: ppeInputSchema.optional(),
+  idea_id: z.string().min(1).optional(),
 })
 
 export async function handleCreatePbi({
-  product_id, title, description, priority, source_docs, ceremony_object_key, ppe,
+  product_id, title, description, priority, source_docs, ceremony_object_key, ppe, idea_id,
 }: z.infer<typeof inputSchema>) {
   return withToolErrors(async () => {
     const auth = await requireWriteAccess()
@@ -66,9 +68,15 @@ export async function handleCreatePbi({
     }
     if ((ppe === undefined) !== (ceremony_object_key === undefined)) throw new Error('PPE_INPUT_INCOMPLETE')
     if (ppe) assertCeremonyOperationKey(ppe, 'pbi', ceremony_object_key!)
+    if (idea_id) {
+      const ideaError = await loadLinkableIdea(idea_id, product_id, auth.userId)
+      if (ideaError) return toolError(ideaError)
+    }
     const request = {
       product_id, title, description: description ?? null, priority,
       source_docs: source_docs ?? null, ceremony_object_key: ceremony_object_key ?? null,
+      // Alleen als meegegeven, zodat de payload hash van calls zonder idea_id gelijk blijft.
+      ...(idea_id ? { idea_id } : {}),
     }
 
         // PBI-102: resolve source_docs vooraf zodat we voor de tx-start weten
@@ -181,7 +189,9 @@ export async function handleCreatePbi({
               role: link.role as 'PLAN' | 'GRILL',
             })
           }
-          return { ...pbi, source_docs: links }
+          if (!idea_id) return { ...pbi, source_docs: links }
+          const idea_link = await linkIdeaIfEmpty(tx, idea_id, 'pbi_id', pbi.id)
+          return { ...pbi, source_docs: links, idea_link }
         })
         const created = await withCodeUniqueRetry('pbis_product_id_code_key', createPbi)
         return toolJson(created)
@@ -196,7 +206,7 @@ export function registerCreatePbiTool(server: McpServer) {
     {
       title: 'Create PBI',
       description:
-        'Add a Product Backlog Item to a product. Priority is team importance only; execution order appends within the parent and can be changed through backlog reorder. PBI-102: optional source_docs link the PBI to ProductDoc revisions (PLAN/GRILL); revision_id is frozen at link-time. Forbidden for demo accounts.',
+        'Add a Product Backlog Item to a product. Priority is team importance only; execution order appends within the parent and can be changed through backlog reorder. PBI-102: optional source_docs link the PBI to ProductDoc revisions (PLAN/GRILL); revision_id is frozen at link-time. Optional idea_id links the idea to the new PBI: ideas.pbi_id is only set when it is still empty, never overwritten; the idea must be owned by the caller and belong to this product (primary or secondary). Forbidden for demo accounts.',
       inputSchema,
     },
     handleCreatePbi,

@@ -18,6 +18,7 @@ import {
   executePpeMutation,
   ppeInputSchema,
 } from '../lib/ppe-operation.js'
+import { linkIdeaIfEmpty, loadLinkableIdea } from '../lib/idea-link.js'
 
 const SPRINT_AUTO_RE = /^S-(\d{4}-\d{2}-\d{2})-(\d+)$/
 const MAX_CODE_ATTEMPTS = 3
@@ -63,10 +64,11 @@ export const inputSchema = z.object({
   start_date: z.string().date().optional(),
   ceremony_object_key: z.string().min(1).optional(),
   ppe: ppeInputSchema.optional(),
+  idea_id: z.string().min(1).optional(),
 })
 
 export async function handleCreateSprint(
-  { product_id, code, sprint_goal, start_date, ceremony_object_key, ppe }: z.infer<typeof inputSchema>,
+  { product_id, code, sprint_goal, start_date, ceremony_object_key, ppe, idea_id }: z.infer<typeof inputSchema>,
 ) {
   return withToolErrors(async () => {
     const auth = await requireWriteAccess()
@@ -78,12 +80,18 @@ export async function handleCreateSprint(
       throw new Error('PPE_INPUT_INCOMPLETE')
     }
     if (ppe) assertCeremonyOperationKey(ppe, 'sprint', ceremony_object_key!)
+    if (idea_id) {
+      const ideaError = await loadLinkableIdea(idea_id, product_id, auth.userId)
+      if (ideaError) return toolError(ideaError)
+    }
     const request = {
       product_id,
       code: code ?? null,
       sprint_goal,
       start_date: start_date ?? null,
       ceremony_object_key: ceremony_object_key ?? null,
+      // Alleen als meegegeven, zodat de payload hash van calls zonder idea_id gelijk blijft.
+      ...(idea_id ? { idea_id } : {}),
     }
 
     return executePpeMutation({
@@ -103,23 +111,26 @@ export async function handleCreateSprint(
           created_at: true,
         } as const
 
-        if (code) {
-          const sprint = await prisma.sprint.create({
-            data: { product_id, code, sprint_goal, status: 'OPEN', start_date: resolvedStartDate },
-            select: baseSelect,
+        // Met idea_id delen sprint-create en koppeling één transactie; zonder
+        // idea_id valt er niets atomair te houden en blijft het een kale create.
+        // Een code-conflict komt ongewijzigd uit $transaction, dus de retry blijft werken.
+        const createSprint = async (sprintCode: string) => {
+          const data = { product_id, code: sprintCode, sprint_goal, status: 'OPEN' as const, start_date: resolvedStartDate }
+          if (!idea_id) return prisma.sprint.create({ data, select: baseSelect })
+          return prisma.$transaction(async (tx) => {
+            const sprint = await tx.sprint.create({ data, select: baseSelect })
+            const idea_link = await linkIdeaIfEmpty(tx, idea_id, 'build_sprint_id', sprint.id)
+            return { ...sprint, idea_link }
           })
-          return toolJson(sprint)
         }
+
+        if (code) return toolJson(await createSprint(code))
 
         let lastError: unknown
         for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
           const generated = await generateNextSprintCode(product_id)
           try {
-            const sprint = await prisma.sprint.create({
-              data: { product_id, code: generated, sprint_goal, status: 'OPEN', start_date: resolvedStartDate },
-              select: baseSelect,
-            })
-            return toolJson(sprint)
+            return toolJson(await createSprint(generated))
           } catch (e) {
             if (isCodeUniqueConflict(e)) { lastError = e; continue }
             throw e
@@ -137,7 +148,7 @@ export function registerCreateSprintTool(server: McpServer) {
     {
       title: 'Create Sprint',
       description:
-        'Create a new sprint for a product with status=OPEN. Code auto-generated as S-{YYYY-MM-DD}-{N} per product per date if not provided. Forbidden for demo accounts.',
+        'Create a new sprint for a product with status=OPEN. Code auto-generated as S-{YYYY-MM-DD}-{N} per product per date if not provided. Optional idea_id links the idea to the new sprint: ideas.build_sprint_id is only set when it is still empty, never overwritten; the idea must be owned by the caller and belong to this product (primary or secondary). Forbidden for demo accounts.',
       inputSchema,
     },
     handleCreateSprint,
