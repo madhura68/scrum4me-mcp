@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { Prisma } from '@prisma/client'
+import { toolText } from './helpers/tool-result.js'
+import type { AnyMock } from './helpers/mocks.js'
 
 vi.mock('../src/prisma.js', () => ({
   prisma: {
@@ -7,7 +9,17 @@ vi.mock('../src/prisma.js', () => ({
       findMany: vi.fn(),
       create: vi.fn(),
     },
+    idea: { findFirst: vi.fn(), updateMany: vi.fn() },
+    ideaProduct: { findUnique: vi.fn() },
+    $transaction: vi.fn(),
   },
+}))
+
+// executePpeMutation doorlussen zodat we het request kunnen inspecteren dat
+// in de PPE payload_hash terechtkomt, zonder controller-database.
+vi.mock('../src/lib/ppe-operation.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/lib/ppe-operation.js')>()),
+  executePpeMutation: vi.fn((input: { mutate: () => Promise<unknown> }) => input.mutate()),
 }))
 
 vi.mock('../src/auth.js', () => ({
@@ -28,13 +40,18 @@ import { prisma } from '../src/prisma.js'
 import { requireWriteAccess } from '../src/auth.js'
 import { userCanAccessProduct } from '../src/access.js'
 import { handleCreateSprint } from '../src/tools/create-sprint.js'
+import { executePpeMutation } from '../src/lib/ppe-operation.js'
 
 const mockPrisma = prisma as unknown as {
   sprint: {
     findMany: ReturnType<typeof vi.fn>
     create: ReturnType<typeof vi.fn>
   }
+  idea: { findFirst: AnyMock; updateMany: AnyMock }
+  ideaProduct: { findUnique: AnyMock }
+  $transaction: AnyMock
 }
+const mockExecutePpeMutation = executePpeMutation as unknown as AnyMock
 const mockRequireWriteAccess = requireWriteAccess as ReturnType<typeof vi.fn>
 const mockUserCanAccessProduct = userCanAccessProduct as ReturnType<typeof vi.fn>
 
@@ -46,6 +63,10 @@ beforeEach(() => {
   mockRequireWriteAccess.mockResolvedValue({ userId: USER_ID, tokenId: 'tok-1', username: 'alice', isDemo: false })
   mockUserCanAccessProduct.mockResolvedValue(true)
   mockPrisma.sprint.findMany.mockResolvedValue([])
+  mockPrisma.idea.findFirst.mockResolvedValue({ product_id: PRODUCT_ID })
+  mockPrisma.idea.updateMany.mockResolvedValue({ count: 1 })
+  mockPrisma.ideaProduct.findUnique.mockResolvedValue(null)
+  mockPrisma.$transaction.mockImplementation(async (run: (tx: typeof prisma) => Promise<unknown>) => run(prisma))
 })
 
 function parseResult(result: Awaited<ReturnType<typeof handleCreateSprint>>) {
@@ -188,5 +209,118 @@ describe('handleCreateSprint', () => {
 
     const callArgs = mockPrisma.sprint.create.mock.calls[0][0]
     expect(callArgs.data.start_date.toISOString().slice(0, 10)).toBe('2026-01-01')
+  })
+})
+
+describe('handleCreateSprint idea_id (ISS-17)', () => {
+  const IDEA_ID = 'idea-1'
+  const sprintRow = {
+    id: 'spr-i', code: 'S-2026-05-11-1', sprint_goal: 'g', status: 'OPEN',
+    start_date: new Date(), created_at: new Date(),
+  }
+
+  function p2002() {
+    return new Prisma.PrismaClientKnownRequestError('unique', {
+      code: 'P2002', clientVersion: 'x', meta: { target: ['product_id', 'code'] },
+    })
+  }
+
+  it('zonder idea_id: geen transactie, geen idee-query, request zonder idea_id-key', async () => {
+    mockPrisma.sprint.create.mockResolvedValue(sprintRow)
+
+    const result = await handleCreateSprint({ product_id: PRODUCT_ID, sprint_goal: 'g' })
+
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled()
+    expect(mockPrisma.idea.findFirst).not.toHaveBeenCalled()
+    expect(mockPrisma.idea.updateMany).not.toHaveBeenCalled()
+    expect(parseResult(result)).not.toHaveProperty('idea_link')
+    const request = mockExecutePpeMutation.mock.calls[0][0].request
+    expect(request).toEqual({
+      product_id: PRODUCT_ID, code: null, sprint_goal: 'g', start_date: null, ceremony_object_key: null,
+    })
+    expect('idea_id' in request).toBe(false)
+  })
+
+  it('koppelt een lege build_sprint_id in dezelfde transactie (gegenereerde code)', async () => {
+    mockPrisma.sprint.create.mockResolvedValue(sprintRow)
+
+    const result = await handleCreateSprint({ product_id: PRODUCT_ID, sprint_goal: 'g', idea_id: IDEA_ID })
+
+    expect(mockPrisma.idea.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: IDEA_ID, user_id: USER_ID },
+    }))
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1)
+    expect(mockPrisma.idea.updateMany).toHaveBeenCalledWith({
+      where: { id: IDEA_ID, build_sprint_id: null },
+      data: { build_sprint_id: 'spr-i' },
+    })
+    const parsed = parseResult(result)
+    expect(parsed.id).toBe('spr-i')
+    expect(parsed.idea_link).toEqual({ idea_id: IDEA_ID, field: 'build_sprint_id', outcome: 'set' })
+    expect(mockExecutePpeMutation.mock.calls[0][0].request.idea_id).toBe(IDEA_ID)
+  })
+
+  it('koppelt ook op het pad met expliciete code', async () => {
+    mockPrisma.sprint.create.mockResolvedValue(sprintRow)
+
+    const result = await handleCreateSprint({
+      product_id: PRODUCT_ID, code: 'CUSTOM', sprint_goal: 'g', idea_id: IDEA_ID,
+    })
+
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1)
+    expect(mockPrisma.idea.updateMany).toHaveBeenCalledTimes(1)
+    expect(parseResult(result).idea_link.outcome).toBe('set')
+  })
+
+  it('overschrijft een gevulde build_sprint_id niet, maar maakt de sprint wel aan', async () => {
+    mockPrisma.sprint.create.mockResolvedValue(sprintRow)
+    mockPrisma.idea.updateMany.mockResolvedValue({ count: 0 })
+
+    const result = await handleCreateSprint({ product_id: PRODUCT_ID, sprint_goal: 'g', idea_id: IDEA_ID })
+
+    expect(mockPrisma.sprint.create).toHaveBeenCalledTimes(1)
+    const parsed = parseResult(result)
+    expect(parsed.id).toBe('spr-i')
+    expect(parsed.idea_link).toEqual({ idea_id: IDEA_ID, field: 'build_sprint_id', outcome: 'skipped_existing' })
+  })
+
+  it('weigert een vreemd of onbekend idee zonder sprint aan te maken', async () => {
+    mockPrisma.idea.findFirst.mockResolvedValue(null)
+
+    const result = await handleCreateSprint({ product_id: PRODUCT_ID, sprint_goal: 'g', idea_id: IDEA_ID })
+
+    expect(result.isError).toBe(true)
+    expect(toolText(result)).toMatch(/not found or not accessible/)
+    expect(mockPrisma.sprint.create).not.toHaveBeenCalled()
+    expect(mockExecutePpeMutation).not.toHaveBeenCalled()
+  })
+
+  it('weigert een product dat primair noch secundair bij het idee hoort', async () => {
+    mockPrisma.idea.findFirst.mockResolvedValue({ product_id: 'other-product' })
+
+    const result = await handleCreateSprint({ product_id: PRODUCT_ID, sprint_goal: 'g', idea_id: IDEA_ID })
+
+    expect(result.isError).toBe(true)
+    expect(toolText(result)).toMatch(/does not belong to product/)
+    expect(mockPrisma.sprint.create).not.toHaveBeenCalled()
+  })
+
+  it('herkent een code-conflict uit de transactie en zet de koppeling één keer', async () => {
+    mockPrisma.sprint.create
+      .mockRejectedValueOnce(p2002())
+      .mockResolvedValueOnce({ ...sprintRow, id: 'spr-r' })
+
+    const result = await handleCreateSprint({ product_id: PRODUCT_ID, sprint_goal: 'g', idea_id: IDEA_ID })
+
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(2)
+    expect(mockPrisma.sprint.create).toHaveBeenCalledTimes(2)
+    expect(mockPrisma.idea.updateMany).toHaveBeenCalledTimes(1)
+    expect(mockPrisma.idea.updateMany).toHaveBeenCalledWith({
+      where: { id: IDEA_ID, build_sprint_id: null },
+      data: { build_sprint_id: 'spr-r' },
+    })
+    const parsed = parseResult(result)
+    expect(parsed.id).toBe('spr-r')
+    expect(parsed.idea_link.outcome).toBe('set')
   })
 })
