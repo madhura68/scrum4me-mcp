@@ -22,7 +22,7 @@ activity and create todos via native tool calls instead of curl.
 | `log_test_result` | Append TEST_RESULT (PASSED/FAILED) | no |
 | `log_commit` | Append COMMIT with hash and message | no |
 | `create_todo` | Add a todo, optionally scoped to a product | no |
-| `create_pbi` | Add a Product Backlog Item to a product (parent-scoped append) | no |
+| `create_pbi` | Add a Product Backlog Item to a product (parent-scoped append). Optional `idea_id` sets `ideas.pbi_id` only when it is empty (see below) | no |
 | `create_story` | Add a story under a PBI (status=OPEN, lands in product backlog) | no |
 | `create_task` | Add a task under a story (status=TO_DO, inherits sprint_id). Optional estimate — `estimate_active_minutes`, `estimate_usd` and `estimate_basis`, all three or none (`ESTIMATE_INCOMPLETE`) — stored once as a `task_estimates` row in the task's transaction and never changed afterwards | no |
 | `ask_user_question` | Post a question to the active user about a story; optional `wait_seconds` (max 600) polls for the answer | no |
@@ -149,6 +149,13 @@ The authoring tools enforce parent-scoped append semantics:
   serialization conflicts are retried by that transaction layer, at most three times. A separate
   bounded outer retry reruns the complete create attempt only for the expected
   `(product_id, code)` `P2002`; unrelated unique violations surface immediately.
+- `create_pbi` and `create_sprint` accept an optional `idea_id` that records the idea → PBI/sprint
+  link (`ideas.pbi_id` and `ideas.build_sprint_id` respectively). The column is filled only when
+  empty and never overwritten; the response reports `idea_link: { idea_id, field, outcome }` with
+  `outcome` `set` or `skipped_existing`. The idea must belong to the caller and the product must be
+  the idea's primary or a secondary (`idea_products`) product; otherwise a tool error is returned
+  and nothing is created. The link is written atomically with the create. `idea_id` is only part
+  of the hashed PPE request when supplied, so existing payload hashes do not change.
 - `priority` remains required team-importance metadata on all three tools, but changing it does
   not move an item.
 
