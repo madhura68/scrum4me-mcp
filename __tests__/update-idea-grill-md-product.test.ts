@@ -124,3 +124,52 @@ it('M23 chat-gate: staat grill-write toe vanuit GRILLED (voorbereidingsfase)', a
   const res = await handler({ idea_id: 'idea-1', markdown: '# grill' })
   expect(res.isError).toBeFalsy()
 })
+
+it('staat grill-write toe vanuit DRAFT en zet GRILLED + grill_doc_id', async () => {
+  mockFindUnique.mockResolvedValue({
+    id: 'idea-1', code: 'IDEA-042', user_id: 'user-1', product_id: 'prod-1',
+    title: 'T', status: 'DRAFT',
+  })
+  txMocks.idea.update.mockResolvedValue({ id: 'idea-1', status: 'GRILLED', code: 'IDEA-042' })
+  txMocks.ideaChatMessage.create.mockResolvedValue({ id: 'msg-1' })
+  const handler = captureHandler()
+  const res = await handler({ idea_id: 'idea-1', markdown: '# grill' })
+  expect(res.isError).toBeFalsy()
+  expect(txMocks.idea.update).toHaveBeenCalledWith(
+    expect.objectContaining({
+      data: expect.objectContaining({ status: 'GRILLED', grill_doc_id: 'doc-1' }),
+    }),
+  )
+  expect(JSON.parse(toolText(res)).ok).toBe(true)
+})
+
+it('staat grill-write toe vanuit GRILL_FAILED', async () => {
+  mockFindUnique.mockResolvedValue({
+    id: 'idea-1', code: 'IDEA-042', user_id: 'user-1', product_id: 'prod-1',
+    title: 'T', status: 'GRILL_FAILED',
+  })
+  txMocks.idea.update.mockResolvedValue({ id: 'idea-1', status: 'GRILLED', code: 'IDEA-042' })
+  txMocks.ideaChatMessage.create.mockResolvedValue({ id: 'msg-1' })
+  const handler = captureHandler()
+  const res = await handler({ idea_id: 'idea-1', markdown: '# grill' })
+  expect(res.isError).toBeFalsy()
+  expect(txMocks.idea.update).toHaveBeenCalledWith(
+    expect.objectContaining({
+      data: expect.objectContaining({ status: 'GRILLED', grill_doc_id: 'doc-1' }),
+    }),
+  )
+  expect(JSON.parse(toolText(res)).ok).toBe(true)
+})
+
+it('weigert vanuit PLANNED met de toegestane statussen in de melding', async () => {
+  mockFindUnique.mockResolvedValue({
+    id: 'idea-1', code: 'IDEA-042', user_id: 'user-1', product_id: 'prod-1',
+    title: 'T', status: 'PLANNED',
+  })
+  const handler = captureHandler()
+  const res = await handler({ idea_id: 'idea-1', markdown: '# grill' })
+  expect(res.isError).toBe(true)
+  expect(toolText(res)).toContain('toegestaan: DRAFT, GRILL_FAILED, GRILLING, GRILLED, PLAN_READY')
+  expect(toolText(res)).not.toContain('annuleer eerst de pipeline')
+  expect(txMocks.idea.update).not.toHaveBeenCalled()
+})
