@@ -28,3 +28,29 @@ Triage:
 | L-m4 | claude MINOR | Closing is not idempotent, SPEC_FAILED is not closable, `chat.md` step 5 conflicts. | Yes | **Accepted** in part. A second close is a no-op with a test. SPEC_FAILED stays refused and is documented (Review Focus 7). `chat.md` stays unchanged (JP decision 3), with an explanation in Review Focus 6. |
 
 **Scope delta:** removed the yaml summary; added the lock and re-read in the close path (no new component, an existing helper) and the idempotent no-op. First usable result unchanged.
+
+### Round 2 — rev 2 @ `3c4ab58d4ab8d26da0fd38b21e2f8bd457439678`
+
+- **Pin:** `doc` = plan, sha256 `d6fa5bc5…bb73`. No idea_link.
+- **CODEX:** request `801733dd-b623-423e-810a-e57a679c4bdd`, root `811d625b-e6ab-4022-8380-b8a3cea69512`, key `347b29ec-…6d6`. **GO**: 0B/0M/2m.
+- **CLAUDE:** request `4c8951d1-4ffe-49e7-8e5f-ffce5e68c65f`, root `4c5f41e4-f458-4112-86b1-0984dafa537e`, key `b97e4e03-…a50`. **GO**: 0B/0M/4m.
+- **Round-1 fixes:** codex held 1, 2, 4, 5 and 7, held 6 and 8 partly (see C2-m1), and held 3 partly (see C2-m2). Claude held all eight.
+- **Adjudication of the rejected interleaving test:** both reviewers upheld the rejection for this scope. Claude adds that `claudeJob.create` with `idea_id` waits on the `FOR UPDATE` lock through the FK, and that the `tx.$queryRaw` assertion catches the only failure mode a mock can see (the lock taken outside `tx`). Codex notes that the cited CLAUDE.md quotation is about driver error shapes, not concurrency. The rejection holds anyway, because no failure path is left that needs a real-DB test.
+- **Scope:** neither reviewer found a removal candidate; `review_dispatched` on the spec tool is needed for acceptance (b). Codex considers the plan counterpart optional but proportionate, so it stays.
+
+Triage:
+
+| # | Reviewer | Finding | Verified | Remedy |
+|---|---|---|---|---|
+| C2-m1 | codex MINOR | The no-op close returns `code`, but the ownership query only selects `id, status`. | Yes (`update-idea.ts:43-45`, pin in `update-idea.test.ts:168-171`) | **Accepted.** The ownership select gains `code`, the pinned select test is updated (named as an exception in Global Constraints), and the no-op test asserts all three fields. |
+| C2-m2 | codex MINOR | External inputs (IDEA-263 docs, rules, memories) are not in the review bundle. | Yes | **No change.** Tasks 4/5 already read and record revision and sha256 before writing. These are execution prerequisites, not review evidence. |
+| L2-m1 | claude MINOR | The residual-window justification only covers IDEA_GRILL. | Yes (`idea-jobs.ts:20-39`: MAKE_SPEC from GRILLED/SPEC_FAILED, MAKE_PLAN from GRILLED/PLAN_FAILED/PLAN_READY) | **Accepted.** Reworded: the job is real and sets its own next status; PLANNED is an allowed source only for IDEA_GRILL. |
+| L2-m2 | claude MINOR | A stuck IDEA_CHAT job blocks the close and no remedy is named. | Yes. The MCP has no job-cancel tool (`update_job_status` enum without cancelled). The web app has `cancelClaudeJobAction` (any active job by id), while `cancelIdeaJobAction` refuses IDEA_CHAT. | **Accepted.** The remedy is in the Task 3 interfaces, and the message now ends with `— wacht tot die klaar is of annuleer hem`. |
+| L2-m3 | claude MINOR | A `null` from the re-read in the transaction is not specified. | Yes | **Accepted.** `null` → `Idea not found`, with a test. |
+| L2-m4 | claude MINOR | Review Focus 2 recovery path needs a worker. | Yes (`idea-jobs.ts:69-115`) | **Accepted.** Focus 2 names the plan-write path (no worker) first; IDEA_GRILL needs a worker and a `repo_url`. |
+
+**Verdict:** GO/GO on `3c4ab58`. The plan phase is done.
+
+**Post-GO edits:** only the five accepted MINORs above. They are text and test specification, with no design change and no new component, and they were not reviewed again. A delta round (single reviewer, CODEX) is possible on JP's request.
+
+**Scope delta:** no work removed. Added: one select field, one test assertion and one test for the `null` case, plus wording. First usable result and practical proof unchanged.

@@ -25,7 +25,7 @@ Geen schemawijziging en geen tweede schrijver op de statusmachine.
 ## Global Constraints
 
 - Geen Prisma-migratie en geen enum-wijziging (`IdeaStatus`, `IdeaLogType` blijven zoals ze zijn).
-- Pipelinegedrag blijft byte-gelijk wanneer er een actieve maker-job is (IDEA_GRILL, IDEA_MAKE_SPEC/IDEA_REVISE_SPEC, IDEA_MAKE_PLAN). Bestaande tests blijven ongewijzigd groen, behalve waar een test een foutmeldingstekst vastpint die deze increment bewust wijzigt.
+- Pipelinegedrag blijft byte-gelijk wanneer er een actieve maker-job is (IDEA_GRILL, IDEA_MAKE_SPEC/IDEA_REVISE_SPEC, IDEA_MAKE_PLAN). Bestaande tests blijven ongewijzigd groen, behalve waar een test een foutmeldingstekst vastpint die deze increment bewust wijzigt, en de select-pin van de eigendomsquery in `update-idea.test.ts` (Taak 3).
 - De bestaande eigendoms-, product-binding-, demo- en content-policy-checks blijven ongewijzigd.
 - Foutmeldingen in het Nederlands, toolbeschrijvingen in het Engels (huidige conventie).
 - Verificatie per taak: `npm run typecheck`, `npm run typecheck:tests` en `npm test` (de volledige unit-suite, want mock-tests pinnen queries).
@@ -33,7 +33,7 @@ Geen schemawijziging en geen tweede schrijver op de statusmachine.
 ## Review Focus
 
 1. **Afsluiten terwijl er een pipeline-job met `idea_id` loopt, of terwijl er net een wordt aangemaakt.** Een gelijktijdige dispatch (IDEA_GRILL, de spec/plan-loop, een IDEA_CHAT-beurt) mag niet door PLANNED worden overschreven. Taak 3 neemt daarom de idee-rij op slot en herleest status en jobs binnen dezelfde transactie, en test die volgorde. Een losse SPEC_REVIEW via `dispatch_job`/`dispatchSpecReview` (de situatie bij IDEA-263) heeft géén `idea_id` (`src/lib/dispatch/review-jobs.ts:140-151`) en raakt de idee-status niet (`submit-review.ts:575` volgt alleen `job.idea`): de guard ziet hem bewust niet.
-2. **Afsluiten na increment 1 van een idee met meerdere increments.** PLANNED is niet meer bewerkbaar. Herstel blijft mogelijk: `dispatch_job IDEA_GRILL` mag vanuit PLANNED en `update_idea_plan_md` heeft geen gate. De beschrijving zegt daarom "na het laatste increment". Dit is bewust geaccepteerd, zonder extra test.
+2. **Afsluiten na increment 1 van een idee met meerdere increments.** PLANNED is niet meer bewerkbaar. Herstel blijft mogelijk: `update_idea_plan_md` heeft geen gate en zet PLAN_READY (geldige plan-yaml vereist, geen worker nodig); `dispatch_job IDEA_GRILL` mag ook vanuit PLANNED, maar vraagt een verse worker en een `repo_url` (`idea-jobs.ts:69-115`). De beschrijving zegt daarom "na het laatste increment". Dit is bewust geaccepteerd, zonder extra test.
 3. **Grill-write vanuit PLANNED of vanuit een spec/plan-pipelinestatus.** Die blijft geweigerd, en de melding noemt de toegestane statussen. Taak 1 test dit.
 4. **Interactieve spec- of plan-write terwijl er een maker-job loopt van een andere sessie.** Dit is pipelinegedrag, ongewijzigd, en het antwoordveld `review_dispatched: true` maakt het zichtbaar. Taak 2 test dit.
 5. **Grill-write vanuit PLAN_READY zet de status terug naar GRILLED.** Dat is bestaand gedrag en valt buiten deze increment. Alleen de beschrijving vermeldt het.
@@ -107,17 +107,19 @@ Geen schemawijziging en geen tweede schrijver op de statusmachine.
 - Levert:
   - Invoer: `status?: 'PLANNED'` (`z.literal('PLANNED')`). De refine wordt "minstens één van title, description of status".
   - Resultaat: ongewijzigd `{ id, code, status }`.
-  - Nieuwe constante in het bestand: `IDEA_CLOSE_BLOCKING_JOB_KINDS = ['IDEA_GRILL', 'IDEA_MAKE_SPEC', 'IDEA_REVISE_SPEC', 'SPEC_REVIEW', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'IDEA_CHAT']`. IDEA_CHAT telt mee: een chatbeurt (ook de harness-chat) mag een idee niet afsluiten, en de eigen RUNNING-job blokkeert dat. Een interactief afsluiten tijdens een lopende chatbeurt wordt dan ook geweigerd; dat is zeldzaam genoeg.
+  - Nieuwe constante in het bestand: `IDEA_CLOSE_BLOCKING_JOB_KINDS = ['IDEA_GRILL', 'IDEA_MAKE_SPEC', 'IDEA_REVISE_SPEC', 'SPEC_REVIEW', 'IDEA_MAKE_PLAN', 'IDEA_REVIEW_PLAN', 'IDEA_CHAT']`. IDEA_CHAT telt mee: een chatbeurt (ook de harness-chat) mag een idee niet afsluiten, en de eigen RUNNING-job blokkeert dat. Een interactief afsluiten tijdens een lopende chatbeurt wordt dan ook geweigerd; dat is zeldzaam genoeg. Blijft een IDEA_CHAT-job hangen (bijv. QUEUED zonder chat-worker), dan is de remedie wachten of de job annuleren in Scrum4Me op job-id (`cancelClaudeJobAction`; `cancelIdeaJobAction` weigert IDEA_CHAT). De MCP heeft geen job-cancel-tool.
 
 - [ ] **Stap 1: tests schrijven en rood zien**
   - `zet status PLANNED vanuit PLAN_READY en logt STATUS_CHANGE`: de update bevat `status: 'PLANNED'`; `ideaLog.create` met `type: 'STATUS_CHANGE'`, `metadata: { from: 'PLAN_READY', to: 'PLANNED', via: 'update_idea' }`; de respons heeft `status: 'PLANNED'`.
   - `zet PLANNED vanuit DRAFT (interactief pad)`: zelfde asserties met `from: 'DRAFT'`.
   - `weigert PLANNED bij een actieve pipeline-SPEC_REVIEW (met idea_id)`: `tx.claudeJob.findFirst` geeft `{ id: 'job-1', kind: 'SPEC_REVIEW' }`. Verwacht `isError`, de tekst bevat `SPEC_REVIEW` en `job-1`, en er volgt geen update.
   - `weigert PLANNED tijdens een lopende IDEA_CHAT-beurt`: zelfde vorm met `kind: 'IDEA_CHAT'`.
-  - `title-only update doet geen jobcheck`: `claudeJob.findFirst` en `$transaction` worden niet aangeroepen; `prisma.idea.update` wordt rechtstreeks aangeroepen zoals nu (de bestaande tests blijven ongewijzigd).
+  - `title-only update doet geen jobcheck`: `claudeJob.findFirst` en `$transaction` worden niet aangeroepen; `prisma.idea.update` wordt rechtstreeks aangeroepen zoals nu (de bestaande tests blijven ongewijzigd, op de select-pin hieronder na).
   - `status-pad: lock vóór herlezing en jobcheck, alles in één transactie`: binnen de `$transaction`-callback is de volgorde `tx.$queryRaw` (lockIdeaRow) → `tx.idea.findUnique` → `tx.claudeJob.findFirst` → `tx.idea.update` → `tx.ideaLog.create` (vergelijk `mock.invocationCallOrder`).
   - `herleest de status onder het slot`: de pre-check ziet DRAFT, `tx.idea.findUnique` geeft GRILLING. Verwacht `isError` met de status in de melding, en geen `tx.idea.update`.
-  - `tweede afsluiting is een no-op`: het idee staat al op PLANNED en alleen `status` is meegegeven. Verwacht succes met `status: 'PLANNED'`, zonder `$transaction`, update of log.
+  - `tweede afsluiting is een no-op`: het idee staat al op PLANNED en alleen `status` is meegegeven. Verwacht succes met de volledige respons `{ id, code, status: 'PLANNED' }`, zonder `$transaction`, update of log.
+  - `herlezing vindt het idee niet meer`: `tx.idea.findUnique` geeft `null`. Verwacht `isError` met `Idea not found`, en geen `tx.idea.update`.
+  - De eigendomsquery selecteert voortaan ook `code` (zie stap 2). Pas daarom de select-pin in de bestaande test `weigert een idee buiten product/pool` (`__tests__/update-idea.test.ts:168-171`) aan naar `{ id: true, code: true, status: true }`; dat is de enige wijziging aan een bestaande assertie buiten de refine-melding.
   - Breid de mock in `__tests__/update-idea.test.ts` uit met `$transaction` (callback-vorm, roept de callback aan met een `tx`-mock), en op die `tx` met `$queryRaw`, `idea.findUnique`, `idea.update`, `claudeJob.findFirst` en `ideaLog.create`.
   - `weigert PLANNED vanuit SPEC_REVIEWING`: de bestaande gate `EDITABLE_STATUSES` grijpt in, en de melding noemt de status.
   - `status-only schrijft geen DOC_UPDATE-kanaalbericht`: `ideaChatMessage.create` wordt niet aangeroepen.
@@ -125,18 +127,18 @@ Geen schemawijziging en geen tweede schrijver op de statusmachine.
   - De bestaande test `eist minstens één van title/description` wordt de nieuwe refine-melding.
 
 - [ ] **Stap 2: implementeren**
-  - Volgorde in `handleUpdateIdea`: zod → `requireWriteAccess` → eigendom (zoals nu) → alleen `status` en het idee staat al op PLANNED: no-op, geef `{ id, code, status }` terug → content-policy alleen als title of description is meegegeven → `EDITABLE_STATUSES` als snelle pre-check (zoals nu).
+  - Volgorde in `handleUpdateIdea`: zod → `requireWriteAccess` → eigendom (zoals nu, met `select: { id: true, code: true, status: true }` zodat de no-op `code` kan teruggeven) → alleen `status` en het idee staat al op PLANNED: no-op, geef `{ id, code, status }` terug → content-policy alleen als title of description is meegegeven → `EDITABLE_STATUSES` als snelle pre-check (zoals nu).
   - Zonder `status`: het bestaande pad, ongewijzigd (`prisma.idea.update` rechtstreeks).
   - Met `status`: één interactieve `prisma.$transaction(async (tx) => …)`:
     1. `lockIdeaRow(tx, idea_id)`;
-    2. herlees de status met `tx.idea.findUnique` en pas `EDITABLE_STATUSES` opnieuw toe;
+    2. herlees de status met `tx.idea.findUnique` en pas `EDITABLE_STATUSES` opnieuw toe (`null`, het idee is intussen verwijderd: weiger met `Idea not found`);
     3. jobcheck `tx.claudeJob.findFirst({ where: { idea_id, kind: { in: [...IDEA_CLOSE_BLOCKING_JOB_KINDS] }, status: { in: [...ACTIVE_JOB_STATUSES] } }, select: { id, kind } })`;
     4. `tx.idea.update` met `status: 'PLANNED'` (plus title/description als die zijn meegegeven);
     5. `tx.ideaLog.create({ type: 'STATUS_CHANGE', content: `Status ${from} → PLANNED (update_idea)`, metadata: { from, to: 'PLANNED', via: 'update_idea' } })`.
 
     Een weigering binnen de callback wordt een `toolError` na de rollback.
-  - Melding bij een jobtreffer: `` `Idee kan niet worden afgesloten: er loopt nog een ${kind}-job (${id})` ``.
-  - Restvenster, bewust geaccepteerd: een dispatch die de status vóór het slot las, schrijft ná de commit GRILLING (of SPEC_DRAFTING/PLANNING) over PLANNED. Dat is consistent: er loopt dan een echte job, en IDEA_GRILL mag vanuit PLANNED.
+  - Melding bij een jobtreffer: `` `Idee kan niet worden afgesloten: er loopt nog een ${kind}-job (${id}) — wacht tot die klaar is of annuleer hem` ``.
+  - Restvenster, bewust geaccepteerd: een dispatch die de status vóór het slot las, schrijft ná de commit zijn jobstatus (GRILLING, SPEC_DRAFTING of PLANNING) over PLANNED. Dat is consistent: er loopt dan een echte job die zijn eigen vervolgstatus zet. Voor IDEA_GRILL is PLANNED zelfs een toegestane bron; IDEA_MAKE_SPEC en IDEA_MAKE_PLAN zijn dat niet (`IDEA_KIND_RULES`, `idea-jobs.ts:20-39`), maar een dispatch die vóór het slot valideerde, schrijft toch.
   - Het DOC_UPDATE-kanaalbericht komt alleen als title of description is gewijzigd.
   - Beschrijving: "Update the title and/or description of an idea, or close it with status: 'PLANNED' once its last ceremony increment is built (sprint/PBI created interactively). Closing is refused while an idea pipeline job (grill/spec/plan/review) is active. A PLANNED idea leaves get_ideas_context and is no longer editable."
 
