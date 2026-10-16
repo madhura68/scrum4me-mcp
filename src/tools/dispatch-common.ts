@@ -28,9 +28,20 @@ export const commonFields = {
 export function buildInput(value: unknown): DispatchInput {
   try { return parseDispatchInput(value) } catch { throw new DispatchError('DISPATCH_INVALID_INPUT') }
 }
+/** The service answers an intake it will not serve (product outside DISPATCH_PRODUCT_ALLOWLIST, dispatch switched off,
+ * no repository sources deployed) with the same opaque 404 as an unknown request, and refuses before it stores anything.
+ * On submit that 404 can mean nothing else, so the caller is told what it means; on a read or cancel it keeps its plain meaning. */
+const SUBMIT_REFUSED = 'DISPATCH_NOT_FOUND (HTTP 404): the dispatch service refused this intake and stored nothing. ' +
+  'Most likely this product is not enabled for dispatch (DISPATCH_PRODUCT_ALLOWLIST) or dispatch is switched off. ' +
+  'Retrying will not help until an operator changes that configuration; after that a retry is safe.'
 export async function submitRaw(input: DispatchInput, key: string | undefined) {
   const idempotency_key = key ?? randomUUID()
-  return { idempotency_key, dispatch: await requestDispatchClient().submitDispatch(input, idempotency_key) }
+  try {
+    return { idempotency_key, dispatch: await requestDispatchClient().submitDispatch(input, idempotency_key) }
+  } catch (error) {
+    if (error instanceof DispatchClientError && error.status === 404 && error.code === 'DISPATCH_NOT_FOUND') throw new Error(SUBMIT_REFUSED)
+    throw error
+  }
 }
 export async function submit(input: DispatchInput, key: string | undefined) {
   return toolJson(await submitRaw(input, key))
