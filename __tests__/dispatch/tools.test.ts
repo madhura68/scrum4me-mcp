@@ -109,6 +109,27 @@ describe('dispatch MCP tools',()=>{
   vi.stubEnv('S4M_DISPATCH_URL','');calls=[]
   const unconfigured=await asUser(()=>handlers.get_dispatch({request_id:id}));expect(unconfigured.isError).toBe(true);expect(unconfigured.content[0].text).toContain('DISPATCH_NOT_CONFIGURED');expect(calls).toHaveLength(0)
  })
+ it('explains a refused intake (404) on submit only; on a read or cancel a 404 keeps its plain meaning',async()=>{
+  // The service answers a product outside its allowlist with an opaque 404 (requests.ts). Without
+  // a hint a caller reads it as "setup still running" and keeps retrying (MacSearch, 2026-10-16).
+  vi.stubGlobal('fetch',vi.fn(async(url:string,init:RequestInit)=>{calls.push({url,init});return new Response(JSON.stringify({error:'DISPATCH_NOT_FOUND'}),{status:404})}))
+  db.idea.findFirst.mockResolvedValue({id:'idea-1'})
+  for(const run of [()=>handlers.dispatch_task({...base,access:'read'}),()=>handlers.dispatch_review({...base,review_documents:documents}),
+   ()=>handlers.dispatch_review({...base,review_documents:documents,idea_link:{idea_id:'idea-1',idea_phase:'PLAN'}})]){
+   const refused=await asUser(run)
+   expect(refused.isError).toBe(true)
+   expect(refused.content[0].text).toMatch(/^DISPATCH_NOT_FOUND \(HTTP 404\): /)
+   expect(refused.content[0].text).toContain('DISPATCH_PRODUCT_ALLOWLIST')
+  }
+  expect(calls).toHaveLength(3)
+  const read=await asUser(()=>handlers.get_dispatch({request_id:id}))
+  expect(read.content[0].text).toBe('DISPATCH_NOT_FOUND (HTTP 404)')
+  const cancel=await asUser(()=>handlers.cancel_dispatch({request_id:id,expected_version:'3',action_id:'33333333-3333-4333-8333-333333333333'}))
+  expect(cancel.content[0].text).toBe('DISPATCH_NOT_FOUND (HTTP 404)')
+  vi.stubGlobal('fetch',vi.fn(async()=>new Response(JSON.stringify({error:'DISPATCH_FORBIDDEN'}),{status:403})))
+  const forbidden=await asUser(()=>handlers.dispatch_task({...base,access:'read'}))
+  expect(forbidden.content[0].text).toBe('DISPATCH_FORBIDDEN (HTTP 403)')
+ })
 })
 
 describe('dispatch_review idea_link (IDEA-251)',()=>{
