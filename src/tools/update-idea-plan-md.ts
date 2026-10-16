@@ -35,21 +35,22 @@ export const inputSchema = z.object({
 // die de codex-worker claimt. Ronde n = ronde van de triggerende
 // IDEA_MAKE_PLAN-job (plan r{n} ↔ review r{n}; button-job zonder key = ronde 1).
 // Idempotent via de composiet-unique (created_by_job_id, orchestration_key).
+// Retourneert true alleen als déze aanroep de IDEA_REVIEW_PLAN-rij aanmaakte.
 async function maybeAutoDispatchPlanReview(
   ideaId: string,
   autoPlanReview: boolean,
   // M23: pin — het zojuist geschreven plan-doc + de exacte revisie die de
   // reviewer moet beoordelen (doorgegeven aan ReviewLog bij verdict).
   pin?: { docId: string; revisionId: string },
-): Promise<void> {
-  if (!autoPlanReview) return
+): Promise<boolean> {
+  if (!autoPlanReview) return false
 
   const makePlanJob = await prisma.claudeJob.findFirst({
     where: { idea_id: ideaId, kind: 'IDEA_MAKE_PLAN', status: { in: ['CLAIMED', 'RUNNING'] } },
     orderBy: { created_at: 'desc' },
     select: { id: true, orchestration_key: true, user_id: true, product_id: true },
   })
-  if (!makePlanJob) return // handmatige plan-edit zonder actieve job → geen loop
+  if (!makePlanJob) return false // handmatige plan-edit zonder actieve job → geen loop
 
   const round = parseLoopRound(makePlanJob.orchestration_key) || 1
 
@@ -99,6 +100,7 @@ async function maybeAutoDispatchPlanReview(
       idea_id: ideaId,
     })
   }
+  return reviewJobId !== null
 }
 
 export async function handleUpdateIdeaPlanMd(input: { idea_id: string; markdown: string }) {
@@ -196,8 +198,9 @@ export async function handleUpdateIdeaPlanMd(input: { idea_id: string; markdown:
     // M20: keten-side-effect ná commit van de plan-write. Faalt best-effort
     // niet-fataal (de plan-write is al gecommit; een dispatch-fout mag de
     // tool-respons niet breken).
+    let reviewDispatched = false
     try {
-      await maybeAutoDispatchPlanReview(idea_id, idea.product?.auto_plan_review ?? false, { docId: result.wr.doc_id, revisionId: result.wr.revision_id })
+      reviewDispatched = await maybeAutoDispatchPlanReview(idea_id, idea.product?.auto_plan_review ?? false, { docId: result.wr.doc_id, revisionId: result.wr.revision_id })
     } catch (err) {
       console.error('maybeAutoDispatchPlanReview failed (plan is al PLAN_READY):', err)
     }
@@ -210,6 +213,7 @@ export async function handleUpdateIdeaPlanMd(input: { idea_id: string; markdown:
         revision_id: result.wr.revision_id,
         revision: result.wr.revision,
       },
+      review_dispatched: reviewDispatched,
     })
   } catch (err) {
     if (err instanceof ProductDocWriteError) {
@@ -226,7 +230,7 @@ export function registerUpdateIdeaPlanMdTool(server: McpServer) {
     {
       title: 'Update idea plan_md',
       description:
-        'Save the make-plan-result markdown for an idea: validates plan-yaml first; on success writes a ProductDoc (folder=PLANS) + immutable revision, sets Idea.plan_doc_id, dual-writes Idea.plan_md for backward-compat, and transitions status to PLAN_READY. On plan-parse-fail status → PLAN_FAILED (no ProductDoc-write). With product.auto_plan_review it also enqueues an IDEA_REVIEW_PLAN codex-review (M20 plan-review-loop). Requires Idea.product_id. Forbidden for demo accounts.',
+        'Save the make-plan-result markdown for an idea: validates plan-yaml first; on success writes a ProductDoc (folder=PLANS) + immutable revision, sets Idea.plan_doc_id, dual-writes Idea.plan_md for backward-compat, and transitions status to PLAN_READY. On plan-parse-fail status → PLAN_FAILED (no ProductDoc-write). The IDEA_REVIEW_PLAN codex-review (M20 plan-review-loop) is only enqueued when an IDEA_MAKE_PLAN job is CLAIMED/RUNNING and product.auto_plan_review is on; called interactively it saves the doc, sets PLAN_READY and starts no review. Requires Idea.product_id. Forbidden for demo accounts.',
       inputSchema,
     },
     async ({ idea_id, markdown }) => withToolErrors(() => handleUpdateIdeaPlanMd({ idea_id, markdown })),

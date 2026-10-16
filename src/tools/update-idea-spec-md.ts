@@ -1,7 +1,7 @@
 // MCP-tool (M23): schrijft het specificatie-document van de spec-fase als
 // ProductDoc(SPECS) + immutable revisie, zet Idea.spec_doc_id, en dispatcht
-// post-commit de SPEC_REVIEW-review-job (pipeline-keten). Geen parse-gate:
-// de spec is proza, geen YAML-contract.
+// bij een actieve maker-job post-commit de SPEC_REVIEW-review-job
+// (pipeline-keten). Geen parse-gate: de spec is proza, geen YAML-contract.
 //
 // Wordt aangeroepen door de worker als laatste stap van een
 // IDEA_MAKE_SPEC/IDEA_REVISE_SPEC-sessie.
@@ -34,10 +34,12 @@ export const inputSchema = z.object({
 })
 
 // M23 auto-dispatch: ná een geslaagde spec-write enqueuet dit de SPEC_REVIEW
-// van deze ronde. Pipeline-semantiek: review volgt altijd (geen toggle).
+// van deze ronde. Pipeline-semantiek: bij een actieve maker volgt de review
+// altijd (geen toggle).
 // Ronde n = ronde van de triggerende maker-job (button-job zonder key = r1).
 // Idempotent via de composiet-unique (created_by_job_id, orchestration_key).
-async function maybeAutoDispatchSpecReview(ideaId: string, revisionId: string): Promise<void> {
+// Retourneert true alleen als déze aanroep de SPEC_REVIEW-rij aanmaakte.
+async function maybeAutoDispatchSpecReview(ideaId: string, revisionId: string): Promise<boolean> {
   const makerJob = await prisma.claudeJob.findFirst({
     where: {
       idea_id: ideaId,
@@ -47,13 +49,13 @@ async function maybeAutoDispatchSpecReview(ideaId: string, revisionId: string): 
     orderBy: { created_at: 'desc' },
     select: { id: true, orchestration_key: true, user_id: true, product_id: true },
   })
-  if (!makerJob) return // geen actieve maker → geen keten (spec-writes zijn job-gedreven)
+  if (!makerJob) return false // geen actieve maker → geen keten (interactieve spec-write)
 
   const idea = await prisma.idea.findUnique({
     where: { id: ideaId },
     select: { spec_doc_id: true },
   })
-  if (!idea?.spec_doc_id) return
+  if (!idea?.spec_doc_id) return false
 
   const round = parseLoopRound(makerJob.orchestration_key) || 1
 
@@ -107,6 +109,7 @@ async function maybeAutoDispatchSpecReview(ideaId: string, revisionId: string): 
       idea_id: ideaId,
     })
   }
+  return reviewJobId !== null
 }
 
 export async function handleUpdateIdeaSpecMd(input: { idea_id: string; markdown: string }) {
@@ -165,8 +168,9 @@ export async function handleUpdateIdeaSpecMd(input: { idea_id: string; markdown:
 
     // M23: keten-side-effect ná commit — faalt best-effort niet-fataal
     // (de spec-write is al gecommit; een dispatch-fout mag de respons niet breken).
+    let reviewDispatched = false
     try {
-      await maybeAutoDispatchSpecReview(idea_id, result.wr.revision_id)
+      reviewDispatched = await maybeAutoDispatchSpecReview(idea_id, result.wr.revision_id)
     } catch (err) {
       console.error('maybeAutoDispatchSpecReview failed (spec is al opgeslagen):', err)
     }
@@ -179,6 +183,7 @@ export async function handleUpdateIdeaSpecMd(input: { idea_id: string; markdown:
         revision_id: result.wr.revision_id,
         revision: result.wr.revision,
       },
+      review_dispatched: reviewDispatched,
     })
   } catch (err) {
     if (err instanceof ProductDocWriteError) {
@@ -194,7 +199,7 @@ export function registerUpdateIdeaSpecMdTool(server: McpServer) {
     {
       title: 'Update idea spec (SPECS-doc)',
       description:
-        'Save the spec-phase markdown for an idea (M23 pipeline): writes a ProductDoc (folder=SPECS, slug {code}-spec) + immutable revision, sets Idea.spec_doc_id, and auto-dispatches the SPEC_REVIEW job for this round (pins the written revision via doc_revision_id; flips status to SPEC_REVIEWING). No YAML contract — the spec is prose. Requires Idea.product_id. Forbidden for demo accounts.',
+        'Save the spec-phase markdown for an idea (M23 pipeline): writes a ProductDoc (folder=SPECS, slug {code}-spec) + immutable revision and sets Idea.spec_doc_id. Only when an IDEA_MAKE_SPEC/IDEA_REVISE_SPEC job for this idea is CLAIMED/RUNNING does it also dispatch the SPEC_REVIEW for that round and set SPEC_REVIEWING. That review pins the written revision via doc_revision_id. Called interactively (no such job) it saves the doc and leaves the status unchanged. The response field review_dispatched tells which happened. No YAML contract — the spec is prose. Requires Idea.product_id. Forbidden for demo accounts.',
       inputSchema,
     },
     async ({ idea_id, markdown }) => withToolErrors(() => handleUpdateIdeaSpecMd({ idea_id, markdown })),

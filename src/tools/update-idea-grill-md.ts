@@ -34,7 +34,7 @@ export function registerUpdateIdeaGrillMdTool(server: McpServer) {
     {
       title: 'Update idea grill_md',
       description:
-        'Save the grill-result markdown for an idea: writes a ProductDoc (folder=GRILLS) + immutable revision, sets Idea.grill_doc_id, and dual-writes Idea.grill_md for backward-compat (wait-for-job still reads it). Transitions status to GRILLED. Requires Idea.product_id. Forbidden for demo accounts.',
+        'Save the grill-result markdown for an idea: writes a ProductDoc (folder=GRILLS) + immutable revision, sets Idea.grill_doc_id, and dual-writes Idea.grill_md for backward-compat (wait-for-job still reads it). Transitions status to GRILLED. Requires Idea.product_id. Forbidden for demo accounts. Allowed from DRAFT, GRILL_FAILED, GRILLING, GRILLED and PLAN_READY. Outside an IDEA_GRILL job (an interactive grill) it only saves the doc and sets GRILLED; it never starts a job. Writing from PLAN_READY resets the status to GRILLED.',
       inputSchema,
     },
     async ({ idea_id, markdown, product_id }) =>
@@ -56,10 +56,20 @@ export function registerUpdateIdeaGrillMdTool(server: McpServer) {
         // dat zou de statemachine corrumperen (bv. een IDEA_CHAT-beurt die
         // update_idea_grill_md aanroept tijdens SPEC_REVIEWING). Alleen de
         // grill-flow zelf en de vrije voorbereidingsfase zijn toegestaan.
-        const GRILL_WRITE_ALLOWED_FROM = ['GRILLING', 'GRILLED', 'PLAN_READY'] as const
+        // DRAFT en GRILL_FAILED horen bij die vrije voorbereidingsfase: er loopt
+        // dan geen grill-job, want de dispatch van IDEA_GRILL zet het idee direct
+        // op GRILLING. Een losse SPEC_REVIEW kan wel lopen (IDEA-263); die raakt
+        // de grill niet.
+        const GRILL_WRITE_ALLOWED_FROM = [
+          'DRAFT',
+          'GRILL_FAILED',
+          'GRILLING',
+          'GRILLED',
+          'PLAN_READY',
+        ] as const
         if (!(GRILL_WRITE_ALLOWED_FROM as readonly string[]).includes(idea.status)) {
           return toolError(
-            `Grill-write niet toegestaan vanuit status ${idea.status} — annuleer eerst de pipeline (terug naar GRILLED)`,
+            `Grill-write niet toegestaan vanuit status ${idea.status} (toegestaan: ${GRILL_WRITE_ALLOWED_FROM.join(', ')}) — het idee zit in de spec/plan-pipeline of is al afgesloten`,
           )
         }
         // Product-bound wanneer de caller een product_id meegeeft (copilot-service):

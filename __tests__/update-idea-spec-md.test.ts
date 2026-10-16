@@ -24,6 +24,7 @@ const mockNotify = vi.hoisted(() => vi.fn())
 vi.mock('../src/lib/dispatch/notify.js', () => ({ notifyJobEnqueued: mockNotify }))
 
 import { handleUpdateIdeaSpecMd } from '../src/tools/update-idea-spec-md.js'
+import { toolText } from './helpers/tool-result.js'
 
 beforeEach(() => {
   // mockReset (niet clear): wist ook once-queues zodat tests elkaars
@@ -61,6 +62,19 @@ describe('update_idea_spec_md (M23)', () => {
     expect(JSON.parse((r as { content: { text: string }[] }).content[0].text).ok).toBe(true)
   })
 
+  it('zonder actieve maker-job: geen SPEC_REVIEW, status ongewijzigd, review_dispatched false', async () => {
+    setupIdea()
+    m.claudeJob.findFirst.mockResolvedValue(null) // interactief: geen IDEA_MAKE_SPEC/IDEA_REVISE_SPEC
+    const r = await handleUpdateIdeaSpecMd({ idea_id: 'i1', markdown: '# Spec' })
+    expect(m.claudeJob.create).not.toHaveBeenCalled()
+    expect(m.idea.update).toHaveBeenCalledTimes(1)
+    expect(m.idea.update.mock.calls.every((c) => !('status' in c[0].data))).toBe(true)
+    expect(mockNotify).not.toHaveBeenCalled()
+    const body = JSON.parse(toolText(r))
+    expect(body.ok).toBe(true)
+    expect(body.review_dispatched).toBe(false)
+  })
+
   it('dispatcht SPEC_REVIEW met idea_id, pin en source SYSTEM bij actieve maker', async () => {
     setupIdea()
     m.claudeJob.findFirst
@@ -68,7 +82,7 @@ describe('update_idea_spec_md (M23)', () => {
     m.$queryRaw.mockResolvedValue([{ id: 'i1' }])
     // findActiveSpecLoopJob → geen andere actieve job
     m.claudeJob.findFirst.mockResolvedValueOnce(null)
-    await handleUpdateIdeaSpecMd({ idea_id: 'i1', markdown: '# Spec' })
+    const r = await handleUpdateIdeaSpecMd({ idea_id: 'i1', markdown: '# Spec' })
     expect(m.claudeJob.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({
         kind: 'SPEC_REVIEW',
@@ -84,6 +98,7 @@ describe('update_idea_spec_md (M23)', () => {
       data: { status: 'SPEC_REVIEWING' },
     }))
     expect(mockNotify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'SPEC_REVIEW', idea_id: 'i1' }))
+    expect(JSON.parse(toolText(r)).review_dispatched).toBe(true)
   })
 
   it('P2002 op de dedup-unique is een no-op', async () => {
@@ -98,6 +113,32 @@ describe('update_idea_spec_md (M23)', () => {
     const r = await handleUpdateIdeaSpecMd({ idea_id: 'i1', markdown: '# Spec' })
     expect(JSON.parse((r as { content: { text: string }[] }).content[0].text).ok).toBe(true)
     expect(mockNotify).not.toHaveBeenCalled()
+  })
+
+  it('P2002-dedup geeft review_dispatched false', async () => {
+    setupIdea()
+    m.claudeJob.findFirst.mockResolvedValueOnce({ id: 'maker-1', orchestration_key: 'idea:i1:spec-loop:r2', user_id: 'u1', product_id: 'p1' })
+    m.$queryRaw.mockResolvedValue([{ id: 'i1' }])
+    m.claudeJob.findFirst.mockResolvedValueOnce(null)
+    const { Prisma } = await import('@prisma/client')
+    m.claudeJob.create.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('dup', { code: 'P2002', clientVersion: 'x' }),
+    )
+    const r = await handleUpdateIdeaSpecMd({ idea_id: 'i1', markdown: '# Spec' })
+    const body = JSON.parse(toolText(r))
+    expect(body.ok).toBe(true)
+    expect(body.review_dispatched).toBe(false)
+  })
+
+  it('al actieve spec-loop-job: geen tweede SPEC_REVIEW, review_dispatched false', async () => {
+    setupIdea()
+    m.claudeJob.findFirst.mockResolvedValueOnce({ id: 'maker-1', orchestration_key: null, user_id: 'u1', product_id: 'p1' })
+    m.$queryRaw.mockResolvedValue([{ id: 'i1' }])
+    m.claudeJob.findFirst.mockResolvedValueOnce({ id: 'other-review', kind: 'SPEC_REVIEW' })
+    const r = await handleUpdateIdeaSpecMd({ idea_id: 'i1', markdown: '# Spec' })
+    expect(m.claudeJob.create).not.toHaveBeenCalled()
+    expect(mockNotify).not.toHaveBeenCalled()
+    expect(JSON.parse(toolText(r)).review_dispatched).toBe(false)
   })
 
   it('weigert idea zonder product', async () => {
