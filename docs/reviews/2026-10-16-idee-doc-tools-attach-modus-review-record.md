@@ -45,7 +45,7 @@ Triage:
 | C2-m1 | codex MINOR | The no-op close returns `code`, but the ownership query only selects `id, status`. | Yes (`update-idea.ts:43-45`, pin in `update-idea.test.ts:168-171`) | **Accepted.** The ownership select gains `code`, the pinned select test is updated (named as an exception in Global Constraints), and the no-op test asserts all three fields. |
 | C2-m2 | codex MINOR | External inputs (IDEA-263 docs, rules, memories) are not in the review bundle. | Yes | **No change.** Tasks 4/5 already read and record revision and sha256 before writing. These are execution prerequisites, not review evidence. |
 | L2-m1 | claude MINOR | The residual-window justification only covers IDEA_GRILL. | Yes (`idea-jobs.ts:20-39`: MAKE_SPEC from GRILLED/SPEC_FAILED, MAKE_PLAN from GRILLED/PLAN_FAILED/PLAN_READY) | **Accepted.** Reworded: the job is real and sets its own next status; PLANNED is an allowed source only for IDEA_GRILL. |
-| L2-m2 | claude MINOR | A stuck IDEA_CHAT job blocks the close and no remedy is named. | Yes. The MCP has no job-cancel tool (`update_job_status` enum without cancelled). The web app has `cancelClaudeJobAction` (any active job by id), while `cancelIdeaJobAction` refuses IDEA_CHAT. | **Accepted.** The remedy is in the Task 3 interfaces, and the message now ends with `— wacht tot die klaar is of annuleer hem`. |
+| L2-m2 | claude MINOR | A stuck IDEA_CHAT job blocks the close and no remedy is named. | Yes. The MCP has no job-cancel tool (`update_job_status` enum without cancelled). The web app has `cancelClaudeJobAction` (any active job by id), while `cancelIdeaJobAction` refuses IDEA_CHAT. *(Wrong; corrected in delta round 1, see below.)* | **Accepted.** The remedy is in the Task 3 interfaces, and the message now ends with `— wacht tot die klaar is of annuleer hem`. |
 | L2-m3 | claude MINOR | A `null` from the re-read in the transaction is not specified. | Yes | **Accepted.** `null` → `Idea not found`, with a test. |
 | L2-m4 | claude MINOR | Review Focus 2 recovery path needs a worker. | Yes (`idea-jobs.ts:69-115`) | **Accepted.** Focus 2 names the plan-write path (no worker) first; IDEA_GRILL needs a worker and a `repo_url`. |
 
@@ -54,3 +54,18 @@ Triage:
 **Post-GO edits:** only the five accepted MINORs above. They are text and test specification, with no design change and no new component, and they were not reviewed again. One of them changes an existing test assertion (the ownership select pin in `update-idea.test.ts:168-171`), which is now named as an exception in Global Constraints. A delta round (single reviewer, CODEX, because claude wrote the edits) is possible on JP's request.
 
 **Scope delta:** no work removed. Added: one select field, one test assertion and one test for the `null` case, plus wording. First usable result and practical proof unchanged.
+
+### Delta round 1 — post-GO edits @ `340b035d0fccf3976772f3e29fe1b2a115752a66`
+
+- **Order from JP (2026-10-16):** "Eerst een delta-ronde met codex op de post-GO-edits, daarna ceremonie op mijn akkoord."
+- **Pins:** `doc` = plan @ `340b035`, sha256 `e59ea963…044c`; `prev` = plan @ `3c4ab58`, sha256 `d6fa5bc5…bb73`. The body carried the full diff, because the checkout is shallow. No idea_link.
+- **CODEX:** request `a0ba8e2a-2a17-4766-9b92-24ff39bbaddd`, root `fa95cda2-7856-4ed4-85ac-a4682e5eccee`, key `606eb5ce-df8b-414c-8210-aa25732fe87a`. **GO**: 0B/0M/1m.
+- **Per edit:** C2-m1, L2-m1, L2-m3 and L2-m4 held. L2-m2 held partly: its web-repo evidence could not be checked in the bundle.
+
+| # | Finding | Verified | Remedy |
+|---|---|---|---|
+| D1-m1 | codex MINOR: the web cancel remedy for a stuck IDEA_CHAT (`cancelClaudeJobAction`; `cancelIdeaJobAction` refuses IDEA_CHAT) is author-reported, not shown. | **The claim was wrong.** Claude had read a stale local Scrum4Me checkout on branch `codex/opus-48-job-defaults`. On origin/main `ca9f1a05`: `cancelIdeaJobAction` cancels IDEA_CHAT without changing the status (`actions/ideas.ts:728-758`), but its "Pipeline annuleren" button only shows in `spec_drafting/spec_reviewing/planning/reviewing_plan` (`components/ideas/idea-row-actions.tsx:93,300`). `cancelClaudeJobAction` has no idea-chat UI (only `components/solo/task-detail-dialog.tsx` and `components/agent-chat/chat-window.tsx`). `/admin/jobs` → Annuleer (`cancelJobAction`, `actions/admin/jobs.ts:26`, admin, no kind restriction for unmanaged jobs) reaches a stuck IDEA_CHAT from any status. | **Accepted, corrected.** The Task 3 interfaces now name `/admin/jobs` → Annuleer as the remedy, with the file:line references at `ca9f1a05`, and say why the idea button does not apply in an editable status. |
+
+**Verdict:** delta GO on `340b035`. **Post-delta edit:** only the D1-m1 correction (one sentence in Task 3 interfaces). It was not reviewed again, because a reviewer cannot read the web-repo `.ts` files (git pins are `.md` only). The evidence is the origin/main file:line above.
+
+**Scope delta:** none. The remedy text is corrected; no code, test or acceptance changed.
