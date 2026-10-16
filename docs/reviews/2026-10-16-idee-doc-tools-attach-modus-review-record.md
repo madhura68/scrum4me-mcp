@@ -12,8 +12,8 @@
 ### Round 1 — rev 1 @ `ed6ecf7170c56dc6962b6199375f040e68c8f621`
 
 - **Pin:** `doc` = plan, sha256 `4452f57c…ec2e`. No idea_link.
-- **CODEX:** request `1d215d79-bd2b-476a-bade-dad1972413e9`, root `b60d3812-6e7e-4b82-ae5e-6f70f381498e`, key `69ed9e6a-…178d`. **NO-GO**: 0B/1M/1m.
-- **CLAUDE:** request `013892da-a0c3-4d98-a4db-1ed2de04f4be`, root `0daa75ca-6aaf-4cf2-833e-34659726b23d`, key `2ecdcb4d-…29b1`. **GO**: 0B/0M/4m.
+- **CODEX:** request `1d215d79-bd2b-476a-bade-dad1972413e9`, root `b60d3812-6e7e-4b82-ae5e-6f70f381498e`, job `ad48c837-baf5-40a0-a8e6-919915ad3841`, key `69ed9e6a-…178d`. **NO-GO**: 0B/1M/1m.
+- **CLAUDE:** request `013892da-a0c3-4d98-a4db-1ed2de04f4be`, root `0daa75ca-6aaf-4cf2-833e-34659726b23d`, job `119758f2-555f-480e-98d1-683b2e9d581f`, key `2ecdcb4d-…29b1`. **GO**: 0B/0M/4m.
 
 Triage:
 
@@ -32,8 +32,8 @@ Triage:
 ### Round 2 — rev 2 @ `3c4ab58d4ab8d26da0fd38b21e2f8bd457439678`
 
 - **Pin:** `doc` = plan, sha256 `d6fa5bc5…bb73`. No idea_link.
-- **CODEX:** request `801733dd-b623-423e-810a-e57a679c4bdd`, root `811d625b-e6ab-4022-8380-b8a3cea69512`, key `347b29ec-…6d6`. **GO**: 0B/0M/2m.
-- **CLAUDE:** request `4c8951d1-4ffe-49e7-8e5f-ffce5e68c65f`, root `4c5f41e4-f458-4112-86b1-0984dafa537e`, key `b97e4e03-…a50`. **GO**: 0B/0M/4m.
+- **CODEX:** request `801733dd-b623-423e-810a-e57a679c4bdd`, root `811d625b-e6ab-4022-8380-b8a3cea69512`, job `8587525c-d8d2-43e8-86a6-c9a20c98850d`, key `347b29ec-9880-4ba3-93b1-9147bf1038d6`. **GO**: 0B/0M/2m.
+- **CLAUDE:** request `4c8951d1-4ffe-49e7-8e5f-ffce5e68c65f`, root `4c5f41e4-f458-4112-86b1-0984dafa537e`, job `481ccea0-705a-4a58-91e1-b712edfb39fb`, key `b97e4e03-a7e6-488b-a180-78187b085a50`. **GO**: 0B/0M/4m.
 - **Round-1 fixes:** codex held 1, 2, 4, 5 and 7, held 6 and 8 partly (see C2-m1), and held 3 partly (see C2-m2). Claude held all eight.
 - **Adjudication of the rejected interleaving test:** both reviewers upheld the rejection for this scope. Claude adds that `claudeJob.create` with `idea_id` waits on the `FOR UPDATE` lock through the FK, and that the `tx.$queryRaw` assertion catches the only failure mode a mock can see (the lock taken outside `tx`). Codex notes that the cited CLAUDE.md quotation is about driver error shapes, not concurrency. The rejection holds anyway, because no failure path is left that needs a real-DB test.
 - **Scope:** neither reviewer found a removal candidate; `review_dispatched` on the spec tool is needed for acceptance (b). Codex considers the plan counterpart optional but proportionate, so it stays.
@@ -51,6 +51,6 @@ Triage:
 
 **Verdict:** GO/GO on `3c4ab58`. The plan phase is done.
 
-**Post-GO edits:** only the five accepted MINORs above. They are text and test specification, with no design change and no new component, and they were not reviewed again. A delta round (single reviewer, CODEX) is possible on JP's request.
+**Post-GO edits:** only the five accepted MINORs above. They are text and test specification, with no design change and no new component, and they were not reviewed again. One of them changes an existing test assertion (the ownership select pin in `update-idea.test.ts:168-171`), which is now named as an exception in Global Constraints. A delta round (single reviewer, CODEX, because claude wrote the edits) is possible on JP's request.
 
 **Scope delta:** no work removed. Added: one select field, one test assertion and one test for the `null` case, plus wording. First usable result and practical proof unchanged.
