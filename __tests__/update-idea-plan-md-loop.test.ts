@@ -27,6 +27,7 @@ const { mockNotify } = vi.hoisted(() => ({ mockNotify: vi.fn() }))
 vi.mock('../src/lib/dispatch/notify.js', () => ({ notifyJobEnqueued: mockNotify }))
 
 import { handleUpdateIdeaPlanMd } from '../src/tools/update-idea-plan-md.js'
+import { toolText } from './helpers/tool-result.js'
 
 const IDEA_ID = 'idea-1'
 const VALID_PLAN = `---
@@ -82,7 +83,7 @@ describe('update_idea_plan_md — M20 auto-dispatch', () => {
 
   it('dispatcht IDEA_REVIEW_PLAN (runtime CODEX + capability review + key r1) bij toggle-aan', async () => {
     setup({ auto_plan_review: true, makePlanJob: { id: 'plan-1', orchestration_key: null, user_id: 'u1', product_id: 'p1' } })
-    await handleUpdateIdeaPlanMd({ idea_id: IDEA_ID, markdown: VALID_PLAN })
+    const r = await handleUpdateIdeaPlanMd({ idea_id: IDEA_ID, markdown: VALID_PLAN })
     const data = m.claudeJob.create.mock.calls[0][0].data
     expect(data.kind).toBe('IDEA_REVIEW_PLAN')
     expect(data.runtime).toBe('CODEX')
@@ -90,6 +91,7 @@ describe('update_idea_plan_md — M20 auto-dispatch', () => {
     expect(data.source).toBe('SYSTEM')
     expect(data.created_by_job_id).toBe('plan-1')
     expect(data.orchestration_key).toBe(`idea:${IDEA_ID}:plan-loop:r1`)
+    expect(JSON.parse(toolText(r)).review_dispatched).toBe(true)
   })
 
   it('review na revisie-plan r2 krijgt key r2 (zelfde ronde als het plan)', async () => {
@@ -115,9 +117,10 @@ describe('update_idea_plan_md — M20 auto-dispatch', () => {
 
   it('skipt dispatch als toggle uit staat', async () => {
     setup({ auto_plan_review: false, makePlanJob: { id: 'plan-1', orchestration_key: null, user_id: 'u1', product_id: 'p1' } })
-    await handleUpdateIdeaPlanMd({ idea_id: IDEA_ID, markdown: VALID_PLAN })
+    const r = await handleUpdateIdeaPlanMd({ idea_id: IDEA_ID, markdown: VALID_PLAN })
     expect(m.claudeJob.create).not.toHaveBeenCalled()
     expect(mockNotify).not.toHaveBeenCalled()
+    expect(JSON.parse(toolText(r)).review_dispatched).toBe(false)
   })
 
   it('skipt dispatch zonder actieve IDEA_MAKE_PLAN-job', async () => {
@@ -126,14 +129,30 @@ describe('update_idea_plan_md — M20 auto-dispatch', () => {
     expect(m.claudeJob.create).not.toHaveBeenCalled()
   })
 
+  it('zonder actieve IDEA_MAKE_PLAN-job: PLAN_READY, geen review, review_dispatched false', async () => {
+    setup({ auto_plan_review: true, makePlanJob: null }) // interactief, toggle staat aan
+    const r = await handleUpdateIdeaPlanMd({ idea_id: IDEA_ID, markdown: VALID_PLAN })
+    expect(m.idea.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: 'PLAN_READY', plan_doc_id: 'doc-1' }),
+    }))
+    expect(m.idea.update.mock.calls.some((c) => c[0].data.status === 'REVIEWING_PLAN')).toBe(false)
+    expect(m.claudeJob.create).not.toHaveBeenCalled()
+    expect(mockNotify).not.toHaveBeenCalled()
+    const body = JSON.parse(toolText(r))
+    expect(body.ok).toBe(true)
+    expect(body.idea.status).toBe('PLAN_READY')
+    expect(body.review_dispatched).toBe(false)
+  })
+
   it('skipt dispatch als er al een actieve loop-job draait', async () => {
     setup({
       auto_plan_review: true,
       makePlanJob: { id: 'plan-1', orchestration_key: null, user_id: 'u1', product_id: 'p1' },
       activeLoopJob: { id: 'other-review', kind: 'IDEA_REVIEW_PLAN' },
     })
-    await handleUpdateIdeaPlanMd({ idea_id: IDEA_ID, markdown: VALID_PLAN })
+    const r = await handleUpdateIdeaPlanMd({ idea_id: IDEA_ID, markdown: VALID_PLAN })
     expect(m.claudeJob.create).not.toHaveBeenCalled()
     expect(mockNotify).not.toHaveBeenCalled()
+    expect(JSON.parse(toolText(r)).review_dispatched).toBe(false)
   })
 })
