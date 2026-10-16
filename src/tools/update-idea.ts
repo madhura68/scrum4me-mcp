@@ -222,7 +222,7 @@ export function registerUpdateIdeaTool(server: McpServer) {
     {
       title: 'Update idea',
       description:
-        "Update the title and/or description of an idea, or close it with status: 'PLANNED' once its last ceremony increment is built (sprint/PBI created interactively). Closing is refused while an idea pipeline job (grill/spec/plan/review) is active. A PLANNED idea leaves get_ideas_context and is no longer editable.",
+        "Update the title and/or description of an existing idea (product-bound), or close it with status: 'PLANNED' once its last ceremony increment is built (sprint/PBI created interactively). At least one of title, description or status is required. Title/description changes are gated by the product content_policy (AVG). Only allowed while the idea is in an editable status. Closing is refused while an idea pipeline or chat job (grill/spec/plan/review/chat) is active. A PLANNED idea leaves get_ideas_context and is no longer editable. Forbidden for demo accounts.",
       inputSchema,
     },
     async (input) => handleUpdateIdea(input),

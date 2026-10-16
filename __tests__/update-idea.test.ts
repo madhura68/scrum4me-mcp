@@ -394,3 +394,54 @@ it('weigert een andere status dan PLANNED', async () => {
   expect(mockUpdate).not.toHaveBeenCalled()
   expect(mockTransaction).not.toHaveBeenCalled()
 })
+
+it('sluit af met een nieuwe titel: titel in de transactie-update, content-policy gecheckt, DOC_UPDATE na commit', async () => {
+  const res = await handleUpdateIdea({
+    idea_id: 'idea-1',
+    product_id: 'prod-1',
+    title: 'Nieuwe titel',
+    status: 'PLANNED',
+  })
+  expect(res.isError).toBeFalsy()
+  expect(JSON.parse(toolText(res))).toEqual({ id: 'idea-1', code: 'IDEA-042', status: 'PLANNED' })
+  expect(mockProduct).toHaveBeenCalledWith({
+    where: { id: 'prod-1' },
+    select: { content_policy: true },
+  })
+  expect(txMocks.idea.update).toHaveBeenCalledWith({
+    where: { id: 'idea-1' },
+    data: { status: 'PLANNED', title: 'Nieuwe titel' },
+    select: { id: true, code: true, status: true },
+  })
+  expect(mockUpdate).not.toHaveBeenCalled()
+  expect(mockChatMessage).toHaveBeenCalledTimes(1)
+  expect(mockChatMessage).toHaveBeenCalledWith({
+    data: {
+      idea_id: 'idea-1',
+      role: 'SYSTEM',
+      kind: 'DOC_UPDATE',
+      content: 'Beschrijving bijgewerkt door de agent',
+      metadata: { fields: ['title'] },
+    },
+  })
+  expect(mockChatMessage.mock.invocationCallOrder[0]).toBeGreaterThan(
+    txMocks.ideaLog.create.mock.invocationCallOrder[0],
+  )
+})
+
+it('sluit niet af als de content-policy de nieuwe titel weigert', async () => {
+  mockProduct.mockResolvedValue({
+    content_policy: { forbiddenFields: ['bsn'], forbiddenFeatureTerms: [], allowedFieldTerms: [] },
+  })
+  const res = await handleUpdateIdea({
+    idea_id: 'idea-1',
+    product_id: 'prod-1',
+    title: 'Voeg een bsn-veld toe',
+    status: 'PLANNED',
+  })
+  expect(res.isError).toBe(true)
+  expect(toolText(res)).toMatch(/AVG.*bsn/)
+  expect(mockTransaction).not.toHaveBeenCalled()
+  expect(txMocks.idea.update).not.toHaveBeenCalled()
+  expect(mockChatMessage).not.toHaveBeenCalled()
+})
