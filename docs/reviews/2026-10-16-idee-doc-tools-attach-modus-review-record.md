@@ -69,3 +69,20 @@ Triage:
 **Verdict:** delta GO on `340b035`. **Post-delta edit:** only the D1-m1 correction (one sentence in Task 3 interfaces). It was not reviewed again, because a reviewer cannot read the web-repo `.ts` files (git pins are `.md` only). The evidence is the origin/main file:line above.
 
 **Scope delta:** none. The remedy text is corrected; no code, test or acceptance changed.
+
+## Ceremony — plan @ `0d9cad477bee7842d941f234d97a2e809000a879`
+
+- **Akkoord JP (2026-10-16):** "Akkoord: ceremonie op 0d9cad4 (sprint, PBI, story, taken met estimate, zonder idea_id), daarna hardstop."
+- **Plan pin:** sha256 `54da3ba9cb901b6a00b35434a699a59992825c22af512736c315b4f4a770a7f0`. No `idea_id` (JP decision 2), so no `idea_link`.
+- **Estimates:** based on `get_estimate_history` (6 measured tasks: T-176, T-178, T-180, T-183, T-184, T-185).
+- **Sprint:** S-2026-10-16-1 (`cmvb3i0dq0008ab17sacwcntw`).
+- **PBI:** PBI-40 (`cmvb3i7cc0009ab17iejj6kwr`), priority 2.
+- **Story:** ST-063 (`cmvb3ies2000aab17fzm4kdpe`), IN_SPRINT.
+- **Tasks:**
+  - T-188 (`cmvb3jr28000bab17b23r7sq4`): Taak 1, grill-write from DRAFT/GRILL_FAILED. 10 min / $4.
+  - T-189 (`cmvb3kb4j000cab17adx5pp7p`): Taak 2, `review_dispatched` and descriptions. 15 min / $7.
+  - T-190 (`cmvb3l9sw000dab17vbgfm3kz`): Taak 3, close with `update_idea({ status: 'PLANNED' })`. 20 min / $11. The IDEA_CHAT remedy moved to the task description to stay under the 8000-character `implementation_plan` limit.
+  - T-191 (`cmvb3lx9f000eab17lcv1oh1l`): Taak 4, PR, rollout and practical proof. 25 min / $6.
+  - T-192 (`cmvb3mcq8000fab1715sh4bhj`): Taak 5, instructions and memories. 10 min / $4.
+- **Total estimate:** 80 min / $32.
+- **Hardstop.** Nothing has been executed. Implementation, merge and rollout each need JP's word.
