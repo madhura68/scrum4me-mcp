@@ -19,19 +19,51 @@ function extractDiffPaths(diff: string): string[] {
   return [...paths]
 }
 
-// Extract file paths mentioned in a plan (backtick-quoted, parenthesised, or bullet-list headings).
+const FILES_HEADING = /^(#{1,6})\s*(Bestanden|Files)\b/i
+// A line that names files the task must leave alone ("NIET wijzigen: `x`").
+const NEGATIVE_LINE = /\b(niet\s+(wijzigen|aanpassen|aanraken)|ongewijzigd|do\s+not\s+(change|modify|touch|edit))\b/i
+
+// When the plan has a "Bestanden"/"Files" section, only that section lists the
+// files to change; paths elsewhere are context (imports, tips, references).
+function filesSection(plan: string): string {
+  const lines = plan.split('\n')
+  const start = lines.findIndex((l) => FILES_HEADING.test(l))
+  if (start === -1) return plan
+  const level = (lines[start].match(FILES_HEADING) as RegExpMatchArray)[1].length
+  const rest = lines.slice(start + 1)
+  const end = rest.findIndex((l) => {
+    const h = l.match(/^(#{1,6})\s/)
+    return h !== null && h[1].length <= level
+  })
+  return (end === -1 ? rest : rest.slice(0, end)).join('\n')
+}
+
+// One brace group: `a/{b,c}/d.ts` → `a/b/d.ts`, `a/c/d.ts`. Anything else is
+// returned as-is (nested or multiple groups are then rejected by looksLikePath).
+function expandBraces(token: string): string[] {
+  const m = token.match(/^([^{}]*)\{([^{}]*)\}([^{}]*)$/)
+  if (!m) return [token]
+  return m[2].split(',').map((alt) => `${m[1]}${alt.trim()}${m[3]}`)
+}
+
+// Extract the file paths a plan says to change (backtick-quoted or bullet-list headings).
 function extractPlanPaths(plan: string): string[] {
   const paths = new Set<string>()
+  const scope = filesSection(plan)
+    .split('\n')
+    .filter((l) => !NEGATIVE_LINE.test(l))
+    .join('\n')
 
   const backtickRe = /`([^`\s][^`]*[^`\s]|[^`\s])`/g
   let m: RegExpExecArray | null
-  while ((m = backtickRe.exec(plan)) !== null) {
-    const p = m[1].trim()
-    if (looksLikePath(p)) paths.add(p)
+  while ((m = backtickRe.exec(scope)) !== null) {
+    for (const p of expandBraces(m[1].trim())) {
+      if (looksLikePath(p)) paths.add(p)
+    }
   }
 
   const bulletRe = /^[-*]\s+\*{0,2}([^\s*][^\s]*)\.([a-zA-Z]{1,6})\*{0,2}\s*[:\n]/gm
-  while ((m = bulletRe.exec(plan)) !== null) {
+  while ((m = bulletRe.exec(scope)) !== null) {
     paths.add(`${m[1]}.${m[2]}`)
   }
 
@@ -46,17 +78,33 @@ function extractPlanPaths(plan: string): string[] {
 function looksLikePath(p: string): boolean {
   if (p.length <= 3) return false
   if (p.includes(' ')) return false
+  if (/^[@~]\//.test(p)) return false // module specifier (`@/lib/auth`), not a repo path
   if (/[="'<>()[\]{};,]/.test(p)) return false
   if (/\.{2,}/.test(p)) return false
   if (!p.includes('/') && !/\.[a-zA-Z][a-zA-Z0-9]{0,5}$/.test(p)) return false
   return true
 }
 
+// `**` → any characters, `*` → any characters within one segment. Like the
+// plain-path match below, the pattern may match a suffix of the diff path.
+function globToRegExp(glob: string): RegExp {
+  const escape = (s: string) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+  const src = glob
+    .split('**')
+    .map((part) => part.split('*').map(escape).join('[^/]*'))
+    .join('.*')
+  return new RegExp(`^(?:.*/)?${src}$`)
+}
+
 // Path match: exact or suffix match so "classify.ts" matches "src/verify/classify.ts".
+// A glob matches by pattern; a path ending in "/" is a directory prefix.
 function pathMatches(planPath: string, diffPaths: string[]): boolean {
   const norm = planPath.replace(/\\/g, '/')
+  const glob = norm.includes('*') ? globToRegExp(norm) : null
   return diffPaths.some((dp) => {
     const ndp = dp.replace(/\\/g, '/')
+    if (glob) return glob.test(ndp)
+    if (norm.endsWith('/')) return ndp.startsWith(norm) || ndp.includes(`/${norm}`)
     return ndp === norm || ndp.endsWith(`/${norm}`) || norm.endsWith(`/${ndp}`)
   })
 }
