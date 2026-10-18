@@ -44,6 +44,17 @@ vi.mock('../src/git/job-locks.js', () => jobLockMocks)
 vi.mock('../src/git/push.js', () => ({ pushBranchForJob: pushMocks.pushBranchForJob }))
 vi.mock('../src/lib/push-trigger.js', () => ({ triggerPush: pushMocks.triggerPush }))
 vi.mock('../src/git/worktree-cleanup-queue.js', () => worktreeQueueMocks)
+// ISS-6: de directe opruiming van een HARNESS-/local_llm-worktree. Alleen deze twee functies
+// worden vervangen; de rest van beide modules blijft echt.
+const cleanupMocks = vi.hoisted(() => ({ removeWorktreeForJob: vi.fn(), resolveRepoRoot: vi.fn() }))
+vi.mock('../src/git/worktree.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/git/worktree.js')>()),
+  removeWorktreeForJob: cleanupMocks.removeWorktreeForJob,
+}))
+vi.mock('../src/tools/wait-for-job.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/tools/wait-for-job.js')>()),
+  resolveRepoRoot: cleanupMocks.resolveRepoRoot,
+}))
 vi.mock('../src/git/pr.js', () => prMocks)
 vi.mock('../src/lib/tasks-status-update.js', () => propagateMocks)
 vi.mock('../src/cancel/pbi-cascade.js', () => cascadeMocks)
@@ -195,6 +206,8 @@ beforeEach(() => {
   worktreeQueueMocks.markWorktreeCleanupPending.mockResolvedValue(undefined)
   worktreeQueueMocks.isWorktreeCleanupPending.mockResolvedValue(false)
   worktreeQueueMocks.clearWorktreeCleanupPending.mockResolvedValue(undefined)
+  cleanupMocks.removeWorktreeForJob.mockResolvedValue({ removed: true })
+  cleanupMocks.resolveRepoRoot.mockResolvedValue('/repos/repo')
   prMocks.createPullRequest.mockResolvedValue({ url: 'https://git.example/org/repo/pulls/9' })
   prMocks.markPullRequestReady.mockResolvedValue({ ok: true })
   prMocks.listPullRequestFiles.mockResolvedValue([])
@@ -364,5 +377,85 @@ describe('update_job_status: TASK_IMPLEMENTATION jobs van een HARNESS- of local_
 
     expect(result).not.toMatchObject({ isError: true })
     expect(mockCancelPbi).toHaveBeenCalledOnce()
+  })
+})
+
+// ISS-6: de uitgestelde opruiming (marker + runDeferredWorktreeCleanup) bestaat voor de PostToolUse-hook van Claude
+// Code, die na update_job_status nog met cwd = de worktree draait. Alleen de docker-runner voert de marker uit; de
+// harness heeft geen Claude Code-proces en geen route naar die stap. Een bewaakte job ruimt daarom direct op.
+describe('update_job_status: worktree-opruiming bij een HARNESS- of local_llm-job (ISS-6)', () => {
+  function doneRow() {
+    return {
+      id: 'job-local-1',
+      status: 'DONE',
+      branch: 'feat/job-local-1',
+      pushed_at: new Date('2026-09-27T09:05:00Z'),
+      pr_url: null,
+      verify_result: 'ALIGNED',
+      summary: 'Klaar.',
+      error: null,
+      started_at: new Date('2026-09-27T09:00:00Z'),
+      finished_at: new Date('2026-09-27T09:05:00Z'),
+      head_sha: null,
+    }
+  }
+
+  it.each(GUARDED_JOBS)('done + $label ⇒ worktree direct weg, geen marker', async ({ job }) => {
+    installJobFixture(baseFixture(job))
+    mockPrisma.claudeJob.update.mockResolvedValue(doneRow())
+
+    await registerHandler()({ job_id: 'job-local-1', status: 'done', summary: 'Klaar.', branch: 'feat/job-local-1' })
+
+    expect(cleanupMocks.removeWorktreeForJob).toHaveBeenCalledWith(
+      expect.objectContaining({ repoRoot: '/repos/repo', jobId: 'job-local-1' }),
+    )
+    expect(worktreeQueueMocks.markWorktreeCleanupPending).not.toHaveBeenCalled()
+  })
+
+  it.each(GUARDED_JOBS)('failed + $label ⇒ worktree direct weg, geen marker', async ({ job }) => {
+    installJobFixture(baseFixture({ ...job, status: 'CLAIMED', branch: null }))
+    mockPrisma.claudeJob.update.mockResolvedValue({ ...doneRow(), status: 'FAILED', branch: null, pushed_at: null, error: 'model faalde' })
+
+    await registerHandler()({ job_id: 'job-local-1', status: 'failed', error: 'model faalde ergens' })
+
+    expect(cleanupMocks.removeWorktreeForJob).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'job-local-1' }))
+    expect(worktreeQueueMocks.markWorktreeCleanupPending).not.toHaveBeenCalled()
+  })
+
+  it.each(GUARDED_JOBS)('mislukte push + $label ⇒ worktree blijft staan voor inspectie', async ({ job }) => {
+    installJobFixture(baseFixture(job))
+    pushMocks.pushBranchForJob.mockResolvedValue({ pushed: false, reason: 'unknown', stderr: 'remote: Forbidden' })
+    mockPrisma.claudeJob.update.mockResolvedValue({ ...doneRow(), status: 'FAILED', pushed_at: null, error: 'push failed' })
+
+    await registerHandler()({ job_id: 'job-local-1', status: 'done', summary: 'Klaar.', branch: 'feat/job-local-1' })
+
+    expect(cleanupMocks.removeWorktreeForJob).not.toHaveBeenCalled()
+    expect(worktreeQueueMocks.markWorktreeCleanupPending).not.toHaveBeenCalled()
+  })
+
+  it.each(GUARDED_JOBS)('fout bij opruimen + $label ⇒ done blijft done', async ({ job }) => {
+    installJobFixture(baseFixture(job))
+    cleanupMocks.resolveRepoRoot.mockRejectedValue(new Error('repo-root onleesbaar'))
+    mockPrisma.claudeJob.update.mockResolvedValue(doneRow())
+
+    const result = (await registerHandler()({
+      job_id: 'job-local-1',
+      status: 'done',
+      summary: 'Klaar.',
+      branch: 'feat/job-local-1',
+    })) as { structuredContent: { status: string } }
+
+    expect(result).not.toMatchObject({ isError: true })
+    expect(result.structuredContent.status).toBe('done')
+  })
+
+  it('regressie gewone job: done schrijft nog een marker en ruimt niet direct op', async () => {
+    installJobFixture(baseFixture({ required_capability: null }))
+    mockPrisma.claudeJob.update.mockResolvedValue({ ...doneRow(), pr_url: 'https://git.example/org/repo/pulls/9' })
+
+    await registerHandler()({ job_id: 'job-local-1', status: 'done', summary: 'Klaar.', branch: 'feat/job-local-1' })
+
+    expect(worktreeQueueMocks.markWorktreeCleanupPending).toHaveBeenCalledWith('job-local-1')
+    expect(cleanupMocks.removeWorktreeForJob).not.toHaveBeenCalled()
   })
 })
