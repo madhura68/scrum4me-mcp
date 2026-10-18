@@ -46,43 +46,62 @@ function filesSections(plan: string): string {
   return found ? kept.join('\n') : plan
 }
 
-// After the negation, a contrast word or a change verb starts a positive order:
-// "NIET wijzigen: `a`, maar wijzig `b`", "Do not change `a`, but modify `b`".
-const POSITIVE_AFTER_NEGATION =
-  /\b(maar|wel|behalve|echter|but|except|however|wijzig\w*|pas\b|aanpass\w*|maak|voeg|schrijf|verwijder\w*|vervang\w*|modify|change|update|add|create|edit|write|remove|delete|replace)\b/i
-
-// Splits a line into clauses at ";" and at a sentence-ending "." outside
-// backticks, and drops a clause only when it starts with the negation and the
-// rest gives no positive order ("NIET wijzigen: `x`, bestaande tests, `y`.").
-// A negation after a path ("wijzig `a`, maar laat `b` ongewijzigd") or a
-// positive order after it keeps every path in the clause: a wrongly required
-// path fails visibly as PARTIAL, while a wrongly dropped one would let
-// unfinished work through as ALIGNED.
-function isNegativeClause(clause: string): boolean {
-  const neg = clause.match(NEGATIVE_CLAUSE)
-  if (!neg || neg.index === undefined) return false
-  if (!/^[\s\-*]*$/.test(clause.slice(0, neg.index))) return false
-  const rest = clause.slice(neg.index + neg[0].length).replace(/`[^`]*`/g, ' ')
-  return !POSITIVE_AFTER_NEGATION.test(rest)
-}
-
-function positiveClauses(line: string): string {
-  const clauses: string[] = []
+// Splits text at the characters `isBoundary` accepts, never inside backticks.
+function splitOutsideCode(text: string, isBoundary: (c: string, next: string | undefined) => boolean): string[] {
+  const parts: string[] = []
   let current = ''
   let inCode = false
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i]
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
     if (c === '`') inCode = !inCode
-    const boundary = !inCode && (c === ';' || (c === '.' && (i + 1 === line.length || /\s/.test(line[i + 1]))))
-    if (boundary) {
-      clauses.push(current)
+    if (!inCode && isBoundary(c, text[i + 1])) {
+      parts.push(current)
       current = ''
     } else {
       current += c
     }
   }
-  clauses.push(current)
-  return clauses.filter((cl) => !isNegativeClause(cl)).join(';')
+  parts.push(current)
+  return parts
+}
+
+// Nothing but paths, "en/and/of/or" and punctuation: a list, no order of its own.
+function isPathList(text: string): boolean {
+  const rest = text.replace(/`[^`]*`/g, ' ').replace(/\b(en|and|of|or)\b/gi, ' ')
+  return /^[\s:,.()\-*]*$/.test(rest)
+}
+
+// Keeps the parts of a line that name files to change. A line is split into
+// clauses at ";" and at a sentence-ending ".", a clause into segments at ",",
+// all outside backticks. A segment is dropped only when it is an exclusion
+// list: it starts with the negation followed by nothing but a path list
+// ("NIET wijzigen: `x`"), or it continues one with a path list (", `y` en `z`").
+// A segment without paths ("bestaande tests") changes nothing. Any other
+// segment keeps its paths and ends the exclusion ("…, rename `b` to `c`",
+// "wijzig `a`, maar laat `b` ongewijzigd"): a wrongly required path fails
+// visibly as PARTIAL, while a wrongly dropped one would let unfinished work
+// through as ALIGNED. No word list decides what counts as an order.
+function positiveClauses(line: string): string {
+  const clauses = splitOutsideCode(line, (c, next) => c === ';' || (c === '.' && (next === undefined || /\s/.test(next))))
+  return clauses
+    .map((clause) => {
+      let excluding = false
+      return splitOutsideCode(clause, (c) => c === ',')
+        .filter((seg) => {
+          const neg = seg.match(NEGATIVE_CLAUSE)
+          if (neg && neg.index !== undefined && /^[\s\-*]*$/.test(seg.slice(0, neg.index))) {
+            excluding = isPathList(seg.slice(neg.index + neg[0].length))
+            return !excluding
+          }
+          if (!excluding) return true
+          if (!seg.includes('`')) return false
+          if (isPathList(seg)) return false
+          excluding = false
+          return true
+        })
+        .join(',')
+    })
+    .join(';')
 }
 
 // One brace group: `a/{b,c}/d.ts` → `a/b/d.ts`, `a/c/d.ts`. Anything else is

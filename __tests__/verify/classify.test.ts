@@ -312,6 +312,9 @@ describe('classifyDiffAgainstPlan — plan-padextractie (ISS-7)', () => {
     for (const mixed of [
       'NIET wijzigen: `src/a.ts`, maar wijzig `src/b.ts`',
       'Do not change `src/a.ts`, but modify `src/b.ts`',
+      'Do not change `src/a.ts`, rename `src/b.ts` to `src/e.ts`',
+      'NIET wijzigen: `src/a.ts` en hernoem `src/b.ts` naar `src/e.ts`',
+      'NIET wijzigen: `src/a.ts`, hernoem `src/b.ts`',
     ]) {
       const plan = `## Bestanden\n- ${mixed}\n- Wijzig \`src/c.ts\``
       const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/c.ts']), plan })
