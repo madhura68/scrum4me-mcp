@@ -291,6 +291,23 @@ describe('classifyDiffAgainstPlan — plan-padextractie (ISS-7)', () => {
     expect(classifyDiffAgainstPlan({ diff: makeDiff(['docsx.md']), plan }).result).toBe('PARTIAL')
   })
 
+  it('leest alle Bestanden/Files-secties, niet alleen de eerste', () => {
+    const plan = '## Task 1\n### Files\n- `src/a.ts`\n\n## Task 2\n### Files\n- `src/b.ts`'
+    const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts']), plan })
+    expect(r.result).toBe('PARTIAL')
+    expect(r.reasoning).toContain('src/b.ts')
+    expect(classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts', 'src/b.ts']), plan }).result).toBe('ALIGNED')
+  })
+
+  it('een gemengde regel sluit alleen het negatieve deel uit', () => {
+    const plan = '## Bestanden\n- Wijzig `src/a.ts`; laat `src/b.ts` ongewijzigd.\n- Wijzig `src/c.ts`.'
+    const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/c.ts']), plan })
+    expect(r.result).toBe('PARTIAL')
+    expect(r.reasoning).toContain('src/a.ts')
+    expect(r.reasoning).not.toContain('src/b.ts')
+    expect(classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts', 'src/c.ts']), plan }).result).toBe('ALIGNED')
+  })
+
   it('geneste braces gooien niet en tellen niet als pad', () => {
     const plan = '## Bestanden\n- `src/a.ts`\n- `a/{b,{c,d}}.ts`'
     const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts']), plan })

@@ -20,22 +20,52 @@ function extractDiffPaths(diff: string): string[] {
 }
 
 const FILES_HEADING = /^(#{1,6})\s*(Bestanden|Files)\b/i
-// A line that names files the task must leave alone ("NIET wijzigen: `x`").
-const NEGATIVE_LINE = /\b(niet\s+(wijzigen|aanpassen|aanraken)|ongewijzigd|do\s+not\s+(change|modify|touch|edit))\b/i
+// A clause that names files the task must leave alone ("NIET wijzigen: `x`").
+const NEGATIVE_CLAUSE = /\b(niet\s+(wijzigen|aanpassen|aanraken)|ongewijzigd|do\s+not\s+(change|modify|touch|edit))\b/i
 
-// When the plan has a "Bestanden"/"Files" section, only that section lists the
-// files to change; paths elsewhere are context (imports, tips, references).
-function filesSection(plan: string): string {
+// When the plan has "Bestanden"/"Files" sections, only those list the files to
+// change; paths elsewhere are context (imports, tips, references). A plan with
+// one such section per task has them all read.
+function filesSections(plan: string): string {
   const lines = plan.split('\n')
-  const start = lines.findIndex((l) => FILES_HEADING.test(l))
-  if (start === -1) return plan
-  const level = (lines[start].match(FILES_HEADING) as RegExpMatchArray)[1].length
-  const rest = lines.slice(start + 1)
-  const end = rest.findIndex((l) => {
-    const h = l.match(/^(#{1,6})\s/)
-    return h !== null && h[1].length <= level
-  })
-  return (end === -1 ? rest : rest.slice(0, end)).join('\n')
+  const kept: string[] = []
+  let level = 0 // >0 while inside a files section of that heading level
+  let found = false
+  for (const line of lines) {
+    const files = line.match(FILES_HEADING)
+    const heading = line.match(/^(#{1,6})\s/)
+    if (files) {
+      level = files[1].length
+      found = true
+    } else if (heading && level > 0 && heading[1].length <= level) {
+      level = 0
+    } else if (level > 0) {
+      kept.push(line)
+    }
+  }
+  return found ? kept.join('\n') : plan
+}
+
+// Splits a line into clauses at ";" and at a sentence-ending "." outside
+// backticks, and drops the negative ones: "Wijzig `a`; laat `b` ongewijzigd."
+// keeps `a` and drops only `b`.
+function positiveClauses(line: string): string {
+  const clauses: string[] = []
+  let current = ''
+  let inCode = false
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]
+    if (c === '`') inCode = !inCode
+    const boundary = !inCode && (c === ';' || (c === '.' && (i + 1 === line.length || /\s/.test(line[i + 1]))))
+    if (boundary) {
+      clauses.push(current)
+      current = ''
+    } else {
+      current += c
+    }
+  }
+  clauses.push(current)
+  return clauses.filter((cl) => !NEGATIVE_CLAUSE.test(cl)).join(';')
 }
 
 // One brace group: `a/{b,c}/d.ts` → `a/b/d.ts`, `a/c/d.ts`. Anything else is
@@ -49,10 +79,7 @@ function expandBraces(token: string): string[] {
 // Extract the file paths a plan says to change (backtick-quoted or bullet-list headings).
 function extractPlanPaths(plan: string): string[] {
   const paths = new Set<string>()
-  const scope = filesSection(plan)
-    .split('\n')
-    .filter((l) => !NEGATIVE_LINE.test(l))
-    .join('\n')
+  const scope = filesSections(plan).split('\n').map(positiveClauses).join('\n')
 
   const backtickRe = /`([^`\s][^`]*[^`\s]|[^`\s])`/g
   let m: RegExpExecArray | null
