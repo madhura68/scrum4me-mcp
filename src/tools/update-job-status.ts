@@ -1782,11 +1782,21 @@ export function registerUpdateJobStatusTool(server: McpServer) {
           await backupPushOnFailure(job_id, updated.branch ?? null)
         }
 
+        // ISS-6: een HARNESS- of local_llm-job heeft geen Claude Code-proces en dus geen hook, en de
+        // harness heeft geen route naar runDeferredWorktreeCleanup: een marker zou nooit worden
+        // uitgevoerd. Deze jobs ruimen daarom direct op (best-effort; removeWorktreeForJob draait
+        // voor zo'n job geen git in de worktree).
         if (
           (actualStatus === 'done' || actualStatus === 'failed' || actualStatus === 'skipped') &&
           !skipWorktreeCleanup
         ) {
-          await markWorktreeCleanupPending(job_id)
+          if (isHarnessJobRow(job)) {
+            await cleanupWorktreeForTerminalStatus(job.product_id, job_id, actualStatus, updated.branch ?? undefined).catch(
+              (err) => console.warn(`[update_job_status] direct worktree cleanup FAILED for job=${job_id}:`, err),
+            )
+          } else {
+            await markWorktreeCleanupPending(job_id)
+          }
         }
 
         // PBI fail-cascade: when a TASK_IMPLEMENTATION job ends in FAILED,

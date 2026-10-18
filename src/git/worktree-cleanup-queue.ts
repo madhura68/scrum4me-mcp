@@ -12,6 +12,9 @@
 // instead of removing it. The worker runner (run-one-job) removes it AFTER the
 // agent's Claude process has exited — i.e. after the hook has run — via
 // runDeferredWorktreeCleanup() in update-job-status.ts.
+//
+// Not for HARNESS/local_llm jobs (ISS-6): they have no Claude Code hook and no runner
+// that drains this queue, so update_job_status removes their worktree directly.
 
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
