@@ -265,6 +265,32 @@ describe('classifyDiffAgainstPlan — plan-padextractie (ISS-7)', () => {
     expect(r.result).toBe('ALIGNED')
   })
 
+  it('drie bestanden onder één glob of map zijn geen scope-uitbreiding', () => {
+    const glob = classifyDiffAgainstPlan({ diff: makeDiff(['docs/a.md', 'docs/b.md', 'docs/c.md']), plan: '## Bestanden\n- `docs/*.md`' })
+    expect(glob.result).toBe('ALIGNED')
+    const dir = classifyDiffAgainstPlan({
+      diff: makeDiff(['src/verify/a.ts', 'src/verify/b.ts', 'src/verify/c.ts']),
+      plan: '## Files\n- `src/verify/`',
+    })
+    expect(dir.result).toBe('ALIGNED')
+  })
+
+  it('bestanden buiten het patroon tellen nog wel als scope-uitbreiding', () => {
+    const r = classifyDiffAgainstPlan({
+      diff: makeDiff(['docs/a.md', 'src/x.ts', 'src/y.ts', 'src/z.ts']),
+      plan: '## Bestanden\n- `docs/a.md`',
+    })
+    expect(r.result).toBe('DIVERGENT')
+    expect(r.reasoning).toMatch(/Extra: src\/x\.ts/)
+  })
+
+  it('een globstar matcht ook nul mappen', () => {
+    const plan = '## Bestanden\n- `docs/**/*.md`'
+    expect(classifyDiffAgainstPlan({ diff: makeDiff(['docs/x.md']), plan }).result).toBe('ALIGNED')
+    expect(classifyDiffAgainstPlan({ diff: makeDiff(['docs/sub/deep/x.md']), plan }).result).toBe('ALIGNED')
+    expect(classifyDiffAgainstPlan({ diff: makeDiff(['docsx.md']), plan }).result).toBe('PARTIAL')
+  })
+
   it('geneste braces gooien niet en tellen niet als pad', () => {
     const plan = '## Bestanden\n- `src/a.ts`\n- `a/{b,{c,d}}.ts`'
     const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts']), plan })

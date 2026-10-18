@@ -85,14 +85,20 @@ function looksLikePath(p: string): boolean {
   return true
 }
 
-// `**` → any characters, `*` → any characters within one segment. Like the
-// plain-path match below, the pattern may match a suffix of the diff path.
+// `**/` → zero or more directories, `**` → any characters, `*` → any characters
+// within one segment. Like the plain-path match below, the pattern may match a
+// suffix of the diff path.
 function globToRegExp(glob: string): RegExp {
   const escape = (s: string) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')
   const src = glob
-    .split('**')
-    .map((part) => part.split('*').map(escape).join('[^/]*'))
-    .join('.*')
+    .split('**/')
+    .map((dirs) =>
+      dirs
+        .split('**')
+        .map((part) => part.split('*').map(escape).join('[^/]*'))
+        .join('.*'),
+    )
+    .join('(?:.*/)?')
   return new RegExp(`^(?:.*/)?${src}$`)
 }
 
@@ -179,7 +185,10 @@ export function classifyDiffAgainstPlan(opts: {
 
   const covered = planPaths.filter((pp) => pathMatches(pp, diffPaths))
   const coverage = covered.length / planPaths.length
-  const ratio = diffPaths.length / planPaths.length
+  // A glob or directory covers several files: the scope is at least the number
+  // of diff paths the plan covers, so only files outside the plan count as creep.
+  const inPlan = diffPaths.filter((dp) => planPaths.some((pp) => pathMatches(pp, [dp]))).length
+  const ratio = diffPaths.length / Math.max(planPaths.length, inPlan)
 
   if (coverage < 1) {
     const missing = planPaths.filter((pp) => !pathMatches(pp, diffPaths))
