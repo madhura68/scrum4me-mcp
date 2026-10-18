@@ -19,19 +19,114 @@ function extractDiffPaths(diff: string): string[] {
   return [...paths]
 }
 
-// Extract file paths mentioned in a plan (backtick-quoted, parenthesised, or bullet-list headings).
+const FILES_HEADING = /^(#{1,6})\s*(Bestanden|Files)\b/i
+// A clause that names files the task must leave alone ("NIET wijzigen: `x`").
+const NEGATIVE_CLAUSE = /\b(niet\s+(wijzigen|aanpassen|aanraken)|ongewijzigd|do\s+not\s+(change|modify|touch|edit))\b/i
+
+// When the plan has "Bestanden"/"Files" sections, only those list the files to
+// change; paths elsewhere are context (imports, tips, references). A plan with
+// one such section per task has them all read.
+function filesSections(plan: string): string {
+  const lines = plan.split('\n')
+  const kept: string[] = []
+  let level = 0 // >0 while inside a files section of that heading level
+  let found = false
+  for (const line of lines) {
+    const files = line.match(FILES_HEADING)
+    const heading = line.match(/^(#{1,6})\s/)
+    if (files) {
+      level = files[1].length
+      found = true
+    } else if (heading && level > 0 && heading[1].length <= level) {
+      level = 0
+    } else if (level > 0) {
+      kept.push(line)
+    }
+  }
+  return found ? kept.join('\n') : plan
+}
+
+// Splits text at the characters `isBoundary` accepts, never inside backticks.
+function splitOutsideCode(text: string, isBoundary: (c: string, next: string | undefined) => boolean): string[] {
+  const parts: string[] = []
+  let current = ''
+  let inCode = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c === '`') inCode = !inCode
+    if (!inCode && isBoundary(c, text[i + 1])) {
+      parts.push(current)
+      current = ''
+    } else {
+      current += c
+    }
+  }
+  parts.push(current)
+  return parts
+}
+
+// Nothing but paths, "en/and/of/or" and punctuation: a list, no order of its own.
+function isPathList(text: string): boolean {
+  const rest = text.replace(/`[^`]*`/g, ' ').replace(/\b(en|and|of|or)\b/gi, ' ')
+  return /^[\s:,.()\-*]*$/.test(rest)
+}
+
+// Keeps the parts of a line that name files to change. A line is split into
+// clauses at ";" and at a sentence-ending ".", a clause into segments at ",",
+// all outside backticks. A segment is dropped only when it is an exclusion
+// list: it starts with the negation followed by nothing but a path list
+// ("NIET wijzigen: `x`"), or it continues one with a path list (", `y` en `z`").
+// A segment without paths ("bestaande tests") changes nothing. Any other
+// segment keeps its paths and ends the exclusion ("…, rename `b` to `c`",
+// "wijzig `a`, maar laat `b` ongewijzigd"): a wrongly required path fails
+// visibly as PARTIAL, while a wrongly dropped one would let unfinished work
+// through as ALIGNED. No word list decides what counts as an order.
+function positiveClauses(line: string): string {
+  const clauses = splitOutsideCode(line, (c, next) => c === ';' || (c === '.' && (next === undefined || /\s/.test(next))))
+  return clauses
+    .map((clause) => {
+      let excluding = false
+      return splitOutsideCode(clause, (c) => c === ',')
+        .filter((seg) => {
+          const neg = seg.match(NEGATIVE_CLAUSE)
+          if (neg && neg.index !== undefined && /^[\s\-*]*$/.test(seg.slice(0, neg.index))) {
+            excluding = isPathList(seg.slice(neg.index + neg[0].length))
+            return !excluding
+          }
+          if (!excluding) return true
+          if (!seg.includes('`')) return false
+          if (isPathList(seg)) return false
+          excluding = false
+          return true
+        })
+        .join(',')
+    })
+    .join(';')
+}
+
+// One brace group: `a/{b,c}/d.ts` → `a/b/d.ts`, `a/c/d.ts`. Anything else is
+// returned as-is (nested or multiple groups are then rejected by looksLikePath).
+function expandBraces(token: string): string[] {
+  const m = token.match(/^([^{}]*)\{([^{}]*)\}([^{}]*)$/)
+  if (!m) return [token]
+  return m[2].split(',').map((alt) => `${m[1]}${alt.trim()}${m[3]}`)
+}
+
+// Extract the file paths a plan says to change (backtick-quoted or bullet-list headings).
 function extractPlanPaths(plan: string): string[] {
   const paths = new Set<string>()
+  const scope = filesSections(plan).split('\n').map(positiveClauses).join('\n')
 
   const backtickRe = /`([^`\s][^`]*[^`\s]|[^`\s])`/g
   let m: RegExpExecArray | null
-  while ((m = backtickRe.exec(plan)) !== null) {
-    const p = m[1].trim()
-    if (looksLikePath(p)) paths.add(p)
+  while ((m = backtickRe.exec(scope)) !== null) {
+    for (const p of expandBraces(m[1].trim())) {
+      if (looksLikePath(p)) paths.add(p)
+    }
   }
 
   const bulletRe = /^[-*]\s+\*{0,2}([^\s*][^\s]*)\.([a-zA-Z]{1,6})\*{0,2}\s*[:\n]/gm
-  while ((m = bulletRe.exec(plan)) !== null) {
+  while ((m = bulletRe.exec(scope)) !== null) {
     paths.add(`${m[1]}.${m[2]}`)
   }
 
@@ -46,17 +141,39 @@ function extractPlanPaths(plan: string): string[] {
 function looksLikePath(p: string): boolean {
   if (p.length <= 3) return false
   if (p.includes(' ')) return false
+  if (/^[@~]\//.test(p)) return false // module specifier (`@/lib/auth`), not a repo path
   if (/[="'<>()[\]{};,]/.test(p)) return false
   if (/\.{2,}/.test(p)) return false
   if (!p.includes('/') && !/\.[a-zA-Z][a-zA-Z0-9]{0,5}$/.test(p)) return false
   return true
 }
 
+// `**/` → zero or more directories, `**` → any characters, `*` → any characters
+// within one segment. Like the plain-path match below, the pattern may match a
+// suffix of the diff path.
+function globToRegExp(glob: string): RegExp {
+  const escape = (s: string) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+  const src = glob
+    .split('**/')
+    .map((dirs) =>
+      dirs
+        .split('**')
+        .map((part) => part.split('*').map(escape).join('[^/]*'))
+        .join('.*'),
+    )
+    .join('(?:.*/)?')
+  return new RegExp(`^(?:.*/)?${src}$`)
+}
+
 // Path match: exact or suffix match so "classify.ts" matches "src/verify/classify.ts".
+// A glob matches by pattern; a path ending in "/" is a directory prefix.
 function pathMatches(planPath: string, diffPaths: string[]): boolean {
   const norm = planPath.replace(/\\/g, '/')
+  const glob = norm.includes('*') ? globToRegExp(norm) : null
   return diffPaths.some((dp) => {
     const ndp = dp.replace(/\\/g, '/')
+    if (glob) return glob.test(ndp)
+    if (norm.endsWith('/')) return ndp.startsWith(norm) || ndp.includes(`/${norm}`)
     return ndp === norm || ndp.endsWith(`/${norm}`) || norm.endsWith(`/${ndp}`)
   })
 }
@@ -131,7 +248,10 @@ export function classifyDiffAgainstPlan(opts: {
 
   const covered = planPaths.filter((pp) => pathMatches(pp, diffPaths))
   const coverage = covered.length / planPaths.length
-  const ratio = diffPaths.length / planPaths.length
+  // A glob or directory covers several files: the scope is at least the number
+  // of diff paths the plan covers, so only files outside the plan count as creep.
+  const inPlan = diffPaths.filter((dp) => planPaths.some((pp) => pathMatches(pp, [dp]))).length
+  const ratio = diffPaths.length / Math.max(planPaths.length, inPlan)
 
   if (coverage < 1) {
     const missing = planPaths.filter((pp) => !pathMatches(pp, diffPaths))

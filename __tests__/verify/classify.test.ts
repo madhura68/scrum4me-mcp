@@ -213,3 +213,137 @@ describe('classifyDiffAgainstPlan — plan met pseudo-paths', () => {
     expect(r.reasoning).toMatch(/bar\.ts/)
   })
 })
+
+describe('classifyDiffAgainstPlan — plan-padextractie (ISS-7)', () => {
+  const ROUTES = ['backlog', 'issues', 'jobs', 'notifications', 'solo', 'sprint', 'user-settings'].map(
+    (r) => `app/api/realtime/${r}/route.ts`,
+  )
+  const SSE_PLAN = [
+    '## Doel',
+    'Breng de SSE-opzet onder in één helper. Importeer `getSession` uit `@/lib/auth`.',
+    '',
+    '## Bestanden',
+    '- Nieuw: `lib/realtime/sse.ts`',
+    '- Nieuw: `__tests__/lib/realtime-sse.test.ts`',
+    '- Wijzig (alle zeven): `app/api/realtime/{backlog,issues,jobs,notifications,solo,sprint,user-settings}/route.ts`',
+    '- NIET wijzigen: `app/api/hub/events/route.ts`, `lib/realtime/notify-hub.ts`, `vendor/`.',
+    '',
+    '## Tip',
+    'Zoek eerst met grep in `app/api/realtime/*`.',
+  ].join('\n')
+
+  it('complete diff tegen het SSE-plan is ALIGNED', () => {
+    const diff = makeDiff(['lib/realtime/sse.ts', '__tests__/lib/realtime-sse.test.ts', ...ROUTES])
+    const r = classifyDiffAgainstPlan({ diff, plan: SSE_PLAN })
+    expect(r.result).toBe('ALIGNED')
+    expect(r.reasoning).toMatch(/Alle 9 plan-paden/)
+  })
+
+  it('halve diff tegen het SSE-plan is PARTIAL en noemt de ontbrekende routes', () => {
+    const diff = makeDiff(['lib/realtime/sse.ts', '__tests__/lib/realtime-sse.test.ts', ROUTES[0]])
+    const r = classifyDiffAgainstPlan({ diff, plan: SSE_PLAN })
+    expect(r.result).toBe('PARTIAL')
+    expect(r.reasoning).toMatch(/3\/9/)
+    expect(r.reasoning).toContain('app/api/realtime/issues/route.ts')
+  })
+
+  it('zonder sectie Bestanden: NIET-regels en @/-specifiers tellen niet mee', () => {
+    const plan = 'Pas `src/a.ts` aan.\nNIET wijzigen: `src/b.ts`.\nImporteer `@/lib/x`.'
+    const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts']), plan })
+    expect(r.result).toBe('ALIGNED')
+  })
+
+  it('een glob is gedekt zodra één diffpad matcht', () => {
+    const plan = '## Bestanden\n- `docs/*.md`'
+    expect(classifyDiffAgainstPlan({ diff: makeDiff(['docs/x.md']), plan }).result).toBe('ALIGNED')
+    expect(classifyDiffAgainstPlan({ diff: makeDiff(['src/y.ts']), plan }).result).toBe('PARTIAL')
+  })
+
+  it('een map-pad is gedekt door een bestand eronder', () => {
+    const plan = '## Files\n- `src/verify/`'
+    const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/verify/classify.ts']), plan })
+    expect(r.result).toBe('ALIGNED')
+  })
+
+  it('drie bestanden onder één glob of map zijn geen scope-uitbreiding', () => {
+    const glob = classifyDiffAgainstPlan({ diff: makeDiff(['docs/a.md', 'docs/b.md', 'docs/c.md']), plan: '## Bestanden\n- `docs/*.md`' })
+    expect(glob.result).toBe('ALIGNED')
+    const dir = classifyDiffAgainstPlan({
+      diff: makeDiff(['src/verify/a.ts', 'src/verify/b.ts', 'src/verify/c.ts']),
+      plan: '## Files\n- `src/verify/`',
+    })
+    expect(dir.result).toBe('ALIGNED')
+  })
+
+  it('bestanden buiten het patroon tellen nog wel als scope-uitbreiding', () => {
+    const r = classifyDiffAgainstPlan({
+      diff: makeDiff(['docs/a.md', 'src/x.ts', 'src/y.ts', 'src/z.ts']),
+      plan: '## Bestanden\n- `docs/a.md`',
+    })
+    expect(r.result).toBe('DIVERGENT')
+    expect(r.reasoning).toMatch(/Extra: src\/x\.ts/)
+  })
+
+  it('een globstar matcht ook nul mappen', () => {
+    const plan = '## Bestanden\n- `docs/**/*.md`'
+    expect(classifyDiffAgainstPlan({ diff: makeDiff(['docs/x.md']), plan }).result).toBe('ALIGNED')
+    expect(classifyDiffAgainstPlan({ diff: makeDiff(['docs/sub/deep/x.md']), plan }).result).toBe('ALIGNED')
+    expect(classifyDiffAgainstPlan({ diff: makeDiff(['docsx.md']), plan }).result).toBe('PARTIAL')
+  })
+
+  it('leest alle Bestanden/Files-secties, niet alleen de eerste', () => {
+    const plan = '## Task 1\n### Files\n- `src/a.ts`\n\n## Task 2\n### Files\n- `src/b.ts`'
+    const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts']), plan })
+    expect(r.result).toBe('PARTIAL')
+    expect(r.reasoning).toContain('src/b.ts')
+    expect(classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts', 'src/b.ts']), plan }).result).toBe('ALIGNED')
+  })
+
+  it('een gemengde opdracht houdt het positieve pad verplicht (puntkomma en komma)', () => {
+    for (const mixed of ['Wijzig `src/a.ts`; laat `src/b.ts` ongewijzigd.', 'Wijzig `src/a.ts`, maar laat `src/b.ts` ongewijzigd.']) {
+      const plan = `## Bestanden\n- ${mixed}\n- Wijzig \`src/c.ts\`.`
+      const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/c.ts']), plan })
+      expect(r.result).toBe('PARTIAL')
+      expect(r.reasoning).toContain('src/a.ts')
+    }
+  })
+
+  it('een regel die met de negatie begint maar een wijzigopdracht bevat, houdt alle paden verplicht (NL en EN)', () => {
+    for (const mixed of [
+      'NIET wijzigen: `src/a.ts`, maar wijzig `src/b.ts`',
+      'Do not change `src/a.ts`, but modify `src/b.ts`',
+      'Do not change `src/a.ts`, rename `src/b.ts` to `src/e.ts`',
+      'NIET wijzigen: `src/a.ts` en hernoem `src/b.ts` naar `src/e.ts`',
+      'NIET wijzigen: `src/a.ts`, hernoem `src/b.ts`',
+    ]) {
+      const plan = `## Bestanden\n- ${mixed}\n- Wijzig \`src/c.ts\``
+      const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/c.ts']), plan })
+      expect(r.result).toBe('PARTIAL')
+      expect(r.reasoning).toContain('src/b.ts')
+    }
+  })
+
+  it('een pure negatieve lijst valt weg (NL en EN)', () => {
+    for (const neg of [
+      'NIET wijzigen: `src/b.ts`, `src/d.ts` en `vendor/`.',
+      'NIET wijzigen: `src/b.ts`, bestaande tests, `vendor/`.',
+      'Do not touch `src/b.ts` or `src/d.ts`.',
+    ]) {
+      const plan = `## Bestanden\n- Wijzig \`src/a.ts\`\n- ${neg}`
+      expect(classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts']), plan }).result).toBe('ALIGNED')
+    }
+  })
+
+  it('een bijzin die met de negatie begint valt weg, ook naast een wijzigopdracht', () => {
+    const plan = '## Bestanden\n- Wijzig `src/a.ts`; NIET wijzigen: `src/b.ts`, `src/d.ts`.'
+    const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts']), plan })
+    expect(r.result).toBe('ALIGNED')
+  })
+
+  it('geneste braces gooien niet en tellen niet als pad', () => {
+    const plan = '## Bestanden\n- `src/a.ts`\n- `a/{b,{c,d}}.ts`'
+    const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts']), plan })
+    expect(r.result).toBe('ALIGNED')
+    expect(r.reasoning).toMatch(/Alle 1 plan-paden/)
+  })
+})
