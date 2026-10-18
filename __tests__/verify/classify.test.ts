@@ -308,6 +308,29 @@ describe('classifyDiffAgainstPlan — plan-padextractie (ISS-7)', () => {
     }
   })
 
+  it('een regel die met de negatie begint maar een wijzigopdracht bevat, houdt alle paden verplicht (NL en EN)', () => {
+    for (const mixed of [
+      'NIET wijzigen: `src/a.ts`, maar wijzig `src/b.ts`',
+      'Do not change `src/a.ts`, but modify `src/b.ts`',
+    ]) {
+      const plan = `## Bestanden\n- ${mixed}\n- Wijzig \`src/c.ts\``
+      const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/c.ts']), plan })
+      expect(r.result).toBe('PARTIAL')
+      expect(r.reasoning).toContain('src/b.ts')
+    }
+  })
+
+  it('een pure negatieve lijst valt weg (NL en EN)', () => {
+    for (const neg of [
+      'NIET wijzigen: `src/b.ts`, `src/d.ts` en `vendor/`.',
+      'NIET wijzigen: `src/b.ts`, bestaande tests, `vendor/`.',
+      'Do not touch `src/b.ts` or `src/d.ts`.',
+    ]) {
+      const plan = `## Bestanden\n- Wijzig \`src/a.ts\`\n- ${neg}`
+      expect(classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts']), plan }).result).toBe('ALIGNED')
+    }
+  })
+
   it('een bijzin die met de negatie begint valt weg, ook naast een wijzigopdracht', () => {
     const plan = '## Bestanden\n- Wijzig `src/a.ts`; NIET wijzigen: `src/b.ts`, `src/d.ts`.'
     const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts']), plan })

@@ -46,17 +46,24 @@ function filesSections(plan: string): string {
   return found ? kept.join('\n') : plan
 }
 
+// After the negation, a contrast word or a change verb starts a positive order:
+// "NIET wijzigen: `a`, maar wijzig `b`", "Do not change `a`, but modify `b`".
+const POSITIVE_AFTER_NEGATION =
+  /\b(maar|wel|behalve|echter|but|except|however|wijzig\w*|pas\b|aanpass\w*|maak|voeg|schrijf|verwijder\w*|vervang\w*|modify|change|update|add|create|edit|write|remove|delete|replace)\b/i
+
 // Splits a line into clauses at ";" and at a sentence-ending "." outside
-// backticks, and drops a clause only when its negation comes before its first
-// path ("NIET wijzigen: `x`, `y`", "do not touch `x`"). A negation after a path
-// ("wijzig `a`, maar laat `b` ongewijzigd") keeps every path in the clause: a
-// wrongly required path fails visibly as PARTIAL, while a wrongly dropped one
-// would let unfinished work through as ALIGNED.
+// backticks, and drops a clause only when it starts with the negation and the
+// rest gives no positive order ("NIET wijzigen: `x`, bestaande tests, `y`.").
+// A negation after a path ("wijzig `a`, maar laat `b` ongewijzigd") or a
+// positive order after it keeps every path in the clause: a wrongly required
+// path fails visibly as PARTIAL, while a wrongly dropped one would let
+// unfinished work through as ALIGNED.
 function isNegativeClause(clause: string): boolean {
   const neg = clause.match(NEGATIVE_CLAUSE)
   if (!neg || neg.index === undefined) return false
-  const firstPath = clause.indexOf('`')
-  return firstPath === -1 || neg.index < firstPath
+  if (!/^[\s\-*]*$/.test(clause.slice(0, neg.index))) return false
+  const rest = clause.slice(neg.index + neg[0].length).replace(/`[^`]*`/g, ' ')
+  return !POSITIVE_AFTER_NEGATION.test(rest)
 }
 
 function positiveClauses(line: string): string {
