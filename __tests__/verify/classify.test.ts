@@ -299,13 +299,19 @@ describe('classifyDiffAgainstPlan — plan-padextractie (ISS-7)', () => {
     expect(classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts', 'src/b.ts']), plan }).result).toBe('ALIGNED')
   })
 
-  it('een gemengde regel sluit alleen het negatieve deel uit', () => {
-    const plan = '## Bestanden\n- Wijzig `src/a.ts`; laat `src/b.ts` ongewijzigd.\n- Wijzig `src/c.ts`.'
-    const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/c.ts']), plan })
-    expect(r.result).toBe('PARTIAL')
-    expect(r.reasoning).toContain('src/a.ts')
-    expect(r.reasoning).not.toContain('src/b.ts')
-    expect(classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts', 'src/c.ts']), plan }).result).toBe('ALIGNED')
+  it('een gemengde opdracht houdt het positieve pad verplicht (puntkomma en komma)', () => {
+    for (const mixed of ['Wijzig `src/a.ts`; laat `src/b.ts` ongewijzigd.', 'Wijzig `src/a.ts`, maar laat `src/b.ts` ongewijzigd.']) {
+      const plan = `## Bestanden\n- ${mixed}\n- Wijzig \`src/c.ts\`.`
+      const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/c.ts']), plan })
+      expect(r.result).toBe('PARTIAL')
+      expect(r.reasoning).toContain('src/a.ts')
+    }
+  })
+
+  it('een bijzin die met de negatie begint valt weg, ook naast een wijzigopdracht', () => {
+    const plan = '## Bestanden\n- Wijzig `src/a.ts`; NIET wijzigen: `src/b.ts`, `src/d.ts`.'
+    const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts']), plan })
+    expect(r.result).toBe('ALIGNED')
   })
 
   it('geneste braces gooien niet en tellen niet als pad', () => {

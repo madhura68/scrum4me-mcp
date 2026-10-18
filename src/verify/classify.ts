@@ -47,8 +47,18 @@ function filesSections(plan: string): string {
 }
 
 // Splits a line into clauses at ";" and at a sentence-ending "." outside
-// backticks, and drops the negative ones: "Wijzig `a`; laat `b` ongewijzigd."
-// keeps `a` and drops only `b`.
+// backticks, and drops a clause only when its negation comes before its first
+// path ("NIET wijzigen: `x`, `y`", "do not touch `x`"). A negation after a path
+// ("wijzig `a`, maar laat `b` ongewijzigd") keeps every path in the clause: a
+// wrongly required path fails visibly as PARTIAL, while a wrongly dropped one
+// would let unfinished work through as ALIGNED.
+function isNegativeClause(clause: string): boolean {
+  const neg = clause.match(NEGATIVE_CLAUSE)
+  if (!neg || neg.index === undefined) return false
+  const firstPath = clause.indexOf('`')
+  return firstPath === -1 || neg.index < firstPath
+}
+
 function positiveClauses(line: string): string {
   const clauses: string[] = []
   let current = ''
@@ -65,7 +75,7 @@ function positiveClauses(line: string): string {
     }
   }
   clauses.push(current)
-  return clauses.filter((cl) => !NEGATIVE_CLAUSE.test(cl)).join(';')
+  return clauses.filter((cl) => !isNegativeClause(cl)).join(';')
 }
 
 // One brace group: `a/{b,c}/d.ts` → `a/b/d.ts`, `a/c/d.ts`. Anything else is
