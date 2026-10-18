@@ -213,3 +213,62 @@ describe('classifyDiffAgainstPlan — plan met pseudo-paths', () => {
     expect(r.reasoning).toMatch(/bar\.ts/)
   })
 })
+
+describe('classifyDiffAgainstPlan — plan-padextractie (ISS-7)', () => {
+  const ROUTES = ['backlog', 'issues', 'jobs', 'notifications', 'solo', 'sprint', 'user-settings'].map(
+    (r) => `app/api/realtime/${r}/route.ts`,
+  )
+  const SSE_PLAN = [
+    '## Doel',
+    'Breng de SSE-opzet onder in één helper. Importeer `getSession` uit `@/lib/auth`.',
+    '',
+    '## Bestanden',
+    '- Nieuw: `lib/realtime/sse.ts`',
+    '- Nieuw: `__tests__/lib/realtime-sse.test.ts`',
+    '- Wijzig (alle zeven): `app/api/realtime/{backlog,issues,jobs,notifications,solo,sprint,user-settings}/route.ts`',
+    '- NIET wijzigen: `app/api/hub/events/route.ts`, `lib/realtime/notify-hub.ts`, `vendor/`.',
+    '',
+    '## Tip',
+    'Zoek eerst met grep in `app/api/realtime/*`.',
+  ].join('\n')
+
+  it('complete diff tegen het SSE-plan is ALIGNED', () => {
+    const diff = makeDiff(['lib/realtime/sse.ts', '__tests__/lib/realtime-sse.test.ts', ...ROUTES])
+    const r = classifyDiffAgainstPlan({ diff, plan: SSE_PLAN })
+    expect(r.result).toBe('ALIGNED')
+    expect(r.reasoning).toMatch(/Alle 9 plan-paden/)
+  })
+
+  it('halve diff tegen het SSE-plan is PARTIAL en noemt de ontbrekende routes', () => {
+    const diff = makeDiff(['lib/realtime/sse.ts', '__tests__/lib/realtime-sse.test.ts', ROUTES[0]])
+    const r = classifyDiffAgainstPlan({ diff, plan: SSE_PLAN })
+    expect(r.result).toBe('PARTIAL')
+    expect(r.reasoning).toMatch(/3\/9/)
+    expect(r.reasoning).toContain('app/api/realtime/issues/route.ts')
+  })
+
+  it('zonder sectie Bestanden: NIET-regels en @/-specifiers tellen niet mee', () => {
+    const plan = 'Pas `src/a.ts` aan.\nNIET wijzigen: `src/b.ts`.\nImporteer `@/lib/x`.'
+    const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts']), plan })
+    expect(r.result).toBe('ALIGNED')
+  })
+
+  it('een glob is gedekt zodra één diffpad matcht', () => {
+    const plan = '## Bestanden\n- `docs/*.md`'
+    expect(classifyDiffAgainstPlan({ diff: makeDiff(['docs/x.md']), plan }).result).toBe('ALIGNED')
+    expect(classifyDiffAgainstPlan({ diff: makeDiff(['src/y.ts']), plan }).result).toBe('PARTIAL')
+  })
+
+  it('een map-pad is gedekt door een bestand eronder', () => {
+    const plan = '## Files\n- `src/verify/`'
+    const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/verify/classify.ts']), plan })
+    expect(r.result).toBe('ALIGNED')
+  })
+
+  it('geneste braces gooien niet en tellen niet als pad', () => {
+    const plan = '## Bestanden\n- `src/a.ts`\n- `a/{b,{c,d}}.ts`'
+    const r = classifyDiffAgainstPlan({ diff: makeDiff(['src/a.ts']), plan })
+    expect(r.result).toBe('ALIGNED')
+    expect(r.reasoning).toMatch(/Alle 1 plan-paden/)
+  })
+})
