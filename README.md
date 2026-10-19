@@ -624,6 +624,7 @@ job stays an ordinary Claude job, and the claim of Claude and Codex jobs is as b
   processing off and the worktree's gitlink checked first, no git in a worktree that is being removed,
   no backup push from the worktree, and in `update_job_status` no auto-PR, no status propagation to
   task/story/PBI and no PBI fail-cascade — the harness manages its loose task jobs itself.
+  The worktree of a `done` or `failed` job is removed directly by `update_job_status` (best-effort; a failure there does not change the status) instead of through the deferred-cleanup marker, because no Claude Code hook or runner drains that marker for such a job. A `done` job whose push failed keeps its worktree for inspection.
 
 Tool errors of `wait_for_job` for a `HARNESS` job:
 
