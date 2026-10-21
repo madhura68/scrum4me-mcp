@@ -450,6 +450,7 @@ model Product {
   notes                     Note[]
   usage_segments            UsageSegment[]
   harness_choices           ProductHarnessChoice[]
+  access_steps              ProductAccessStep[]
   agent_chats               AgentChat[]
 
   @@unique([user_id, name])
@@ -871,9 +872,39 @@ model AgentModel {
   notes        String?      @db.Text
   created_at   DateTime     @default(now())
   updated_at   DateTime     @updatedAt
+  facts        AgentModelFacts?
 
   @@unique([runtime, model_id])
   @@map("agent_models")
+}
+
+/// IDEA-269: waar een registry-rij draait. Alleen LOCAL geldt als niet-gehost.
+enum ModelOrigin {
+  SUBSCRIPTION
+  REMOTE
+  LOCAL
+}
+
+/// IDEA-269: herkomst en beschrijvende feiten van één agent_models-rij (1:1).
+/// Eigen tabel omdat agent_models gesloten is (IDEA-213-adoptie). Beschrijvend:
+/// harness.json en LiteLLM blijven leidend. Geen rij = herkomst onbekend = gehost.
+model AgentModelFacts {
+  agent_model_id     String      @id
+  agent_model        AgentModel  @relation(fields: [agent_model_id], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  origin             ModelOrigin
+  upstream_model     String?
+  context_tokens     Int?
+  max_context_tokens Int?
+  max_output_tokens  Int?
+  quantization       String?
+  params_total_b     Decimal?    @db.Decimal(10, 2)
+  params_active_b    Decimal?    @db.Decimal(10, 2)
+  capabilities       String[]    @default([])
+  reasoning_efforts  String[]    @default([])
+  created_at         DateTime    @default(now())
+  updated_at         DateTime    @updatedAt
+
+  @@map("agent_model_facts")
 }
 
 model ClaudeWorker {
@@ -2441,6 +2472,30 @@ model ProductHarnessChoice {
 
   @@id([product_id, kind])
   @@map("product_harness_choices")
+}
+
+// IDEA-267 I1: vinkjes van de tab Toegang per product en stap
+// (spec docs/specs/2026-10-18-idea-267-toegang-per-product.md §6 in Scrum4Me). Alleen additief;
+// de migratie en het additieve contract staan in Scrum4Me.
+
+/// IDEA-267: DONE alleen voor checklistitems; NOT_APPLICABLE ook voor live stappen.
+enum ProductAccessStepState {
+  DONE
+  NOT_APPLICABLE
+}
+
+/// IDEA-267: één rij per afgevinkte stap; "Ongedaan maken" verwijdert de rij. context_at_check is de
+/// waarde waar het vinkje van afhangt (repo_url, deploy_flow of de sha256 van de trust-YAML).
+model ProductAccessStep {
+  product          Product                @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  product_id       String
+  step_key         String                 @db.VarChar(64)
+  state            ProductAccessStepState
+  context_at_check String?
+  updated_at       DateTime               @updatedAt
+
+  @@id([product_id, step_key])
+  @@map("product_access_steps")
 }
 
 /// M45: gemeld bedrag per HARNESS-job (spec §6.2); één rij per job, upsert door update_job_status.

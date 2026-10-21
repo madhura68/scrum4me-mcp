@@ -123,13 +123,13 @@ describe('getFullJobContext — live JobKindConfig-resolutie', () => {
     expect(ctx.config.model).toBe('claude-sonnet-5')
   })
 
-  it('CODEX zonder DB-rij resolveert claim-time naar GPT-5.5', async () => {
+  it('CODEX zonder DB-rij resolveert claim-time naar GPT-6.1 Sol', async () => {
     mockPrisma.claudeJob.findUnique.mockResolvedValue({ ...BASE_ORCH_JOB, runtime: 'CODEX' })
     mockPrisma.jobKindConfig.findUnique.mockResolvedValue(null)
 
     const ctx = (await getFullJobContext('job-jkc-1', 'CODEX')) as any
     expect(ctx.config.runtime).toBe('CODEX')
-    expect(ctx.config.model).toBe('gpt-5.5')
+    expect(ctx.config.model).toBe('gpt-6.1-sol')
   })
 
   it('CODEX behoudt ook een expliciete legacy DB-waarde ongewijzigd', async () => {
